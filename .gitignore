@@ -27,3 +27,8 @@ id_ed25519*
 
 # Local config overrides
 shotgun.local.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
