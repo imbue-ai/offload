@@ -309,15 +309,7 @@ fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>> 
             Ok(Arc::new(SshProvider::new(cfg.clone())))
         }
         ProviderConfig::Remote(cfg) => {
-            Ok(Arc::new(ConnectorProvider::from_config(
-                shotgun::provider::remote::ConnectorProviderConfig {
-                    create_command: cfg.create_command.clone(),
-                    exec_command: cfg.exec_command.clone(),
-                    destroy_command: cfg.destroy_command.clone(),
-                    working_dir: cfg.working_dir.clone(),
-                    timeout_secs: cfg.timeout_secs,
-                },
-            )))
+            Ok(Arc::new(ConnectorProvider::from_config(cfg.clone())))
         }
     }
 }

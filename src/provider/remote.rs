@@ -4,12 +4,11 @@
 //! running shell commands. The Sandbox manages the lifecycle (create/exec/destroy).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -17,39 +16,13 @@ use super::{
     Command, DynSandbox, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
-use crate::config::SandboxConfig;
+use crate::config::{RemoteProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
-
-/// Configuration for the connector-based provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorProviderConfig {
-    /// Command to create a sandbox instance (prints sandbox_id to stdout)
-    pub create_command: String,
-
-    /// Command to execute on a sandbox.
-    /// {sandbox_id} and {command} will be substituted.
-    pub exec_command: String,
-
-    /// Command to destroy a sandbox.
-    /// {sandbox_id} will be substituted.
-    pub destroy_command: String,
-
-    /// Working directory for running the connector
-    pub working_dir: Option<PathBuf>,
-
-    /// Timeout in seconds
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-}
-
-fn default_timeout() -> u64 {
-    3600
-}
 
 /// Provider that uses shell commands for lifecycle management.
 pub struct ConnectorProvider {
     connector: Arc<ShellConnector>,
-    config: ConnectorProviderConfig,
+    config: RemoteProviderConfig,
     sandboxes: Arc<Mutex<HashMap<String, ConnectorSandboxInfo>>>,
 }
 
@@ -62,7 +35,7 @@ struct ConnectorSandboxInfo {
 
 impl ConnectorProvider {
     /// Create a new provider from config.
-    pub fn from_config(config: ConnectorProviderConfig) -> Self {
+    pub fn from_config(config: RemoteProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
@@ -171,10 +144,6 @@ impl ConnectorSandbox {
 impl Sandbox for ConnectorSandbox {
     fn id(&self) -> &str {
         &self.id
-    }
-
-    fn is_single_use(&self) -> bool {
-        false // Lifecycle-based sandboxes are reusable
     }
 
     async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult> {

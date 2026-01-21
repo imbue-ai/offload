@@ -182,42 +182,15 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// Sandboxes can execute commands, transfer files, and be terminated.
 /// They abstract over different execution backends like Docker containers,
 /// SSH connections, or local processes.
-///
-/// # Single-Use vs Reusable Sandboxes
-///
-/// Some sandboxes (like remote/Modal) spin up a new instance for each command,
-/// making them effectively single-use. Others (like Docker, SSH, Process) maintain
-/// a persistent environment that can run multiple commands.
-///
-/// Check `is_single_use()` to determine the sandbox's behavior. Single-use sandboxes
-/// will return `Err(ProviderError::SandboxExhausted)` if `exec` is called more than once.
 #[async_trait]
 pub trait Sandbox: Send + Sync {
     /// Get the unique identifier for this sandbox.
     fn id(&self) -> &str;
 
-    /// Returns true if this sandbox can only execute one command.
-    ///
-    /// Single-use sandboxes spin up a new remote instance for each exec() call,
-    /// so calling exec() multiple times is wasteful and semantically incorrect.
-    /// After the first exec(), subsequent calls will return `SandboxExhausted`.
-    ///
-    /// Reusable sandboxes (Docker, SSH, Process) maintain a persistent connection
-    /// and can execute multiple commands efficiently.
-    fn is_single_use(&self) -> bool {
-        false
-    }
-
     /// Execute a command and wait for completion.
-    ///
-    /// For single-use sandboxes, this can only be called once. Subsequent calls
-    /// will return `Err(ProviderError::SandboxExhausted)`.
     async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult>;
 
     /// Execute a command and stream output.
-    ///
-    /// For single-use sandboxes, this can only be called once. Subsequent calls
-    /// will return `Err(ProviderError::SandboxExhausted)`.
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream>;
 
     /// Upload a file or directory to the sandbox.
