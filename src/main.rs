@@ -13,7 +13,6 @@ use shotgun::discovery::{
     cargo::CargoDiscoverer, generic::GenericDiscoverer, pytest::PytestDiscoverer, TestDiscoverer,
 };
 use shotgun::executor::Orchestrator;
-use shotgun::connector::ShellConnector;
 use shotgun::provider::{
     docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
     ssh::SshProvider, SandboxProvider,
@@ -310,12 +309,15 @@ fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>> 
             Ok(Arc::new(SshProvider::new(cfg.clone())))
         }
         ProviderConfig::Remote(cfg) => {
-            let mut connector = ShellConnector::new(&cfg.execute_command)
-                .with_timeout(cfg.timeout_secs);
-            if let Some(dir) = &cfg.working_dir {
-                connector = connector.with_working_dir(dir.clone());
-            }
-            Ok(Arc::new(ConnectorProvider::new(connector)))
+            Ok(Arc::new(ConnectorProvider::from_config(
+                shotgun::provider::remote::ConnectorProviderConfig {
+                    create_command: cfg.create_command.clone(),
+                    exec_command: cfg.exec_command.clone(),
+                    destroy_command: cfg.destroy_command.clone(),
+                    working_dir: cfg.working_dir.clone(),
+                    timeout_secs: cfg.timeout_secs,
+                },
+            )))
         }
     }
 }

@@ -172,28 +172,25 @@ fn default_ssh_port() -> u16 {
 
 /// Configuration for the remote execution provider.
 ///
-/// Plug in your own script that handles all remote execution.
-/// Your script receives test names and handles Modal/EC2/Fly/etc.
+/// Uses lifecycle-based execution: create sandbox, execute commands, destroy.
+/// Your scripts handle Modal/EC2/Fly/etc.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteProviderConfig {
-    /// Command to execute tests remotely.
-    /// Test command is appended: `{execute_command} {test_command}`
-    /// Can output JSON: {"exit_code": 0, "stdout": "...", "stderr": "..."}
-    /// Or just run and return exit code directly.
-    pub execute_command: String,
+    /// Command to create a sandbox instance.
+    /// Should print sandbox_id to stdout.
+    pub create_command: String,
 
-    /// Optional setup command (e.g., sync code to remote).
-    pub setup_command: Option<String>,
+    /// Command to execute on a sandbox.
+    /// Use {sandbox_id} and {command} as placeholders.
+    /// Should output JSON: {"exit_code": 0, "stdout": "...", "stderr": "..."}
+    pub exec_command: String,
 
-    /// Optional teardown command.
-    pub teardown_command: Option<String>,
+    /// Command to destroy a sandbox.
+    /// Use {sandbox_id} as placeholder.
+    pub destroy_command: String,
 
     /// Working directory for running commands locally.
     pub working_dir: Option<PathBuf>,
-
-    /// Environment variables to pass to commands.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 
     /// Timeout in seconds for remote execution.
     #[serde(default = "default_remote_timeout")]
