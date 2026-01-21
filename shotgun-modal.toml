@@ -8,7 +8,9 @@ stream_output = true
 
 [provider]
 type = "remote"
-execute_command = "./scripts/run-on-modal.py"
+create_command = "uv run scripts/modal-create.py"
+exec_command = "uv run scripts/modal-exec.py {sandbox_id} '{command}'"
+destroy_command = "uv run scripts/modal-destroy.py {sandbox_id}"
 timeout_secs = 600
 
 [discovery]
