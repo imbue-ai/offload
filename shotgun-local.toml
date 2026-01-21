@@ -1,0 +1,22 @@
+# shotgun configuration for local process execution
+
+[shotgun]
+max_parallel = 2
+test_timeout_secs = 60
+retry_count = 0
+stream_output = true
+
+[provider]
+type = "process"
+shell = "/bin/sh"
+
+[discovery]
+type = "pytest"
+paths = ["examples/tests"]
+python = "python3"
+extra_args = ["-s"]  # -s disables output capture so we see prints
+
+[report]
+output_dir = "test-results"
+junit = true
+junit_file = "junit.xml"

@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
-    Command, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
+    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{SandboxConfig, SshProviderConfig};
@@ -55,10 +55,7 @@ impl SshProvider {
 
 #[async_trait]
 impl SandboxProvider for SshProvider {
-    type Sandbox = SshSandbox;
-    type Config = SshProviderConfig;
-
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
         let host = self.next_host().await;
 
         let working_dir = config.working_dir.clone()
@@ -94,14 +91,14 @@ impl SandboxProvider for SshProvider {
         ssh_opts.push("-p".to_string());
         ssh_opts.push(self.config.port.to_string());
 
-        Ok(SshSandbox {
+        Ok(Box::new(SshSandbox {
             id: config.id.clone(),
             host,
             user: self.config.user.clone(),
             ssh_opts,
             working_dir,
             env: config.env.clone(),
-        })
+        }))
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {

@@ -13,7 +13,6 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
-use serde::de::DeserializeOwned;
 
 use crate::config::SandboxConfig;
 
@@ -234,30 +233,6 @@ pub trait Sandbox: Send + Sync {
     async fn terminate(&self) -> ProviderResult<()>;
 }
 
-/// A provider creates and manages sandboxes.
-///
-/// Different providers implement different execution backends:
-/// - Docker: Runs tests in containers
-/// - SSH: Runs tests on remote machines
-/// - Process: Runs tests as local processes
-#[async_trait]
-pub trait SandboxProvider: Send + Sync {
-    /// The type of sandbox this provider creates.
-    type Sandbox: Sandbox;
-
-    /// The configuration type for this provider.
-    type Config: DeserializeOwned + Send + Sync;
-
-    /// Create a new sandbox with the given configuration.
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox>;
-
-    /// List all sandboxes managed by this provider.
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;
-
-    /// Get the provider name (for logging and config).
-    fn name(&self) -> &'static str;
-}
-
 /// Escape a string for use in a shell command.
 fn shell_escape(s: &str) -> String {
     if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
@@ -270,44 +245,20 @@ fn shell_escape(s: &str) -> String {
 /// A type-erased sandbox for dynamic dispatch.
 pub type DynSandbox = Box<dyn Sandbox>;
 
-/// A type-erased provider for dynamic dispatch.
+/// A provider creates and manages sandboxes.
+///
+/// Different providers implement different execution backends:
+/// - Docker: Runs tests in containers
+/// - SSH: Runs tests on remote machines
+/// - Process: Runs tests as local processes
 #[async_trait]
-pub trait DynSandboxProvider: Send + Sync {
+pub trait SandboxProvider: Send + Sync {
+    /// Create a new sandbox with the given configuration.
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox>;
+
+    /// List all sandboxes managed by this provider.
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;
+
+    /// Get the provider name (for logging and config).
     fn name(&self) -> &'static str;
-}
-
-/// Wrapper to convert a concrete provider to a dynamic one.
-pub struct DynProviderWrapper<P: SandboxProvider> {
-    inner: P,
-}
-
-impl<P: SandboxProvider> DynProviderWrapper<P>
-where
-    P::Sandbox: 'static,
-{
-    pub fn new(provider: P) -> Self {
-        Self { inner: provider }
-    }
-}
-
-#[async_trait]
-impl<P> DynSandboxProvider for DynProviderWrapper<P>
-where
-    P: SandboxProvider + 'static,
-    P::Sandbox: 'static,
-{
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
-        let sandbox = self.inner.create_sandbox(config).await?;
-        Ok(Box::new(sandbox))
-    }
-
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
-        self.inner.list_sandboxes().await
-    }
-
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
 }

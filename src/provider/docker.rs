@@ -19,7 +19,7 @@ use futures::StreamExt;
 use tokio::sync::Mutex;
 
 use super::{
-    Command, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
+    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{DockerProviderConfig, SandboxConfig};
@@ -65,10 +65,7 @@ impl DockerProvider {
 
 #[async_trait]
 impl SandboxProvider for DockerProvider {
-    type Sandbox = DockerSandbox;
-    type Config = DockerProviderConfig;
-
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
         // Build environment variables
         let mut env: Vec<String> = self.config.env.iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -147,12 +144,12 @@ impl SandboxProvider for DockerProvider {
         };
         self.containers.lock().await.insert(config.id.clone(), info);
 
-        Ok(DockerSandbox {
+        Ok(Box::new(DockerSandbox {
             id: config.id.clone(),
             container_id,
             docker: self.docker.clone(),
             working_dir: self.config.working_dir.clone(),
-        })
+        }))
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {

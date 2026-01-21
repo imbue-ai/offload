@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
-    Command, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult,
+    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult,
     Sandbox, SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{ProcessProviderConfig, SandboxConfig};
@@ -38,10 +38,7 @@ impl ProcessProvider {
 
 #[async_trait]
 impl SandboxProvider for ProcessProvider {
-    type Sandbox = ProcessSandbox;
-    type Config = ProcessProviderConfig;
-
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
         let working_dir = config
             .working_dir
             .as_ref()
@@ -65,7 +62,7 @@ impl SandboxProvider for ProcessProvider {
         };
         self.sandboxes.lock().await.push(info);
 
-        Ok(sandbox)
+        Ok(Box::new(sandbox))
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {

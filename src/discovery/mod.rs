@@ -185,5 +185,3 @@ pub trait TestDiscoverer: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
-/// A boxed, type-erased test discoverer.
-pub type DynDiscoverer = Box<dyn TestDiscoverer>;

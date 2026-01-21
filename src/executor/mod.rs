@@ -16,11 +16,11 @@ use tracing::{info, warn, error};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
 use crate::discovery::{TestCase, TestOutcome, TestResult};
-use crate::provider::DynSandboxProvider;
+use crate::provider::{OutputLine, SandboxProvider};
 use crate::report::Reporter;
 
 pub use retry::RetryManager;
-pub use runner::TestRunner;
+pub use runner::{OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
 /// Result of the entire test run.
@@ -63,7 +63,7 @@ impl RunResult {
 /// The main orchestrator that coordinates test execution.
 pub struct Orchestrator {
     config: Config,
-    provider: Arc<dyn DynSandboxProvider>,
+    provider: Arc<dyn SandboxProvider>,
     discoverer: Arc<dyn crate::discovery::TestDiscoverer>,
     reporter: Arc<dyn Reporter>,
 }
@@ -72,7 +72,7 @@ impl Orchestrator {
     /// Create a new orchestrator with the given components.
     pub fn new(
         config: Config,
-        provider: Arc<dyn DynSandboxProvider>,
+        provider: Arc<dyn SandboxProvider>,
         discoverer: Arc<dyn crate::discovery::TestDiscoverer>,
         reporter: Arc<dyn Reporter>,
     ) -> Self {
@@ -209,11 +209,22 @@ impl Orchestrator {
                             }
                         };
 
-                        let runner = TestRunner::new(
+                        let mut runner = TestRunner::new(
                             sandbox,
                             discoverer.clone(),
                             Duration::from_secs(config.shotgun.test_timeout_secs),
                         );
+
+                        // Enable streaming if configured
+                        if config.shotgun.stream_output {
+                            let callback: OutputCallback = Arc::new(|test_id, line| {
+                                match line {
+                                    OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+                                    OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+                                }
+                            });
+                            runner = runner.with_streaming(callback);
+                        }
 
                         let result = runner.run_test(test).await;
 
@@ -245,11 +256,22 @@ impl Orchestrator {
                     }
                 } else {
                     // Reusable sandbox: run all tests in the same sandbox
-                    let runner = TestRunner::new(
+                    let mut runner = TestRunner::new(
                         initial_sandbox,
                         discoverer,
                         Duration::from_secs(config.shotgun.test_timeout_secs),
                     );
+
+                    // Enable streaming if configured
+                    if config.shotgun.stream_output {
+                        let callback: OutputCallback = Arc::new(|test_id, line| {
+                            match line {
+                                OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+                                OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+                            }
+                        });
+                        runner = runner.with_streaming(callback);
+                    }
 
                     for test in &batch {
                         reporter.on_test_start(test).await;

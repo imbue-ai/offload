@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::{
-    Command, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox,
+    Command, DynSandbox, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::SandboxConfig;
@@ -85,10 +85,7 @@ impl<C: Connector> ConnectorProvider<C> {
 
 #[async_trait]
 impl<C: Connector + 'static> SandboxProvider for ConnectorProvider<C> {
-    type Sandbox = ConnectorSandbox<C>;
-    type Config = ConnectorProviderConfig;
-
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
         info!("Creating connector sandbox: {}", config.id);
 
         let info = ConnectorSandboxInfo {
@@ -97,11 +94,11 @@ impl<C: Connector + 'static> SandboxProvider for ConnectorProvider<C> {
         };
         self.sandboxes.lock().await.insert(config.id.clone(), info);
 
-        Ok(ConnectorSandbox {
+        Ok(Box::new(ConnectorSandbox {
             id: config.id.clone(),
             connector: self.connector.clone(),
             can_run_command: AtomicBool::new(true),
-        })
+        }))
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {

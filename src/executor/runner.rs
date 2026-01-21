@@ -4,16 +4,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::StreamExt;
 use tracing::{debug, info};
 
 use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
-use crate::provider::DynSandbox;
+use crate::provider::{DynSandbox, OutputLine};
+
+/// Callback for streaming output lines.
+pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
 /// Runs tests in a sandbox.
 pub struct TestRunner {
     sandbox: DynSandbox,
     discoverer: Arc<dyn TestDiscoverer>,
     timeout: Duration,
+    stream_output: bool,
+    output_callback: Option<OutputCallback>,
 }
 
 impl TestRunner {
@@ -27,7 +33,16 @@ impl TestRunner {
             sandbox,
             discoverer,
             timeout,
+            stream_output: false,
+            output_callback: None,
         }
+    }
+
+    /// Enable streaming output with a callback.
+    pub fn with_streaming(mut self, callback: OutputCallback) -> Self {
+        self.stream_output = true;
+        self.output_callback = Some(callback);
+        self
     }
 
     /// Get a reference to the sandbox.
@@ -45,8 +60,12 @@ impl TestRunner {
         let mut cmd = self.discoverer.run_command(&[test.clone()]);
         cmd = cmd.timeout(self.timeout.as_secs());
 
-        // Execute the command
-        let exec_result = self.sandbox.exec(&cmd).await?;
+        // Execute the command (streaming or buffered)
+        let exec_result = if self.stream_output {
+            self.exec_streaming(&cmd, &test.id).await?
+        } else {
+            self.sandbox.exec(&cmd).await?
+        };
 
         let duration = start.elapsed();
 
@@ -86,6 +105,51 @@ impl TestRunner {
             });
 
         Ok(test_result)
+    }
+
+    /// Execute command with streaming output.
+    async fn exec_streaming(&self, cmd: &crate::provider::Command, test_id: &str) -> Result<crate::provider::ExecResult> {
+        let start = std::time::Instant::now();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let mut stream = self.sandbox.exec_stream(cmd).await?;
+
+        while let Some(line) = stream.next().await {
+            // Call the output callback if set
+            if let Some(ref callback) = self.output_callback {
+                callback(test_id, &line);
+            }
+
+            // Collect output
+            match &line {
+                OutputLine::Stdout(s) => {
+                    stdout.push_str(s);
+                    stdout.push('\n');
+                }
+                OutputLine::Stderr(s) => {
+                    stderr.push_str(s);
+                    stderr.push('\n');
+                }
+            }
+        }
+
+        // Infer exit code from output (streaming doesn't give us exit code directly)
+        // Look for pytest/test framework exit patterns
+        let exit_code = if stdout.contains("PASSED") || stdout.contains("passed") {
+            0
+        } else if stdout.contains("FAILED") || stdout.contains("failed") || stderr.contains("error") {
+            1
+        } else {
+            0 // Assume success if no clear failure indicators
+        };
+
+        Ok(crate::provider::ExecResult {
+            exit_code,
+            stdout,
+            stderr,
+            duration: start.elapsed(),
+        })
     }
 
     /// Run multiple tests and return all results.

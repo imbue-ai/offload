@@ -16,7 +16,7 @@ use shotgun::executor::Orchestrator;
 use shotgun::connector::ShellConnector;
 use shotgun::provider::{
     docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
-    ssh::SshProvider, DynProviderWrapper, DynSandboxProvider,
+    ssh::SshProvider, SandboxProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter, Reporter};
 
@@ -121,7 +121,7 @@ async fn run_tests(
     info!("Loaded configuration from {}", config_path.display());
 
     // Create provider
-    let provider: Arc<dyn DynSandboxProvider> = create_provider(&config.provider)?;
+    let provider: Arc<dyn SandboxProvider> = create_provider(&config.provider)?;
     info!("Using provider: {}", provider.name());
 
     // Create discoverer
@@ -298,19 +298,16 @@ junit_file = "junit.xml"
     Ok(())
 }
 
-fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn DynSandboxProvider>> {
+fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>> {
     match config {
         ProviderConfig::Process(cfg) => {
-            let provider = ProcessProvider::new(cfg.clone());
-            Ok(Arc::new(DynProviderWrapper::new(provider)))
+            Ok(Arc::new(ProcessProvider::new(cfg.clone())))
         }
         ProviderConfig::Docker(cfg) => {
-            let provider = DockerProvider::new(cfg.clone())?;
-            Ok(Arc::new(DynProviderWrapper::new(provider)))
+            Ok(Arc::new(DockerProvider::new(cfg.clone())?))
         }
         ProviderConfig::Ssh(cfg) => {
-            let provider = SshProvider::new(cfg.clone());
-            Ok(Arc::new(DynProviderWrapper::new(provider)))
+            Ok(Arc::new(SshProvider::new(cfg.clone())))
         }
         ProviderConfig::Remote(cfg) => {
             let mut connector = ShellConnector::new(&cfg.execute_command)
@@ -318,8 +315,7 @@ fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn DynSandboxProvider
             if let Some(dir) = &cfg.working_dir {
                 connector = connector.with_working_dir(dir.clone());
             }
-            let provider = ConnectorProvider::new(connector);
-            Ok(Arc::new(DynProviderWrapper::new(provider)))
+            Ok(Arc::new(ConnectorProvider::new(connector)))
         }
     }
 }

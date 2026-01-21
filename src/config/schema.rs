@@ -39,6 +39,10 @@ pub struct ShotgunConfig {
 
     /// Working directory for test execution.
     pub working_dir: Option<PathBuf>,
+
+    /// Stream test output in real-time instead of buffering.
+    #[serde(default)]
+    pub stream_output: bool,
 }
 
 fn default_max_parallel() -> usize {

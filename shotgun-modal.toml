@@ -1,0 +1,22 @@
+# shotgun configuration for Modal execution
+
+[shotgun]
+max_parallel = 4
+test_timeout_secs = 600
+retry_count = 2
+stream_output = true
+
+[provider]
+type = "remote"
+execute_command = "./scripts/run-on-modal.py"
+timeout_secs = 600
+
+[discovery]
+type = "pytest"
+paths = ["examples/tests"]
+python = "python3"
+
+[report]
+output_dir = "test-results"
+junit = true
+junit_file = "junit.xml"
