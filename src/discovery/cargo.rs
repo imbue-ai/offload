@@ -1,0 +1,200 @@
+//! Cargo test discovery implementation.
+
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use regex::Regex;
+
+use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutcome, TestResult};
+use crate::config::CargoDiscoveryConfig;
+use crate::provider::{Command, ExecResult};
+
+/// Cargo test discoverer.
+pub struct CargoDiscoverer {
+    config: CargoDiscoveryConfig,
+}
+
+impl CargoDiscoverer {
+    /// Create a new cargo test discoverer with the given configuration.
+    pub fn new(config: CargoDiscoveryConfig) -> Self {
+        Self { config }
+    }
+
+    /// Parse cargo test --list output to extract test cases.
+    fn parse_list_output(&self, output: &str) -> Vec<TestCase> {
+        let mut tests = Vec::new();
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+
+            // Skip empty lines and summary lines
+            if trimmed.is_empty() || trimmed.ends_with("tests") && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                continue;
+            }
+
+            // Test lines end with ": test" or ": benchmark"
+            if trimmed.ends_with(": test") {
+                let test_name = trimmed.trim_end_matches(": test");
+                tests.push(TestCase::new(test_name));
+            } else if trimmed.ends_with(": benchmark") {
+                let test_name = trimmed.trim_end_matches(": benchmark");
+                tests.push(TestCase::new(test_name).with_marker("benchmark"));
+            }
+        }
+
+        tests
+    }
+}
+
+#[async_trait]
+impl TestDiscoverer for CargoDiscoverer {
+    async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
+        // Build the cargo test --list command
+        let mut cmd_args = vec!["test".to_string()];
+
+        // Add package if specified
+        if let Some(package) = &self.config.package {
+            cmd_args.push("-p".to_string());
+            cmd_args.push(package.clone());
+        }
+
+        // Add features if specified
+        if !self.config.features.is_empty() {
+            cmd_args.push("--features".to_string());
+            cmd_args.push(self.config.features.join(","));
+        }
+
+        // Add binary if specified
+        if let Some(bin) = &self.config.bin {
+            cmd_args.push("--bin".to_string());
+            cmd_args.push(bin.clone());
+        }
+
+        // Include ignored tests if requested
+        if self.config.include_ignored {
+            cmd_args.push("--ignored".to_string());
+        }
+
+        cmd_args.push("--".to_string());
+        cmd_args.push("--list".to_string());
+
+        let output = tokio::process::Command::new("cargo")
+            .args(&cmd_args)
+            .output()
+            .await
+            .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            return Err(DiscoveryError::DiscoveryFailed(format!(
+                "cargo test --list failed: {}",
+                stderr
+            )));
+        }
+
+        let tests = self.parse_list_output(&stdout);
+
+        if tests.is_empty() {
+            tracing::warn!("No tests discovered. stdout: {}, stderr: {}", stdout, stderr);
+        }
+
+        Ok(tests)
+    }
+
+    fn run_command(&self, tests: &[TestCase]) -> Command {
+        let mut cmd = Command::new("cargo")
+            .arg("test");
+
+        // Add package if specified
+        if let Some(package) = &self.config.package {
+            cmd = cmd.arg("-p").arg(package);
+        }
+
+        // Add features if specified
+        if !self.config.features.is_empty() {
+            cmd = cmd.arg("--features").arg(self.config.features.join(","));
+        }
+
+        // Add binary if specified
+        if let Some(bin) = &self.config.bin {
+            cmd = cmd.arg("--bin").arg(bin);
+        }
+
+        // Include ignored tests if requested
+        if self.config.include_ignored {
+            cmd = cmd.arg("--ignored");
+        }
+
+        cmd = cmd.arg("--").arg("--exact");
+
+        // Add test names
+        for test in tests {
+            cmd = cmd.arg(&test.id);
+        }
+
+        cmd
+    }
+
+    fn parse_results(&self, output: &ExecResult, _result_file: Option<&str>) -> DiscoveryResult<Vec<TestResult>> {
+        parse_cargo_test_output(&output.stdout, &output.stderr)
+    }
+
+    fn name(&self) -> &'static str {
+        "cargo"
+    }
+}
+
+/// Parse cargo test output to extract test results.
+fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<TestResult>> {
+    let mut results = Vec::new();
+
+    // Match lines like:
+    // test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    // test tests::test_foo ... ok
+    // test tests::test_bar ... FAILED
+    let result_re = Regex::new(r"test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)").unwrap();
+
+    for cap in result_re.captures_iter(stdout) {
+        let test_id = &cap[1];
+        let status = &cap[2];
+
+        let outcome = match status {
+            "ok" => TestOutcome::Passed,
+            "FAILED" => TestOutcome::Failed,
+            "ignored" => TestOutcome::Skipped,
+            _ => continue,
+        };
+
+        results.push(TestResult {
+            test: TestCase::new(test_id),
+            outcome,
+            duration: std::time::Duration::ZERO,
+            stdout: String::new(),
+            stderr: String::new(),
+            error_message: None,
+            stack_trace: None,
+        });
+    }
+
+    // Try to extract failure details
+    let failure_re = Regex::new(r"---- (\S+) stdout ----\n([\s\S]*?)(?=\n----|\n\nfailures:)").unwrap();
+    for cap in failure_re.captures_iter(stdout) {
+        let test_id = &cap[1];
+        let output_content = &cap[2];
+
+        // Find and update the corresponding result
+        for result in &mut results {
+            if result.test.id == test_id {
+                result.stdout = output_content.to_string();
+                if result.outcome == TestOutcome::Failed {
+                    result.error_message = Some(output_content.lines().last().unwrap_or("").to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(results)
+}

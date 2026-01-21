@@ -1,0 +1,21 @@
+# shotgun configuration file
+# Example configuration using the process provider with pytest
+
+[shotgun]
+max_parallel = 4
+test_timeout_secs = 300
+retry_count = 2
+
+[provider]
+type = "process"
+working_dir = "."
+
+[discovery]
+type = "pytest"
+paths = ["examples/tests"]
+python = "python3"
+
+[report]
+output_dir = "test-results"
+junit = true
+junit_file = "junit.xml"

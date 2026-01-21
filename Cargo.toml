@@ -1,0 +1,59 @@
+[package]
+name = "shotgun"
+version = "0.1.0"
+edition = "2021"
+description = "Flexible parallel test runner with pluggable cloud providers"
+license = "MIT"
+
+[[bin]]
+name = "shotgun"
+path = "src/main.rs"
+
+[lib]
+name = "shotgun"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization & Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Docker provider
+bollard = "0.18"
+
+# Reporting
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+# Terminal UI
+indicatif = "0.17"
+console = "0.15"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+shellexpand = "3"
+shell-words = "1"
+regex = "1"
+tar = "0.4"
+tokio-stream = { version = "0.1", features = ["io-util"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

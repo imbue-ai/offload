@@ -1,0 +1,29 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test output
+/test-results/
+
+# Claude Code
+.claude/
+
+# SSH keys (never commit these!)
+*.pem
+*_key
+id_rsa*
+id_ed25519*
+
+# Local config overrides
+shotgun.local.toml
