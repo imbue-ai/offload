@@ -60,6 +60,10 @@ pub struct ConnectorResult {
     pub stderr: String,
 }
 
+use crate::provider::{OutputStream, OutputLine};
+use futures::stream::StreamExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
 /// Trait for connectors that bridge shotgun to remote compute.
 ///
 /// Connectors handle:
@@ -80,6 +84,11 @@ pub trait Connector: Send + Sync {
     /// The command is typically a test runner invocation like:
     /// `["pytest", "test_file.py::test_name", "-v"]`
     async fn execute(&self, command: &[String]) -> ProviderResult<ConnectorResult>;
+
+    /// Execute a command and stream the output.
+    ///
+    /// Returns a stream of output lines as they are produced.
+    async fn execute_stream(&self, command: &[String]) -> ProviderResult<OutputStream>;
 
     /// Get the connector name (for logging).
     fn name(&self) -> &str;
@@ -214,6 +223,44 @@ impl Connector for ShellConnector {
                 })
             }
         }
+    }
+
+    async fn execute_stream(&self, command: &[String]) -> ProviderResult<OutputStream> {
+        let mut parts = self.command_parts();
+        parts.extend(command.iter().cloned());
+
+        debug!("Streaming command: {:?}", parts);
+
+        let mut cmd = tokio::process::Command::new(&parts[0]);
+        cmd.args(&parts[1..]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn()
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn connector: {}", e)))?;
+
+        let stdout = child.stdout.take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr = child.stderr.take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
+            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
+
+        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
+            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
+
+        // Merge stdout and stderr streams
+        let combined = futures::stream::select(stdout_stream, stderr_stream);
+
+        Ok(Box::pin(combined))
     }
 
     fn name(&self) -> &str {

@@ -5,10 +5,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
@@ -204,16 +207,52 @@ impl Sandbox for SshSandbox {
     }
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
-        // For streaming, we use a similar approach but return a stream
-        // This is a simplified implementation that collects all output first
-        let result = self.exec(cmd).await?;
+        // Build the full command with environment and working directory
+        let mut full_cmd = String::new();
 
-        let stdout_lines: Vec<_> = result.stdout.lines().map(|l| OutputLine::Stdout(l.to_string())).collect();
-        let stderr_lines: Vec<_> = result.stderr.lines().map(|l| OutputLine::Stderr(l.to_string())).collect();
+        // Add environment variables
+        for (key, value) in &self.env {
+            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+        }
+        for (key, value) in &cmd.env {
+            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+        }
 
-        let all_lines: Vec<_> = stdout_lines.into_iter().chain(stderr_lines).collect();
+        // Change to working directory
+        if let Some(dir) = cmd.working_dir.as_ref().or(self.working_dir.as_ref()) {
+            full_cmd.push_str(&format!("cd '{}'; ", dir.replace('\'', "'\\''")));
+        }
 
-        Ok(Box::pin(futures::stream::iter(all_lines)))
+        // Add the actual command
+        full_cmd.push_str(&cmd.to_shell_string());
+
+        // Execute via SSH with streaming
+        let mut ssh_cmd = self.ssh_command();
+        ssh_cmd.arg(&full_cmd);
+        ssh_cmd.stdout(Stdio::piped());
+        ssh_cmd.stderr(Stdio::piped());
+
+        let mut child = ssh_cmd.spawn()
+            .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
+
+        let stdout = child.stdout.take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr = child.stderr.take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
+            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
+
+        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
+            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
+
+        // Merge stdout and stderr streams
+        let combined = stream::select(stdout_stream, stderr_stream);
+
+        Ok(Box::pin(combined))
     }
 
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()> {

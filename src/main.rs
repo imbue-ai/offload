@@ -13,8 +13,9 @@ use shotgun::discovery::{
     cargo::CargoDiscoverer, generic::GenericDiscoverer, pytest::PytestDiscoverer, TestDiscoverer,
 };
 use shotgun::executor::Orchestrator;
+use shotgun::connector::ShellConnector;
 use shotgun::provider::{
-    docker::DockerProvider, process::ProcessProvider, remote::RemoteProvider,
+    docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
     ssh::SshProvider, DynProviderWrapper, DynSandboxProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter, Reporter};
@@ -312,15 +313,12 @@ fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn DynSandboxProvider
             Ok(Arc::new(DynProviderWrapper::new(provider)))
         }
         ProviderConfig::Remote(cfg) => {
-            let remote_cfg = shotgun::provider::remote::RemoteProviderConfig {
-                execute_command: cfg.execute_command.clone(),
-                setup_command: cfg.setup_command.clone(),
-                teardown_command: cfg.teardown_command.clone(),
-                working_dir: cfg.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
-                env: cfg.env.clone(),
-                timeout_secs: cfg.timeout_secs,
-            };
-            let provider = RemoteProvider::new(remote_cfg);
+            let mut connector = ShellConnector::new(&cfg.execute_command)
+                .with_timeout(cfg.timeout_secs);
+            if let Some(dir) = &cfg.working_dir {
+                connector = connector.with_working_dir(dir.clone());
+            }
+            let provider = ConnectorProvider::new(connector);
             Ok(Arc::new(DynProviderWrapper::new(provider)))
         }
     }
