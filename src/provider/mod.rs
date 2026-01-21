@@ -4,7 +4,6 @@
 //! any cloud provider, container runtime, or remote execution environment.
 
 pub mod docker;
-pub mod ondemand;
 pub mod process;
 pub mod remote;
 pub mod ssh;

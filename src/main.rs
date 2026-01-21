@@ -14,9 +14,8 @@ use shotgun::discovery::{
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
-    docker::DockerProvider, ondemand::{CommandSpawner, OnDemandProvider},
-    process::ProcessProvider, remote::RemoteProvider, ssh::SshProvider, DynProviderWrapper,
-    DynSandboxProvider,
+    docker::DockerProvider, process::ProcessProvider, remote::RemoteProvider,
+    ssh::SshProvider, DynProviderWrapper, DynSandboxProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter, Reporter};
 
@@ -66,7 +65,7 @@ enum Commands {
 
     /// Initialize a new configuration file
     Init {
-        /// Provider type (process, docker, ssh, ondemand, remote)
+        /// Provider type (process, docker, ssh, remote)
         #[arg(short, long, default_value = "process")]
         provider: String,
 
@@ -191,7 +190,6 @@ fn validate_config(config_path: &PathBuf) -> Result<()> {
                 ProviderConfig::Process(_) => "process",
                 ProviderConfig::Docker(_) => "docker",
                 ProviderConfig::Ssh(_) => "ssh",
-                ProviderConfig::Ondemand(_) => "ondemand",
                 ProviderConfig::Remote(_) => "remote",
             };
             println!("  Provider: {}", provider_name);
@@ -229,19 +227,9 @@ hosts = ["localhost"]
 user = "ubuntu"
 port = 22
 working_dir = "/home/ubuntu/workspace""#,
-        "ondemand" => r#"[provider]
-type = "ondemand"
-# Command to spawn compute - must output JSON: {"instance_id": "...", "host": "...", "port": 22, "user": "..."}
-spawn_command = "./scripts/spawn-instance.sh {id}"
-# Command to destroy compute
-destroy_command = "./scripts/destroy-instance.sh {instance_id}"
-# SSH key for connecting
-key_path = "~/.ssh/id_rsa"
-working_dir = "/home/ubuntu/workspace"
-health_check_timeout_secs = 120"#,
         "remote" => r#"[provider]
 type = "remote"
-# Your script that handles everything: spin up EC2/GCP/Fly, run tests, return results
+# Your script that handles everything: spin up cloud compute, run tests, return results
 # Test command is appended to this
 execute_command = "./scripts/run-remote.sh"
 # Optional: sync code before running
@@ -249,7 +237,7 @@ setup_command = "./scripts/sync-code.sh"
 # Timeout for remote execution
 timeout_secs = 3600"#,
         _ => {
-            eprintln!("Unknown provider: {}. Use: process, docker, ssh, ondemand, remote", provider);
+            eprintln!("Unknown provider: {}. Use: process, docker, ssh, remote", provider);
             std::process::exit(1);
         }
     };
@@ -321,18 +309,6 @@ fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn DynSandboxProvider
         }
         ProviderConfig::Ssh(cfg) => {
             let provider = SshProvider::new(cfg.clone());
-            Ok(Arc::new(DynProviderWrapper::new(provider)))
-        }
-        ProviderConfig::Ondemand(cfg) => {
-            let spawner = CommandSpawner {
-                spawn_command: cfg.spawn_command.clone(),
-                destroy_command: cfg.destroy_command.clone(),
-                key_path: cfg.key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            };
-            let env: Vec<(String, String)> = cfg.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            let provider = OnDemandProvider::new(spawner, cfg.working_dir.clone())
-                .with_env(env)
-                .with_health_check_timeout(cfg.health_check_timeout_secs);
             Ok(Arc::new(DynProviderWrapper::new(provider)))
         }
         ProviderConfig::Remote(cfg) => {

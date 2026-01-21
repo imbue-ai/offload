@@ -63,13 +63,10 @@ pub enum ProviderConfig {
     /// Docker container provider.
     Docker(DockerProviderConfig),
 
-    /// SSH provider for remote machines.
+    /// SSH provider for remote machines (EC2, GCP, bare metal).
     Ssh(SshProviderConfig),
 
-    /// On-demand compute provider (generic - works with any cloud).
-    Ondemand(OndemandProviderConfig),
-
-    /// Remote execution provider - plug in your own executor script.
+    /// Remote execution provider - plug in your own executor script (Modal, etc.).
     Remote(RemoteProviderConfig),
 }
 
@@ -167,45 +164,6 @@ pub struct SshProviderConfig {
 
 fn default_ssh_port() -> u16 {
     22
-}
-
-/// Configuration for the on-demand compute provider.
-///
-/// This provider spawns compute on-demand from any cloud service.
-/// You provide commands that create/destroy machines and return SSH info.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OndemandProviderConfig {
-    /// Command to spawn a compute instance.
-    /// Should output JSON: {"instance_id": "...", "host": "...", "port": 22, "user": "..."}
-    /// The placeholder {id} will be replaced with a unique sandbox ID.
-    pub spawn_command: String,
-
-    /// Command to destroy a compute instance.
-    /// The placeholder {instance_id} will be replaced with the instance ID.
-    pub destroy_command: String,
-
-    /// Path to SSH private key for connecting to spawned instances.
-    pub key_path: Option<PathBuf>,
-
-    /// Working directory on the remote machine.
-    #[serde(default = "default_ondemand_working_dir")]
-    pub working_dir: String,
-
-    /// Timeout in seconds waiting for SSH to become available.
-    #[serde(default = "default_health_check_timeout")]
-    pub health_check_timeout_secs: u64,
-
-    /// Environment variables to set in the sandbox.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-}
-
-fn default_ondemand_working_dir() -> String {
-    "/home/ubuntu".to_string()
-}
-
-fn default_health_check_timeout() -> u64 {
-    120
 }
 
 /// Configuration for the remote execution provider.
