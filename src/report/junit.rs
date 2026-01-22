@@ -43,13 +43,19 @@ impl JUnitReporter {
 
         // Calculate totals
         let tests = run_result.results.len();
-        let failures = run_result.results.iter()
+        let failures = run_result
+            .results
+            .iter()
             .filter(|r| r.outcome == TestOutcome::Failed)
             .count();
-        let errors = run_result.results.iter()
+        let errors = run_result
+            .results
+            .iter()
             .filter(|r| r.outcome == TestOutcome::Error)
             .count();
-        let skipped = run_result.results.iter()
+        let skipped = run_result
+            .results
+            .iter()
             .filter(|r| r.outcome == TestOutcome::Skipped)
             .count();
         let time = run_result.duration.as_secs_f64();
@@ -99,7 +105,10 @@ impl JUnitReporter {
         let mut testcase = BytesStart::new("testcase");
         testcase.push_attribute(("classname", classname.as_str()));
         testcase.push_attribute(("name", name.as_str()));
-        testcase.push_attribute(("time", format!("{:.3}", result.duration.as_secs_f64()).as_str()));
+        testcase.push_attribute((
+            "time",
+            format!("{:.3}", result.duration.as_secs_f64()).as_str(),
+        ));
 
         match result.outcome {
             TestOutcome::Passed => {
@@ -230,9 +239,7 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
         // Also remove invalid XML characters
         .chars()
-        .filter(|c| {
-            matches!(c, '\t' | '\n' | '\r' | ' '..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}')
-        })
+        .filter(|c| matches!(c, '\t' | '\n' | '\r' | ' '..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}'))
         .collect()
 }
 

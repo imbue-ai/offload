@@ -30,14 +30,16 @@ impl GenericDiscoverer {
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| TestCase::new(line))
+            .map(TestCase::new)
             .collect()
     }
 
     /// Substitute {tests} placeholder in run command.
     fn substitute_tests(&self, tests: &[TestCase]) -> String {
         let test_ids: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
-        self.config.run_command.replace("{tests}", &test_ids.join(" "))
+        self.config
+            .run_command
+            .replace("{tests}", &test_ids.join(" "))
     }
 }
 
@@ -53,7 +55,9 @@ impl TestDiscoverer for GenericDiscoverer {
             cmd.current_dir(dir);
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -69,7 +73,11 @@ impl TestDiscoverer for GenericDiscoverer {
         let tests = self.parse_discover_output(&stdout);
 
         if tests.is_empty() {
-            tracing::warn!("No tests discovered. stdout: {}, stderr: {}", stdout, stderr);
+            tracing::warn!(
+                "No tests discovered. stdout: {}, stderr: {}",
+                stdout,
+                stderr
+            );
         }
 
         Ok(tests)
@@ -96,7 +104,11 @@ impl TestDiscoverer for GenericDiscoverer {
         cmd
     }
 
-    fn parse_results(&self, output: &ExecResult, result_file: Option<&str>) -> DiscoveryResult<Vec<TestResult>> {
+    fn parse_results(
+        &self,
+        output: &ExecResult,
+        result_file: Option<&str>,
+    ) -> DiscoveryResult<Vec<TestResult>> {
         // Try to parse JUnit XML if result file is provided
         if let Some(xml_content) = result_file {
             return parse_junit_xml(xml_content);
@@ -141,11 +153,15 @@ fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
     let testcase_re = Regex::new(
         r#"<testcase[^>]*name="([^"]+)"[^>]*(?:classname="([^"]+)")?[^>]*(?:time="([^"]+)")?[^>]*(?:/>|>([\s\S]*?)</testcase>)"#
     ).unwrap();
+    let msg_re = Regex::new(r#"message="([^"]*)""#).unwrap();
 
     for cap in testcase_re.captures_iter(content) {
         let name = &cap[1];
         let classname = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let time: f64 = cap.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+        let time: f64 = cap
+            .get(3)
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(0.0);
         let inner = cap.get(4).map(|m| m.as_str()).unwrap_or("");
 
         let test_id = if classname.is_empty() {
@@ -157,11 +173,9 @@ fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
         let test = TestCase::new(&test_id);
 
         let (outcome, error_message) = if inner.contains("<failure") {
-            let msg_re = Regex::new(r#"message="([^"]*)""#).unwrap();
             let msg = msg_re.captures(inner).map(|c| c[1].to_string());
             (TestOutcome::Failed, msg)
         } else if inner.contains("<error") {
-            let msg_re = Regex::new(r#"message="([^"]*)""#).unwrap();
             let msg = msg_re.captures(inner).map(|c| c[1].to_string());
             (TestOutcome::Error, msg)
         } else if inner.contains("<skipped") {

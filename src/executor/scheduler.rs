@@ -28,9 +28,7 @@ impl Scheduler {
         }
 
         // Simple round-robin distribution
-        let mut batches: Vec<Vec<TestCase>> = (0..self.max_parallel)
-            .map(|_| Vec::new())
-            .collect();
+        let mut batches: Vec<Vec<TestCase>> = (0..self.max_parallel).map(|_| Vec::new()).collect();
 
         for (i, test) in tests.iter().enumerate() {
             let batch_idx = i % self.max_parallel;
@@ -46,7 +44,11 @@ impl Scheduler {
     /// Schedule tests with a maximum batch size.
     ///
     /// This creates more batches but limits how many tests run per sandbox.
-    pub fn schedule_with_batch_size(&self, tests: &[TestCase], max_batch_size: usize) -> Vec<Vec<TestCase>> {
+    pub fn schedule_with_batch_size(
+        &self,
+        tests: &[TestCase],
+        max_batch_size: usize,
+    ) -> Vec<Vec<TestCase>> {
         if tests.is_empty() {
             return Vec::new();
         }
@@ -116,11 +118,7 @@ mod tests {
     #[test]
     fn test_schedule_individual() {
         let scheduler = Scheduler::new(4);
-        let tests = vec![
-            make_test("test1"),
-            make_test("test2"),
-            make_test("test3"),
-        ];
+        let tests = vec![make_test("test1"), make_test("test2"), make_test("test3")];
         let batches = scheduler.schedule_individual(&tests);
 
         assert_eq!(batches.len(), 3);

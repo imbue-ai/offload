@@ -28,7 +28,10 @@ impl CargoDiscoverer {
             let trimmed = line.trim();
 
             // Skip empty lines and summary lines
-            if trimmed.is_empty() || trimmed.ends_with("tests") && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            if trimmed.is_empty()
+                || trimmed.ends_with("tests")
+                    && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+            {
                 continue;
             }
 
@@ -97,15 +100,18 @@ impl TestDiscoverer for CargoDiscoverer {
         let tests = self.parse_list_output(&stdout);
 
         if tests.is_empty() {
-            tracing::warn!("No tests discovered. stdout: {}, stderr: {}", stdout, stderr);
+            tracing::warn!(
+                "No tests discovered. stdout: {}, stderr: {}",
+                stdout,
+                stderr
+            );
         }
 
         Ok(tests)
     }
 
     fn run_command(&self, tests: &[TestCase]) -> Command {
-        let mut cmd = Command::new("cargo")
-            .arg("test");
+        let mut cmd = Command::new("cargo").arg("test");
 
         // Add package if specified
         if let Some(package) = &self.config.package {
@@ -137,7 +143,11 @@ impl TestDiscoverer for CargoDiscoverer {
         cmd
     }
 
-    fn parse_results(&self, output: &ExecResult, _result_file: Option<&str>) -> DiscoveryResult<Vec<TestResult>> {
+    fn parse_results(
+        &self,
+        output: &ExecResult,
+        _result_file: Option<&str>,
+    ) -> DiscoveryResult<Vec<TestResult>> {
         parse_cargo_test_output(&output.stdout, &output.stderr)
     }
 
@@ -178,20 +188,30 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<T
         });
     }
 
-    // Try to extract failure details
-    let failure_re = Regex::new(r"---- (\S+) stdout ----\n([\s\S]*?)(?=\n----|\n\nfailures:)").unwrap();
-    for cap in failure_re.captures_iter(stdout) {
-        let test_id = &cap[1];
-        let output_content = &cap[2];
+    // Try to extract failure details by splitting on test output sections
+    let section_re = Regex::new(r"---- (\S+) stdout ----\n").unwrap();
+    let sections: Vec<_> = section_re.split(stdout).collect();
+    let test_ids: Vec<_> = section_re
+        .captures_iter(stdout)
+        .map(|c| c[1].to_string())
+        .collect();
 
-        // Find and update the corresponding result
-        for result in &mut results {
-            if result.test.id == test_id {
-                result.stdout = output_content.to_string();
-                if result.outcome == TestOutcome::Failed {
-                    result.error_message = Some(output_content.lines().last().unwrap_or("").to_string());
+    // sections[0] is before first match, sections[i+1] is content after test_ids[i]
+    for (i, test_id) in test_ids.iter().enumerate() {
+        if let Some(content) = sections.get(i + 1) {
+            // Content ends at next section or "failures:" marker
+            let output_content = content.split("\n\nfailures:").next().unwrap_or(content);
+
+            // Find and update the corresponding result
+            for result in &mut results {
+                if result.test.id == *test_id {
+                    result.stdout = output_content.to_string();
+                    if result.outcome == TestOutcome::Failed {
+                        result.error_message =
+                            Some(output_content.lines().last().unwrap_or("").to_string());
+                    }
+                    break;
                 }
-                break;
             }
         }
     }

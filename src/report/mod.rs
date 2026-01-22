@@ -49,8 +49,8 @@ impl MultiReporter {
         }
     }
 
-    /// Add a reporter.
-    pub fn add<R: Reporter + 'static>(mut self, reporter: R) -> Self {
+    /// Add a reporter to the multi-reporter.
+    pub fn with_reporter<R: Reporter + 'static>(mut self, reporter: R) -> Self {
         self.reporters.push(Box::new(reporter));
         self
     }
@@ -113,7 +113,9 @@ impl Reporter for ConsoleReporter {
         let pb = indicatif::ProgressBar::new(tests.len() as u64);
         pb.set_style(
             indicatif::ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
                 .unwrap()
                 .progress_chars("#>-"),
         );
@@ -171,7 +173,12 @@ impl Reporter for ConsoleReporter {
             println!("{}", console::style("All tests passed!").green().bold());
         } else if result.not_run > 0 && result.failed == 0 {
             println!();
-            println!("{}", console::style("Tests could not be executed (sandbox creation failed).").red().bold());
+            println!(
+                "{}",
+                console::style("Tests could not be executed (sandbox creation failed).")
+                    .red()
+                    .bold()
+            );
         } else {
             println!();
             println!("{}", console::style("Some tests failed.").red().bold());

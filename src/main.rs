@@ -1,6 +1,6 @@
 //! shotgun CLI - Flexible parallel test runner.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,10 +14,10 @@ use shotgun::discovery::{
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
-    docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
-    ssh::SshProvider, SandboxProvider,
+    docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider, ssh::SshProvider,
+    SandboxProvider,
 };
-use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter, Reporter};
+use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
 #[derive(Parser)]
 #[command(name = "shotgun")]
@@ -80,7 +80,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Set up logging
-    let log_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+    let log_level = if cli.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(log_level)
         .with_target(false)
@@ -92,17 +96,18 @@ async fn main() -> Result<()> {
             parallel,
             collect_only,
             junit,
-        } => {
-            run_tests(&cli.config, parallel, collect_only, junit, cli.verbose).await
-        }
+        } => run_tests(&cli.config, parallel, collect_only, junit, cli.verbose).await,
         Commands::Collect { format } => collect_tests(&cli.config, &format).await,
         Commands::Validate => validate_config(&cli.config),
-        Commands::Init { provider, framework } => init_config(&provider, &framework),
+        Commands::Init {
+            provider,
+            framework,
+        } => init_config(&provider, &framework),
     }
 }
 
 async fn run_tests(
-    config_path: &PathBuf,
+    config_path: &Path,
     parallel_override: Option<usize>,
     collect_only: bool,
     junit_path: Option<PathBuf>,
@@ -119,16 +124,87 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Create provider
-    let provider: Arc<dyn SandboxProvider> = create_provider(&config.provider)?;
-    info!("Using provider: {}", provider.name());
+    // Match on provider and discoverer to get concrete types
+    match (&config.provider, &config.discovery) {
+        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = ProcessProvider::new(p_cfg.clone());
+            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = ProcessProvider::new(p_cfg.clone());
+            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+            let provider = ProcessProvider::new(p_cfg.clone());
+            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = DockerProvider::new(p_cfg.clone())?;
+            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = DockerProvider::new(p_cfg.clone())?;
+            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+            let provider = DockerProvider::new(p_cfg.clone())?;
+            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = SshProvider::new(p_cfg.clone());
+            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = SshProvider::new(p_cfg.clone());
+            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+            let provider = SshProvider::new(p_cfg.clone());
+            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = ConnectorProvider::from_config(p_cfg.clone());
+            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = ConnectorProvider::from_config(p_cfg.clone());
+            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+            let provider = ConnectorProvider::from_config(p_cfg.clone());
+            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+        }
+    }
+}
 
-    // Create discoverer
-    let discoverer: Arc<dyn TestDiscoverer> = create_discoverer(&config.discovery)?;
+async fn run_with<P, D>(
+    config: config::Config,
+    provider: P,
+    discoverer: D,
+    collect_only: bool,
+    junit_path: Option<PathBuf>,
+    verbose: bool,
+) -> Result<()>
+where
+    P: SandboxProvider + 'static,
+    D: TestDiscoverer + 'static,
+{
+    info!("Using provider: {}", provider.name());
     info!("Using discoverer: {}", discoverer.name());
 
     if collect_only {
-        // Just discover and print tests
         let tests = discoverer.discover(&[]).await?;
         println!("Discovered {} tests:", tests.len());
         for test in &tests {
@@ -137,23 +213,26 @@ async fn run_tests(
         return Ok(());
     }
 
-    // Create reporter
     let reporter = create_reporter(&config, junit_path, verbose);
-
-    // Create and run orchestrator
-    let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+    let orchestrator = Orchestrator::new(
+        config,
+        Arc::new(provider),
+        Arc::new(discoverer),
+        Arc::new(reporter),
+    );
 
     let result = orchestrator.run().await?;
-
-    // Exit with appropriate code
     std::process::exit(result.exit_code());
 }
 
-async fn collect_tests(config_path: &PathBuf, format: &str) -> Result<()> {
+async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
-    let discoverer: Arc<dyn TestDiscoverer> = create_discoverer(&config.discovery)?;
 
-    let tests = discoverer.discover(&[]).await?;
+    let tests = match &config.discovery {
+        DiscoveryConfig::Pytest(cfg) => PytestDiscoverer::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Cargo(cfg) => CargoDiscoverer::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Generic(cfg) => GenericDiscoverer::new(cfg.clone()).discover(&[]).await?,
+    };
 
     match format {
         "json" => {
@@ -176,7 +255,7 @@ async fn collect_tests(config_path: &PathBuf, format: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_config(config_path: &PathBuf) -> Result<()> {
+fn validate_config(config_path: &Path) -> Result<()> {
     match config::load_config(config_path) {
         Ok(config) => {
             println!("Configuration is valid!");
@@ -212,22 +291,29 @@ fn validate_config(config_path: &PathBuf) -> Result<()> {
 
 fn init_config(provider: &str, framework: &str) -> Result<()> {
     let provider_config = match provider {
-        "process" => r#"[provider]
+        "process" => {
+            r#"[provider]
 type = "process"
 working_dir = "."
-shell = "/bin/sh""#,
-        "docker" => r#"[provider]
+shell = "/bin/sh""#
+        }
+        "docker" => {
+            r#"[provider]
 type = "docker"
 image = "python:3.11"
 volumes = []
-working_dir = "/workspace""#,
-        "ssh" => r#"[provider]
+working_dir = "/workspace""#
+        }
+        "ssh" => {
+            r#"[provider]
 type = "ssh"
 hosts = ["localhost"]
 user = "ubuntu"
 port = 22
-working_dir = "/home/ubuntu/workspace""#,
-        "remote" => r#"[provider]
+working_dir = "/home/ubuntu/workspace""#
+        }
+        "remote" => {
+            r#"[provider]
 type = "remote"
 # Your script that handles everything: spin up cloud compute, run tests, return results
 # Test command is appended to this
@@ -235,24 +321,34 @@ execute_command = "./scripts/run-remote.sh"
 # Optional: sync code before running
 setup_command = "./scripts/sync-code.sh"
 # Timeout for remote execution
-timeout_secs = 3600"#,
+timeout_secs = 3600"#
+        }
         _ => {
-            eprintln!("Unknown provider: {}. Use: process, docker, ssh, remote", provider);
+            eprintln!(
+                "Unknown provider: {}. Use: process, docker, ssh, remote",
+                provider
+            );
             std::process::exit(1);
         }
     };
 
     let discovery_config = match framework {
-        "pytest" => r#"[discovery]
+        "pytest" => {
+            r#"[discovery]
 type = "pytest"
 paths = ["tests"]
-python = "python""#,
-        "cargo" => r#"[discovery]
-type = "cargo""#,
-        "generic" => r#"[discovery]
+python = "python""#
+        }
+        "cargo" => {
+            r#"[discovery]
+type = "cargo""#
+        }
+        "generic" => {
+            r#"[discovery]
 type = "generic"
 discover_command = "echo test1 test2"
-run_command = "echo Running {tests}""#,
+run_command = "echo Running {tests}""#
+        }
         _ => {
             eprintln!(
                 "Unknown framework: {}. Use: pytest, cargo, generic",
@@ -297,48 +393,22 @@ junit_file = "junit.xml"
     Ok(())
 }
 
-fn create_provider(config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>> {
-    match config {
-        ProviderConfig::Process(cfg) => {
-            Ok(Arc::new(ProcessProvider::new(cfg.clone())))
-        }
-        ProviderConfig::Docker(cfg) => {
-            Ok(Arc::new(DockerProvider::new(cfg.clone())?))
-        }
-        ProviderConfig::Ssh(cfg) => {
-            Ok(Arc::new(SshProvider::new(cfg.clone())))
-        }
-        ProviderConfig::Remote(cfg) => {
-            Ok(Arc::new(ConnectorProvider::from_config(cfg.clone())))
-        }
-    }
-}
-
-fn create_discoverer(config: &DiscoveryConfig) -> Result<Arc<dyn TestDiscoverer>> {
-    match config {
-        DiscoveryConfig::Pytest(cfg) => Ok(Arc::new(PytestDiscoverer::new(cfg.clone()))),
-        DiscoveryConfig::Cargo(cfg) => Ok(Arc::new(CargoDiscoverer::new(cfg.clone()))),
-        DiscoveryConfig::Generic(cfg) => Ok(Arc::new(GenericDiscoverer::new(cfg.clone()))),
-    }
-}
-
 fn create_reporter(
     config: &config::Config,
     junit_override: Option<PathBuf>,
     verbose: bool,
-) -> Arc<dyn Reporter> {
+) -> MultiReporter {
     let mut multi = MultiReporter::new();
 
     // Add console reporter
-    multi = multi.add(ConsoleReporter::new(verbose));
+    multi = multi.with_reporter(ConsoleReporter::new(verbose));
 
     // Add JUnit reporter if enabled
     if config.report.junit {
-        let junit_path = junit_override.unwrap_or_else(|| {
-            config.report.output_dir.join(&config.report.junit_file)
-        });
-        multi = multi.add(JUnitReporter::new(junit_path));
+        let junit_path = junit_override
+            .unwrap_or_else(|| config.report.output_dir.join(&config.report.junit_file));
+        multi = multi.with_reporter(JUnitReporter::new(junit_path));
     }
 
-    Arc::new(multi)
+    multi
 }

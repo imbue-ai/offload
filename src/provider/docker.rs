@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bollard::container::{
-    Config as ContainerConfig, CreateContainerOptions, LogOutput,
-    RemoveContainerOptions, StartContainerOptions,
+    Config as ContainerConfig, CreateContainerOptions, LogOutput, RemoveContainerOptions,
+    StartContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::Docker;
@@ -19,7 +19,7 @@ use futures::StreamExt;
 use tokio::sync::Mutex;
 
 use super::{
-    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
+    Command, ExecResult, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{DockerProviderConfig, SandboxConfig};
@@ -65,9 +65,14 @@ impl DockerProvider {
 
 #[async_trait]
 impl SandboxProvider for DockerProvider {
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
+    type Sandbox = DockerSandbox;
+
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DockerSandbox> {
         // Build environment variables
-        let mut env: Vec<String> = self.config.env.iter()
+        let mut env: Vec<String> = self
+            .config
+            .env
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
@@ -102,7 +107,9 @@ impl SandboxProvider for DockerProvider {
         }
 
         // Create container config
-        let working_dir = config.working_dir.as_ref()
+        let working_dir = config
+            .working_dir
+            .as_ref()
             .or(self.config.working_dir.as_ref())
             .map(|s| s.to_string());
 
@@ -123,7 +130,8 @@ impl SandboxProvider for DockerProvider {
             platform: None,
         };
 
-        let response = self.docker
+        let response = self
+            .docker
             .create_container(Some(options), container_config)
             .await
             .map_err(|e| ProviderError::CreateFailed(e.to_string()))?;
@@ -144,12 +152,12 @@ impl SandboxProvider for DockerProvider {
         };
         self.containers.lock().await.insert(config.id.clone(), info);
 
-        Ok(Box::new(DockerSandbox {
+        Ok(DockerSandbox {
             id: config.id.clone(),
             container_id,
             docker: self.docker.clone(),
             working_dir: self.config.working_dir.clone(),
-        }))
+        })
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
@@ -191,11 +199,15 @@ impl Sandbox for DockerSandbox {
         let exec_cmd = vec!["/bin/sh".to_string(), "-c".to_string(), shell_cmd];
 
         // Build environment
-        let env: Vec<String> = cmd.env.iter()
+        let env: Vec<String> = cmd
+            .env
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
-        let working_dir = cmd.working_dir.as_ref()
+        let working_dir = cmd
+            .working_dir
+            .as_ref()
             .or(self.working_dir.as_ref())
             .cloned();
 
@@ -209,13 +221,15 @@ impl Sandbox for DockerSandbox {
             ..Default::default()
         };
 
-        let exec = self.docker
+        let exec = self
+            .docker
             .create_exec(&self.container_id, exec_options)
             .await
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
 
         // Start exec and collect output
-        let output = self.docker
+        let output = self
+            .docker
             .start_exec(&exec.id, None)
             .await
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
@@ -238,7 +252,8 @@ impl Sandbox for DockerSandbox {
         }
 
         // Get exit code
-        let inspect = self.docker
+        let inspect = self
+            .docker
             .inspect_exec(&exec.id)
             .await
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
@@ -258,11 +273,15 @@ impl Sandbox for DockerSandbox {
         let shell_cmd = cmd.to_shell_string();
         let exec_cmd = vec!["/bin/sh".to_string(), "-c".to_string(), shell_cmd];
 
-        let env: Vec<String> = cmd.env.iter()
+        let env: Vec<String> = cmd
+            .env
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
-        let working_dir = cmd.working_dir.as_ref()
+        let working_dir = cmd
+            .working_dir
+            .as_ref()
             .or(self.working_dir.as_ref())
             .cloned();
 
@@ -275,12 +294,14 @@ impl Sandbox for DockerSandbox {
             ..Default::default()
         };
 
-        let exec = self.docker
+        let exec = self
+            .docker
             .create_exec(&self.container_id, exec_options)
             .await
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
 
-        let output = self.docker
+        let output = self
+            .docker
             .start_exec(&exec.id, None)
             .await
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
@@ -288,12 +309,12 @@ impl Sandbox for DockerSandbox {
         if let StartExecResults::Attached { output, .. } = output {
             let stream = output.filter_map(|msg| async {
                 match msg {
-                    Ok(LogOutput::StdOut { message }) => {
-                        Some(OutputLine::Stdout(String::from_utf8_lossy(&message).to_string()))
-                    }
-                    Ok(LogOutput::StdErr { message }) => {
-                        Some(OutputLine::Stderr(String::from_utf8_lossy(&message).to_string()))
-                    }
+                    Ok(LogOutput::StdOut { message }) => Some(OutputLine::Stdout(
+                        String::from_utf8_lossy(&message).to_string(),
+                    )),
+                    Ok(LogOutput::StdErr { message }) => Some(OutputLine::Stderr(
+                        String::from_utf8_lossy(&message).to_string(),
+                    )),
                     _ => None,
                 }
             });
@@ -305,8 +326,8 @@ impl Sandbox for DockerSandbox {
 
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()> {
         // Use docker cp (via tar archive)
-        let tar_data = create_tar_archive(local)
-            .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
+        let tar_data =
+            create_tar_archive(local).map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
 
         let remote_dir = remote.parent().unwrap_or(Path::new("/"));
 
@@ -326,13 +347,12 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
-        let mut stream = self.docker
-            .download_from_container(
-                &self.container_id,
-                Some(bollard::container::DownloadFromContainerOptions {
-                    path: remote.to_string_lossy().to_string(),
-                }),
-            );
+        let mut stream = self.docker.download_from_container(
+            &self.container_id,
+            Some(bollard::container::DownloadFromContainerOptions {
+                path: remote.to_string_lossy().to_string(),
+            }),
+        );
 
         let mut tar_data = Vec::new();
         while let Some(chunk) = stream.next().await {
@@ -347,7 +367,8 @@ impl Sandbox for DockerSandbox {
     }
 
     async fn status(&self) -> ProviderResult<SandboxStatus> {
-        let info = self.docker
+        let info = self
+            .docker
             .inspect_container(&self.container_id, None)
             .await
             .map_err(|e| ProviderError::NotFound(e.to_string()))?;
@@ -381,8 +402,6 @@ impl Sandbox for DockerSandbox {
 
 /// Create a tar archive from a file or directory.
 fn create_tar_archive(path: &Path) -> std::io::Result<Vec<u8>> {
-    
-
     let mut archive = tar::Builder::new(Vec::new());
 
     if path.is_dir() {

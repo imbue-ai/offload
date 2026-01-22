@@ -13,8 +13,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::{
-    Command, DynSandbox, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox,
-    SandboxInfo, SandboxProvider, SandboxStatus,
+    Command, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo,
+    SandboxProvider, SandboxStatus,
 };
 use crate::config::{RemoteProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
@@ -52,7 +52,9 @@ impl ConnectorProvider {
 
 #[async_trait]
 impl SandboxProvider for ConnectorProvider {
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
+    type Sandbox = ConnectorSandbox;
+
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ConnectorSandbox> {
         info!("Creating connector sandbox: {}", config.id);
 
         // Run the create command to get a sandbox_id
@@ -81,13 +83,13 @@ impl SandboxProvider for ConnectorProvider {
         };
         self.sandboxes.lock().await.insert(config.id.clone(), info);
 
-        Ok(Box::new(ConnectorSandbox {
+        Ok(ConnectorSandbox {
             id: config.id.clone(),
             remote_id,
             connector: self.connector.clone(),
             exec_command: self.config.exec_command.clone(),
             destroy_command: self.config.destroy_command.clone(),
-        }))
+        })
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
@@ -161,9 +163,7 @@ impl Sandbox for ConnectorSandbox {
             .rev()
             .find(|line| line.trim().starts_with('{'))
         {
-            if let Ok(parsed) =
-                serde_json::from_str::<crate::connector::ExecResult>(json_line)
-            {
+            if let Ok(parsed) = serde_json::from_str::<crate::connector::ExecResult>(json_line) {
                 return Ok(ExecResult {
                     exit_code: parsed.exit_code,
                     stdout: parsed.stdout,
@@ -204,7 +204,10 @@ impl Sandbox for ConnectorSandbox {
 
     async fn terminate(&self) -> ProviderResult<()> {
         let shell_cmd = self.build_destroy_command();
-        info!("Terminating sandbox {} (remote: {})", self.id, self.remote_id);
+        info!(
+            "Terminating sandbox {} (remote: {})",
+            self.id, self.remote_id
+        );
 
         let result = self.connector.run(&shell_cmd).await?;
 

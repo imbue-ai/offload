@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
-    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult, Sandbox,
+    Command, ExecResult, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{SandboxConfig, SshProviderConfig};
@@ -55,10 +55,14 @@ impl SshProvider {
 
 #[async_trait]
 impl SandboxProvider for SshProvider {
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
+    type Sandbox = SshSandbox;
+
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<SshSandbox> {
         let host = self.next_host().await;
 
-        let working_dir = config.working_dir.clone()
+        let working_dir = config
+            .working_dir
+            .clone()
             .or_else(|| self.config.working_dir.clone());
 
         // Track the sandbox
@@ -71,8 +75,10 @@ impl SandboxProvider for SshProvider {
 
         // Build SSH options
         let mut ssh_opts = vec![
-            "-o".to_string(), "BatchMode=yes".to_string(),
-            "-o".to_string(), format!("ConnectTimeout=30"),
+            "-o".to_string(),
+            "BatchMode=yes".to_string(),
+            "-o".to_string(),
+            format!("ConnectTimeout=30"),
         ];
 
         if self.config.disable_host_key_check {
@@ -91,14 +97,14 @@ impl SandboxProvider for SshProvider {
         ssh_opts.push("-p".to_string());
         ssh_opts.push(self.config.port.to_string());
 
-        Ok(Box::new(SshSandbox {
+        Ok(SshSandbox {
             id: config.id.clone(),
             host,
             user: self.config.user.clone(),
             ssh_opts,
             working_dir,
             env: config.env.clone(),
-        }))
+        })
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
@@ -162,10 +168,18 @@ impl Sandbox for SshSandbox {
 
         // Add environment variables
         for (key, value) in &self.env {
-            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+            full_cmd.push_str(&format!(
+                "export {}='{}'; ",
+                key,
+                value.replace('\'', "'\\''")
+            ));
         }
         for (key, value) in &cmd.env {
-            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+            full_cmd.push_str(&format!(
+                "export {}='{}'; ",
+                key,
+                value.replace('\'', "'\\''")
+            ));
         }
 
         // Change to working directory
@@ -181,15 +195,16 @@ impl Sandbox for SshSandbox {
         ssh_cmd.arg(&full_cmd);
 
         let output = if let Some(timeout) = cmd.timeout_secs {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(timeout),
-                ssh_cmd.output(),
-            )
-            .await
-            .map_err(|_| ProviderError::Timeout(format!("Command timed out after {}s", timeout)))?
-            .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
+            tokio::time::timeout(std::time::Duration::from_secs(timeout), ssh_cmd.output())
+                .await
+                .map_err(|_| {
+                    ProviderError::Timeout(format!("Command timed out after {}s", timeout))
+                })?
+                .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
         } else {
-            ssh_cmd.output().await
+            ssh_cmd
+                .output()
+                .await
                 .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
         };
 
@@ -209,10 +224,18 @@ impl Sandbox for SshSandbox {
 
         // Add environment variables
         for (key, value) in &self.env {
-            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+            full_cmd.push_str(&format!(
+                "export {}='{}'; ",
+                key,
+                value.replace('\'', "'\\''")
+            ));
         }
         for (key, value) in &cmd.env {
-            full_cmd.push_str(&format!("export {}='{}'; ", key, value.replace('\'', "'\\''")));
+            full_cmd.push_str(&format!(
+                "export {}='{}'; ",
+                key,
+                value.replace('\'', "'\\''")
+            ));
         }
 
         // Change to working directory
@@ -229,12 +252,17 @@ impl Sandbox for SshSandbox {
         ssh_cmd.stdout(Stdio::piped());
         ssh_cmd.stderr(Stdio::piped());
 
-        let mut child = ssh_cmd.spawn()
+        let mut child = ssh_cmd
+            .spawn()
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
 
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
-        let stderr = child.stderr.take()
+        let stderr = child
+            .stderr
+            .take()
             .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
 
         let stdout_reader = BufReader::new(stdout);
@@ -253,11 +281,7 @@ impl Sandbox for SshSandbox {
     }
 
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()> {
-        let remote_path = format!(
-            "{}:{}",
-            self.ssh_dest(),
-            remote.display()
-        );
+        let remote_path = format!("{}:{}", self.ssh_dest(), remote.display());
 
         let mut scp_args = vec!["-r".to_string()];
 
@@ -280,7 +304,7 @@ impl Sandbox for SshSandbox {
 
         if !output.status.success() {
             return Err(ProviderError::UploadFailed(
-                String::from_utf8_lossy(&output.stderr).to_string()
+                String::from_utf8_lossy(&output.stderr).to_string(),
             ));
         }
 
@@ -288,14 +312,11 @@ impl Sandbox for SshSandbox {
     }
 
     async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
-        let remote_path = format!(
-            "{}:{}",
-            self.ssh_dest(),
-            remote.display()
-        );
+        let remote_path = format!("{}:{}", self.ssh_dest(), remote.display());
 
         if let Some(parent) = local.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
         }
 
@@ -318,7 +339,7 @@ impl Sandbox for SshSandbox {
 
         if !output.status.success() {
             return Err(ProviderError::DownloadFailed(
-                String::from_utf8_lossy(&output.stderr).to_string()
+                String::from_utf8_lossy(&output.stderr).to_string(),
             ));
         }
 

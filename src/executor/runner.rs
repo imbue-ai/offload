@@ -8,27 +8,23 @@ use futures::StreamExt;
 use tracing::{debug, info};
 
 use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
-use crate::provider::{DynSandbox, OutputLine};
+use crate::provider::{OutputLine, Sandbox};
 
 /// Callback for streaming output lines.
 pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
 /// Runs tests in a sandbox.
-pub struct TestRunner {
-    sandbox: DynSandbox,
-    discoverer: Arc<dyn TestDiscoverer>,
+pub struct TestRunner<S, D> {
+    sandbox: S,
+    discoverer: Arc<D>,
     timeout: Duration,
     stream_output: bool,
     output_callback: Option<OutputCallback>,
 }
 
-impl TestRunner {
+impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     /// Create a new test runner.
-    pub fn new(
-        sandbox: DynSandbox,
-        discoverer: Arc<dyn TestDiscoverer>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(sandbox: S, discoverer: Arc<D>, timeout: Duration) -> Self {
         Self {
             sandbox,
             discoverer,
@@ -46,7 +42,7 @@ impl TestRunner {
     }
 
     /// Get a reference to the sandbox.
-    pub fn sandbox(&self) -> &DynSandbox {
+    pub fn sandbox(&self) -> &S {
         &self.sandbox
     }
 
@@ -57,7 +53,7 @@ impl TestRunner {
         info!("Running test: {}", test.id);
 
         // Generate the run command
-        let mut cmd = self.discoverer.run_command(&[test.clone()]);
+        let mut cmd = self.discoverer.run_command(std::slice::from_ref(test));
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command (streaming or buffered)
@@ -78,10 +74,13 @@ impl TestRunner {
         let result_content = self.try_download_results().await;
 
         // Parse results
-        let results = self.discoverer.parse_results(&exec_result, result_content.as_deref())?;
+        let results = self
+            .discoverer
+            .parse_results(&exec_result, result_content.as_deref())?;
 
         // Find the result for this specific test
-        let test_result = results.into_iter()
+        let test_result = results
+            .into_iter()
             .find(|r| r.test.id == test.id)
             .unwrap_or_else(|| {
                 // If we couldn't parse specific results, infer from exit code
@@ -108,7 +107,11 @@ impl TestRunner {
     }
 
     /// Execute command with streaming output.
-    async fn exec_streaming(&self, cmd: &crate::provider::Command, test_id: &str) -> Result<crate::provider::ExecResult> {
+    async fn exec_streaming(
+        &self,
+        cmd: &crate::provider::Command,
+        test_id: &str,
+    ) -> Result<crate::provider::ExecResult> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -138,7 +141,8 @@ impl TestRunner {
         // Look for pytest/test framework exit patterns
         let exit_code = if stdout.contains("PASSED") || stdout.contains("passed") {
             0
-        } else if stdout.contains("FAILED") || stdout.contains("failed") || stderr.contains("error") {
+        } else if stdout.contains("FAILED") || stdout.contains("failed") || stderr.contains("error")
+        {
             1
         } else {
             0 // Assume success if no clear failure indicators
@@ -176,7 +180,9 @@ impl TestRunner {
         let result_content = self.try_download_results().await;
 
         // Parse results
-        let mut results = self.discoverer.parse_results(&exec_result, result_content.as_deref())?;
+        let mut results = self
+            .discoverer
+            .parse_results(&exec_result, result_content.as_deref())?;
 
         // If parsing failed, create results based on exit code
         if results.is_empty() {
@@ -194,7 +200,10 @@ impl TestRunner {
                     stdout: String::new(),
                     stderr: String::new(),
                     error_message: if !exec_result.success() {
-                        Some(format!("Batch failed with exit code: {}", exec_result.exit_code))
+                        Some(format!(
+                            "Batch failed with exit code: {}",
+                            exec_result.exit_code
+                        ))
                     } else {
                         None
                     },
@@ -220,7 +229,12 @@ impl TestRunner {
             let temp_file = tempfile::NamedTempFile::new().ok()?;
             let temp_path = temp_file.path().to_path_buf();
 
-            if self.sandbox.download(std::path::Path::new(path), &temp_path).await.is_ok() {
+            if self
+                .sandbox
+                .download(std::path::Path::new(path), &temp_path)
+                .await
+                .is_ok()
+            {
                 if let Ok(content) = std::fs::read_to_string(&temp_path) {
                     if !content.is_empty() {
                         return Some(content);
