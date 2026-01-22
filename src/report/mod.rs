@@ -156,6 +156,10 @@ impl Reporter for ConsoleReporter {
         println!("  Failed:  {}", console::style(result.failed).red());
         println!("  Skipped: {}", console::style(result.skipped).yellow());
 
+        if result.not_run > 0 {
+            println!("  Not Run: {}", console::style(result.not_run).red().bold());
+        }
+
         if result.flaky > 0 {
             println!("  Flaky:   {}", console::style(result.flaky).yellow());
         }
@@ -165,6 +169,9 @@ impl Reporter for ConsoleReporter {
         if result.success() {
             println!();
             println!("{}", console::style("All tests passed!").green().bold());
+        } else if result.not_run > 0 && result.failed == 0 {
+            println!();
+            println!("{}", console::style("Tests could not be executed (sandbox creation failed).").red().bold());
         } else {
             println!();
             println!("{}", console::style("Some tests failed.").red().bold());

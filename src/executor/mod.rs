@@ -36,6 +36,8 @@ pub struct RunResult {
     pub skipped: usize,
     /// Number of tests that were flaky (passed after retry).
     pub flaky: usize,
+    /// Number of tests that were not run (e.g., sandbox creation failed).
+    pub not_run: usize,
     /// Total duration of the test run.
     pub duration: Duration,
     /// Individual test results.
@@ -45,12 +47,12 @@ pub struct RunResult {
 impl RunResult {
     /// Check if the overall run was successful.
     pub fn success(&self) -> bool {
-        self.failed == 0
+        self.failed == 0 && self.not_run == 0
     }
 
     /// Get the exit code for this run result.
     pub fn exit_code(&self) -> i32 {
-        if self.failed > 0 {
+        if self.failed > 0 || self.not_run > 0 {
             1
         } else if self.flaky > 0 {
             34 // Same as original test_shotgun
@@ -108,6 +110,7 @@ impl Orchestrator {
                 failed: 0,
                 skipped: 0,
                 flaky: 0,
+                not_run: 0,
                 duration: start.elapsed(),
                 results: Vec::new(),
             });
@@ -260,6 +263,7 @@ impl Orchestrator {
         // Calculate statistics
         let passed = all_results.iter().filter(|r| r.outcome == TestOutcome::Passed).count();
         let failed = all_results.iter().filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error).count();
+        let not_run = tests_to_run.len().saturating_sub(all_results.len());
 
         let run_result = RunResult {
             total_tests: tests.len(),
@@ -267,6 +271,7 @@ impl Orchestrator {
             failed,
             skipped: skipped_count,
             flaky: flaky_count,
+            not_run,
             duration: start.elapsed(),
             results: all_results,
         };
