@@ -208,15 +208,14 @@ pub trait Sandbox: Send + Sync {
 
 /// Escape a string for use in a shell command.
 fn shell_escape(s: &str) -> String {
-    if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/')
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
-
-/// A type-erased sandbox for dynamic dispatch.
-pub type DynSandbox = Box<dyn Sandbox>;
 
 /// A provider creates and manages sandboxes.
 ///
@@ -226,8 +225,11 @@ pub type DynSandbox = Box<dyn Sandbox>;
 /// - Process: Runs tests as local processes
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    /// The concrete sandbox type created by this provider.
+    type Sandbox: Sandbox;
+
     /// Create a new sandbox with the given configuration.
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox>;
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox>;
 
     /// List all sandboxes managed by this provider.
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;

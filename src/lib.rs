@@ -34,7 +34,7 @@ pub mod provider;
 pub mod report;
 
 // Re-export commonly used types
-pub use config::{Config, load_config};
+pub use config::{load_config, Config};
 pub use discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
 pub use executor::{Orchestrator, RunResult};
 pub use provider::{Sandbox, SandboxProvider};

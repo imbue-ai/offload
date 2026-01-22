@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
-use crate::discovery::{TestCase, TestOutcome, TestResult};
-use crate::provider::{OutputLine, SandboxProvider};
+use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
+use crate::provider::{OutputLine, Sandbox, SandboxProvider};
 use crate::report::Reporter;
 
 pub use retry::RetryManager;
@@ -63,21 +63,21 @@ impl RunResult {
 }
 
 /// The main orchestrator that coordinates test execution.
-pub struct Orchestrator {
+pub struct Orchestrator<P, D, R> {
     config: Config,
-    provider: Arc<dyn SandboxProvider>,
-    discoverer: Arc<dyn crate::discovery::TestDiscoverer>,
-    reporter: Arc<dyn Reporter>,
+    provider: Arc<P>,
+    discoverer: Arc<D>,
+    reporter: Arc<R>,
 }
 
-impl Orchestrator {
+impl<P, D, R> Orchestrator<P, D, R>
+where
+    P: SandboxProvider + 'static,
+    D: TestDiscoverer + 'static,
+    R: Reporter + 'static,
+{
     /// Create a new orchestrator with the given components.
-    pub fn new(
-        config: Config,
-        provider: Arc<dyn SandboxProvider>,
-        discoverer: Arc<dyn crate::discovery::TestDiscoverer>,
-        reporter: Arc<dyn Reporter>,
-    ) -> Self {
+    pub fn new(config: Config, provider: Arc<P>, discoverer: Arc<D>, reporter: Arc<R>) -> Self {
         Self {
             config,
             provider,
@@ -120,10 +120,7 @@ impl Orchestrator {
         self.reporter.on_discovery_complete(&tests).await;
 
         // Filter out skipped tests
-        let tests_to_run: Vec<_> = tests.iter()
-            .filter(|t| !t.skipped)
-            .cloned()
-            .collect();
+        let tests_to_run: Vec<_> = tests.iter().filter(|t| !t.skipped).cloned().collect();
 
         let skipped_count = tests.len() - tests_to_run.len();
 
@@ -131,7 +128,11 @@ impl Orchestrator {
         let scheduler = Scheduler::new(self.config.shotgun.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
-        info!("Scheduled {} tests into {} batches", tests_to_run.len(), batches.len());
+        info!(
+            "Scheduled {} tests into {} batches",
+            tests_to_run.len(),
+            batches.len()
+        );
 
         // Run tests in parallel
         let results = Arc::new(Mutex::new(Vec::new()));
@@ -152,7 +153,11 @@ impl Orchestrator {
                 // Create initial sandbox to check if it's single-use
                 let sandbox_config = SandboxConfig {
                     id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
-                    working_dir: config.shotgun.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    working_dir: config
+                        .shotgun
+                        .working_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
                     env: Vec::new(),
                     resources: SandboxResources {
                         cpu: None,
@@ -171,17 +176,15 @@ impl Orchestrator {
 
                 let mut runner = TestRunner::new(
                     initial_sandbox,
-                    discoverer,
+                    discoverer.clone(),
                     Duration::from_secs(config.shotgun.test_timeout_secs),
                 );
 
                 // Enable streaming if configured
                 if config.shotgun.stream_output {
-                    let callback: OutputCallback = Arc::new(|test_id, line| {
-                        match line {
-                            OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
-                            OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
-                        }
+                    let callback: OutputCallback = Arc::new(|test_id, line| match line {
+                        OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+                        OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
                     });
                     runner = runner.with_streaming(callback);
                 }
@@ -233,7 +236,8 @@ impl Orchestrator {
         let mut all_results = results.lock().await.clone();
 
         // Identify failed tests for retry
-        let failed_tests: Vec<_> = all_results.iter()
+        let failed_tests: Vec<_> = all_results
+            .iter()
             .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
             .map(|r| r.test.clone())
             .collect();
@@ -252,7 +256,10 @@ impl Orchestrator {
                     flaky_count += 1;
 
                     // Update the original result
-                    if let Some(original) = all_results.iter_mut().find(|r| r.test.id == retry_result.test.id) {
+                    if let Some(original) = all_results
+                        .iter_mut()
+                        .find(|r| r.test.id == retry_result.test.id)
+                    {
                         original.outcome = TestOutcome::Passed;
                         original.error_message = Some("Flaky - passed on retry".to_string());
                     }
@@ -261,8 +268,14 @@ impl Orchestrator {
         }
 
         // Calculate statistics
-        let passed = all_results.iter().filter(|r| r.outcome == TestOutcome::Passed).count();
-        let failed = all_results.iter().filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error).count();
+        let passed = all_results
+            .iter()
+            .filter(|r| r.outcome == TestOutcome::Passed)
+            .count();
+        let failed = all_results
+            .iter()
+            .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
+            .count();
         let not_run = tests_to_run.len().saturating_sub(all_results.len());
 
         let run_result = RunResult {
@@ -297,7 +310,12 @@ impl Orchestrator {
             for attempt in 0..retry_manager.max_retries() {
                 let sandbox_config = SandboxConfig {
                     id: format!("shotgun-retry-{}-{}", uuid::Uuid::new_v4(), attempt),
-                    working_dir: self.config.shotgun.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    working_dir: self
+                        .config
+                        .shotgun
+                        .working_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
                     env: Vec::new(),
                     resources: SandboxResources::default(),
                 };
@@ -318,7 +336,8 @@ impl Orchestrator {
 
                 match runner.run_test(test).await {
                     Ok(result) => {
-                        retry_manager.record_attempt(&test.id, result.outcome == TestOutcome::Passed);
+                        retry_manager
+                            .record_attempt(&test.id, result.outcome == TestOutcome::Passed);
 
                         if result.outcome == TestOutcome::Passed {
                             retry_results.push(result);

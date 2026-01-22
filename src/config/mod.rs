@@ -21,8 +21,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// Load configuration from a string.
 pub fn load_config_str(content: &str) -> Result<Config> {
-    let config: Config = toml::from_str(content)
-        .context("Failed to parse config")?;
+    let config: Config = toml::from_str(content).context("Failed to parse config")?;
 
     Ok(config)
 }

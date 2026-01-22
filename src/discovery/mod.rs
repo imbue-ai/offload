@@ -179,9 +179,12 @@ pub trait TestDiscoverer: Send + Sync {
     ///
     /// This extracts test results from the command output and/or
     /// result files (e.g., JUnit XML).
-    fn parse_results(&self, output: &ExecResult, result_file: Option<&str>) -> DiscoveryResult<Vec<TestResult>>;
+    fn parse_results(
+        &self,
+        output: &ExecResult,
+        result_file: Option<&str>,
+    ) -> DiscoveryResult<Vec<TestResult>>;
 
     /// Get the framework name (for logging and config).
     fn name(&self) -> &'static str;
 }
-

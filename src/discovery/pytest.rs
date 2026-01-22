@@ -116,9 +116,16 @@ impl TestDiscoverer for PytestDiscoverer {
 
         // Add paths to search
         let search_paths: Vec<_> = if paths.is_empty() {
-            self.config.paths.iter().map(|p| p.to_string_lossy().to_string()).collect()
+            self.config
+                .paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect()
         } else {
-            paths.iter().map(|p| p.to_string_lossy().to_string()).collect()
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect()
         };
 
         for path in &search_paths {
@@ -133,7 +140,11 @@ impl TestDiscoverer for PytestDiscoverer {
             .arg("--collect-only")
             .arg("-q")
             .args(
-                self.config.markers.as_ref().map(|m| vec!["-m".to_string(), m.clone()]).unwrap_or_default()
+                self.config
+                    .markers
+                    .as_ref()
+                    .map(|m| vec!["-m".to_string(), m.clone()])
+                    .unwrap_or_default(),
             )
             .args(&self.config.extra_args)
             .args(&search_paths)
@@ -154,7 +165,11 @@ impl TestDiscoverer for PytestDiscoverer {
         let tests = self.parse_collect_output(&stdout);
 
         if tests.is_empty() {
-            tracing::warn!("No tests discovered. stdout: {}, stderr: {}", stdout, stderr);
+            tracing::warn!(
+                "No tests discovered. stdout: {}, stderr: {}",
+                stdout,
+                stderr
+            );
         }
 
         Ok(tests)
@@ -181,7 +196,11 @@ impl TestDiscoverer for PytestDiscoverer {
         cmd
     }
 
-    fn parse_results(&self, output: &ExecResult, result_file: Option<&str>) -> DiscoveryResult<Vec<TestResult>> {
+    fn parse_results(
+        &self,
+        output: &ExecResult,
+        result_file: Option<&str>,
+    ) -> DiscoveryResult<Vec<TestResult>> {
         let mut results = Vec::new();
 
         // Try to parse JUnit XML if available
@@ -210,8 +229,9 @@ fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
 
     // Simple regex-based parsing for now
     let testcase_re = Regex::new(
-        r#"<testcase[^>]*name="([^"]+)"[^>]*classname="([^"]+)"[^>]*time="([^"]+)"[^>]*>"#
-    ).unwrap();
+        r#"<testcase[^>]*name="([^"]+)"[^>]*classname="([^"]+)"[^>]*time="([^"]+)"[^>]*>"#,
+    )
+    .unwrap();
 
     let failure_re = Regex::new(r#"<failure[^>]*message="([^"]*)"[^>]*>"#).unwrap();
     let error_re = Regex::new(r#"<error[^>]*message="([^"]*)"[^>]*>"#).unwrap();
@@ -227,10 +247,14 @@ fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
 
         // Find the content between this testcase and the next (or </testcase>)
         let start = cap.get(0).unwrap().end();
-        let end = content[start..].find("</testcase>").map(|i| start + i).unwrap_or(content.len());
+        let end = content[start..]
+            .find("</testcase>")
+            .map(|i| start + i)
+            .unwrap_or(content.len());
         let testcase_content = &content[start..end];
 
-        let (outcome, error_message) = if let Some(fail_cap) = failure_re.captures(testcase_content) {
+        let (outcome, error_message) = if let Some(fail_cap) = failure_re.captures(testcase_content)
+        {
             (TestOutcome::Failed, Some(fail_cap[1].to_string()))
         } else if let Some(err_cap) = error_re.captures(testcase_content) {
             (TestOutcome::Error, Some(err_cap[1].to_string()))

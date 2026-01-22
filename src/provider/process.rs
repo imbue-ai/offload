@@ -15,8 +15,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
-    Command, DynSandbox, ExecResult, OutputStream, OutputLine, ProviderError, ProviderResult,
-    Sandbox, SandboxInfo, SandboxProvider, SandboxStatus,
+    Command, ExecResult, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
+    SandboxInfo, SandboxProvider, SandboxStatus,
 };
 use crate::config::{ProcessProviderConfig, SandboxConfig};
 
@@ -38,7 +38,9 @@ impl ProcessProvider {
 
 #[async_trait]
 impl SandboxProvider for ProcessProvider {
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DynSandbox> {
+    type Sandbox = ProcessSandbox;
+
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ProcessSandbox> {
         let working_dir = config
             .working_dir
             .as_ref()
@@ -62,7 +64,7 @@ impl SandboxProvider for ProcessProvider {
         };
         self.sandboxes.lock().await.push(info);
 
-        Ok(Box::new(sandbox))
+        Ok(sandbox)
     }
 
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
@@ -116,15 +118,16 @@ impl Sandbox for ProcessSandbox {
         process.stderr(Stdio::piped());
 
         let output = if let Some(timeout) = cmd.timeout_secs {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(timeout),
-                process.output(),
-            )
-            .await
-            .map_err(|_| ProviderError::Timeout(format!("Command timed out after {}s", timeout)))?
-            .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
+            tokio::time::timeout(std::time::Duration::from_secs(timeout), process.output())
+                .await
+                .map_err(|_| {
+                    ProviderError::Timeout(format!("Command timed out after {}s", timeout))
+                })?
+                .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
         } else {
-            process.output().await
+            process
+                .output()
+                .await
                 .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
         };
 
@@ -159,7 +162,8 @@ impl Sandbox for ProcessSandbox {
         process.stdout(Stdio::piped());
         process.stderr(Stdio::piped());
 
-        let mut child = process.spawn()
+        let mut child = process
+            .spawn()
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
 
         let stdout = child.stdout.take().unwrap();
@@ -168,11 +172,13 @@ impl Sandbox for ProcessSandbox {
         let stdout_reader = BufReader::new(stdout);
         let stderr_reader = BufReader::new(stderr);
 
-        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
-            .map(|line: Result<String, std::io::Error>| OutputLine::Stdout(line.unwrap_or_default()));
+        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines()).map(
+            |line: Result<String, std::io::Error>| OutputLine::Stdout(line.unwrap_or_default()),
+        );
 
-        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
-            .map(|line: Result<String, std::io::Error>| OutputLine::Stderr(line.unwrap_or_default()));
+        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines()).map(
+            |line: Result<String, std::io::Error>| OutputLine::Stderr(line.unwrap_or_default()),
+        );
 
         // Merge stdout and stderr streams
         let combined = stream::select(stdout_stream, stderr_stream);
@@ -185,15 +191,18 @@ impl Sandbox for ProcessSandbox {
         let dest = self.working_dir.join(remote);
 
         if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
         }
 
         if local.is_dir() {
-            copy_dir_all(local, &dest).await
+            copy_dir_all(local, &dest)
+                .await
                 .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
         } else {
-            tokio::fs::copy(local, &dest).await
+            tokio::fs::copy(local, &dest)
+                .await
                 .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
         }
 
@@ -204,15 +213,18 @@ impl Sandbox for ProcessSandbox {
         let src = self.working_dir.join(remote);
 
         if let Some(parent) = local.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
         }
 
         if src.is_dir() {
-            copy_dir_all(&src, local).await
+            copy_dir_all(&src, local)
+                .await
                 .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
         } else {
-            tokio::fs::copy(&src, local).await
+            tokio::fs::copy(&src, local)
+                .await
                 .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
         }
 
