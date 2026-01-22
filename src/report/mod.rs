@@ -194,6 +194,21 @@ impl Reporter for ConsoleReporter {
                     if let Some(msg) = &r.error_message {
                         println!("    {}", console::style(msg).dim());
                     }
+                    // Show stdout/stderr for failed tests when not streaming
+                    if !r.stdout.is_empty() {
+                        println!();
+                        println!("    {}", console::style("stdout:").dim());
+                        for line in r.stdout.lines() {
+                            println!("      {}", line);
+                        }
+                    }
+                    if !r.stderr.is_empty() {
+                        println!();
+                        println!("    {}", console::style("stderr:").dim());
+                        for line in r.stderr.lines() {
+                            println!("      {}", line);
+                        }
+                    }
                 }
             }
         }
