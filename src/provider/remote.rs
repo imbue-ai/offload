@@ -198,8 +198,8 @@ impl Sandbox for ConnectorSandbox {
         Ok(())
     }
 
-    async fn status(&self) -> ProviderResult<SandboxStatus> {
-        Ok(SandboxStatus::Running)
+    fn status(&self) -> SandboxStatus {
+        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {

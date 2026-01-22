@@ -136,7 +136,7 @@ where
 
         // Run tests in parallel
         let results = Arc::new(Mutex::new(Vec::new()));
-        let retry_manager = RetryManager::new(self.config.shotgun.retry_count);
+        let mut retry_manager = RetryManager::new(self.config.shotgun.retry_count);
 
         // Execute batches concurrently
         let mut handles = Vec::new();
@@ -147,7 +147,6 @@ where
             let reporter = self.reporter.clone();
             let results = results.clone();
             let config = self.config.clone();
-            let _retry_manager = retry_manager.clone();
 
             let handle = tokio::spawn(async move {
                 // Create initial sandbox to check if it's single-use
@@ -247,7 +246,7 @@ where
         if !failed_tests.is_empty() && self.config.shotgun.retry_count > 0 {
             info!("Retrying {} failed tests...", failed_tests.len());
 
-            let retry_results = self.retry_tests(&failed_tests, &retry_manager).await?;
+            let retry_results = self.retry_tests(&failed_tests, &mut retry_manager).await?;
 
             // Update results based on retries
             for retry_result in retry_results {
@@ -298,7 +297,7 @@ where
     async fn retry_tests(
         &self,
         tests: &[TestCase],
-        retry_manager: &RetryManager,
+        retry_manager: &mut RetryManager,
     ) -> anyhow::Result<Vec<TestResult>> {
         let mut retry_results = Vec::new();
 
@@ -328,7 +327,7 @@ where
                     }
                 };
 
-                let runner = TestRunner::new(
+                let mut runner = TestRunner::new(
                     sandbox,
                     self.discoverer.clone(),
                     Duration::from_secs(self.config.shotgun.test_timeout_secs),
