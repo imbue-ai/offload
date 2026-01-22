@@ -47,7 +47,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     }
 
     /// Run a single test and return the result.
-    pub async fn run_test(&self, test: &TestCase) -> Result<TestResult> {
+    pub async fn run_test(&mut self, test: &TestCase) -> Result<TestResult> {
         let start = std::time::Instant::now();
 
         info!("Running test: {}", test.id);
@@ -108,7 +108,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
 
     /// Execute command with streaming output.
     async fn exec_streaming(
-        &self,
+        &mut self,
         cmd: &crate::provider::Command,
         test_id: &str,
     ) -> Result<crate::provider::ExecResult> {
@@ -157,7 +157,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     }
 
     /// Run multiple tests and return all results.
-    pub async fn run_tests(&self, tests: &[TestCase]) -> Result<Vec<TestResult>> {
+    pub async fn run_tests(&mut self, tests: &[TestCase]) -> Result<Vec<TestResult>> {
         let start = std::time::Instant::now();
 
         info!("Running {} tests", tests.len());
@@ -216,7 +216,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     }
 
     /// Try to download JUnit results from the sandbox.
-    async fn try_download_results(&self) -> Option<String> {
+    async fn try_download_results(&mut self) -> Option<String> {
         // Common JUnit output locations
         let paths = [
             "/tmp/junit.xml",

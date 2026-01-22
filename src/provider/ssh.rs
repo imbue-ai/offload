@@ -346,13 +346,9 @@ impl Sandbox for SshSandbox {
         Ok(())
     }
 
-    async fn status(&self) -> ProviderResult<SandboxStatus> {
-        // Check if we can still execute a simple command
-        let result = self.exec(&Command::new("true")).await;
-        match result {
-            Ok(_) => Ok(SandboxStatus::Running),
-            Err(_) => Ok(SandboxStatus::Failed),
-        }
+    fn status(&self) -> SandboxStatus {
+        // SSH sandboxes are considered running until dropped
+        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {

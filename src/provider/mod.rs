@@ -183,7 +183,7 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// They abstract over different execution backends like Docker containers,
 /// SSH connections, or local processes.
 #[async_trait]
-pub trait Sandbox: Send + Sync {
+pub trait Sandbox: Send {
     /// Get the unique identifier for this sandbox.
     fn id(&self) -> &str;
 
@@ -200,7 +200,7 @@ pub trait Sandbox: Send + Sync {
     async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()>;
 
     /// Get the current status of the sandbox.
-    async fn status(&self) -> ProviderResult<SandboxStatus>;
+    fn status(&self) -> SandboxStatus;
 
     /// Terminate the sandbox and clean up resources.
     async fn terminate(&self) -> ProviderResult<()>;

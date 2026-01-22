@@ -53,7 +53,6 @@ impl SandboxProvider for ProcessProvider {
             working_dir,
             env: config.env.clone(),
             shell: self.config.shell.clone(),
-            status: Arc::new(Mutex::new(SandboxStatus::Running)),
         };
 
         // Track the sandbox
@@ -82,7 +81,6 @@ pub struct ProcessSandbox {
     working_dir: PathBuf,
     env: Vec<(String, String)>,
     shell: String,
-    status: Arc<Mutex<SandboxStatus>>,
 }
 
 #[async_trait]
@@ -231,12 +229,12 @@ impl Sandbox for ProcessSandbox {
         Ok(())
     }
 
-    async fn status(&self) -> ProviderResult<SandboxStatus> {
-        Ok(*self.status.lock().await)
+    fn status(&self) -> SandboxStatus {
+        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {
-        *self.status.lock().await = SandboxStatus::Stopped;
+        // Process sandboxes don't need explicit cleanup
         Ok(())
     }
 }
