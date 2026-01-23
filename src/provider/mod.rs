@@ -1,7 +1,91 @@
 //! Provider traits and implementations for sandbox execution environments.
 //!
-//! This module defines the core abstractions that allow shotgun to work with
-//! any cloud provider, container runtime, or remote execution environment.
+//! This module defines the core abstractions for executing tests in isolated
+//! environments. The provider system is designed to be pluggable, allowing
+//! shotgun to work with any execution backend: Docker containers, SSH-connected
+//! machines, local processes, or custom cloud providers.
+//!
+//! # Architecture
+//!
+//! The provider system has two main traits:
+//!
+//! - [`SandboxProvider`] - Factory that creates sandbox instances
+//! - [`Sandbox`] - An isolated execution environment for running commands
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                     SandboxProvider                          │
+//! │  (creates and manages sandboxes)                            │
+//! │                                                              │
+//! │  create_sandbox() ──────────► Sandbox                       │
+//! │  list_sandboxes()              │                            │
+//! │  name()                        │                            │
+//! └────────────────────────────────┼────────────────────────────┘
+//!                                  │
+//!                                  ▼
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                        Sandbox                               │
+//! │  (isolated execution environment)                           │
+//! │                                                              │
+//! │  exec(Command) ──────────► ExecResult                       │
+//! │  exec_stream(Command) ───► OutputStream                     │
+//! │  upload(local, remote)                                      │
+//! │  download(remote, local)                                    │
+//! │  status()                                                    │
+//! │  terminate()                                                 │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Built-in Providers
+//!
+//! | Provider | Module | Description |
+//! |----------|--------|-------------|
+//! | Process | [`process`] | Run tests as local child processes |
+//! | Docker | [`docker`] | Run tests in Docker containers |
+//! | SSH | [`ssh`] | Run tests on remote machines via SSH |
+//! | Connector | [`remote`] | Run tests via custom shell commands |
+//!
+//! # Implementing a Custom Provider
+//!
+//! To add support for a new execution environment:
+//!
+//! 1. Implement [`Sandbox`] for your execution context
+//! 2. Implement [`SandboxProvider`] to create your sandbox type
+//!
+//! ```no_run
+//! use async_trait::async_trait;
+//! use shotgun::provider::*;
+//! use shotgun::config::SandboxConfig;
+//!
+//! struct MyCloudSandbox { /* ... */ }
+//!
+//! #[async_trait]
+//! impl Sandbox for MyCloudSandbox {
+//!     fn id(&self) -> &str { todo!() }
+//!     async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult> { todo!() }
+//!     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> { todo!() }
+//!     async fn upload(&self, local: &std::path::Path, remote: &std::path::Path) -> ProviderResult<()> { todo!() }
+//!     async fn download(&self, remote: &std::path::Path, local: &std::path::Path) -> ProviderResult<()> { todo!() }
+//!     fn status(&self) -> SandboxStatus { todo!() }
+//!     async fn terminate(&self) -> ProviderResult<()> { todo!() }
+//! }
+//!
+//! struct MyCloudProvider { /* ... */ }
+//!
+//! #[async_trait]
+//! impl SandboxProvider for MyCloudProvider {
+//!     type Sandbox = MyCloudSandbox;
+//!     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> { todo!() }
+//!     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> { todo!() }
+//!     fn name(&self) -> &'static str { "my-cloud" }
+//! }
+//! ```
+//!
+//! # Error Handling
+//!
+//! All provider operations return [`ProviderResult<T>`], which wraps
+//! [`ProviderError`]. Errors are categorized by failure type to enable
+//! appropriate handling (e.g., retry on timeout, fail fast on auth errors).
 
 pub mod docker;
 pub mod process;
@@ -17,82 +101,194 @@ use futures::Stream;
 use crate::config::SandboxConfig;
 
 /// Result type for provider operations.
+///
+/// All provider methods return this type, wrapping either a success value
+/// or a [`ProviderError`] describing what went wrong.
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
 /// Errors that can occur during provider operations.
+///
+/// Errors are categorized to enable appropriate handling strategies:
+/// - **Retryable**: `Timeout`, `Connection` - may succeed on retry
+/// - **Fatal**: `CreateFailed`, `NotFound` - unlikely to succeed on retry
+/// - **Resource**: `SandboxExhausted` - need to wait for resources
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::provider::{ProviderError, ProviderResult};
+///
+/// fn handle_error(result: ProviderResult<()>) {
+///     match result {
+///         Ok(()) => println!("Success"),
+///         Err(ProviderError::Timeout(msg)) => println!("Timed out: {}", msg),
+///         Err(ProviderError::Connection(msg)) => println!("Connection failed: {}", msg),
+///         Err(e) => println!("Error: {}", e),
+///     }
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// Failed to create a new sandbox instance.
+    ///
+    /// Common causes: image not found, insufficient resources, auth failure.
     #[error("Failed to create sandbox: {0}")]
     CreateFailed(String),
 
+    /// Failed to execute a command in the sandbox.
+    ///
+    /// Note: A command that runs but returns non-zero exit code is NOT an error.
+    /// This error indicates the command couldn't be started or communication failed.
     #[error("Failed to execute command: {0}")]
     ExecFailed(String),
 
+    /// Failed to upload a file to the sandbox.
     #[error("Failed to upload file: {0}")]
     UploadFailed(String),
 
+    /// Failed to download a file from the sandbox.
     #[error("Failed to download file: {0}")]
     DownloadFailed(String),
 
+    /// The specified sandbox was not found.
+    ///
+    /// May indicate the sandbox was terminated or never existed.
     #[error("Sandbox not found: {0}")]
     NotFound(String),
 
+    /// Failed to establish or maintain connection to the execution environment.
+    ///
+    /// For SSH: connection refused, auth failed, network unreachable.
+    /// For Docker: daemon not running, socket not accessible.
     #[error("Connection error: {0}")]
     Connection(String),
 
+    /// Operation timed out.
+    ///
+    /// The command or operation took longer than the configured timeout.
+    /// Consider increasing timeouts for long-running tests.
     #[error("Timeout: {0}")]
     Timeout(String),
 
+    /// No more sandboxes can be created (resource limit reached).
+    ///
+    /// Wait for existing sandboxes to complete before creating more.
     #[error("Sandbox exhausted: {0}")]
     SandboxExhausted(String),
 
+    /// I/O error during file operations.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Provider-specific error not covered by other variants.
     #[error("Provider-specific error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
-/// Information about a sandbox instance.
+/// Metadata about a sandbox instance.
+///
+/// Returned by [`SandboxProvider::list_sandboxes`] to provide visibility
+/// into active sandboxes managed by the provider.
 #[derive(Debug, Clone)]
 pub struct SandboxInfo {
+    /// Unique identifier for this sandbox.
     pub id: String,
+    /// Current lifecycle status.
     pub status: SandboxStatus,
+    /// When the sandbox was created.
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Status of a sandbox.
+/// Lifecycle status of a sandbox.
+///
+/// ```text
+///   Creating ──► Running ──► Terminating ──► (removed)
+///      │            │
+///      └────► Failed ◄────┘
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
-    /// Sandbox is being created.
+    /// Sandbox is being created and is not yet ready.
+    ///
+    /// For Docker: container is starting.
+    /// For SSH: connection is being established.
     Creating,
-    /// Sandbox is running and ready for commands.
+
+    /// Sandbox is running and ready to accept commands.
+    ///
+    /// This is the normal operational state.
     Running,
-    /// Sandbox has stopped.
+
+    /// Sandbox has stopped normally.
+    ///
+    /// No longer accepting commands but may still exist.
     Stopped,
-    /// Sandbox has failed.
+
+    /// Sandbox encountered an error and is unusable.
+    ///
+    /// May require manual cleanup depending on the provider.
     Failed,
-    /// Sandbox is being terminated.
+
+    /// Sandbox is in the process of being terminated.
+    ///
+    /// Resources are being released.
     Terminating,
 }
 
 /// A command to execute in a sandbox.
+///
+/// Commands are built using a fluent builder API and can be converted
+/// to shell strings for execution.
+///
+/// # Example
+///
+/// ```
+/// use shotgun::provider::Command;
+///
+/// let cmd = Command::new("pytest")
+///     .arg("-v")
+///     .arg("--tb=short")
+///     .args(["tests/test_math.py::test_add", "tests/test_math.py::test_sub"])
+///     .working_dir("/app")
+///     .env("PYTHONPATH", "/app/src")
+///     .timeout(300);
+///
+/// assert_eq!(cmd.program, "pytest");
+/// assert_eq!(cmd.args.len(), 4);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Command {
-    /// The program to run.
+    /// The program/executable to run.
     pub program: String,
+
     /// Arguments to pass to the program.
     pub args: Vec<String>,
-    /// Working directory (optional).
+
+    /// Working directory for command execution.
+    ///
+    /// If `None`, uses the sandbox's default working directory.
     pub working_dir: Option<String>,
-    /// Environment variables to set.
+
+    /// Environment variables to set for this command.
+    ///
+    /// These are merged with (and override) the sandbox's environment.
     pub env: Vec<(String, String)>,
-    /// Timeout in seconds (optional).
+
+    /// Maximum execution time in seconds.
+    ///
+    /// If the command runs longer, it will be terminated.
     pub timeout_secs: Option<u64>,
 }
 
 impl Command {
-    /// Create a new command.
+    /// Creates a new command with the given program.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("python");
+    /// ```
     pub fn new(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -103,13 +299,28 @@ impl Command {
         }
     }
 
-    /// Add an argument.
+    /// Adds a single argument to the command.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("cargo").arg("test").arg("--release");
+    /// ```
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
         self.args.push(arg.into());
         self
     }
 
-    /// Add multiple arguments.
+    /// Adds multiple arguments to the command.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let tests = vec!["test_a", "test_b", "test_c"];
+    /// let cmd = Command::new("pytest").args(tests);
+    /// ```
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -119,25 +330,62 @@ impl Command {
         self
     }
 
-    /// Set the working directory.
+    /// Sets the working directory for command execution.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("make").arg("test").working_dir("/project");
+    /// ```
     pub fn working_dir(mut self, dir: impl Into<String>) -> Self {
         self.working_dir = Some(dir.into());
         self
     }
 
-    /// Add an environment variable.
+    /// Adds an environment variable for this command.
+    ///
+    /// Can be called multiple times to add multiple variables.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("pytest")
+    ///     .env("PYTHONPATH", "/app")
+    ///     .env("DEBUG", "1");
+    /// ```
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
         self
     }
 
-    /// Set the timeout.
+    /// Sets the execution timeout in seconds.
+    ///
+    /// Commands exceeding this limit will be terminated.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("pytest").timeout(300); // 5 minute timeout
+    /// ```
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
     }
 
-    /// Convert to a shell command string.
+    /// Converts the command to a shell-executable string.
+    ///
+    /// The program and arguments are properly escaped for shell execution.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::Command;
+    /// let cmd = Command::new("echo").arg("hello world");
+    /// assert_eq!(cmd.to_shell_string(), "echo 'hello world'");
+    /// ```
     pub fn to_shell_string(&self) -> String {
         let mut parts = vec![shell_escape(&self.program)];
         for arg in &self.args {
@@ -147,62 +395,236 @@ impl Command {
     }
 }
 
-/// Result of executing a command.
+/// Result of executing a command in a sandbox.
+///
+/// Contains the exit code, captured output, and execution duration.
+/// This is returned by [`Sandbox::exec`] for non-streaming execution.
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::provider::{Command, ExecResult};
+///
+/// async fn run_test(sandbox: &impl shotgun::provider::Sandbox) {
+///     let cmd = Command::new("pytest").arg("test_math.py");
+///     let result = sandbox.exec(&cmd).await.unwrap();
+///
+///     if result.success() {
+///         println!("Tests passed in {:?}", result.duration);
+///     } else {
+///         println!("Tests failed with code {}", result.exit_code);
+///         println!("Error output: {}", result.stderr);
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct ExecResult {
-    /// Exit code (0 typically means success).
+    /// Exit code of the command.
+    ///
+    /// By convention, 0 indicates success and non-zero indicates failure.
+    /// The specific meaning of non-zero codes depends on the program.
     pub exit_code: i32,
-    /// Standard output.
+
+    /// Captured standard output.
     pub stdout: String,
-    /// Standard error.
+
+    /// Captured standard error.
     pub stderr: String,
-    /// Duration of execution.
+
+    /// Wall-clock time the command took to execute.
     pub duration: std::time::Duration,
 }
 
 impl ExecResult {
-    /// Check if the command succeeded (exit code 0).
+    /// Returns `true` if the command succeeded (exit code 0).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::ExecResult;
+    /// use std::time::Duration;
+    ///
+    /// let result = ExecResult {
+    ///     exit_code: 0,
+    ///     stdout: "All tests passed".into(),
+    ///     stderr: String::new(),
+    ///     duration: Duration::from_secs(5),
+    /// };
+    /// assert!(result.success());
+    /// ```
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
 }
 
-/// A line of output from a streaming command.
+/// A single line of output from a streaming command.
+///
+/// Used with [`Sandbox::exec_stream`] to process output in real-time.
+/// Each line is tagged with its source (stdout or stderr).
 #[derive(Debug, Clone)]
 pub enum OutputLine {
+    /// A line from standard output.
     Stdout(String),
+    /// A line from standard error.
     Stderr(String),
 }
 
-/// A boxed stream of output lines.
+/// A stream of output lines from a command.
+///
+/// Returned by [`Sandbox::exec_stream`] for processing output in real-time.
+/// The stream yields [`OutputLine`] items as they become available.
+///
+/// # Example
+///
+/// ```no_run
+/// use futures::StreamExt;
+/// use shotgun::provider::{Command, OutputLine, Sandbox};
+///
+/// async fn stream_output(sandbox: &impl Sandbox) {
+///     let cmd = Command::new("pytest").arg("-v");
+///     let mut stream = sandbox.exec_stream(&cmd).await.unwrap();
+///
+///     while let Some(line) = stream.next().await {
+///         match line {
+///             OutputLine::Stdout(s) => println!("[out] {}", s),
+///             OutputLine::Stderr(s) => eprintln!("[err] {}", s),
+///         }
+///     }
+/// }
+/// ```
 pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 
-/// A sandbox is an isolated execution environment.
+/// An isolated execution environment for running commands.
 ///
-/// Sandboxes can execute commands, transfer files, and be terminated.
-/// They abstract over different execution backends like Docker containers,
-/// SSH connections, or local processes.
+/// A sandbox represents a single execution context where test commands can
+/// be run. It provides methods for:
+///
+/// - **Command execution**: Run commands with [`exec`](Self::exec) or
+///   [`exec_stream`](Self::exec_stream)
+/// - **File transfer**: Copy files with [`upload`](Self::upload) and
+///   [`download`](Self::download)
+/// - **Lifecycle management**: Check [`status`](Self::status) and
+///   [`terminate`](Self::terminate) when done
+///
+/// # Implementors
+///
+/// - [`process::ProcessSandbox`] - Local process execution
+/// - [`docker::DockerSandbox`] - Docker container execution
+/// - [`ssh::SshSandbox`] - Remote SSH execution
+/// - [`remote::ConnectorSandbox`] - Custom remote execution
+///
+/// # Thread Safety
+///
+/// Sandboxes must be `Send` to allow passing between async tasks.
+/// Most implementations are also safe to share (`Sync`), but this is
+/// not required by the trait.
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::provider::{Command, Sandbox};
+///
+/// async fn run_tests(sandbox: &impl Sandbox) -> bool {
+///     let cmd = Command::new("pytest")
+///         .arg("-v")
+///         .arg("tests/")
+///         .timeout(300);
+///
+///     match sandbox.exec(&cmd).await {
+///         Ok(result) => {
+///             println!("Exit code: {}", result.exit_code);
+///             println!("Duration: {:?}", result.duration);
+///             result.success()
+///         }
+///         Err(e) => {
+///             eprintln!("Execution failed: {}", e);
+///             false
+///         }
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait Sandbox: Send {
-    /// Get the unique identifier for this sandbox.
+    /// Returns the unique identifier for this sandbox.
+    ///
+    /// The ID is assigned during creation and remains constant for the
+    /// sandbox's lifetime. It's used for logging, tracking, and cleanup.
     fn id(&self) -> &str;
 
-    /// Execute a command and wait for completion.
+    /// Executes a command and waits for completion.
+    ///
+    /// This is the primary method for running commands. It blocks until
+    /// the command completes (or times out) and returns all output.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The command to execute, including args, env, and timeout
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(ExecResult)` - Command completed (check `exit_code` for success)
+    /// - `Err(ProviderError::Timeout)` - Command exceeded timeout
+    /// - `Err(ProviderError::ExecFailed)` - Failed to run command
     async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult>;
 
-    /// Execute a command and stream output.
+    /// Executes a command and streams output in real-time.
+    ///
+    /// Unlike [`exec`](Self::exec), this returns immediately with a stream
+    /// that yields output lines as they're produced. Useful for long-running
+    /// commands or real-time progress monitoring.
+    ///
+    /// **Note**: The stream does not provide an exit code. If you need the
+    /// exit code, use [`exec`](Self::exec) instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The command to execute
+    ///
+    /// # Returns
+    ///
+    /// A stream of [`OutputLine`] items (stdout/stderr lines).
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream>;
 
-    /// Upload a file or directory to the sandbox.
+    /// Uploads a file or directory to the sandbox.
+    ///
+    /// Copies files from the local filesystem into the sandbox's filesystem.
+    /// For directory uploads, the entire tree is copied recursively.
+    ///
+    /// # Arguments
+    ///
+    /// * `local` - Path on the local filesystem
+    /// * `remote` - Destination path inside the sandbox
+    ///
+    /// # Provider Support
+    ///
+    /// - **Process**: Copies to working directory
+    /// - **Docker**: Uses `docker cp`
+    /// - **SSH**: Uses `scp`
+    /// - **Remote**: Usually not supported (returns `Ok(())`)
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
-    /// Download a file or directory from the sandbox.
+    /// Downloads a file or directory from the sandbox.
+    ///
+    /// Copies files from the sandbox's filesystem to the local filesystem.
+    /// For directory downloads, the entire tree is copied recursively.
+    ///
+    /// # Arguments
+    ///
+    /// * `remote` - Path inside the sandbox
+    /// * `local` - Destination path on the local filesystem
     async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()>;
 
-    /// Get the current status of the sandbox.
+    /// Returns the current lifecycle status of the sandbox.
+    ///
+    /// Use this to check if the sandbox is ready for commands.
     fn status(&self) -> SandboxStatus;
 
-    /// Terminate the sandbox and clean up resources.
+    /// Terminates the sandbox and releases resources.
+    ///
+    /// After calling this method, the sandbox should not be used.
+    /// Resources (containers, connections, etc.) are cleaned up.
+    ///
+    /// This method is idempotent - calling it multiple times is safe.
     async fn terminate(&self) -> ProviderResult<()>;
 }
 
@@ -217,23 +639,89 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
-/// A provider creates and manages sandboxes.
+/// Factory for creating and managing sandbox instances.
 ///
-/// Different providers implement different execution backends:
-/// - Docker: Runs tests in containers
-/// - SSH: Runs tests on remote machines
-/// - Process: Runs tests as local processes
+/// A `SandboxProvider` represents an execution backend (Docker, SSH, etc.)
+/// and is responsible for creating [`Sandbox`] instances on demand. The
+/// provider manages the pool of sandboxes and tracks their lifecycle.
+///
+/// # Implementors
+///
+/// - [`process::ProcessProvider`] - Creates local process sandboxes
+/// - [`docker::DockerProvider`] - Creates Docker container sandboxes
+/// - [`ssh::SshProvider`] - Creates SSH connection sandboxes
+/// - [`remote::ConnectorProvider`] - Creates custom remote sandboxes
+///
+/// # Thread Safety
+///
+/// Providers must be both `Send` and `Sync` to allow sharing across
+/// async tasks. The orchestrator holds an `Arc<P>` to the provider.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use shotgun::provider::{SandboxProvider, Sandbox};
+/// use shotgun::provider::process::ProcessProvider;
+/// use shotgun::config::{SandboxConfig, SandboxResources};
+///
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     let provider = ProcessProvider::new(Default::default());
+///
+///     let config = SandboxConfig {
+///         id: "test-sandbox-1".to_string(),
+///         working_dir: Some("/app".to_string()),
+///         env: vec![("DEBUG".to_string(), "1".to_string())],
+///         resources: SandboxResources::default(),
+///     };
+///
+///     let sandbox = provider.create_sandbox(&config).await?;
+///     println!("Created sandbox: {}", sandbox.id());
+///
+///     // List all sandboxes
+///     let sandboxes = provider.list_sandboxes().await?;
+///     println!("Active sandboxes: {}", sandboxes.len());
+///
+///     Ok(())
+/// }
+/// ```
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
-    /// The concrete sandbox type created by this provider.
+    /// The concrete [`Sandbox`] type created by this provider.
+    ///
+    /// Each provider creates a specific sandbox implementation:
+    /// - `ProcessProvider` creates `ProcessSandbox`
+    /// - `DockerProvider` creates `DockerSandbox`
+    /// - etc.
     type Sandbox: Sandbox;
 
-    /// Create a new sandbox with the given configuration.
+    /// Creates a new sandbox with the given configuration.
+    ///
+    /// This method provisions a new isolated execution environment.
+    /// The sandbox is ready for use when this method returns successfully.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration specifying sandbox ID, working directory,
+    ///   environment variables, and resource limits
+    ///
+    /// # Errors
+    ///
+    /// - `ProviderError::CreateFailed` - Failed to create sandbox
+    /// - `ProviderError::SandboxExhausted` - Resource limit reached
+    /// - `ProviderError::Connection` - Failed to connect to backend
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox>;
 
-    /// List all sandboxes managed by this provider.
+    /// Lists all sandboxes currently managed by this provider.
+    ///
+    /// Returns metadata about active sandboxes including their IDs,
+    /// status, and creation time. Useful for monitoring and cleanup.
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;
 
-    /// Get the provider name (for logging and config).
+    /// Returns the provider's name for logging and identification.
+    ///
+    /// This should return a short, descriptive name like `"docker"`,
+    /// `"ssh"`, or `"process"`.
     fn name(&self) -> &'static str;
 }

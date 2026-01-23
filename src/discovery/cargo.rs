@@ -1,4 +1,56 @@
 //! Cargo test discovery implementation.
+//!
+//! This module provides test discovery for Rust projects using `cargo test`.
+//! It uses `cargo test --list` for discovery and parses stdout for results.
+//!
+//! # Discovery Process
+//!
+//! 1. Run `cargo test [options] -- --list` to enumerate tests
+//! 2. Parse output lines ending in `: test` or `: benchmark`
+//! 3. Generate run commands with `cargo test -- --exact <test_names>`
+//! 4. Parse results from cargo test stdout
+//!
+//! # Test ID Format
+//!
+//! Cargo test IDs follow the Rust module path format:
+//! ```text
+//! module::submodule::test_function
+//! tests::integration::test_scenario
+//! ```
+//!
+//! # Workspace Support
+//!
+//! For workspaces, specify the package to test:
+//!
+//! ```toml
+//! [discovery]
+//! type = "cargo"
+//! package = "my-crate"
+//! features = ["test-utils"]
+//! ```
+//!
+//! # Example Usage
+//!
+//! ```no_run
+//! use shotgun::discovery::cargo::CargoDiscoverer;
+//! use shotgun::discovery::TestDiscoverer;
+//! use shotgun::config::CargoDiscoveryConfig;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = CargoDiscoveryConfig {
+//!         package: Some("my-crate".into()),
+//!         features: vec!["test-utils".into()],
+//!         ..Default::default()
+//!     };
+//!
+//!     let discoverer = CargoDiscoverer::new(config);
+//!     let tests = discoverer.discover(&[]).await?;
+//!
+//!     println!("Found {} tests", tests.len());
+//!     Ok(())
+//! }
+//! ```
 
 use std::path::PathBuf;
 
@@ -9,13 +61,37 @@ use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutco
 use crate::config::CargoDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
-/// Cargo test discoverer.
+/// Test discoverer for Rust projects using `cargo test`.
+///
+/// Uses `cargo test --list` for discovery and generates commands
+/// with `--exact` flag to run specific tests.
+///
+/// # Configuration
+///
+/// See [`CargoDiscoveryConfig`] for available options including:
+/// - `package`: Package to test (for workspaces)
+/// - `features`: Cargo features to enable
+/// - `bin`: Binary target name
+/// - `include_ignored`: Include `#[ignore]` tests
 pub struct CargoDiscoverer {
     config: CargoDiscoveryConfig,
 }
 
 impl CargoDiscoverer {
-    /// Create a new cargo test discoverer with the given configuration.
+    /// Creates a new cargo test discoverer with the given configuration.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::discovery::cargo::CargoDiscoverer;
+    /// use shotgun::config::CargoDiscoveryConfig;
+    ///
+    /// let discoverer = CargoDiscoverer::new(CargoDiscoveryConfig {
+    ///     package: Some("my-lib".into()),
+    ///     features: vec!["test-utils".into()],
+    ///     ..Default::default()
+    /// });
+    /// ```
     pub fn new(config: CargoDiscoveryConfig) -> Self {
         Self { config }
     }

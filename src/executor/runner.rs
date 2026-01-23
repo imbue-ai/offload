@@ -1,4 +1,41 @@
-//! Test runner that executes tests in a sandbox.
+//! Test runner for executing tests in a sandbox.
+//!
+//! The [`TestRunner`] is responsible for executing tests within a single
+//! sandbox and parsing their results. It handles both single-test and
+//! batch execution modes.
+//!
+//! # Features
+//!
+//! - **Single test execution**: Run one test at a time with [`run_test`](TestRunner::run_test)
+//! - **Batch execution**: Run multiple tests with [`run_tests`](TestRunner::run_tests)
+//! - **Streaming output**: Real-time output via callback with [`with_streaming`](TestRunner::with_streaming)
+//! - **Result parsing**: Automatic parsing via the discoverer
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//! use shotgun::executor::TestRunner;
+//! use shotgun::provider::process::ProcessSandbox;
+//! use shotgun::discovery::pytest::PytestDiscoverer;
+//! use shotgun::discovery::TestCase;
+//!
+//! async fn run_test_example(
+//!     sandbox: ProcessSandbox,
+//!     discoverer: Arc<PytestDiscoverer>,
+//! ) -> anyhow::Result<()> {
+//!     let mut runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300));
+//!
+//!     let test = TestCase::new("tests/test_math.py::test_add");
+//!     let result = runner.run_test(&test).await?;
+//!
+//!     if result.outcome.is_success() {
+//!         println!("Test passed!");
+//!     }
+//!     Ok(())
+//! }
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,10 +47,37 @@ use tracing::{debug, info};
 use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
 
-/// Callback for streaming output lines.
+/// Callback function for streaming test output.
+///
+/// Called for each line of output during streaming execution. The callback
+/// receives the test ID and the output line.
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use shotgun::executor::OutputCallback;
+/// use shotgun::provider::OutputLine;
+///
+/// let callback: OutputCallback = Arc::new(|test_id, line| {
+///     match line {
+///         OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+///         OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+///     }
+/// });
+/// ```
 pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
-/// Runs tests in a sandbox.
+/// Executes tests within a single sandbox.
+///
+/// The runner handles command generation, execution, output capture,
+/// and result parsing. It uses the configured discoverer to generate
+/// appropriate commands and parse results.
+///
+/// # Type Parameters
+///
+/// - `S`: The sandbox type (implements [`Sandbox`])
+/// - `D`: The discoverer type (implements [`TestDiscoverer`])
 pub struct TestRunner<S, D> {
     sandbox: S,
     discoverer: Arc<D>,
@@ -23,7 +87,13 @@ pub struct TestRunner<S, D> {
 }
 
 impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
-    /// Create a new test runner.
+    /// Creates a new test runner for the given sandbox.
+    ///
+    /// # Arguments
+    ///
+    /// * `sandbox` - The sandbox to execute tests in
+    /// * `discoverer` - The discoverer for command generation and result parsing
+    /// * `timeout` - Maximum time for test execution
     pub fn new(sandbox: S, discoverer: Arc<D>, timeout: Duration) -> Self {
         Self {
             sandbox,
@@ -34,19 +104,60 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
         }
     }
 
-    /// Enable streaming output with a callback.
+    /// Enables streaming output with a callback.
+    ///
+    /// When enabled, test output is sent to the callback as it occurs
+    /// rather than being buffered.
+    ///
+    /// # Arguments
+    ///
+    /// * `callback` - Function called for each line of output
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use shotgun::executor::TestRunner;
+    /// use shotgun::provider::OutputLine;
+    /// # use shotgun::provider::process::ProcessSandbox;
+    /// # use shotgun::discovery::pytest::PytestDiscoverer;
+    /// # use std::time::Duration;
+    ///
+    /// # fn example(sandbox: ProcessSandbox, discoverer: Arc<PytestDiscoverer>) {
+    /// let runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300))
+    ///     .with_streaming(Arc::new(|test_id, line| {
+    ///         match line {
+    ///             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+    ///             OutputLine::Stderr(s) => eprintln!("[{}] ERR: {}", test_id, s),
+    ///         }
+    ///     }));
+    /// # }
+    /// ```
     pub fn with_streaming(mut self, callback: OutputCallback) -> Self {
         self.stream_output = true;
         self.output_callback = Some(callback);
         self
     }
 
-    /// Get a reference to the sandbox.
+    /// Returns a reference to the underlying sandbox.
+    ///
+    /// Useful for terminating the sandbox after tests complete.
     pub fn sandbox(&self) -> &S {
         &self.sandbox
     }
 
-    /// Run a single test and return the result.
+    /// Runs a single test and returns its result.
+    ///
+    /// Generates a command for the test using the discoverer, executes it
+    /// in the sandbox, and parses the results.
+    ///
+    /// # Arguments
+    ///
+    /// * `test` - The test case to execute
+    ///
+    /// # Returns
+    ///
+    /// The test result including outcome, duration, and captured output.
     pub async fn run_test(&mut self, test: &TestCase) -> Result<TestResult> {
         let start = std::time::Instant::now();
 
@@ -159,7 +270,20 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
         })
     }
 
-    /// Run multiple tests and return all results.
+    /// Runs multiple tests in a batch and returns all results.
+    ///
+    /// Generates a single command for all tests, executes it, and parses
+    /// the combined results. More efficient than running tests individually
+    /// but provides less isolation.
+    ///
+    /// # Arguments
+    ///
+    /// * `tests` - The test cases to execute as a batch
+    ///
+    /// # Returns
+    ///
+    /// Results for all tests. If parsing fails, infers results from the
+    /// overall exit code.
     pub async fn run_tests(&mut self, tests: &[TestCase]) -> Result<Vec<TestResult>> {
         let start = std::time::Instant::now();
 

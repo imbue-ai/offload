@@ -1,7 +1,60 @@
-//! Remote execution provider using Connectors.
+//! Remote execution provider using lifecycle-based shell commands.
 //!
-//! This provider delegates execution to a `Connector`, which handles
-//! running shell commands. The Sandbox manages the lifecycle (create/exec/destroy).
+//! This provider enables integration with any execution environment by
+//! defining shell commands for sandbox lifecycle management. It's designed
+//! for cloud providers like Modal, AWS Lambda, Fly.io, or custom systems.
+//!
+//! # When to Use
+//!
+//! - **Cloud functions**: Modal, AWS Lambda, Google Cloud Functions
+//! - **Custom orchestration**: Kubernetes pods, Nomad jobs
+//! - **Specialized hardware**: GPU instances, ARM machines
+//! - **Serverless execution**: On-demand compute scaling
+//!
+//! # Characteristics
+//!
+//! | Feature | Support |
+//! |---------|---------|
+//! | Isolation | Depends on backend |
+//! | Resource limits | Depends on backend |
+//! | File transfer | Not supported |
+//! | Streaming output | Supported |
+//! | Parallel execution | Yes |
+//!
+//! # Command Protocol
+//!
+//! The provider uses three commands for lifecycle management:
+//!
+//! 1. **create_command**: Creates a sandbox, prints ID to stdout
+//! 2. **exec_command**: Runs a command, uses `{sandbox_id}` and `{command}` placeholders
+//! 3. **destroy_command**: Cleans up, uses `{sandbox_id}` placeholder
+//!
+//! The exec command can return either plain text or JSON:
+//! ```json
+//! {"exit_code": 0, "stdout": "output", "stderr": "errors"}
+//! ```
+//!
+//! # Example: Modal Integration
+//!
+//! ```toml
+//! [provider]
+//! type = "remote"
+//! create_command = "python -c 'import uuid; print(uuid.uuid4())'"
+//! exec_command = "modal run --sandbox-id {sandbox_id} -- {command}"
+//! destroy_command = "modal sandbox delete {sandbox_id}"
+//! ```
+//!
+//! # Example: Custom Kubernetes Executor
+//!
+//! ```toml
+//! [provider]
+//! type = "remote"
+//! working_dir = "/path/to/scripts"
+//! create_command = "./k8s-create-pod.sh"
+//! exec_command = "./k8s-exec.sh {sandbox_id} {command}"
+//! destroy_command = "./k8s-delete-pod.sh {sandbox_id}"
+//! timeout_secs = 3600
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,7 +72,16 @@ use super::{
 use crate::config::{RemoteProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
-/// Provider that uses shell commands for lifecycle management.
+/// Provider that uses shell commands for sandbox lifecycle management.
+///
+/// This provider is highly flexible - it delegates all operations to
+/// user-defined shell commands. The commands can call any external tool,
+/// script, or API.
+///
+/// # Sandbox Creation
+///
+/// The `create_command` is run and must print a unique sandbox ID to stdout.
+/// This ID is then used in subsequent exec and destroy commands.
 pub struct ConnectorProvider {
     connector: Arc<ShellConnector>,
     config: RemoteProviderConfig,
@@ -34,7 +96,31 @@ struct ConnectorSandboxInfo {
 }
 
 impl ConnectorProvider {
-    /// Create a new provider from config.
+    /// Creates a new provider from the given configuration.
+    ///
+    /// The configuration specifies the shell commands used for sandbox
+    /// lifecycle management: create, exec, and destroy.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Remote provider configuration with command templates
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::remote::ConnectorProvider;
+    /// use shotgun::config::RemoteProviderConfig;
+    ///
+    /// let config = RemoteProviderConfig {
+    ///     create_command: "uuidgen".to_string(),
+    ///     exec_command: "echo 'Running on {sandbox_id}'; {command}".to_string(),
+    ///     destroy_command: "echo 'Cleaned up {sandbox_id}'".to_string(),
+    ///     working_dir: None,
+    ///     timeout_secs: 3600,
+    /// };
+    ///
+    /// let provider = ConnectorProvider::from_config(config);
+    /// ```
     pub fn from_config(config: RemoteProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
@@ -109,10 +195,28 @@ impl SandboxProvider for ConnectorProvider {
     }
 }
 
-/// A sandbox that uses shell commands for execution.
+/// A sandbox managed through shell command templates.
 ///
-/// This sandbox is reusable: you can call exec() multiple times on the same
-/// remote instance, then call terminate() to clean up.
+/// The sandbox maintains a `remote_id` (returned by the create command)
+/// that is substituted into the exec and destroy command templates.
+///
+/// # Reusability
+///
+/// Unlike single-use sandboxes, this sandbox can execute multiple commands
+/// on the same remote instance. This is useful for stateful workflows where
+/// subsequent commands depend on previous ones.
+///
+/// # File Transfer
+///
+/// File upload/download is not supported by this provider. If you need
+/// file transfer, include the files in your execution environment (e.g.,
+/// baked into a container image) or use a different provider.
+///
+/// # JSON Protocol
+///
+/// The exec command can optionally return JSON on stdout for structured
+/// results. If the last line of output is valid JSON with `exit_code`,
+/// `stdout`, and `stderr` fields, those are used as the result.
 pub struct ConnectorSandbox {
     /// Local sandbox ID
     id: String,

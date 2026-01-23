@@ -1,4 +1,57 @@
-//! Configuration loading and schema definitions.
+//! Configuration loading and schema definitions for shotgun.
+//!
+//! This module provides types and functions for loading shotgun configuration
+//! from TOML files or strings. The configuration schema defines all settings
+//! for providers, test discovery, and reporting.
+//!
+//! # Configuration File Format
+//!
+//! Shotgun configuration files use TOML format with four main sections:
+//!
+//! ```toml
+//! [shotgun]
+//! max_parallel = 4           # Number of parallel sandboxes
+//! test_timeout_secs = 300    # Timeout per test batch
+//! retry_count = 2            # Retry failed tests up to N times
+//! stream_output = false      # Stream output in real-time
+//!
+//! [provider]
+//! type = "docker"            # One of: process, docker, ssh, remote
+//! # ... provider-specific settings
+//!
+//! [discovery]
+//! type = "pytest"            # One of: pytest, cargo, generic
+//! # ... discovery-specific settings
+//!
+//! [report]
+//! output_dir = "test-results"
+//! junit = true
+//! ```
+//!
+//! # Example
+//!
+//! ```no_run
+//! use shotgun::config::{load_config, load_config_str};
+//! use std::path::Path;
+//!
+//! // Load from file
+//! let config = load_config(Path::new("shotgun.toml"))?;
+//!
+//! // Or load from string
+//! let toml = r#"
+//!     [shotgun]
+//!     max_parallel = 2
+//!
+//!     [provider]
+//!     type = "process"
+//!
+//!     [discovery]
+//!     type = "pytest"
+//!     paths = ["tests"]
+//! "#;
+//! let config = load_config_str(toml)?;
+//! # Ok::<(), anyhow::Error>(())
+//! ```
 
 pub mod schema;
 
@@ -8,7 +61,32 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Load configuration from a TOML file.
+/// Loads shotgun configuration from a TOML file.
+///
+/// This is the primary way to load configuration. The file must be valid TOML
+/// and conform to the shotgun configuration schema.
+///
+/// # Arguments
+///
+/// * `path` - Path to the TOML configuration file
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The file cannot be read (e.g., doesn't exist or permission denied)
+/// - The file contains invalid TOML syntax
+/// - The configuration doesn't match the expected schema
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::config::load_config;
+/// use std::path::Path;
+///
+/// let config = load_config(Path::new("shotgun.toml"))?;
+/// println!("Max parallel: {}", config.shotgun.max_parallel);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
@@ -19,7 +97,40 @@ pub fn load_config(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// Load configuration from a string.
+/// Loads shotgun configuration from a TOML string.
+///
+/// Useful for testing, embedding configuration, or generating configuration
+/// programmatically.
+///
+/// # Arguments
+///
+/// * `content` - A string containing valid TOML configuration
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The string contains invalid TOML syntax
+/// - The configuration doesn't match the expected schema
+///
+/// # Example
+///
+/// ```
+/// use shotgun::config::load_config_str;
+///
+/// let config = load_config_str(r#"
+///     [shotgun]
+///     max_parallel = 4
+///
+///     [provider]
+///     type = "process"
+///
+///     [discovery]
+///     type = "pytest"
+/// "#)?;
+///
+/// assert_eq!(config.shotgun.max_parallel, 4);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn load_config_str(content: &str) -> Result<Config> {
     let config: Config = toml::from_str(content).context("Failed to parse config")?;
 

@@ -1,7 +1,80 @@
-//! Test execution engine.
+//! Test execution engine and orchestration.
 //!
-//! This module coordinates test discovery, distribution, execution,
-//! and result collection across multiple sandboxes.
+//! This module contains the core execution logic that coordinates test
+//! discovery, distribution across sandboxes, execution, retry handling,
+//! and result collection.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────┐
+//! │                         Orchestrator                                 │
+//! │  (coordinates the entire test run)                                  │
+//! │                                                                      │
+//! │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐            │
+//! │  │  Discoverer  │   │   Scheduler  │   │   Reporter   │            │
+//! │  │   (finds     │   │ (distributes │   │   (reports   │            │
+//! │  │    tests)    │   │    tests)    │   │   results)   │            │
+//! │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘            │
+//! │         │                  │                  │                     │
+//! │         ▼                  ▼                  │                     │
+//! │  ┌────────────────────────────────────────────────────────────┐    │
+//! │  │                      TestRunner (per sandbox)              │    │
+//! │  │  ┌────────────┐                        ┌──────────────┐   │    │
+//! │  │  │  Sandbox   │ ◄──── exec() ────────► │ RetryManager │   │    │
+//! │  │  │ (provider) │                        │  (retries)   │   │    │
+//! │  │  └────────────┘                        └──────────────┘   │    │
+//! │  └────────────────────────────────────────────────────────────┘    │
+//! │                                                                      │
+//! └─────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Execution Flow
+//!
+//! 1. **Discovery**: Find tests using the configured discoverer
+//! 2. **Scheduling**: Distribute tests into batches across sandboxes
+//! 3. **Execution**: Run test batches in parallel sandboxes
+//! 4. **Retry**: Re-run failed tests (if configured)
+//! 5. **Reporting**: Aggregate results and notify reporters
+//!
+//! # Key Components
+//!
+//! - [`Orchestrator`]: Main entry point coordinating the test run
+//! - [`Scheduler`]: Distributes tests across available sandboxes
+//! - [`TestRunner`]: Executes tests in a single sandbox
+//! - [`RetryManager`]: Handles retry logic and flaky test detection
+//! - [`RunResult`]: Aggregated results of the entire test run
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use shotgun::executor::Orchestrator;
+//! use shotgun::config::load_config;
+//! use shotgun::provider::process::ProcessProvider;
+//! use shotgun::discovery::pytest::PytestDiscoverer;
+//! use shotgun::report::ConsoleReporter;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+//!
+//!     let provider = Arc::new(ProcessProvider::new(Default::default()));
+//!     let discoverer = Arc::new(PytestDiscoverer::new(Default::default()));
+//!     let reporter = Arc::new(ConsoleReporter::new(true));
+//!
+//!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+//!     let result = orchestrator.run().await?;
+//!
+//!     if result.success() {
+//!         println!("All tests passed!");
+//!     } else {
+//!         println!("{} tests failed", result.failed);
+//!     }
+//!
+//!     std::process::exit(result.exit_code());
+//! }
+//! ```
 
 pub mod retry;
 pub mod runner;
@@ -23,34 +96,112 @@ pub use retry::RetryManager;
 pub use runner::{OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
-/// Result of the entire test run.
+/// Aggregated results of an entire test run.
+///
+/// Contains summary statistics and individual test results. This is the
+/// return value of [`Orchestrator::run`] and is passed to reporters
+/// for final output.
+///
+/// # Exit Codes
+///
+/// The [`exit_code`](Self::exit_code) method returns conventional exit codes:
+///
+/// | Code | Meaning |
+/// |------|---------|
+/// | 0 | All tests passed |
+/// | 1 | Some tests failed or weren't run |
+/// | 34 | All tests passed but some were flaky |
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::executor::RunResult;
+///
+/// fn print_summary(result: &RunResult) {
+///     println!("Test Results:");
+///     println!("  Total:   {}", result.total_tests);
+///     println!("  Passed:  {}", result.passed);
+///     println!("  Failed:  {}", result.failed);
+///     println!("  Skipped: {}", result.skipped);
+///     println!("  Flaky:   {}", result.flaky);
+///     println!("  Duration: {:?}", result.duration);
+///
+///     if result.success() {
+///         println!("All tests passed!");
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RunResult {
     /// Total number of tests discovered.
     pub total_tests: usize,
+
     /// Number of tests that passed.
     pub passed: usize,
-    /// Number of tests that failed.
+
+    /// Number of tests that failed (assertions or errors).
     pub failed: usize,
+
     /// Number of tests that were skipped.
     pub skipped: usize,
-    /// Number of tests that were flaky (passed after retry).
+
+    /// Number of tests that were flaky (passed on retry).
+    ///
+    /// A flaky test is one that failed initially but passed after retrying.
     pub flaky: usize,
-    /// Number of tests that were not run (e.g., sandbox creation failed).
+
+    /// Number of tests that couldn't be run.
+    ///
+    /// Typically due to sandbox creation failures or infrastructure issues.
     pub not_run: usize,
-    /// Total duration of the test run.
+
+    /// Wall-clock duration of the entire test run.
     pub duration: Duration,
-    /// Individual test results.
+
+    /// Individual test results for all executed tests.
     pub results: Vec<TestResult>,
 }
 
 impl RunResult {
-    /// Check if the overall run was successful.
+    /// Returns `true` if the test run was successful.
+    ///
+    /// A run is successful if no tests failed and all scheduled tests
+    /// were executed. Flaky tests are considered successful (they passed
+    /// on retry).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::executor::RunResult;
+    /// use std::time::Duration;
+    ///
+    /// let result = RunResult {
+    ///     total_tests: 100,
+    ///     passed: 95,
+    ///     failed: 0,
+    ///     skipped: 5,
+    ///     flaky: 2,
+    ///     not_run: 0,
+    ///     duration: Duration::from_secs(60),
+    ///     results: vec![],
+    /// };
+    ///
+    /// assert!(result.success());
+    /// ```
     pub fn success(&self) -> bool {
         self.failed == 0 && self.not_run == 0
     }
 
-    /// Get the exit code for this run result.
+    /// Returns an appropriate process exit code for this result.
+    ///
+    /// | Condition | Exit Code |
+    /// |-----------|-----------|
+    /// | Tests failed or not run | 1 |
+    /// | All passed but some flaky | 34 |
+    /// | All passed cleanly | 0 |
+    ///
+    /// Exit code 34 is used for flaky tests to distinguish from clean
+    /// passes while still indicating the run succeeded.
     pub fn exit_code(&self) -> i32 {
         if self.failed > 0 || self.not_run > 0 {
             1
@@ -63,6 +214,51 @@ impl RunResult {
 }
 
 /// The main orchestrator that coordinates test execution.
+///
+/// The orchestrator is the top-level component that ties together:
+/// - A [`SandboxProvider`] for execution environments
+/// - A [`TestDiscoverer`] for finding tests
+/// - A [`Reporter`] for output
+///
+/// It manages the full lifecycle of a test run: discovery, scheduling,
+/// parallel execution, retries, and result aggregation.
+///
+/// # Type Parameters
+///
+/// - `P`: The sandbox provider type
+/// - `D`: The test discoverer type
+/// - `R`: The reporter type
+///
+/// # Example
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use shotgun::executor::Orchestrator;
+/// use shotgun::config::load_config;
+/// use shotgun::provider::process::ProcessProvider;
+/// use shotgun::discovery::pytest::PytestDiscoverer;
+/// use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
+///
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+///
+///     // Set up components
+///     let provider = Arc::new(ProcessProvider::new(Default::default()));
+///     let discoverer = Arc::new(PytestDiscoverer::new(Default::default()));
+///     let reporter = Arc::new(
+///         MultiReporter::new()
+///             .with_reporter(ConsoleReporter::new(true))
+///             .with_reporter(JUnitReporter::new("results.xml".into()))
+///     );
+///
+///     // Create orchestrator and run
+///     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+///     let result = orchestrator.run().await?;
+///
+///     std::process::exit(result.exit_code());
+/// }
+/// ```
 pub struct Orchestrator<P, D, R> {
     config: Config,
     provider: Arc<P>,
@@ -76,7 +272,17 @@ where
     D: TestDiscoverer + 'static,
     R: Reporter + 'static,
 {
-    /// Create a new orchestrator with the given components.
+    /// Creates a new orchestrator with the given components.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration loaded from TOML
+    /// * `provider` - Sandbox provider for creating execution environments
+    /// * `discoverer` - Test discoverer for finding tests
+    /// * `reporter` - Reporter for outputting results
+    ///
+    /// All components are wrapped in `Arc` for shared ownership across
+    /// async tasks.
     pub fn new(config: Config, provider: Arc<P>, discoverer: Arc<D>, reporter: Arc<R>) -> Self {
         Self {
             config,
@@ -86,7 +292,26 @@ where
         }
     }
 
-    /// Run all tests and return the results.
+    /// Runs all tests and returns the aggregated results.
+    ///
+    /// This is the main entry point for test execution. It performs:
+    ///
+    /// 1. Test discovery using the configured discoverer
+    /// 2. Scheduling tests into batches based on `max_parallel`
+    /// 3. Parallel execution across sandboxes
+    /// 4. Retrying failed tests (if `retry_count > 0`)
+    /// 5. Aggregating results and notifying the reporter
+    ///
+    /// # Returns
+    ///
+    /// [`RunResult`] containing summary statistics and individual results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Test discovery fails completely
+    /// - All sandbox creations fail
+    /// - Critical infrastructure errors occur
     pub async fn run(&self) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 

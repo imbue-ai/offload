@@ -1,7 +1,92 @@
 //! Docker container provider implementation.
 //!
-//! This provider runs tests in Docker containers, providing isolation
-//! and reproducibility.
+//! This provider runs tests inside Docker containers, providing strong
+//! isolation and reproducible test environments. Each sandbox is a
+//! separate container created from a configured image.
+//!
+//! # When to Use
+//!
+//! - **Isolation**: Tests need isolated filesystems/networks
+//! - **Reproducibility**: Consistent environment across machines
+//! - **Dependencies**: Tests require specific system packages
+//! - **CI/CD**: Standard containerized testing workflow
+//!
+//! # Characteristics
+//!
+//! | Feature | Support |
+//! |---------|---------|
+//! | Isolation | Full (filesystem, network, processes) |
+//! | Resource limits | CPU and memory limits supported |
+//! | File transfer | Via `docker cp` (tar archives) |
+//! | Streaming output | Supported via Docker exec |
+//! | Parallel execution | Yes, via multiple containers |
+//!
+//! # Prerequisites
+//!
+//! - Docker daemon must be running
+//! - User must have permission to access Docker socket
+//! - Specified image must be available (pulled automatically if not)
+//!
+//! # Example Configuration
+//!
+//! ```toml
+//! [provider]
+//! type = "docker"
+//! image = "python:3.11-slim"
+//! volumes = [".:/app:ro"]
+//! working_dir = "/app"
+//! network_mode = "bridge"
+//!
+//! [provider.env]
+//! PYTHONDONTWRITEBYTECODE = "1"
+//!
+//! [provider.resources]
+//! cpu_limit = 2.0
+//! memory_limit = 2147483648
+//! ```
+//!
+//! # Container Lifecycle
+//!
+//! 1. **Create**: Container created with `sleep infinity` to keep running
+//! 2. **Execute**: Commands run via `docker exec`
+//! 3. **Terminate**: Container forcibly removed with `docker rm -f`
+//!
+//! # Example Usage
+//!
+//! ```no_run
+//! use shotgun::provider::docker::DockerProvider;
+//! use shotgun::provider::{SandboxProvider, Sandbox, Command};
+//! use shotgun::config::{DockerProviderConfig, SandboxConfig, SandboxResources};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = DockerProviderConfig {
+//!         image: "python:3.11".to_string(),
+//!         volumes: vec![".:/app".to_string()],
+//!         working_dir: Some("/app".to_string()),
+//!         env: Default::default(),
+//!         network_mode: "bridge".to_string(),
+//!         docker_host: None,
+//!         resources: Default::default(),
+//!     };
+//!
+//!     let provider = DockerProvider::new(config)?;
+//!
+//!     let sandbox_config = SandboxConfig {
+//!         id: "test-container".to_string(),
+//!         working_dir: Some("/app".to_string()),
+//!         env: vec![],
+//!         resources: SandboxResources::default(),
+//!     };
+//!
+//!     let sandbox = provider.create_sandbox(&sandbox_config).await?;
+//!     let result = sandbox.exec(&Command::new("python").arg("--version")).await?;
+//!     println!("Python version: {}", result.stdout);
+//!
+//!     sandbox.terminate().await?;
+//!     Ok(())
+//! }
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,7 +109,16 @@ use super::{
 };
 use crate::config::{DockerProviderConfig, SandboxConfig};
 
-/// Docker container provider.
+/// Provider that runs tests in Docker containers.
+///
+/// Uses the [bollard](https://docs.rs/bollard) crate to communicate with
+/// the Docker daemon. Containers are created on demand and can be
+/// configured with resource limits, volumes, and environment variables.
+///
+/// # Connection
+///
+/// By default, connects to the local Docker socket. For remote Docker
+/// daemons, configure `docker_host` in the provider configuration.
 pub struct DockerProvider {
     docker: Docker,
     config: DockerProviderConfig,
@@ -40,7 +134,41 @@ struct ContainerInfo {
 }
 
 impl DockerProvider {
-    /// Create a new Docker provider with the given configuration.
+    /// Creates a new Docker provider with the given configuration.
+    ///
+    /// Establishes a connection to the Docker daemon. If `docker_host` is
+    /// specified in the config, connects to that URL; otherwise uses the
+    /// local Docker socket.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Docker provider configuration including image, volumes,
+    ///   environment, and resource limits
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError::Connection` if unable to connect to the
+    /// Docker daemon (daemon not running, socket not accessible, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use shotgun::provider::docker::DockerProvider;
+    /// use shotgun::config::DockerProviderConfig;
+    ///
+    /// let config = DockerProviderConfig {
+    ///     image: "python:3.11".to_string(),
+    ///     volumes: vec![".:/app".to_string()],
+    ///     working_dir: Some("/app".to_string()),
+    ///     env: Default::default(),
+    ///     network_mode: "bridge".to_string(),
+    ///     docker_host: None,
+    ///     resources: Default::default(),
+    /// };
+    ///
+    /// let provider = DockerProvider::new(config)?;
+    /// # Ok::<(), shotgun::provider::ProviderError>(())
+    /// ```
     pub fn new(config: DockerProviderConfig) -> ProviderResult<Self> {
         let docker = if let Some(host) = &config.docker_host {
             Docker::connect_with_http(host, 120, bollard::API_DEFAULT_VERSION)
@@ -57,7 +185,10 @@ impl DockerProvider {
         })
     }
 
-    /// Create a new Docker provider, connecting to the local Docker daemon.
+    /// Creates a new Docker provider connected to the local daemon.
+    ///
+    /// Equivalent to [`new`](Self::new) - provided for clarity when
+    /// the intent is to use the local Docker installation.
     pub fn local(config: DockerProviderConfig) -> ProviderResult<Self> {
         Self::new(config)
     }
@@ -177,7 +308,22 @@ impl SandboxProvider for DockerProvider {
     }
 }
 
-/// A sandbox backed by a Docker container.
+/// A sandbox backed by a running Docker container.
+///
+/// The container is kept running with `sleep infinity` and commands
+/// are executed via `docker exec`. This allows multiple commands to
+/// run in the same container with shared filesystem state.
+///
+/// # File Transfer
+///
+/// Files are transferred using tar archives:
+/// - **Upload**: Creates a tar, uploads via Docker API
+/// - **Download**: Downloads tar via Docker API, extracts locally
+///
+/// # Termination
+///
+/// Calling [`terminate`](Self::terminate) forcibly removes the container
+/// (`docker rm -f`), cleaning up all resources.
 pub struct DockerSandbox {
     id: String,
     container_id: String,

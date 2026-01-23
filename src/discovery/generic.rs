@@ -1,7 +1,60 @@
 //! Generic test discovery implementation.
 //!
-//! This discoverer allows users to define custom discovery and run commands
-//! for any test framework.
+//! This discoverer enables integration with any test framework by using
+//! custom shell commands for discovery and execution.
+//!
+//! # When to Use
+//!
+//! Use the generic discoverer when:
+//! - Your framework isn't directly supported (Jest, Mocha, Go, etc.)
+//! - You have custom test organization that standard discoverers don't handle
+//! - You need specialized discovery logic
+//!
+//! # Discovery Protocol
+//!
+//! The `discover_command` should output test IDs to stdout, one per line:
+//! ```text
+//! test_login
+//! test_logout
+//! test_user_profile
+//! ```
+//!
+//! Lines starting with `#` are treated as comments and ignored.
+//!
+//! # Run Command Template
+//!
+//! The `run_command` uses `{tests}` as a placeholder for space-separated
+//! test IDs:
+//!
+//! ```toml
+//! run_command = "npm test -- {tests}"
+//! # Becomes: npm test -- test_login test_logout
+//! ```
+//!
+//! # Result Parsing
+//!
+//! For detailed results, configure `result_file` to point to a JUnit XML
+//! file produced by the test runner. Without this, results are inferred
+//! from exit codes only.
+//!
+//! # Example: Jest
+//!
+//! ```toml
+//! [discovery]
+//! type = "generic"
+//! discover_command = "jest --listTests --json | jq -r '.[]' | xargs -I{} basename {}"
+//! run_command = "jest {tests} --ci --reporters=jest-junit"
+//! result_file = "junit.xml"
+//! ```
+//!
+//! # Example: Go
+//!
+//! ```toml
+//! [discovery]
+//! type = "generic"
+//! discover_command = "go test -list '.*' ./... 2>/dev/null | grep -E '^Test'"
+//! run_command = "go test -v -run '^({tests})$' ./..."
+//! ```
 
 use std::path::PathBuf;
 
@@ -11,13 +64,38 @@ use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutco
 use crate::config::GenericDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
-/// Generic test discoverer that uses user-provided commands.
+/// Test discoverer using custom shell commands.
+///
+/// Provides maximum flexibility by delegating discovery and execution
+/// to user-defined shell commands. Suitable for any test framework.
+///
+/// # Configuration
+///
+/// See [`GenericDiscoveryConfig`] for available options including:
+/// - `discover_command`: Shell command that outputs test IDs
+/// - `run_command`: Command template with `{tests}` placeholder
+/// - `result_file`: Optional JUnit XML path for detailed results
+/// - `working_dir`: Directory for running commands
 pub struct GenericDiscoverer {
     config: GenericDiscoveryConfig,
 }
 
 impl GenericDiscoverer {
-    /// Create a new generic discoverer with the given configuration.
+    /// Creates a new generic discoverer with the given configuration.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::discovery::generic::GenericDiscoverer;
+    /// use shotgun::config::GenericDiscoveryConfig;
+    ///
+    /// let discoverer = GenericDiscoverer::new(GenericDiscoveryConfig {
+    ///     discover_command: "find tests -name '*.test.js' -exec basename {} \\;".into(),
+    ///     run_command: "jest {tests}".into(),
+    ///     result_file: Some("junit.xml".into()),
+    ///     working_dir: None,
+    /// });
+    /// ```
     pub fn new(config: GenericDiscoveryConfig) -> Self {
         Self { config }
     }

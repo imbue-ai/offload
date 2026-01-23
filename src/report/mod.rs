@@ -1,4 +1,69 @@
 //! Test reporting and output generation.
+//!
+//! This module provides the [`Reporter`] trait for receiving test events
+//! and several built-in reporter implementations.
+//!
+//! # Reporter Trait
+//!
+//! Reporters receive callbacks during test execution:
+//!
+//! 1. [`on_discovery_complete`](Reporter::on_discovery_complete) - After tests are found
+//! 2. [`on_test_start`](Reporter::on_test_start) - Before each test runs
+//! 3. [`on_test_complete`](Reporter::on_test_complete) - After each test finishes
+//! 4. [`on_run_complete`](Reporter::on_run_complete) - After all tests finish
+//!
+//! # Built-in Reporters
+//!
+//! | Reporter | Description |
+//! |----------|-------------|
+//! | [`ConsoleReporter`] | Terminal output with progress bar |
+//! | [`JUnitReporter`] | JUnit XML file for CI systems |
+//! | [`MultiReporter`] | Combines multiple reporters |
+//! | [`NullReporter`] | Discards all events (for testing) |
+//!
+//! # Example: Custom Reporter
+//!
+//! ```no_run
+//! use async_trait::async_trait;
+//! use shotgun::report::Reporter;
+//! use shotgun::discovery::{TestCase, TestResult};
+//! use shotgun::executor::RunResult;
+//!
+//! struct SlackReporter {
+//!     webhook_url: String,
+//! }
+//!
+//! #[async_trait]
+//! impl Reporter for SlackReporter {
+//!     async fn on_discovery_complete(&self, tests: &[TestCase]) {
+//!         // Could post "Starting test run with N tests"
+//!     }
+//!
+//!     async fn on_test_start(&self, _test: &TestCase) {}
+//!     async fn on_test_complete(&self, _result: &TestResult) {}
+//!
+//!     async fn on_run_complete(&self, result: &RunResult) {
+//!         // Post summary to Slack webhook
+//!         let msg = format!(
+//!             "Tests complete: {} passed, {} failed",
+//!             result.passed, result.failed
+//!         );
+//!         // ... send to webhook_url
+//!     }
+//! }
+//! ```
+//!
+//! # Combining Reporters
+//!
+//! Use [`MultiReporter`] to send events to multiple reporters:
+//!
+//! ```
+//! use shotgun::report::{MultiReporter, ConsoleReporter, JUnitReporter};
+//!
+//! let reporter = MultiReporter::new()
+//!     .with_reporter(ConsoleReporter::new(true))
+//!     .with_reporter(JUnitReporter::new("results.xml".into()));
+//! ```
 
 pub mod junit;
 
@@ -9,23 +74,58 @@ use crate::executor::RunResult;
 
 pub use junit::JUnitReporter;
 
-/// A test reporter receives events during test execution.
+/// Trait for receiving test execution events.
+///
+/// Reporters are notified at key points during test execution and can
+/// output results in various formats (terminal, files, webhooks, etc.).
+///
+/// # Thread Safety
+///
+/// Reporters must be `Send + Sync` as events may arrive from multiple
+/// async tasks concurrently.
+///
+/// # Event Order
+///
+/// Events are delivered in this order:
+/// 1. `on_discovery_complete` (once)
+/// 2. `on_test_start` / `on_test_complete` (per test, possibly concurrent)
+/// 3. `on_run_complete` (once)
 #[async_trait]
 pub trait Reporter: Send + Sync {
     /// Called when test discovery is complete.
+    ///
+    /// Receives the full list of discovered tests before execution begins.
+    /// Useful for setting up progress tracking or initial reporting.
     async fn on_discovery_complete(&self, tests: &[TestCase]);
 
-    /// Called when a test starts running.
+    /// Called when a test starts executing.
+    ///
+    /// May be called concurrently for parallel tests.
     async fn on_test_start(&self, test: &TestCase);
 
-    /// Called when a test completes.
+    /// Called when a test completes with its result.
+    ///
+    /// May be called concurrently for parallel tests.
     async fn on_test_complete(&self, result: &TestResult);
 
     /// Called when all tests have completed.
+    ///
+    /// Receives the aggregated run result with all test outcomes.
+    /// Use this for final summary output or file generation.
     async fn on_run_complete(&self, result: &RunResult);
 }
 
-/// A reporter that does nothing (for testing or when output is not needed).
+/// A reporter that discards all events.
+///
+/// Useful for testing or when no output is desired.
+///
+/// # Example
+///
+/// ```
+/// use shotgun::report::NullReporter;
+///
+/// let reporter = NullReporter;
+/// ```
 pub struct NullReporter;
 
 #[async_trait]
@@ -36,20 +136,46 @@ impl Reporter for NullReporter {
     async fn on_run_complete(&self, _result: &RunResult) {}
 }
 
-/// A reporter that combines multiple reporters.
+/// A reporter that forwards events to multiple child reporters.
+///
+/// Use this to combine different output formats (e.g., console + JUnit).
+/// Events are sent to all child reporters in the order they were added.
+///
+/// # Example
+///
+/// ```
+/// use shotgun::report::{MultiReporter, ConsoleReporter, JUnitReporter, NullReporter};
+///
+/// let reporter = MultiReporter::new()
+///     .with_reporter(ConsoleReporter::new(true))
+///     .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
+/// ```
 pub struct MultiReporter {
     reporters: Vec<Box<dyn Reporter>>,
 }
 
 impl MultiReporter {
-    /// Create a new multi-reporter.
+    /// Creates a new empty multi-reporter.
+    ///
+    /// Use [`with_reporter`](Self::with_reporter) to add child reporters.
     pub fn new() -> Self {
         Self {
             reporters: Vec::new(),
         }
     }
 
-    /// Add a reporter to the multi-reporter.
+    /// Adds a reporter to receive events.
+    ///
+    /// Returns `self` for method chaining.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::report::{MultiReporter, ConsoleReporter};
+    ///
+    /// let reporter = MultiReporter::new()
+    ///     .with_reporter(ConsoleReporter::new(false));
+    /// ```
     pub fn with_reporter<R: Reporter + 'static>(mut self, reporter: R) -> Self {
         self.reporters.push(Box::new(reporter));
         self
@@ -89,14 +215,40 @@ impl Reporter for MultiReporter {
     }
 }
 
-/// Console reporter that shows progress in the terminal.
+/// Terminal reporter with progress bar and colored output.
+///
+/// Provides real-time test progress using a progress bar and outputs
+/// colored pass/fail status for each test. At the end, prints a summary
+/// with failed test details.
+///
+/// # Output Modes
+///
+/// - **Normal** (`verbose: false`): Shows only failures
+/// - **Verbose** (`verbose: true`): Shows all test results
+///
+/// # Example
+///
+/// ```
+/// use shotgun::report::ConsoleReporter;
+///
+/// // Show all results
+/// let verbose_reporter = ConsoleReporter::new(true);
+///
+/// // Show only failures
+/// let quiet_reporter = ConsoleReporter::new(false);
+/// ```
 pub struct ConsoleReporter {
     progress: std::sync::Mutex<Option<indicatif::ProgressBar>>,
     verbose: bool,
 }
 
 impl ConsoleReporter {
-    /// Create a new console reporter.
+    /// Creates a new console reporter.
+    ///
+    /// # Arguments
+    ///
+    /// * `verbose` - If `true`, prints all test results. If `false`,
+    ///   only prints failures and the final summary.
     pub fn new(verbose: bool) -> Self {
         Self {
             progress: std::sync::Mutex::new(None),

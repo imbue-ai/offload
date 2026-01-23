@@ -1,46 +1,158 @@
-//! Configuration schema definitions.
+//! Configuration schema definitions for shotgun.
+//!
+//! This module defines all configuration types that can be deserialized from
+//! TOML configuration files. The schema uses serde for serialization and
+//! tagged enums for provider/discovery type selection.
+//!
+//! # Schema Overview
+//!
+//! ```text
+//! Config (root)
+//! ├── ShotgunConfig          - Core settings (parallelism, timeouts, retries)
+//! ├── ProviderConfig         - Tagged enum selecting provider type
+//! │   ├── Process            - Local process execution
+//! │   ├── Docker             - Docker container execution
+//! │   ├── Ssh                - Remote SSH execution
+//! │   └── Remote             - Custom remote execution (Modal, etc.)
+//! ├── DiscoveryConfig        - Tagged enum selecting discovery type
+//! │   ├── Pytest             - pytest test discovery
+//! │   ├── Cargo              - Rust/Cargo test discovery
+//! │   └── Generic            - Custom shell-based discovery
+//! └── ReportConfig           - Output and reporting settings
+//! ```
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Root configuration structure.
+/// Root configuration structure for shotgun.
+///
+/// This struct represents the complete configuration loaded from a TOML file.
+/// It contains all settings needed to run tests: core settings, provider
+/// configuration, test discovery configuration, and reporting options.
+///
+/// # TOML Structure
+///
+/// ```toml
+/// [shotgun]
+/// max_parallel = 4
+/// test_timeout_secs = 300
+///
+/// [provider]
+/// type = "docker"
+/// image = "python:3.11"
+///
+/// [discovery]
+/// type = "pytest"
+/// paths = ["tests"]
+///
+/// [report]
+/// output_dir = "test-results"
+/// ```
+///
+/// # Example
+///
+/// ```
+/// use shotgun::config::Config;
+///
+/// let config: Config = toml::from_str(r#"
+///     [shotgun]
+///     max_parallel = 2
+///
+///     [provider]
+///     type = "process"
+///
+///     [discovery]
+///     type = "pytest"
+/// "#).unwrap();
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    /// Core shotgun settings.
+    /// Core shotgun settings (parallelism, timeouts, retries).
     pub shotgun: ShotgunConfig,
 
-    /// Provider configuration.
+    /// Provider configuration determining where tests run.
     pub provider: ProviderConfig,
 
-    /// Test discovery configuration.
+    /// Test discovery configuration determining how tests are found.
     pub discovery: DiscoveryConfig,
 
-    /// Report configuration (optional).
+    /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
 }
 
-/// Core shotgun settings.
+/// Core shotgun execution settings.
+///
+/// These settings control the fundamental behavior of test execution:
+/// how many tests run in parallel, timeout limits, and retry behavior.
+///
+/// # Defaults
+///
+/// | Field | Default |
+/// |-------|---------|
+/// | `max_parallel` | 10 |
+/// | `test_timeout_secs` | 900 (15 minutes) |
+/// | `retry_count` | 3 |
+/// | `working_dir` | None (current directory) |
+/// | `stream_output` | false |
+///
+/// # Example
+///
+/// ```toml
+/// [shotgun]
+/// max_parallel = 4
+/// test_timeout_secs = 300
+/// retry_count = 2
+/// working_dir = "/path/to/project"
+/// stream_output = true
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShotgunConfig {
-    /// Maximum number of parallel sandboxes.
+    /// Maximum number of sandboxes to run in parallel.
+    ///
+    /// Higher values increase throughput but require more resources.
+    /// Each sandbox may correspond to a Docker container, SSH connection,
+    /// or local process depending on the provider.
+    ///
+    /// Default: 10
     #[serde(default = "default_max_parallel")]
     pub max_parallel: usize,
 
-    /// Test timeout in seconds.
+    /// Timeout for test execution in seconds.
+    ///
+    /// If a test batch takes longer than this, it will be terminated.
+    /// Set this high enough for your slowest tests but low enough to
+    /// catch hung tests.
+    ///
+    /// Default: 900 (15 minutes)
     #[serde(default = "default_test_timeout")]
     pub test_timeout_secs: u64,
 
-    /// Number of retries for failed tests.
+    /// Number of times to retry failed tests.
+    ///
+    /// Failed tests are retried up to this many times. If a test passes
+    /// on retry, it's marked as "flaky". Set to 0 to disable retries.
+    ///
+    /// Default: 3
     #[serde(default = "default_retry_count")]
     pub retry_count: usize,
 
     /// Working directory for test execution.
+    ///
+    /// If specified, tests will run in this directory. Otherwise,
+    /// the current working directory is used.
     pub working_dir: Option<PathBuf>,
 
     /// Stream test output in real-time instead of buffering.
+    ///
+    /// When enabled, test output is printed as it occurs. When disabled
+    /// (default), output is collected and displayed after each test completes.
+    /// Streaming is useful for debugging but may interleave output from
+    /// parallel tests.
+    ///
+    /// Default: false
     #[serde(default)]
     pub stream_output: bool,
 }
@@ -57,34 +169,112 @@ fn default_retry_count() -> usize {
     3
 }
 
-/// Provider configuration (tagged union).
+/// Provider configuration specifying where tests run.
+///
+/// This is a tagged enum that selects the execution provider based on the
+/// `type` field in TOML. Each variant contains provider-specific settings.
+///
+/// # Provider Types
+///
+/// | Type | Description | Use Case |
+/// |------|-------------|----------|
+/// | `process` | Local processes | Development, CI without containers |
+/// | `docker` | Docker containers | Isolated, reproducible test environments |
+/// | `ssh` | Remote SSH machines | Distributed testing across VMs/servers |
+/// | `remote` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
+///
+/// # Example
+///
+/// ```toml
+/// # Local process execution
+/// [provider]
+/// type = "process"
+/// working_dir = "/path/to/project"
+///
+/// # Docker container execution
+/// [provider]
+/// type = "docker"
+/// image = "python:3.11"
+/// volumes = [".:/app"]
+///
+/// # SSH remote execution
+/// [provider]
+/// type = "ssh"
+/// hosts = ["worker1.example.com", "worker2.example.com"]
+/// user = "ubuntu"
+/// key_path = "~/.ssh/id_rsa"
+///
+/// # Custom remote execution (e.g., Modal)
+/// [provider]
+/// type = "remote"
+/// create_command = "modal sandbox create"
+/// exec_command = "modal sandbox exec {sandbox_id} -- {command}"
+/// destroy_command = "modal sandbox delete {sandbox_id}"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
-    /// Local process provider.
+    /// Run tests as local processes.
+    ///
+    /// The simplest provider - tests run directly on the host machine.
+    /// Useful for development and CI environments without containerization.
     Process(ProcessProviderConfig),
 
-    /// Docker container provider.
+    /// Run tests in Docker containers.
+    ///
+    /// Each sandbox is a Docker container providing isolation and
+    /// reproducibility. Requires Docker to be installed and running.
     Docker(DockerProviderConfig),
 
-    /// SSH provider for remote machines (EC2, GCP, bare metal).
+    /// Run tests on remote machines via SSH.
+    ///
+    /// Connects to specified hosts and executes tests remotely.
+    /// Useful for distributed testing across cloud VMs or bare metal servers.
     Ssh(SshProviderConfig),
 
-    /// Remote execution provider - plug in your own executor script (Modal, etc.).
+    /// Run tests using custom shell commands.
+    ///
+    /// Defines create/exec/destroy commands for lifecycle management.
+    /// Use this to integrate with cloud providers like Modal, AWS Lambda,
+    /// or any custom execution environment.
     Remote(RemoteProviderConfig),
 }
 
-/// Configuration for the process provider.
+/// Configuration for the local process provider.
+///
+/// Tests run as child processes of shotgun on the local machine.
+/// This is the simplest provider and requires no external dependencies.
+///
+/// # Example
+///
+/// ```toml
+/// [provider]
+/// type = "process"
+/// working_dir = "/path/to/project"
+/// shell = "/bin/bash"
+///
+/// [provider.env]
+/// PYTHONPATH = "/app"
+/// DEBUG = "1"
+/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProcessProviderConfig {
-    /// Working directory for processes.
+    /// Working directory for spawned processes.
+    ///
+    /// If not specified, uses the current working directory.
     pub working_dir: Option<PathBuf>,
 
-    /// Environment variables to set.
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
     #[serde(default)]
     pub env: HashMap<String, String>,
 
     /// Shell to use for running commands.
+    ///
+    /// Commands are executed via `{shell} -c "{command}"`.
+    ///
+    /// Default: `/bin/sh`
     #[serde(default = "default_shell")]
     pub shell: String,
 }
@@ -93,31 +283,80 @@ fn default_shell() -> String {
     "/bin/sh".to_string()
 }
 
-/// Configuration for the Docker provider.
+/// Configuration for the Docker container provider.
+///
+/// Each sandbox is a Docker container that runs tests in isolation.
+/// Containers are created with `docker create`, executed with `docker exec`,
+/// and removed with `docker rm`.
+///
+/// # Example
+///
+/// ```toml
+/// [provider]
+/// type = "docker"
+/// image = "python:3.11-slim"
+/// volumes = [".:/app:ro", "./test-results:/results"]
+/// working_dir = "/app"
+/// network_mode = "bridge"
+///
+/// [provider.env]
+/// PYTHONDONTWRITEBYTECODE = "1"
+///
+/// [provider.resources]
+/// cpu_limit = 2.0
+/// memory_limit = 2147483648  # 2GB
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DockerProviderConfig {
-    /// Docker image to use.
+    /// Docker image to use for containers.
+    ///
+    /// This image should have all dependencies needed to run your tests.
+    /// It will be pulled automatically if not present locally.
     pub image: String,
 
-    /// Volume mounts (host:container format).
+    /// Volume mounts in `host:container[:options]` format.
+    ///
+    /// Common options include `:ro` for read-only and `:rw` for read-write.
+    ///
+    /// # Example
+    /// ```toml
+    /// volumes = [
+    ///     ".:/app:ro",           # Mount current dir read-only
+    ///     "/tmp/cache:/cache"    # Mount cache directory
+    /// ]
+    /// ```
     #[serde(default)]
     pub volumes: Vec<String>,
 
-    /// Environment variables.
+    /// Environment variables to set in containers.
     #[serde(default)]
     pub env: HashMap<String, String>,
 
     /// Working directory inside the container.
+    ///
+    /// Test commands will run from this directory.
     pub working_dir: Option<String>,
 
-    /// Network mode (bridge, host, none).
+    /// Docker network mode.
+    ///
+    /// Common values: `bridge` (default), `host`, `none`.
+    ///
+    /// Default: `bridge`
     #[serde(default = "default_network_mode")]
     pub network_mode: String,
 
-    /// Docker host URL (defaults to local socket).
+    /// Docker daemon URL.
+    ///
+    /// If not specified, uses the local Docker socket.
+    /// Set this to connect to a remote Docker daemon.
+    ///
+    /// # Example
+    /// ```toml
+    /// docker_host = "tcp://192.168.1.100:2375"
+    /// ```
     pub docker_host: Option<String>,
 
-    /// Resource limits.
+    /// Resource limits for containers.
     #[serde(default)]
     pub resources: DockerResourceConfig,
 }
@@ -126,42 +365,99 @@ fn default_network_mode() -> String {
     "bridge".to_string()
 }
 
-/// Docker resource limits.
+/// Resource limits for Docker containers.
+///
+/// These settings constrain CPU and memory usage per container.
+/// Useful for preventing tests from consuming excessive resources.
+///
+/// # Example
+///
+/// ```toml
+/// [provider.resources]
+/// cpu_limit = 2.0           # 2 CPU cores
+/// memory_limit = 2147483648 # 2GB RAM
+/// memory_swap = 4294967296  # 4GB swap
+/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DockerResourceConfig {
-    /// CPU limit (e.g., 2.0 for 2 CPUs).
+    /// CPU core limit (e.g., 2.0 for 2 CPU cores).
+    ///
+    /// Fractional values are allowed (e.g., 0.5 for half a core).
     pub cpu_limit: Option<f64>,
 
     /// Memory limit in bytes.
+    ///
+    /// Container will be OOM-killed if it exceeds this limit.
     pub memory_limit: Option<i64>,
 
-    /// Memory swap limit in bytes.
+    /// Memory + swap limit in bytes.
+    ///
+    /// Set equal to `memory_limit` to disable swap.
+    /// Set to -1 for unlimited swap.
     pub memory_swap: Option<i64>,
 }
 
-/// Configuration for the SSH provider.
+/// Configuration for the SSH remote execution provider.
+///
+/// Tests run on remote machines accessed via SSH. Sandboxes are distributed
+/// across the configured hosts in round-robin fashion, enabling parallel
+/// execution across multiple servers.
+///
+/// # Prerequisites
+///
+/// - SSH access to all specified hosts
+/// - Test code and dependencies available on remote hosts
+/// - SSH key authentication configured (password auth not supported)
+///
+/// # Example
+///
+/// ```toml
+/// [provider]
+/// type = "ssh"
+/// hosts = ["worker1.example.com", "worker2.example.com", "worker3.example.com"]
+/// user = "ubuntu"
+/// key_path = "~/.ssh/id_rsa"
+/// port = 22
+/// working_dir = "/home/ubuntu/project"
+/// disable_host_key_check = false
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SshProviderConfig {
-    /// List of hosts to connect to.
+    /// List of remote hosts to distribute tests across.
+    ///
+    /// Tests are assigned to hosts in round-robin fashion.
+    /// More hosts enable higher parallelism.
     pub hosts: Vec<String>,
 
-    /// SSH username.
+    /// SSH username for connecting to hosts.
     pub user: String,
 
-    /// Path to SSH private key.
+    /// Path to SSH private key file.
+    ///
+    /// Supports `~` expansion for home directory.
+    /// If not specified, uses default SSH key locations.
     pub key_path: Option<PathBuf>,
 
-    /// SSH port (defaults to 22).
+    /// SSH port number.
+    ///
+    /// Default: 22
     #[serde(default = "default_ssh_port")]
     pub port: u16,
 
     /// Working directory on remote hosts.
+    ///
+    /// Test commands will `cd` to this directory before running.
     pub working_dir: Option<String>,
 
-    /// Known hosts file path.
+    /// Path to known_hosts file for host key verification.
     pub known_hosts: Option<PathBuf>,
 
-    /// Whether to disable host key checking (not recommended for production).
+    /// Disable SSH host key checking.
+    ///
+    /// **Warning**: Only use for testing. Disabling host key checking
+    /// makes connections vulnerable to man-in-the-middle attacks.
+    ///
+    /// Default: false
     #[serde(default)]
     pub disable_host_key_check: bool,
 }
@@ -170,29 +466,86 @@ fn default_ssh_port() -> u16 {
     22
 }
 
-/// Configuration for the remote execution provider.
+/// Configuration for custom remote execution provider.
 ///
-/// Uses lifecycle-based execution: create sandbox, execute commands, destroy.
-/// Your scripts handle Modal/EC2/Fly/etc.
+/// This provider uses shell commands to manage sandbox lifecycle, enabling
+/// integration with any cloud provider or execution environment. You define
+/// three commands: create, exec, and destroy.
+///
+/// # Command Protocol
+///
+/// - **create_command**: Prints a unique sandbox ID to stdout
+/// - **exec_command**: Uses `{sandbox_id}` and `{command}` placeholders
+/// - **destroy_command**: Uses `{sandbox_id}` placeholder
+///
+/// The exec command can optionally return JSON for structured results:
+/// ```json
+/// {"exit_code": 0, "stdout": "...", "stderr": "..."}
+/// ```
+///
+/// # Example: Modal Integration
+///
+/// ```toml
+/// [provider]
+/// type = "remote"
+/// create_command = "modal sandbox create --image python:3.11"
+/// exec_command = "modal sandbox exec {sandbox_id} -- sh -c {command}"
+/// destroy_command = "modal sandbox delete {sandbox_id}"
+/// timeout_secs = 3600
+/// ```
+///
+/// # Example: Custom Script
+///
+/// ```toml
+/// [provider]
+/// type = "remote"
+/// working_dir = "/path/to/scripts"
+/// create_command = "./create_worker.sh"
+/// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
+/// destroy_command = "./destroy_worker.sh {sandbox_id}"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteProviderConfig {
-    /// Command to create a sandbox instance.
-    /// Should print sandbox_id to stdout.
+    /// Command to create a new sandbox instance.
+    ///
+    /// Must print a unique sandbox ID to stdout. This ID will be passed
+    /// to exec and destroy commands via the `{sandbox_id}` placeholder.
+    ///
+    /// # Example
+    /// ```sh
+    /// # Simple: UUID generation
+    /// uuidgen
+    ///
+    /// # Cloud: Create and return instance ID
+    /// aws ec2 run-instances --query 'Instances[0].InstanceId' --output text
+    /// ```
     pub create_command: String,
 
-    /// Command to execute on a sandbox.
-    /// Use {sandbox_id} and {command} as placeholders.
-    /// Should output JSON: {"exit_code": 0, "stdout": "...", "stderr": "..."}
+    /// Command to execute a test command on a sandbox.
+    ///
+    /// Available placeholders:
+    /// - `{sandbox_id}`: The ID returned by create_command
+    /// - `{command}`: The shell-escaped test command to run
+    ///
+    /// Can return plain text or JSON: `{"exit_code": N, "stdout": "...", "stderr": "..."}`
     pub exec_command: String,
 
-    /// Command to destroy a sandbox.
-    /// Use {sandbox_id} as placeholder.
+    /// Command to destroy/cleanup a sandbox.
+    ///
+    /// Available placeholders:
+    /// - `{sandbox_id}`: The ID returned by create_command
+    ///
+    /// Called after tests complete to release resources.
     pub destroy_command: String,
 
-    /// Working directory for running commands locally.
+    /// Local working directory for running the lifecycle commands.
+    ///
+    /// Useful when commands are scripts in a specific directory.
     pub working_dir: Option<PathBuf>,
 
-    /// Timeout in seconds for remote execution.
+    /// Timeout for remote command execution in seconds.
+    ///
+    /// Default: 3600 (1 hour)
     #[serde(default = "default_remote_timeout")]
     pub timeout_secs: u64,
 }
@@ -201,35 +554,103 @@ fn default_remote_timeout() -> u64 {
     3600 // 1 hour
 }
 
-/// Test discovery configuration.
+/// Test discovery configuration specifying how tests are found.
+///
+/// This is a tagged enum that selects the discovery method based on the
+/// `type` field in TOML. Each variant contains framework-specific settings.
+///
+/// # Discovery Types
+///
+/// | Type | Framework | Discovery Method |
+/// |------|-----------|------------------|
+/// | `pytest` | Python pytest | `pytest --collect-only` |
+/// | `cargo` | Rust | `cargo test --list` |
+/// | `generic` | Any | Custom shell command |
+///
+/// # Example
+///
+/// ```toml
+/// # pytest discovery
+/// [discovery]
+/// type = "pytest"
+/// paths = ["tests", "integration_tests"]
+/// markers = "not slow"
+///
+/// # cargo test discovery
+/// [discovery]
+/// type = "cargo"
+/// package = "my-crate"
+/// features = ["test-utils"]
+///
+/// # Generic discovery
+/// [discovery]
+/// type = "generic"
+/// discover_command = "find tests -name '*.test.js' -exec basename {} \\;"
+/// run_command = "jest {tests}"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum DiscoveryConfig {
-    /// pytest discovery.
+    /// Discover and run Python tests with pytest.
     Pytest(PytestDiscoveryConfig),
 
-    /// cargo test discovery.
+    /// Discover and run Rust tests with cargo test.
     Cargo(CargoDiscoveryConfig),
 
-    /// Generic/custom discovery.
+    /// Discover and run tests with custom shell commands.
     Generic(GenericDiscoveryConfig),
 }
 
-/// pytest discovery configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Configuration for pytest test discovery.
+///
+/// Uses `pytest --collect-only` to discover tests, then runs them with
+/// standard pytest options. Supports markers, fixtures, and all pytest features.
+///
+/// # Example
+///
+/// ```toml
+/// [discovery]
+/// type = "pytest"
+/// paths = ["tests", "integration"]
+/// markers = "not slow and not integration"
+/// python = "python3.11"
+/// extra_args = ["--ignore=tests/legacy"]
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PytestDiscoveryConfig {
-    /// Paths to search for tests.
+    /// Directories to search for tests.
+    ///
+    /// Paths are relative to the working directory.
+    ///
+    /// Default: `["tests"]`
     #[serde(default = "default_test_paths")]
     pub paths: Vec<PathBuf>,
 
-    /// pytest markers to filter tests (e.g., "not slow").
+    /// pytest marker expression to filter tests.
+    ///
+    /// Uses pytest's `-m` flag. Supports boolean expressions.
+    ///
+    /// # Examples
+    /// - `"not slow"` - Exclude tests marked with `@pytest.mark.slow`
+    /// - `"unit or integration"` - Include only unit or integration tests
+    /// - `"not (slow or flaky)"` - Exclude slow and flaky tests
     pub markers: Option<String>,
 
-    /// Additional pytest arguments for collection.
+    /// Additional pytest arguments for test collection.
+    ///
+    /// These are passed to both `--collect-only` and test execution.
+    ///
+    /// # Examples
+    /// - `["--ignore=tests/legacy"]` - Ignore a directory
+    /// - `["-x"]` - Stop on first failure
     #[serde(default)]
     pub extra_args: Vec<String>,
 
-    /// Python executable to use.
+    /// Python interpreter to use.
+    ///
+    /// Can be a path or command name found in PATH.
+    ///
+    /// Default: `"python"`
     #[serde(default = "default_python")]
     pub python: String,
 }
@@ -242,52 +663,153 @@ fn default_python() -> String {
     "python".to_string()
 }
 
-/// cargo test discovery configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Configuration for Rust/Cargo test discovery.
+///
+/// Uses `cargo test --list` to discover tests, then runs them with
+/// `cargo test -- --exact`. Supports workspaces, features, and all cargo options.
+///
+/// # Example
+///
+/// ```toml
+/// [discovery]
+/// type = "cargo"
+/// package = "my-crate"
+/// features = ["test-utils", "mock-server"]
+/// include_ignored = false
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CargoDiscoveryConfig {
-    /// Package to test (for workspaces).
+    /// Package to test in a Cargo workspace.
+    ///
+    /// Maps to `cargo test -p <package>`. If not specified, tests all packages.
     pub package: Option<String>,
 
-    /// Features to enable.
+    /// Cargo features to enable during testing.
+    ///
+    /// Maps to `cargo test --features <features>`.
     #[serde(default)]
     pub features: Vec<String>,
 
-    /// Test binary name (for --bin).
+    /// Specific binary to test.
+    ///
+    /// Maps to `cargo test --bin <name>`. Useful for testing binary crates.
     pub bin: Option<String>,
 
-    /// Whether to include ignored tests.
+    /// Include tests marked with `#[ignore]`.
+    ///
+    /// Maps to `cargo test -- --ignored`.
+    ///
+    /// Default: false
     #[serde(default)]
     pub include_ignored: bool,
 }
 
-/// Generic discovery configuration.
+/// Configuration for generic/custom test discovery.
+///
+/// Use this discoverer for any test framework by providing shell commands
+/// for discovery and execution. Output parsing relies on JUnit XML or
+/// exit codes.
+///
+/// # Protocol
+///
+/// - **discover_command**: Outputs one test ID per line to stdout
+/// - **run_command**: Uses `{tests}` placeholder for space-separated test IDs
+/// - **result_file**: Optional JUnit XML for detailed results
+///
+/// # Example: Jest
+///
+/// ```toml
+/// [discovery]
+/// type = "generic"
+/// discover_command = "jest --listTests --json | jq -r '.[]'"
+/// run_command = "jest {tests} --ci --reporters=jest-junit"
+/// result_file = "junit.xml"
+/// ```
+///
+/// # Example: Go tests
+///
+/// ```toml
+/// [discovery]
+/// type = "generic"
+/// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
+/// run_command = "go test -v -run '{tests}' ./..."
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenericDiscoveryConfig {
-    /// Command to discover tests (should output test names, one per line).
+    /// Command to discover test IDs.
+    ///
+    /// Should output one test ID per line to stdout. Lines starting with `#`
+    /// are ignored (treated as comments).
+    ///
+    /// Run via shell: `sh -c "{discover_command}"`
     pub discover_command: String,
 
-    /// Command template to run tests ({tests} will be replaced with test names).
+    /// Command template to run tests.
+    ///
+    /// The placeholder `{tests}` is replaced with space-separated test IDs.
+    ///
+    /// # Example
+    /// ```toml
+    /// run_command = "npm test -- {tests}"
+    /// # Becomes: npm test -- test1 test2 test3
+    /// ```
     pub run_command: String,
 
-    /// Path to result file (JUnit XML format).
+    /// Path to JUnit XML result file produced by the test runner.
+    ///
+    /// If specified, shotgun will parse this file for detailed test results.
+    /// Without this, results are inferred from exit codes only.
     pub result_file: Option<PathBuf>,
 
-    /// Working directory for commands.
+    /// Working directory for running discovery and test commands.
     pub working_dir: Option<PathBuf>,
 }
 
-/// Report configuration.
+/// Configuration for test result reporting.
+///
+/// Controls where and how test results are written. The primary output
+/// format is JUnit XML, which is widely supported by CI systems.
+///
+/// # Defaults
+///
+/// | Field | Default |
+/// |-------|---------|
+/// | `output_dir` | `"test-results"` |
+/// | `junit` | `true` |
+/// | `junit_file` | `"junit.xml"` |
+///
+/// # Example
+///
+/// ```toml
+/// [report]
+/// output_dir = "build/test-results"
+/// junit = true
+/// junit_file = "results.xml"
+/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ReportConfig {
-    /// Output directory for reports.
+    /// Directory where report files are written.
+    ///
+    /// Created automatically if it doesn't exist.
+    ///
+    /// Default: `"test-results"`
     #[serde(default = "default_report_dir")]
     pub output_dir: PathBuf,
 
-    /// Whether to generate JUnit XML.
+    /// Whether to generate JUnit XML report.
+    ///
+    /// JUnit XML is the standard format for CI/CD systems like
+    /// Jenkins, GitLab CI, GitHub Actions, etc.
+    ///
+    /// Default: `true`
     #[serde(default = "default_true")]
     pub junit: bool,
 
-    /// JUnit XML filename.
+    /// Filename for the JUnit XML report.
+    ///
+    /// Written to `{output_dir}/{junit_file}`.
+    ///
+    /// Default: `"junit.xml"`
     #[serde(default = "default_junit_file")]
     pub junit_file: String,
 }
@@ -304,31 +826,60 @@ fn default_junit_file() -> String {
     "junit.xml".to_string()
 }
 
-/// Configuration passed to sandbox creation.
+/// Runtime configuration passed to sandbox creation.
+///
+/// This struct is used internally by the orchestrator to configure each
+/// sandbox instance. It contains the runtime-specific settings derived
+/// from the main configuration.
+///
+/// Unlike the TOML configuration structs, this is not serializable and
+/// is constructed programmatically.
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
-    /// Unique identifier for this sandbox.
+    /// Unique identifier for this sandbox instance.
+    ///
+    /// Used for tracking, logging, and cleanup. Typically a UUID.
     pub id: String,
 
     /// Working directory inside the sandbox.
+    ///
+    /// Test commands will execute from this directory.
     pub working_dir: Option<String>,
 
-    /// Environment variables to set.
+    /// Environment variables to set in the sandbox.
+    ///
+    /// Passed as key-value tuples.
     pub env: Vec<(String, String)>,
 
-    /// Resource limits.
+    /// Resource limits for this sandbox.
     pub resources: SandboxResources,
 }
 
-/// Resource limits for a sandbox.
+/// Resource limits for a sandbox instance.
+///
+/// These limits constrain the resources available to tests running
+/// in a sandbox. Not all providers support all resource types.
+///
+/// | Resource | Docker | SSH | Process | Remote |
+/// |----------|--------|-----|---------|--------|
+/// | CPU | Yes | No | No | Varies |
+/// | Memory | Yes | No | No | Varies |
+/// | Timeout | Yes | Yes | Yes | Yes |
 #[derive(Debug, Clone, Default)]
 pub struct SandboxResources {
-    /// CPU cores (e.g., 4.0 for 4 cores).
+    /// CPU core limit (e.g., 4.0 for 4 cores).
+    ///
+    /// Supported by: Docker
     pub cpu: Option<f64>,
 
-    /// Memory in bytes.
+    /// Memory limit in bytes.
+    ///
+    /// Supported by: Docker
     pub memory: Option<u64>,
 
-    /// Timeout in seconds.
+    /// Execution timeout in seconds.
+    ///
+    /// Commands exceeding this limit are terminated.
+    /// Supported by: All providers
     pub timeout_secs: Option<u64>,
 }

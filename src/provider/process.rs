@@ -1,8 +1,61 @@
 //! Local process provider implementation.
 //!
-//! This provider runs tests as local processes, which is useful for
-//! development, debugging, and environments where containerization
-//! is not available.
+//! This provider runs tests as child processes on the local machine.
+//! It's the simplest provider and requires no external dependencies.
+//!
+//! # When to Use
+//!
+//! - **Development**: Fast iteration without container overhead
+//! - **Simple CI**: When containerization isn't available or needed
+//! - **Debugging**: Direct access to processes and filesystem
+//!
+//! # Characteristics
+//!
+//! | Feature | Support |
+//! |---------|---------|
+//! | Isolation | None (shared filesystem and network) |
+//! | Resource limits | Not supported |
+//! | File transfer | Local copy operations |
+//! | Streaming output | Supported |
+//! | Parallel execution | Yes, via multiple processes |
+//!
+//! # Example Configuration
+//!
+//! ```toml
+//! [provider]
+//! type = "process"
+//! working_dir = "/path/to/project"
+//! shell = "/bin/bash"
+//!
+//! [provider.env]
+//! PYTHONPATH = "/path/to/project/src"
+//! ```
+//!
+//! # Example Usage
+//!
+//! ```no_run
+//! use shotgun::provider::process::ProcessProvider;
+//! use shotgun::provider::{SandboxProvider, Sandbox, Command};
+//! use shotgun::config::{ProcessProviderConfig, SandboxConfig, SandboxResources};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let provider = ProcessProvider::new(ProcessProviderConfig::default());
+//!
+//!     let config = SandboxConfig {
+//!         id: "test-1".to_string(),
+//!         working_dir: None,
+//!         env: vec![],
+//!         resources: SandboxResources::default(),
+//!     };
+//!
+//!     let sandbox = provider.create_sandbox(&config).await?;
+//!     let result = sandbox.exec(&Command::new("echo").arg("hello")).await?;
+//!     println!("Output: {}", result.stdout);
+//!
+//!     Ok(())
+//! }
+//! ```
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,14 +73,46 @@ use super::{
 };
 use crate::config::{ProcessProviderConfig, SandboxConfig};
 
-/// Local process provider.
+/// Provider that runs tests as local child processes.
+///
+/// This is the simplest provider implementation. Each sandbox is just
+/// a logical grouping with a shared configuration - commands are run
+/// as child processes of the shotgun process itself.
+///
+/// # Thread Safety
+///
+/// The provider is thread-safe and can be shared across async tasks.
+/// Sandbox creation and listing are protected by internal locks.
 pub struct ProcessProvider {
     config: ProcessProviderConfig,
     sandboxes: Arc<Mutex<Vec<SandboxInfo>>>,
 }
 
 impl ProcessProvider {
-    /// Create a new process provider with the given configuration.
+    /// Creates a new process provider with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration specifying working directory, environment
+    ///   variables, and shell to use
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::process::ProcessProvider;
+    /// use shotgun::config::ProcessProviderConfig;
+    ///
+    /// // With defaults
+    /// let provider = ProcessProvider::new(ProcessProviderConfig::default());
+    ///
+    /// // With custom config
+    /// let config = ProcessProviderConfig {
+    ///     working_dir: Some("/app".into()),
+    ///     shell: "/bin/bash".to_string(),
+    ///     ..Default::default()
+    /// };
+    /// let provider = ProcessProvider::new(config);
+    /// ```
     pub fn new(config: ProcessProviderConfig) -> Self {
         Self {
             config,
@@ -75,7 +160,22 @@ impl SandboxProvider for ProcessProvider {
     }
 }
 
-/// A sandbox that runs commands as local processes.
+/// A sandbox that runs commands as local child processes.
+///
+/// Each command is executed via the configured shell (default: `/bin/sh`).
+/// The sandbox provides a consistent working directory and environment
+/// for all commands.
+///
+/// # File Transfer
+///
+/// Upload and download operations are implemented as local file copies
+/// relative to the working directory. This is useful for tests that
+/// produce output files.
+///
+/// # Termination
+///
+/// Since processes are transient, termination is a no-op. The sandbox
+/// can be safely dropped without cleanup.
 pub struct ProcessSandbox {
     id: String,
     working_dir: PathBuf,

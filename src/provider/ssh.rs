@@ -1,7 +1,56 @@
 //! SSH provider implementation.
 //!
-//! This provider runs tests on remote machines via SSH, which is useful
-//! for distributed testing across cloud VMs or bare metal servers.
+//! This provider runs tests on remote machines via SSH, enabling distributed
+//! testing across cloud VMs, bare metal servers, or any SSH-accessible host.
+//!
+//! # When to Use
+//!
+//! - **Distributed testing**: Spread tests across multiple machines
+//! - **Hardware-specific tests**: Tests requiring specific hardware
+//! - **Cloud VMs**: Run tests on EC2, GCP, Azure instances
+//! - **Existing infrastructure**: Leverage existing server fleet
+//!
+//! # Characteristics
+//!
+//! | Feature | Support |
+//! |---------|---------|
+//! | Isolation | Partial (shared filesystem per host) |
+//! | Resource limits | Not enforced (use host limits) |
+//! | File transfer | Via `scp` |
+//! | Streaming output | Supported |
+//! | Parallel execution | Yes, across multiple hosts |
+//!
+//! # Prerequisites
+//!
+//! - SSH access to all specified hosts
+//! - Key-based authentication (password auth not supported)
+//! - Test code and dependencies available on remote hosts
+//! - `ssh` and `scp` commands available locally
+//!
+//! # Host Distribution
+//!
+//! Tests are distributed across hosts in round-robin fashion. If you have
+//! 3 hosts and create 6 sandboxes, each host will get 2 sandboxes.
+//!
+//! # Example Configuration
+//!
+//! ```toml
+//! [provider]
+//! type = "ssh"
+//! hosts = ["worker1.example.com", "worker2.example.com"]
+//! user = "ubuntu"
+//! key_path = "~/.ssh/id_rsa"
+//! port = 22
+//! working_dir = "/home/ubuntu/project"
+//! disable_host_key_check = false
+//! ```
+//!
+//! # Security Considerations
+//!
+//! - Use key-based authentication with passphrase-protected keys
+//! - Keep `disable_host_key_check = false` in production
+//! - Ensure remote hosts are properly secured
+//! - Consider using a bastion/jump host for additional security
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,7 +69,16 @@ use super::{
 };
 use crate::config::{SandboxConfig, SshProviderConfig};
 
-/// SSH provider for remote test execution.
+/// Provider that runs tests on remote machines via SSH.
+///
+/// Uses the system `ssh` and `scp` commands for maximum compatibility.
+/// Hosts are assigned to sandboxes in round-robin fashion.
+///
+/// # Connection Handling
+///
+/// Each sandbox represents a logical connection to a host. The actual
+/// SSH connections are transient - established per command execution.
+/// This avoids connection pooling complexity while still being efficient.
 pub struct SshProvider {
     config: SshProviderConfig,
     host_index: Arc<Mutex<usize>>,
@@ -35,7 +93,30 @@ struct SshSandboxInfo {
 }
 
 impl SshProvider {
-    /// Create a new SSH provider with the given configuration.
+    /// Creates a new SSH provider with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - SSH configuration including hosts, credentials, and settings
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::provider::ssh::SshProvider;
+    /// use shotgun::config::SshProviderConfig;
+    ///
+    /// let config = SshProviderConfig {
+    ///     hosts: vec!["host1.example.com".into(), "host2.example.com".into()],
+    ///     user: "ubuntu".into(),
+    ///     key_path: Some("~/.ssh/id_rsa".into()),
+    ///     port: 22,
+    ///     working_dir: Some("/app".into()),
+    ///     known_hosts: None,
+    ///     disable_host_key_check: false,
+    /// };
+    ///
+    /// let provider = SshProvider::new(config);
+    /// ```
     pub fn new(config: SshProviderConfig) -> Self {
         Self {
             config,
@@ -44,7 +125,9 @@ impl SshProvider {
         }
     }
 
-    /// Get the next host in round-robin fashion.
+    /// Returns the next host in round-robin order.
+    ///
+    /// Distributes sandboxes evenly across available hosts.
     async fn next_host(&self) -> String {
         let mut index = self.host_index.lock().await;
         let host = self.config.hosts[*index % self.config.hosts.len()].clone();
@@ -124,10 +207,29 @@ impl SandboxProvider for SshProvider {
     }
 }
 
-/// A sandbox backed by an SSH connection.
+/// A sandbox that executes commands on a remote host via SSH.
 ///
-/// This implementation uses the system `ssh` command for simplicity
-/// and maximum compatibility.
+/// Uses the system `ssh` command for broad compatibility. Commands are
+/// wrapped with environment setup and working directory changes before
+/// being sent to the remote host.
+///
+/// # Command Execution
+///
+/// Commands are executed as:
+/// ```sh
+/// ssh [options] user@host "export KEY='value'; cd '/path'; command"
+/// ```
+///
+/// # File Transfer
+///
+/// Uses `scp -r` for file transfers. Both upload and download support
+/// recursive directory copying.
+///
+/// # Limitations
+///
+/// - No persistent connection - each command spawns a new SSH process
+/// - No resource limits - relies on host-level limits
+/// - Requires test dependencies pre-installed on remote hosts
 pub struct SshSandbox {
     id: String,
     host: String,

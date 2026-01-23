@@ -1,7 +1,109 @@
-//! Connector trait for remote test execution.
+//! Connector trait for shell command execution.
 //!
-//! Connectors handle the bridge between shotgun and remote compute providers.
-//! A connector simply runs shell commands - the caller decides what commands to run.
+//! This module provides the [`Connector`] trait, a simple abstraction for running
+//! shell commands either locally or on remote compute resources. Unlike the
+//! [`Sandbox`](crate::provider::Sandbox) trait which provides a higher-level
+//! interface for test execution, connectors are a lower-level primitive focused
+//! purely on command execution.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────┐
+//! │                   Caller                        │
+//! │         (decides what commands to run)          │
+//! └─────────────────────┬───────────────────────────┘
+//!                       │
+//!                       ▼
+//! ┌─────────────────────────────────────────────────┐
+//! │              Connector Trait                    │
+//! │   run() - buffered execution                    │
+//! │   run_stream() - streaming output               │
+//! └─────────────────────┬───────────────────────────┘
+//!                       │
+//!           ┌───────────┴───────────┐
+//!           ▼                       ▼
+//! ┌─────────────────┐     ┌─────────────────┐
+//! │ ShellConnector  │     │ Custom Connector│
+//! │ (local shell)   │     │ (SSH, API, etc) │
+//! └─────────────────┘     └─────────────────┘
+//! ```
+//!
+//! # Built-in Connectors
+//!
+//! | Connector | Description |
+//! |-----------|-------------|
+//! | [`ShellConnector`] | Executes commands via local shell (`sh -c`) |
+//!
+//! # Example: Using ShellConnector
+//!
+//! ```no_run
+//! use shotgun::connector::{Connector, ShellConnector};
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let connector = ShellConnector::new()
+//!     .with_working_dir("/path/to/project".into())
+//!     .with_timeout(300);
+//!
+//! let result = connector.run("pytest tests/ --collect-only -q").await?;
+//!
+//! if result.exit_code == 0 {
+//!     println!("Tests discovered:\n{}", result.stdout);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Example: Streaming Output
+//!
+//! ```no_run
+//! use shotgun::connector::{Connector, ShellConnector};
+//! use shotgun::provider::OutputLine;
+//! use futures::StreamExt;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let connector = ShellConnector::new();
+//! let mut stream = connector.run_stream("pytest tests/ -v").await?;
+//!
+//! while let Some(line) = stream.next().await {
+//!     match line {
+//!         OutputLine::Stdout(s) => println!("{}", s),
+//!         OutputLine::Stderr(s) => eprintln!("{}", s),
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Implementing a Custom Connector
+//!
+//! ```no_run
+//! use async_trait::async_trait;
+//! use shotgun::connector::{Connector, ExecResult};
+//! use shotgun::provider::{OutputStream, ProviderResult};
+//!
+//! struct SshConnector {
+//!     host: String,
+//!     user: String,
+//! }
+//!
+//! #[async_trait]
+//! impl Connector for SshConnector {
+//!     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
+//!         // Execute via SSH...
+//!         # todo!()
+//!     }
+//!
+//!     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
+//!         // Stream output via SSH...
+//!         # todo!()
+//!     }
+//!
+//!     fn name(&self) -> &str {
+//!         "ssh"
+//!     }
+//! }
+//! ```
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -16,31 +118,172 @@ use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 use futures::stream::StreamExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-/// Result from a command execution.
+/// Result from a shell command execution.
+///
+/// Contains the exit code and captured output from a command run via a
+/// [`Connector`]. This is similar to [`provider::ExecResult`](crate::provider::ExecResult)
+/// but without the duration field.
+///
+/// # Example
+///
+/// ```
+/// use shotgun::connector::ExecResult;
+///
+/// let result = ExecResult {
+///     exit_code: 0,
+///     stdout: "test_add PASSED\ntest_sub PASSED\n".to_string(),
+///     stderr: String::new(),
+/// };
+///
+/// if result.exit_code == 0 {
+///     println!("Command succeeded with output:\n{}", result.stdout);
+/// }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecResult {
+    /// Exit code from the command (0 typically indicates success).
     pub exit_code: i32,
+
+    /// Captured standard output.
     pub stdout: String,
+
+    /// Captured standard error.
     pub stderr: String,
 }
 
-/// Trait for connectors that run shell commands.
+/// Trait for connectors that execute shell commands.
 ///
-/// A connector is a simple interface for running commands - either locally
-/// or on remote compute. The caller decides what commands to run.
+/// A connector provides a minimal interface for running commands, either locally
+/// or on remote compute resources. Unlike [`Sandbox`](crate::provider::Sandbox),
+/// connectors don't manage lifecycle or provide file transfer - they simply
+/// execute commands and return results.
+///
+/// # Thread Safety
+///
+/// Connectors must be `Send + Sync` as they may be shared across async tasks.
+///
+/// # Implementation Notes
+///
+/// When implementing a connector:
+/// - Commands are passed as shell strings (e.g., `"pytest tests/ -v"`)
+/// - Use `sh -c` or equivalent to execute commands
+/// - Handle timeouts appropriately in your implementation
+/// - Stream implementations should interleave stdout/stderr as they arrive
+///
+/// # Example
+///
+/// ```no_run
+/// use async_trait::async_trait;
+/// use shotgun::connector::{Connector, ExecResult};
+/// use shotgun::provider::{OutputStream, ProviderResult};
+///
+/// struct MyConnector;
+///
+/// #[async_trait]
+/// impl Connector for MyConnector {
+///     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
+///         // Execute command and capture output...
+///         # todo!()
+///     }
+///
+///     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
+///         // Execute command and stream output...
+///         # todo!()
+///     }
+///
+///     fn name(&self) -> &str {
+///         "my-connector"
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait Connector: Send + Sync {
-    /// Run a command and return the result.
+    /// Executes a command and returns the buffered result.
+    ///
+    /// The command is executed as a shell command (like `sh -c "command"`).
+    /// Output is captured and returned after the command completes.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - Shell command string to execute
+    ///
+    /// # Returns
+    ///
+    /// The execution result including exit code and captured output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Timeout`] if the command exceeds the
+    /// configured timeout, or [`ProviderError::ExecFailed`] if the command
+    /// cannot be started.
     async fn run(&self, command: &str) -> ProviderResult<ExecResult>;
 
-    /// Run a command and stream the output.
+    /// Executes a command and streams output as it occurs.
+    ///
+    /// Unlike [`run`](Self::run), this returns immediately with a stream
+    /// that yields output lines as they become available. Useful for
+    /// long-running commands or real-time progress display.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - Shell command string to execute
+    ///
+    /// # Returns
+    ///
+    /// A stream of [`OutputLine`] values,
+    /// interleaving stdout and stderr as they arrive.
+    ///
+    /// # Note
+    ///
+    /// The stream does not provide the exit code. If you need the exit code,
+    /// use [`run`](Self::run) instead or check command output for success/failure
+    /// indicators.
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream>;
 
-    /// Get the connector name (for logging).
+    /// Returns the connector name for logging and debugging.
+    ///
+    /// Should return a short, descriptive name like `"shell"`, `"ssh"`, or `"docker"`.
     fn name(&self) -> &str;
 }
 
-/// A connector that shells out to run commands locally.
+/// A connector that executes commands via the local shell.
+///
+/// Uses `sh -c` to execute commands, providing a simple way to run
+/// shell commands locally. Supports configurable working directory
+/// and timeout.
+///
+/// # Default Configuration
+///
+/// | Setting | Default |
+/// |---------|---------|
+/// | Working directory | Current directory |
+/// | Timeout | 3600 seconds (1 hour) |
+///
+/// # Example
+///
+/// ```no_run
+/// use shotgun::connector::{Connector, ShellConnector};
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// // Basic usage
+/// let connector = ShellConnector::new();
+/// let result = connector.run("echo 'Hello, World!'").await?;
+/// assert_eq!(result.exit_code, 0);
+///
+/// // With configuration
+/// let connector = ShellConnector::new()
+///     .with_working_dir("/path/to/project".into())
+///     .with_timeout(300); // 5 minute timeout
+///
+/// let result = connector.run("make test").await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Platform Support
+///
+/// Requires a POSIX-compatible `sh` shell. Works on Linux, macOS, and
+/// Windows with WSL or Git Bash.
 pub struct ShellConnector {
     /// Working directory for commands
     working_dir: Option<PathBuf>,
@@ -49,6 +292,17 @@ pub struct ShellConnector {
 }
 
 impl ShellConnector {
+    /// Creates a new shell connector with default settings.
+    ///
+    /// Uses the current working directory and a 1-hour timeout.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::connector::ShellConnector;
+    ///
+    /// let connector = ShellConnector::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             working_dir: None,
@@ -56,11 +310,45 @@ impl ShellConnector {
         }
     }
 
+    /// Sets the working directory for command execution.
+    ///
+    /// Commands will be executed with this directory as their
+    /// current working directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Path to the working directory
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::connector::ShellConnector;
+    ///
+    /// let connector = ShellConnector::new()
+    ///     .with_working_dir("/home/user/project".into());
+    /// ```
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.working_dir = Some(dir);
         self
     }
 
+    /// Sets the command timeout in seconds.
+    ///
+    /// Commands that exceed this duration will be terminated and
+    /// return a [`ProviderError::Timeout`].
+    ///
+    /// # Arguments
+    ///
+    /// * `secs` - Timeout duration in seconds
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::connector::ShellConnector;
+    ///
+    /// let connector = ShellConnector::new()
+    ///     .with_timeout(600); // 10 minute timeout
+    /// ```
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
@@ -146,7 +434,41 @@ impl Connector for ShellConnector {
     }
 }
 
-/// Convert discovered test IDs into TestCase structs.
+/// Converts test ID strings into [`TestCase`] structs.
+///
+/// Parses test IDs in the common `path::module::test_name` format and
+/// creates [`TestCase`] instances with the appropriate fields populated.
+///
+/// # ID Format
+///
+/// The function handles IDs with `::` separators:
+/// - The part before the first `::` is treated as the file path
+/// - The part after the last `::` is treated as the test name
+///
+/// # Example
+///
+/// ```
+/// use shotgun::connector::test_ids_to_cases;
+///
+/// let ids = vec![
+///     "tests/test_math.py::test_addition".to_string(),
+///     "tests/test_math.py::TestClass::test_method".to_string(),
+/// ];
+///
+/// let cases = test_ids_to_cases(ids);
+///
+/// assert_eq!(cases[0].id, "tests/test_math.py::test_addition");
+/// assert_eq!(cases[0].name, "test_addition");
+///
+/// assert_eq!(cases[1].id, "tests/test_math.py::TestClass::test_method");
+/// assert_eq!(cases[1].name, "test_method");
+/// ```
+///
+/// # Use Case
+///
+/// This function is useful when you have raw test IDs from command output
+/// (e.g., from `pytest --collect-only`) and need to convert them to
+/// [`TestCase`] structs for further processing.
 pub fn test_ids_to_cases(ids: Vec<String>) -> Vec<TestCase> {
     ids.into_iter()
         .map(|id| TestCase {

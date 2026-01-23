@@ -1,4 +1,38 @@
 //! JUnit XML report generation.
+//!
+//! Generates JUnit XML format test reports, which are the de facto standard
+//! for CI/CD systems. The output is compatible with Jenkins, GitLab CI,
+//! GitHub Actions, CircleCI, and other CI platforms.
+//!
+//! # Format
+//!
+//! The generated XML follows the JUnit schema:
+//!
+//! ```xml
+//! <?xml version="1.0" encoding="UTF-8"?>
+//! <testsuites tests="3" failures="1" errors="0" time="1.234">
+//!   <testsuite name="shotgun" tests="3" failures="1" errors="0" skipped="0" time="1.234">
+//!     <testcase classname="tests.test_math" name="test_add" time="0.100"/>
+//!     <testcase classname="tests.test_math" name="test_sub" time="0.150">
+//!       <failure message="AssertionError" type="AssertionError">
+//!         assert 2 - 1 == 0
+//!       </failure>
+//!     </testcase>
+//!     <testcase classname="tests.test_math" name="test_mul" time="0.050">
+//!       <skipped/>
+//!     </testcase>
+//!   </testsuite>
+//! </testsuites>
+//! ```
+//!
+//! # Example
+//!
+//! ```
+//! use shotgun::report::JUnitReporter;
+//!
+//! let reporter = JUnitReporter::new("test-results/junit.xml".into())
+//!     .with_testsuite_name("my-project-tests");
+//! ```
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,7 +45,24 @@ use super::Reporter;
 use crate::discovery::{TestCase, TestOutcome, TestResult};
 use crate::executor::RunResult;
 
-/// Reporter that generates JUnit XML output.
+/// Reporter that generates JUnit XML test reports.
+///
+/// Collects test results during execution and writes a JUnit XML file
+/// when the run completes. The file is created or overwritten at the
+/// specified path.
+///
+/// # File Location
+///
+/// Parent directories are created automatically if they don't exist.
+///
+/// # Example
+///
+/// ```
+/// use shotgun::report::JUnitReporter;
+///
+/// let reporter = JUnitReporter::new("build/test-results/junit.xml".into())
+///     .with_testsuite_name("my-app");
+/// ```
 pub struct JUnitReporter {
     output_path: PathBuf,
     results: Mutex<Vec<TestResult>>,
@@ -19,7 +70,11 @@ pub struct JUnitReporter {
 }
 
 impl JUnitReporter {
-    /// Create a new JUnit reporter that writes to the given path.
+    /// Creates a new JUnit reporter that writes to the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_path` - File path for the JUnit XML output
     pub fn new(output_path: PathBuf) -> Self {
         Self {
             output_path,
@@ -28,7 +83,14 @@ impl JUnitReporter {
         }
     }
 
-    /// Set the test suite name.
+    /// Sets the test suite name in the XML output.
+    ///
+    /// The default name is `"shotgun"`. Set this to your project name
+    /// for better identification in CI dashboards.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Test suite name to use in the XML
     pub fn with_testsuite_name(mut self, name: impl Into<String>) -> Self {
         self.testsuite_name = name.into();
         self

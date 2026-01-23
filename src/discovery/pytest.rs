@@ -1,4 +1,62 @@
 //! pytest test discovery implementation.
+//!
+//! This module provides test discovery for Python projects using pytest.
+//! It uses `pytest --collect-only` for discovery and parses JUnit XML
+//! or stdout for results.
+//!
+//! # Discovery Process
+//!
+//! 1. Run `pytest --collect-only -q` to list all tests
+//! 2. Parse output to extract test IDs (e.g., `tests/test_math.py::test_add`)
+//! 3. Generate run commands with `pytest -v --junitxml=/tmp/junit.xml`
+//! 4. Parse results from JUnit XML or stdout
+//!
+//! # Test ID Format
+//!
+//! pytest test IDs follow the format:
+//! ```text
+//! path/to/test_file.py::TestClass::test_method
+//! path/to/test_file.py::test_function
+//! ```
+//!
+//! # Markers
+//!
+//! pytest markers are extracted and stored in [`TestCase::markers`].
+//! The `markers` configuration option filters tests during discovery:
+//!
+//! ```toml
+//! [discovery]
+//! type = "pytest"
+//! markers = "not slow and not integration"
+//! ```
+//!
+//! # Example Usage
+//!
+//! ```no_run
+//! use shotgun::discovery::pytest::PytestDiscoverer;
+//! use shotgun::discovery::TestDiscoverer;
+//! use shotgun::config::PytestDiscoveryConfig;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = PytestDiscoveryConfig {
+//!         paths: vec!["tests".into()],
+//!         markers: Some("not slow".into()),
+//!         python: "python3".into(),
+//!         ..Default::default()
+//!     };
+//!
+//!     let discoverer = PytestDiscoverer::new(config);
+//!     let tests = discoverer.discover(&[]).await?;
+//!
+//!     println!("Found {} tests", tests.len());
+//!     for test in &tests {
+//!         println!("  - {}", test.id);
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
 
 use std::path::PathBuf;
 
@@ -9,13 +67,37 @@ use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutco
 use crate::config::PytestDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
-/// pytest test discoverer.
+/// Test discoverer for Python pytest projects.
+///
+/// Uses `pytest --collect-only` for test discovery and generates
+/// commands with JUnit XML output for structured result parsing.
+///
+/// # Configuration
+///
+/// See [`PytestDiscoveryConfig`] for available options including:
+/// - `paths`: Directories to search
+/// - `markers`: Filter expression (e.g., `"not slow"`)
+/// - `python`: Python interpreter path
+/// - `extra_args`: Additional pytest arguments
 pub struct PytestDiscoverer {
     config: PytestDiscoveryConfig,
 }
 
 impl PytestDiscoverer {
-    /// Create a new pytest discoverer with the given configuration.
+    /// Creates a new pytest discoverer with the given configuration.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use shotgun::discovery::pytest::PytestDiscoverer;
+    /// use shotgun::config::PytestDiscoveryConfig;
+    ///
+    /// let discoverer = PytestDiscoverer::new(PytestDiscoveryConfig {
+    ///     paths: vec!["tests".into(), "integration".into()],
+    ///     markers: Some("not slow".into()),
+    ///     ..Default::default()
+    /// });
+    /// ```
     pub fn new(config: PytestDiscoveryConfig) -> Self {
         Self { config }
     }
