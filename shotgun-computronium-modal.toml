@@ -1,0 +1,26 @@
+# shotgun configuration for running computronium tests on Modal
+
+[shotgun]
+max_parallel = 2
+test_timeout_secs = 120
+retry_count = 0
+stream_output = true
+
+[provider]
+type = "remote"
+create_command = "uv run --project /Users/jacobkirmayer/imbue/shotgun-rs /Users/jacobkirmayer/imbue/shotgun-rs/scripts/modal-create-computronium.py"
+exec_command = "uv run --project /Users/jacobkirmayer/imbue/shotgun-rs /Users/jacobkirmayer/imbue/shotgun-rs/scripts/modal-exec.py {sandbox_id} '{command}'"
+destroy_command = "uv run --project /Users/jacobkirmayer/imbue/shotgun-rs /Users/jacobkirmayer/imbue/shotgun-rs/scripts/modal-destroy.py {sandbox_id}"
+timeout_secs = 300
+
+[discovery]
+type = "pytest"
+paths = [
+    "computronium/common/test_serialization.py",
+    "computronium/test_machine_spec.py"
+]
+python = "python3"
+
+[report]
+output_dir = "test-results"
+junit = false

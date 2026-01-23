@@ -139,13 +139,16 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
 
         // Infer exit code from output (streaming doesn't give us exit code directly)
         // Look for pytest/test framework exit patterns
-        let exit_code = if stdout.contains("PASSED") || stdout.contains("passed") {
+        let exit_code = if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR") {
             0
-        } else if stdout.contains("FAILED") || stdout.contains("failed") || stderr.contains("error")
+        } else if stdout.contains("FAILED")
+            || stdout.contains("ERROR")
+            || stdout.contains("error")
+            || stderr.contains("error")
         {
             1
         } else {
-            0 // Assume success if no clear failure indicators
+            1 // Assume failure if no clear success indicators (safer default)
         };
 
         Ok(crate::provider::ExecResult {
