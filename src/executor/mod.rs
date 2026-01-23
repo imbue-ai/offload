@@ -275,13 +275,17 @@ where
             .iter()
             .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
             .count();
+        let runtime_skipped = all_results
+            .iter()
+            .filter(|r| r.outcome == TestOutcome::Skipped)
+            .count();
         let not_run = tests_to_run.len().saturating_sub(all_results.len());
 
         let run_result = RunResult {
             total_tests: tests.len(),
             passed,
             failed,
-            skipped: skipped_count,
+            skipped: skipped_count + runtime_skipped,
             flaky: flaky_count,
             not_run,
             duration: start.elapsed(),
