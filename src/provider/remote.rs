@@ -129,10 +129,19 @@ pub struct ConnectorSandbox {
 impl ConnectorSandbox {
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
-        let full_cmd = format!("{} {}", cmd.program, cmd.args.join(" "));
+        // Build the inner command with properly escaped arguments
+        let inner_cmd = std::iter::once(cmd.program.as_str())
+            .chain(cmd.args.iter().map(|s| s.as_str()))
+            .map(|a| shell_words::quote(a).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Escape the entire command so it can be passed as a single shell argument
+        let escaped_cmd = shell_words::quote(&inner_cmd);
+
         self.exec_command
             .replace("{sandbox_id}", &self.remote_id)
-            .replace("{command}", &full_cmd)
+            .replace("{command}", &escaped_cmd)
     }
 
     /// Build the destroy command with substitutions.
