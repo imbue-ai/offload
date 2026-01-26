@@ -128,62 +128,158 @@ async fn run_tests(
         (ProviderConfig::Process(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = ProcessProvider::new(p_cfg.clone());
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Process(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = ProcessProvider::new(p_cfg.clone());
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Process(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
             let provider = ProcessProvider::new(p_cfg.clone());
             let discoverer = GenericDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
             let discoverer = GenericDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = SshProvider::new(p_cfg.clone());
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = SshProvider::new(p_cfg.clone());
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
             let provider = SshProvider::new(p_cfg.clone());
             let discoverer = GenericDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = ConnectorProvider::from_config(p_cfg.clone());
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = ConnectorProvider::from_config(p_cfg.clone());
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
         (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
             let provider = ConnectorProvider::from_config(p_cfg.clone());
             let discoverer = GenericDiscoverer::new(d_cfg.clone());
-            run_with(config, provider, discoverer, collect_only, junit_path, verbose).await
+            run_with(
+                config,
+                provider,
+                discoverer,
+                collect_only,
+                junit_path,
+                verbose,
+            )
+            .await
         }
     }
 }

@@ -17,7 +17,12 @@ Thumbs.db
 /test-results/
 
 # Claude Code
-.claude/
+.claude/*
+
+# Enable agents from Rustbucket
+!.claude/agents
+!.claude/agents/*
+
 
 # SSH keys (never commit these!)
 *.pem

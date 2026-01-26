@@ -191,7 +191,11 @@ impl RetryManager {
     /// Returns summary statistics about retries.
     pub fn stats(&self) -> RetryStats {
         let total_tests = self.attempts.len();
-        let total_retries: usize = self.attempts.values().map(|(c, _)| c.saturating_sub(1)).sum();
+        let total_retries: usize = self
+            .attempts
+            .values()
+            .map(|(c, _)| c.saturating_sub(1))
+            .sum();
         let flaky_tests = self
             .attempts
             .iter()
