@@ -1,7 +1,6 @@
 //! shotgun CLI - Flexible parallel test runner.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -214,12 +213,7 @@ where
     }
 
     let reporter = create_reporter(&config, junit_path, verbose);
-    let orchestrator = Orchestrator::new(
-        config,
-        Arc::new(provider),
-        Arc::new(discoverer),
-        Arc::new(reporter),
-    );
+    let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
 
     let result = orchestrator.run().await?;
     std::process::exit(result.exit_code());

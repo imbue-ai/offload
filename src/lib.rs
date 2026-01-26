@@ -57,7 +57,6 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use std::sync::Arc;
 //! use shotgun::config::load_config;
 //! use shotgun::executor::Orchestrator;
 //! use shotgun::provider::process::ProcessProvider;
@@ -70,17 +69,15 @@
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
 //!     // Create provider (runs tests as local processes)
-//!     let provider = Arc::new(ProcessProvider::new(Default::default()));
+//!     let provider = ProcessProvider::new(Default::default());
 //!
 //!     // Create discoverer (finds pytest tests)
-//!     let discoverer = Arc::new(PytestDiscoverer::new(Default::default()));
+//!     let discoverer = PytestDiscoverer::new(Default::default());
 //!
 //!     // Create reporter (console + JUnit XML)
-//!     let reporter = Arc::new(
-//!         MultiReporter::new()
-//!             .with_reporter(ConsoleReporter::new(true))
-//!             .with_reporter(JUnitReporter::new("test-results/junit.xml".into()))
-//!     );
+//!     let reporter = MultiReporter::new()
+//!         .with_reporter(ConsoleReporter::new(true))
+//!         .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
 //!
 //!     // Run tests
 //!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);

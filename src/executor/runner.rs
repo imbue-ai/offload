@@ -14,7 +14,6 @@
 //! # Example
 //!
 //! ```no_run
-//! use std::sync::Arc;
 //! use std::time::Duration;
 //! use shotgun::executor::TestRunner;
 //! use shotgun::provider::process::ProcessSandbox;
@@ -23,7 +22,7 @@
 //!
 //! async fn run_test_example(
 //!     sandbox: ProcessSandbox,
-//!     discoverer: Arc<PytestDiscoverer>,
+//!     discoverer: &PytestDiscoverer,
 //! ) -> anyhow::Result<()> {
 //!     let mut runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300));
 //!
@@ -78,15 +77,15 @@ pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 ///
 /// - `S`: The sandbox type (implements [`Sandbox`])
 /// - `D`: The discoverer type (implements [`TestDiscoverer`])
-pub struct TestRunner<S, D> {
+pub struct TestRunner<'a, S, D> {
     sandbox: S,
-    discoverer: Arc<D>,
+    discoverer: &'a D,
     timeout: Duration,
     stream_output: bool,
     output_callback: Option<OutputCallback>,
 }
 
-impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
+impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
     /// Creates a new test runner for the given sandbox.
     ///
     /// # Arguments
@@ -94,7 +93,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     /// * `sandbox` - The sandbox to execute tests in
     /// * `discoverer` - The discoverer for command generation and result parsing
     /// * `timeout` - Maximum time for test execution
-    pub fn new(sandbox: S, discoverer: Arc<D>, timeout: Duration) -> Self {
+    pub fn new(sandbox: S, discoverer: &'a D, timeout: Duration) -> Self {
         Self {
             sandbox,
             discoverer,
@@ -123,7 +122,7 @@ impl<S: Sandbox, D: TestDiscoverer> TestRunner<S, D> {
     /// # use shotgun::discovery::pytest::PytestDiscoverer;
     /// # use std::time::Duration;
     ///
-    /// # fn example(sandbox: ProcessSandbox, discoverer: Arc<PytestDiscoverer>) {
+    /// # fn example(sandbox: ProcessSandbox, discoverer: &PytestDiscoverer) {
     /// let runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300))
     ///     .with_streaming(Arc::new(|test_id, line| {
     ///         match line {

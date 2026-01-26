@@ -48,7 +48,6 @@
 //! # Example
 //!
 //! ```no_run
-//! use std::sync::Arc;
 //! use shotgun::executor::Orchestrator;
 //! use shotgun::config::load_config;
 //! use shotgun::provider::process::ProcessProvider;
@@ -59,9 +58,9 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
-//!     let provider = Arc::new(ProcessProvider::new(Default::default()));
-//!     let discoverer = Arc::new(PytestDiscoverer::new(Default::default()));
-//!     let reporter = Arc::new(ConsoleReporter::new(true));
+//!     let provider = ProcessProvider::new(Default::default());
+//!     let discoverer = PytestDiscoverer::new(Default::default());
+//!     let reporter = ConsoleReporter::new(true);
 //!
 //!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
 //!     let result = orchestrator.run().await?;
@@ -232,7 +231,6 @@ impl RunResult {
 /// # Example
 ///
 /// ```no_run
-/// use std::sync::Arc;
 /// use shotgun::executor::Orchestrator;
 /// use shotgun::config::load_config;
 /// use shotgun::provider::process::ProcessProvider;
@@ -244,13 +242,11 @@ impl RunResult {
 ///     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 ///
 ///     // Set up components
-///     let provider = Arc::new(ProcessProvider::new(Default::default()));
-///     let discoverer = Arc::new(PytestDiscoverer::new(Default::default()));
-///     let reporter = Arc::new(
-///         MultiReporter::new()
-///             .with_reporter(ConsoleReporter::new(true))
-///             .with_reporter(JUnitReporter::new("results.xml".into()))
-///     );
+///     let provider = ProcessProvider::new(Default::default());
+///     let discoverer = PytestDiscoverer::new(Default::default());
+///     let reporter = MultiReporter::new()
+///         .with_reporter(ConsoleReporter::new(true))
+///         .with_reporter(JUnitReporter::new("results.xml".into()));
 ///
 ///     // Create orchestrator and run
 ///     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
@@ -261,16 +257,16 @@ impl RunResult {
 /// ```
 pub struct Orchestrator<P, D, R> {
     config: Config,
-    provider: Arc<P>,
-    discoverer: Arc<D>,
-    reporter: Arc<R>,
+    provider: P,
+    discoverer: D,
+    reporter: R,
 }
 
 impl<P, D, R> Orchestrator<P, D, R>
 where
-    P: SandboxProvider + 'static,
-    D: TestDiscoverer + 'static,
-    R: Reporter + 'static,
+    P: SandboxProvider,
+    D: TestDiscoverer,
+    R: Reporter,
 {
     /// Creates a new orchestrator with the given components.
     ///
@@ -280,10 +276,7 @@ where
     /// * `provider` - Sandbox provider for creating execution environments
     /// * `discoverer` - Test discoverer for finding tests
     /// * `reporter` - Reporter for outputting results
-    ///
-    /// All components are wrapped in `Arc` for shared ownership across
-    /// async tasks.
-    pub fn new(config: Config, provider: Arc<P>, discoverer: Arc<D>, reporter: Arc<R>) -> Self {
+    pub fn new(config: Config, provider: P, discoverer: D, reporter: R) -> Self {
         Self {
             config,
             provider,
@@ -360,104 +353,95 @@ where
         );
 
         // Run tests in parallel
-        let results = Arc::new(Mutex::new(Vec::new()));
+        let results = Mutex::new(Vec::new());
         let mut retry_manager = RetryManager::new(self.config.shotgun.retry_count);
 
-        // Execute batches concurrently
-        let mut handles = Vec::new();
+        // Execute batches concurrently using scoped spawns (no 'static required)
+        tokio_scoped::scope(|scope| {
+            for (batch_idx, batch) in batches.into_iter().enumerate() {
+                let results = &results;
+                let provider = &self.provider;
+                let discoverer = &self.discoverer;
+                let reporter = &self.reporter;
+                let config = &self.config;
 
-        for (batch_idx, batch) in batches.into_iter().enumerate() {
-            let provider = self.provider.clone();
-            let discoverer = self.discoverer.clone();
-            let reporter = self.reporter.clone();
-            let results = results.clone();
-            let config = self.config.clone();
+                scope.spawn(async move {
+                    // Create initial sandbox to check if it's single-use
+                    let sandbox_config = SandboxConfig {
+                        id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
+                        working_dir: config
+                            .shotgun
+                            .working_dir
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string()),
+                        env: Vec::new(),
+                        resources: SandboxResources {
+                            cpu: None,
+                            memory: None,
+                            timeout_secs: Some(config.shotgun.test_timeout_secs),
+                        },
+                    };
 
-            let handle = tokio::spawn(async move {
-                // Create initial sandbox to check if it's single-use
-                let sandbox_config = SandboxConfig {
-                    id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
-                    working_dir: config
-                        .shotgun
-                        .working_dir
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string()),
-                    env: Vec::new(),
-                    resources: SandboxResources {
-                        cpu: None,
-                        memory: None,
-                        timeout_secs: Some(config.shotgun.test_timeout_secs),
-                    },
-                };
-
-                let initial_sandbox = match provider.create_sandbox(&sandbox_config).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to create sandbox: {}", e);
-                        return;
-                    }
-                };
-
-                let mut runner = TestRunner::new(
-                    initial_sandbox,
-                    discoverer.clone(),
-                    Duration::from_secs(config.shotgun.test_timeout_secs),
-                );
-
-                // Enable streaming if configured
-                if config.shotgun.stream_output {
-                    let callback: OutputCallback = Arc::new(|test_id, line| match line {
-                        OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
-                        OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
-                    });
-                    runner = runner.with_streaming(callback);
-                }
-
-                for test in &batch {
-                    reporter.on_test_start(test).await;
-
-                    let result = runner.run_test(test).await;
-
-                    match &result {
-                        Ok(r) => {
-                            reporter.on_test_complete(r).await;
-                            results.lock().await.push(r.clone());
-                        }
+                    let initial_sandbox = match provider.create_sandbox(&sandbox_config).await {
+                        Ok(s) => s,
                         Err(e) => {
-                            error!("Test execution error: {}", e);
-                            let failed_result = TestResult {
-                                test: test.clone(),
-                                outcome: TestOutcome::Error,
-                                duration: Duration::ZERO,
-                                stdout: String::new(),
-                                stderr: e.to_string(),
-                                error_message: Some(e.to_string()),
-                                stack_trace: None,
-                            };
-                            reporter.on_test_complete(&failed_result).await;
-                            results.lock().await.push(failed_result);
+                            error!("Failed to create sandbox: {}", e);
+                            return;
+                        }
+                    };
+
+                    let mut runner = TestRunner::new(
+                        initial_sandbox,
+                        discoverer,
+                        Duration::from_secs(config.shotgun.test_timeout_secs),
+                    );
+
+                    // Enable streaming if configured
+                    if config.shotgun.stream_output {
+                        let callback: OutputCallback = Arc::new(|test_id, line| match line {
+                            OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
+                            OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+                        });
+                        runner = runner.with_streaming(callback);
+                    }
+
+                    for test in &batch {
+                        reporter.on_test_start(test).await;
+
+                        let result = runner.run_test(test).await;
+
+                        match &result {
+                            Ok(r) => {
+                                reporter.on_test_complete(r).await;
+                                results.lock().await.push(r.clone());
+                            }
+                            Err(e) => {
+                                error!("Test execution error: {}", e);
+                                let failed_result = TestResult {
+                                    test: test.clone(),
+                                    outcome: TestOutcome::Error,
+                                    duration: Duration::ZERO,
+                                    stdout: String::new(),
+                                    stderr: e.to_string(),
+                                    error_message: Some(e.to_string()),
+                                    stack_trace: None,
+                                };
+                                reporter.on_test_complete(&failed_result).await;
+                                results.lock().await.push(failed_result);
+                            }
                         }
                     }
-                }
 
-                // Terminate sandbox after all tests
-                if let Err(e) = runner.sandbox().terminate().await {
-                    warn!("Failed to terminate sandbox: {}", e);
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for all batches to complete
-        for handle in handles {
-            if let Err(e) = handle.await {
-                error!("Batch execution error: {}", e);
+                    // Terminate sandbox after all tests
+                    if let Err(e) = runner.sandbox().terminate().await {
+                        warn!("Failed to terminate sandbox: {}", e);
+                    }
+                });
             }
-        }
+        });
 
         // Collect results
-        let mut all_results = results.lock().await.clone();
+        let mut all_results = results.into_inner();
 
         // Identify failed tests for retry
         let failed_tests: Vec<_> = all_results
@@ -558,7 +542,7 @@ where
 
                 let mut runner = TestRunner::new(
                     sandbox,
-                    self.discoverer.clone(),
+                    &self.discoverer,
                     Duration::from_secs(self.config.shotgun.test_timeout_secs),
                 );
 

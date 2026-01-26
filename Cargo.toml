@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-scoped = "0.2"
 async-trait = "0.1"
 futures = "0.3"
 
