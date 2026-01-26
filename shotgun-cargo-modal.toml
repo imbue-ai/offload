@@ -1,0 +1,22 @@
+# shotgun configuration for running cargo tests on Modal
+
+[shotgun]
+max_parallel = 4
+test_timeout_secs = 600
+retry_count = 1
+stream_output = true
+
+[provider]
+type = "remote"
+create_command = "uv run scripts/modal-create-rust.py"
+exec_command = "uv run scripts/modal-exec.py {sandbox_id} {command}"
+destroy_command = "uv run scripts/modal-destroy.py {sandbox_id}"
+timeout_secs = 600
+
+[discovery]
+type = "cargo"
+
+[report]
+output_dir = "test-results"
+junit = true
+junit_file = "junit.xml"

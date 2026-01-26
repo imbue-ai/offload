@@ -99,6 +99,7 @@ impl CargoDiscoverer {
     /// Parse cargo test --list output to extract test cases.
     fn parse_list_output(&self, output: &str) -> Vec<TestCase> {
         let mut tests = Vec::new();
+        let mut has_doc_tests = false;
 
         for line in output.lines() {
             let trimmed = line.trim();
@@ -114,11 +115,22 @@ impl CargoDiscoverer {
             // Test lines end with ": test" or ": benchmark"
             if trimmed.ends_with(": test") {
                 let test_name = trimmed.trim_end_matches(": test");
+                // Doc tests have names like "src/foo.rs - module (line N)"
+                // They can't be filtered with --exact, so we group them
+                if test_name.contains(" - ") && test_name.contains("(line") {
+                    has_doc_tests = true;
+                    continue;
+                }
                 tests.push(TestCase::new(test_name));
             } else if trimmed.ends_with(": benchmark") {
                 let test_name = trimmed.trim_end_matches(": benchmark");
                 tests.push(TestCase::new(test_name).with_marker("benchmark"));
             }
+        }
+
+        // Add a single grouped doc test case if any doc tests exist
+        if has_doc_tests {
+            tests.push(TestCase::new("__doctest__").with_marker("doctest"));
         }
 
         tests
@@ -209,11 +221,19 @@ impl TestDiscoverer for CargoDiscoverer {
             cmd = cmd.arg("--ignored");
         }
 
-        cmd = cmd.arg("--").arg("--exact");
+        // Check if this is a doc test run
+        let is_doctest = tests.len() == 1 && tests[0].id == "__doctest__";
 
-        // Add test names
-        for test in tests {
-            cmd = cmd.arg(&test.id);
+        if is_doctest {
+            // Run all doc tests with --doc
+            cmd = cmd.arg("--doc");
+        } else {
+            cmd = cmd.arg("--").arg("--exact");
+
+            // Add test names
+            for test in tests {
+                cmd = cmd.arg(&test.id);
+            }
         }
 
         cmd
@@ -262,6 +282,40 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<T
             error_message: None,
             stack_trace: None,
         });
+    }
+
+    // Handle grouped doc tests - if results is empty but we have a passing summary,
+    // this is likely a doc test run (individual doc test names have spaces and don't match \S+)
+    // Look for summary line: "test result: ok. N passed; M failed; ..."
+    if results.is_empty() {
+        let summary_re =
+            Regex::new(r"test result: ok\. (\d+) passed; (\d+) failed;").unwrap();
+        if let Some(cap) = summary_re.captures(stdout) {
+            let passed: u32 = cap[1].parse().unwrap_or(0);
+            let failed: u32 = cap[2].parse().unwrap_or(0);
+
+            if passed > 0 || failed > 0 {
+                let outcome = if failed == 0 {
+                    TestOutcome::Passed
+                } else {
+                    TestOutcome::Failed
+                };
+
+                results.push(TestResult {
+                    test: TestCase::new("__doctest__").with_marker("doctest"),
+                    outcome,
+                    duration: std::time::Duration::ZERO,
+                    stdout: format!("{} doc tests passed, {} failed", passed, failed),
+                    stderr: String::new(),
+                    error_message: if failed > 0 {
+                        Some(format!("{} doc tests failed", failed))
+                    } else {
+                        None
+                    },
+                    stack_trace: None,
+                });
+            }
+        }
     }
 
     // Try to extract failure details by splitting on test output sections
