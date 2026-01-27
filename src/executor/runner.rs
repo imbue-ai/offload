@@ -9,7 +9,7 @@
 //! - **Single test execution**: Run one test at a time with [`run_test`](TestRunner::run_test)
 //! - **Batch execution**: Run multiple tests with [`run_tests`](TestRunner::run_tests)
 //! - **Streaming output**: Real-time output via callback with [`with_streaming`](TestRunner::with_streaming)
-//! - **Result parsing**: Automatic parsing via the discoverer
+//! - **Result parsing**: Automatic parsing via the framework
 //!
 //! # Example
 //!
@@ -22,9 +22,9 @@
 //!
 //! async fn run_test_example(
 //!     sandbox: LocalSandbox,
-//!     discoverer: &PytestFramework,
+//!     framework: &PytestFramework,
 //! ) -> anyhow::Result<()> {
-//!     let mut runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300));
+//!     let mut runner = TestRunner::new(sandbox, framework, Duration::from_secs(300));
 //!
 //!     let test = TestCase::new("tests/test_math.py::test_add");
 //!     let result = runner.run_test(&test).await?;
@@ -70,16 +70,16 @@ pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 /// Executes tests within a single sandbox.
 ///
 /// The runner handles command generation, execution, output capture,
-/// and result parsing. It uses the configured discoverer to generate
+/// and result parsing. It uses the configured framework to generate
 /// appropriate commands and parse results.
 ///
 /// # Type Parameters
 ///
 /// - `S`: The sandbox type (implements [`Sandbox`])
-/// - `D`: The discoverer type (implements [`TestFramework`])
+/// - `D`: The framework type (implements [`TestFramework`])
 pub struct TestRunner<'a, S, D> {
     sandbox: S,
-    discoverer: &'a D,
+    framework: &'a D,
     timeout: Duration,
     stream_output: bool,
     output_callback: Option<OutputCallback>,
@@ -91,12 +91,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// # Arguments
     ///
     /// * `sandbox` - The sandbox to execute tests in
-    /// * `discoverer` - The discoverer for command generation and result parsing
+    /// * `framework` - The framework for command generation and result parsing
     /// * `timeout` - Maximum time for test execution
-    pub fn new(sandbox: S, discoverer: &'a D, timeout: Duration) -> Self {
+    pub fn new(sandbox: S, framework: &'a D, timeout: Duration) -> Self {
         Self {
             sandbox,
-            discoverer,
+            framework,
             timeout,
             stream_output: false,
             output_callback: None,
@@ -122,8 +122,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// # use shotgun::framework::pytest::PytestFramework;
     /// # use std::time::Duration;
     ///
-    /// # fn example(sandbox: LocalSandbox, discoverer: &PytestFramework) {
-    /// let runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300))
+    /// # fn example(sandbox: LocalSandbox, framework: &PytestFramework) {
+    /// let runner = TestRunner::new(sandbox, framework, Duration::from_secs(300))
     ///     .with_streaming(Arc::new(|test_id, line| {
     ///         match line {
     ///             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
@@ -147,7 +147,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Runs a single test and returns its result.
     ///
-    /// Generates a command for the test using the discoverer, executes it
+    /// Generates a command for the test using the framework, executes it
     /// in the sandbox, and parses the results.
     ///
     /// # Arguments
@@ -164,7 +164,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         // Generate the run command
         let mut cmd = self
-            .discoverer
+            .framework
             .produce_test_execution_command(std::slice::from_ref(test));
         cmd = cmd.timeout(self.timeout.as_secs());
 
@@ -187,7 +187,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         // Parse results
         let results = self
-            .discoverer
+            .framework
             .parse_results(&exec_result, result_content.as_deref())?;
 
         // Find the result for this specific test
@@ -287,7 +287,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         info!("Running {} tests", tests.len());
 
         // Generate the run command for all tests
-        let mut cmd = self.discoverer.produce_test_execution_command(tests);
+        let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command
@@ -305,7 +305,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         // Parse results
         let mut results = self
-            .discoverer
+            .framework
             .parse_results(&exec_result, result_content.as_deref())?;
 
         // If parsing failed, create results based on exit code

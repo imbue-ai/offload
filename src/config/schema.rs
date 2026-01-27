@@ -2,7 +2,7 @@
 //!
 //! This module defines all configuration types that can be deserialized from
 //! TOML configuration files. The schema uses serde for serialization and
-//! tagged enums for provider/discovery type selection.
+//! tagged enums for provider/framework type selection.
 //!
 //! # Schema Overview
 //!
@@ -13,10 +13,10 @@
 //! │   ├── Local              - Local process execution
 //! │   ├── Docker             - Docker container execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
-//! ├── DiscoveryConfig        - Tagged enum selecting discovery type
-//! │   ├── Pytest             - pytest test discovery
-//! │   ├── Cargo              - Rust/Cargo test discovery
-//! │   └── Generic            - Custom shell-based discovery
+//! ├── FrameworkConfig        - Tagged enum selecting framework type
+//! │   ├── Pytest             - pytest test framework
+//! │   ├── Cargo              - Rust/Cargo test framework
+//! │   └── Default            - Custom shell-based framework
 //! └── ReportConfig           - Output and reporting settings
 //! ```
 
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This struct represents the complete configuration loaded from a TOML file.
 /// It contains all settings needed to run tests: core settings, provider
-/// configuration, test discovery configuration, and reporting options.
+/// configuration, test framework configuration, and reporting options.
 ///
 /// # TOML Structure
 ///
@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 /// type = "docker"
 /// image = "python:3.11"
 ///
-/// [discovery]
+/// [framework]
 /// type = "pytest"
 /// paths = ["tests"]
 ///
@@ -62,7 +62,7 @@ use serde::{Deserialize, Serialize};
 ///     [provider]
 ///     type = "local"
 ///
-///     [discovery]
+///     [framework]
 ///     type = "pytest"
 /// "#).unwrap();
 /// ```
@@ -74,8 +74,8 @@ pub struct Config {
     /// Provider configuration determining where tests run.
     pub provider: ProviderConfig,
 
-    /// Test discovery configuration determining how tests are found.
-    pub discovery: DiscoveryConfig,
+    /// Test framework configuration determining how tests are found.
+    pub framework: FrameworkConfig,
 
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
@@ -470,26 +470,26 @@ fn default_remote_timeout() -> u64 {
     3600 // 1 hour
 }
 
-/// Test discovery configuration specifying how tests are found.
+/// Test framework configuration specifying how tests are found and run.
 ///
-/// This is a tagged enum that selects the discovery method based on the
+/// This is a tagged enum that selects the test framework based on the
 /// `type` field in TOML. Each variant contains framework-specific settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum DiscoveryConfig {
+pub enum FrameworkConfig {
     /// Discover and run Python tests with pytest.
-    Pytest(PytestDiscoveryConfig),
+    Pytest(PytestFrameworkConfig),
 
     /// Discover and run Rust tests with cargo test.
-    Cargo(CargoDiscoveryConfig),
+    Cargo(CargoFrameworkConfig),
 
     /// Discover and run tests with custom shell commands.
-    Default(DefaultDiscoveryConfig),
+    Default(DefaultFrameworkConfig),
 }
 
-/// Configuration for pytest test discovery.
+/// Configuration for pytest test framework.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct PytestDiscoveryConfig {
+pub struct PytestFrameworkConfig {
     /// Directories to search for tests, relative to the working directory.
     ///
     /// Default: `["tests"]`
@@ -499,7 +499,7 @@ pub struct PytestDiscoveryConfig {
     /// pytest marker expression to filter tests.
     pub markers: Option<String>,
 
-    /// Additional pytest arguments for test collection.
+    /// Additional pytest arguments for test discovery.
     #[serde(default)]
     pub extra_args: Vec<String>,
 
@@ -516,9 +516,9 @@ fn default_python() -> String {
     "python".to_string()
 }
 
-/// Configuration for Rust/Cargo test discovery.
+/// Configuration for Rust/Cargo test framework.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct CargoDiscoveryConfig {
+pub struct CargoFrameworkConfig {
     /// Package to test in a Cargo workspace.
     ///
     /// Maps to `cargo test -p <package>`. If not specified, tests all packages.
@@ -544,10 +544,10 @@ pub struct CargoDiscoveryConfig {
     pub include_ignored: bool,
 }
 
-/// Configuration for generic/custom test discovery.
+/// Configuration for generic/custom test framework.
 ///
-/// Use this discoverer for any test framework by providing shell commands
-/// for discovery and execution. Output parsing relies on JUnit XML or
+/// Use this framework for any test runner by providing shell commands
+/// for test discovery and execution. Output parsing relies on JUnit XML or
 /// exit codes.
 ///
 /// # Protocol
@@ -559,7 +559,7 @@ pub struct CargoDiscoveryConfig {
 /// # Example: Jest
 ///
 /// ```toml
-/// [discovery]
+/// [framework]
 /// type = "default"
 /// discover_command = "jest --listTests --json | jq -r '.[]'"
 /// run_command = "jest {tests} --ci --reporters=jest-junit"
@@ -569,13 +569,13 @@ pub struct CargoDiscoveryConfig {
 /// # Example: Go tests
 ///
 /// ```toml
-/// [discovery]
+/// [framework]
 /// type = "default"
 /// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
 /// run_command = "go test -v -run '{tests}' ./..."
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DefaultDiscoveryConfig {
+pub struct DefaultFrameworkConfig {
     /// Command to discover test IDs.
     ///
     /// Should output one test ID per line to stdout. Lines starting with `#`
@@ -601,7 +601,7 @@ pub struct DefaultDiscoveryConfig {
     /// Without this, results are inferred from exit codes only.
     pub result_file: Option<PathBuf>,
 
-    /// Working directory for running discovery and test commands.
+    /// Working directory for running test commands.
     pub working_dir: Option<PathBuf>,
 }
 

@@ -1,14 +1,14 @@
-//! Default test discovery implementation.
+//! Default test framework implementation.
 //!
-//! This discoverer enables integration with any test framework by using
-//! custom shell commands for discovery and execution.
+//! This framework enables integration with any test framework by using
+//! custom shell commands for test discovery and execution.
 //!
 //! # When to Use
 //!
-//! Use the default discoverer when:
+//! Use the default framework when:
 //! - Your framework isn't directly supported (Jest, Mocha, Go, etc.)
-//! - You have custom test organization that standard discoverers don't handle
-//! - You need specialized discovery logic
+//! - You have custom test organization that standard frameworks don't handle
+//! - You need specialized test discovery logic
 //!
 //! # Discovery Protocol
 //!
@@ -40,7 +40,7 @@
 //! # Example: Jest
 //!
 //! ```toml
-//! [discovery]
+//! [framework]
 //! type = "default"
 //! discover_command = "jest --listTests --json | jq -r '.[]' | xargs -I{} basename {}"
 //! run_command = "jest {tests} --ci --reporters=jest-junit"
@@ -50,7 +50,7 @@
 //! # Example: Go
 //!
 //! ```toml
-//! [discovery]
+//! [framework]
 //! type = "default"
 //! discover_command = "go test -list '.*' ./... 2>/dev/null | grep -E '^Test'"
 //! run_command = "go test -v -run '^({tests})$' ./..."
@@ -60,47 +60,47 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
-use crate::config::DefaultDiscoveryConfig;
+use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use crate::config::DefaultFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
-/// Test discoverer using custom shell commands.
+/// Test framework using custom shell commands.
 ///
-/// Provides maximum flexibility by delegating discovery and execution
+/// Provides maximum flexibility by delegating test discovery and execution
 /// to user-defined shell commands. Suitable for any test framework.
 ///
 /// # Configuration
 ///
-/// See [`DefaultDiscoveryConfig`] for available options including:
+/// See [`DefaultFrameworkConfig`] for available options including:
 /// - `discover_command`: Shell command that outputs test IDs
 /// - `run_command`: Command template with `{tests}` placeholder
 /// - `result_file`: Optional JUnit XML path for detailed results
 /// - `working_dir`: Directory for running commands
 pub struct DefaultFramework {
-    config: DefaultDiscoveryConfig,
+    config: DefaultFrameworkConfig,
 }
 
 impl DefaultFramework {
-    /// Creates a new default discoverer with the given configuration.
+    /// Creates a new default framework with the given configuration.
     ///
     /// # Example
     ///
     /// ```
     /// use shotgun::framework::default::DefaultFramework;
-    /// use shotgun::config::DefaultDiscoveryConfig;
+    /// use shotgun::config::DefaultFrameworkConfig;
     ///
-    /// let discoverer = DefaultFramework::new(DefaultDiscoveryConfig {
+    /// let framework = DefaultFramework::new(DefaultFrameworkConfig {
     ///     discover_command: "find tests -name '*.test.js' -exec basename {} \\;".into(),
     ///     run_command: "jest {tests}".into(),
     ///     result_file: Some("junit.xml".into()),
     ///     working_dir: None,
     /// });
     /// ```
-    pub fn new(config: DefaultDiscoveryConfig) -> Self {
+    pub fn new(config: DefaultFrameworkConfig) -> Self {
         Self { config }
     }
 
-    /// Parse discovery command output to extract test cases.
+    /// Parse test discovery command output to extract test cases.
     ///
     /// Expects one test ID per line.
     fn parse_discover_output(&self, output: &str) -> Vec<TestCase> {
@@ -123,8 +123,8 @@ impl DefaultFramework {
 
 #[async_trait]
 impl TestFramework for DefaultFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
-        // Run discovery command through shell to support pipes, globs, etc.
+    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+        // Run test discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c");
         cmd.arg(&self.config.discover_command);
@@ -136,13 +136,13 @@ impl TestFramework for DefaultFramework {
         let output = cmd
             .output()
             .await
-            .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;
+            .map_err(|e| FrameworkError::DiscoveryFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
-            return Err(DiscoveryError::DiscoveryFailed(format!(
+            return Err(FrameworkError::DiscoveryFailed(format!(
                 "Discovery command failed: {}",
                 stderr
             )));
@@ -186,7 +186,7 @@ impl TestFramework for DefaultFramework {
         &self,
         output: &ExecResult,
         result_file: Option<&str>,
-    ) -> DiscoveryResult<Vec<TestResult>> {
+    ) -> FrameworkResult<Vec<TestResult>> {
         // Try to parse JUnit XML if result file is provided
         if let Some(xml_content) = result_file {
             return parse_junit_xml(xml_content);
@@ -219,7 +219,7 @@ impl TestFramework for DefaultFramework {
 }
 
 /// Parse JUnit XML content to extract test results.
-fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
+fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
     use regex::Regex;
 
     let mut results = Vec::new();

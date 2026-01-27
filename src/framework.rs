@@ -1,12 +1,12 @@
-//! Test discovery traits and implementations.
+//! Test framework traits and implementations.
 //!
-//! This module provides a framework-agnostic interface for discovering tests
+//! This module provides a framework-agnostic interface for collecting tests
 //! and parsing their results. It supports pytest, cargo test, and custom
 //! test frameworks via the [`TestFramework`] trait.
 //!
 //! # Architecture
 //!
-//! The discovery system has three main responsibilities:
+//! The framework system has three main responsibilities:
 //!
 //! 1. **Discover**: Find tests in the codebase ([`TestFramework::discover`])
 //! 2. **Run**: Generate commands to execute tests ([`TestFramework::produce_test_execution_command`])
@@ -50,7 +50,7 @@
 //!
 //! #[async_trait]
 //! impl TestFramework for MyFramework {
-//!     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
+//!     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
 //!         // Discover tests in the given paths
 //!         todo!()
 //!     }
@@ -61,7 +61,7 @@
 //!     }
 //!
 //!     fn parse_results(&self, output: &ExecResult, result_file: Option<&str>)
-//!         -> DiscoveryResult<Vec<TestResult>> {
+//!         -> FrameworkResult<Vec<TestResult>> {
 //!         // Parse test results from output
 //!         todo!()
 //!     }
@@ -79,11 +79,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::provider::{Command, ExecResult};
 
-/// Result type for discovery operations.
+/// Result type for framework operations.
 ///
-/// All discovery methods return this type, wrapping either a success
-/// value or a [`DiscoveryError`].
-pub type DiscoveryResult<T> = Result<T, DiscoveryError>;
+/// All framework methods return this type, wrapping either a success
+/// value or a [`FrameworkError`].
+pub type FrameworkResult<T> = Result<T, FrameworkError>;
 
 /// Errors that can occur during test discovery and result parsing.
 ///
@@ -91,9 +91,9 @@ pub type DiscoveryResult<T> = Result<T, DiscoveryError>;
 ///
 /// - **Discovery**: Problems finding tests (command failed, no tests found)
 /// - **Parsing**: Problems interpreting output (invalid format, encoding)
-/// - **Execution**: Problems running the discovery command
+/// - **Execution**: Problems running the test discovery command
 #[derive(Debug, thiserror::Error)]
-pub enum DiscoveryError {
+pub enum FrameworkError {
     /// Test discovery command failed or found no tests.
     ///
     /// Common causes: invalid path, framework not installed, syntax errors.
@@ -106,7 +106,7 @@ pub enum DiscoveryError {
     #[error("Failed to parse test output: {0}")]
     ParseError(String),
 
-    /// Failed to execute the discovery or test command.
+    /// Failed to execute the test discovery or run command.
     #[error("Command execution failed: {0}")]
     ExecFailed(String),
 
@@ -114,8 +114,8 @@ pub enum DiscoveryError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Other discovery-related errors.
-    #[error("Discovery error: {0}")]
+    /// Other framework-related errors.
+    #[error("Framework error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
@@ -377,7 +377,7 @@ impl TestOutcome {
     }
 }
 
-/// Trait for discovering tests and parsing their results.
+/// Trait for collecting tests and parsing their results.
 ///
 /// A `TestFramework` encapsulates the logic for a specific test framework.
 /// It handles three main operations:
@@ -390,7 +390,7 @@ impl TestOutcome {
 ///
 /// - [`pytest::PytestFramework`] - Python pytest framework
 /// - [`cargo::CargoFramework`] - Rust cargo test framework
-/// - [`default::DefaultFramework`] - Custom shell-based discovery
+/// - [`default::DefaultFramework`] - Custom shell-based framework
 ///
 /// # Thread Safety
 ///
@@ -408,7 +408,7 @@ impl TestOutcome {
 ///
 /// #[async_trait]
 /// impl TestFramework for JestFramework {
-///     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
+///     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
 ///         // Run: jest --listTests
 ///         // Parse output to extract test files
 ///         todo!()
@@ -423,7 +423,7 @@ impl TestOutcome {
 ///     }
 ///
 ///     fn parse_results(&self, output: &ExecResult, result_file: Option<&str>)
-///         -> DiscoveryResult<Vec<TestResult>> {
+///         -> FrameworkResult<Vec<TestResult>> {
 ///         // Parse JUnit XML from jest-junit reporter
 ///         todo!()
 ///     }
@@ -433,7 +433,7 @@ impl TestOutcome {
 pub trait TestFramework: Send + Sync {
     /// Discovers tests in the given paths.
     ///
-    /// This method typically runs a framework-specific collection command
+    /// This method typically runs a framework-specific discovery command
     /// (e.g., `pytest --collect-only`, `cargo test --list`) and parses
     /// the output to extract test cases.
     ///
@@ -446,7 +446,7 @@ pub trait TestFramework: Send + Sync {
     ///
     /// A list of discovered [`TestCase`] objects, or an error if discovery
     /// failed (command error, parse error, etc.).
-    async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>>;
+    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>>;
 
     /// Generates a command to run the specified tests.
     ///
@@ -484,5 +484,5 @@ pub trait TestFramework: Send + Sync {
         &self,
         output: &ExecResult,
         result_file: Option<&str>,
-    ) -> DiscoveryResult<Vec<TestResult>>;
+    ) -> FrameworkResult<Vec<TestResult>>;
 }

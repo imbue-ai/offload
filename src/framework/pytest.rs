@@ -1,7 +1,7 @@
-//! pytest test discovery implementation.
+//! pytest test framework implementation.
 //!
-//! This module provides test discovery for Python projects using pytest.
-//! It uses `pytest --collect-only -q` for discovery and parses JUnit XML
+//! This module provides test framework support for Python projects using pytest.
+//! It uses `pytest --collect-only -q` for test discovery and parses JUnit XML
 //! or stdout for results.
 //!
 //! # Discovery Process
@@ -25,7 +25,7 @@
 //! The `markers` configuration option filters tests during discovery:
 //!
 //! ```toml
-//! [discovery]
+//! [framework]
 //! type = "pytest"
 //! markers = "not slow and not integration"
 //! ```
@@ -35,29 +35,29 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
-use crate::config::PytestDiscoveryConfig;
+use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use crate::config::PytestFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
-/// Test discoverer for Python pytest projects.
+/// Test framework for Python pytest projects.
 ///
 /// Uses `pytest --collect-only -q` for test discovery and generates
 /// commands with JUnit XML output for structured result parsing.
 ///
 /// # Configuration
 ///
-/// See [`PytestDiscoveryConfig`] for available options including:
+/// See [`PytestFrameworkConfig`] for available options including:
 /// - `paths`: Directories to search
 /// - `markers`: Filter expression (e.g., `"not slow"`)
 /// - `python`: Python interpreter path
 /// - `extra_args`: Additional pytest arguments
 pub struct PytestFramework {
-    config: PytestDiscoveryConfig,
+    config: PytestFrameworkConfig,
 }
 
 impl PytestFramework {
-    /// Creates a new pytest discoverer with the given configuration.
-    pub fn new(config: PytestDiscoveryConfig) -> Self {
+    /// Creates a new pytest framework with the given configuration.
+    pub fn new(config: PytestFrameworkConfig) -> Self {
         Self { config }
     }
 
@@ -79,7 +79,7 @@ impl PytestFramework {
 
 #[async_trait]
 impl TestFramework for PytestFramework {
-    async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
+    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
 
@@ -116,14 +116,14 @@ impl TestFramework for PytestFramework {
         let output = cmd
             .output()
             .await
-            .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;
+            .map_err(|e| FrameworkError::DiscoveryFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() && !stdout.contains("::") {
-            return Err(DiscoveryError::DiscoveryFailed(format!(
-                "pytest collection failed: {}",
+            return Err(FrameworkError::DiscoveryFailed(format!(
+                "pytest discovery failed: {}",
                 stderr
             )));
         }
@@ -166,7 +166,7 @@ impl TestFramework for PytestFramework {
         &self,
         output: &ExecResult,
         result_file: Option<&str>,
-    ) -> DiscoveryResult<Vec<TestResult>> {
+    ) -> FrameworkResult<Vec<TestResult>> {
         let mut results = Vec::new();
 
         // Try to parse JUnit XML if available
@@ -184,7 +184,7 @@ impl TestFramework for PytestFramework {
 }
 
 /// Parse JUnit XML content to extract test results.
-fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
+fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
     // Basic JUnit XML parsing
     // In production, we'd use quick-xml for proper parsing
     let mut results = Vec::new();
@@ -241,7 +241,7 @@ fn parse_junit_xml(content: &str) -> DiscoveryResult<Vec<TestResult>> {
 }
 
 /// Parse pytest stdout to extract test results.
-fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<TestResult>> {
+fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestResult>> {
     let mut results = Vec::new();
 
     // Match lines like:

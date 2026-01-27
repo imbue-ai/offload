@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
-use shotgun::config::{self, DiscoveryConfig, ProviderConfig};
+use shotgun::config::{self, FrameworkConfig, ProviderConfig};
 use shotgun::executor::Orchestrator;
 use shotgun::framework::{
     TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
@@ -122,119 +122,119 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Match on provider and discoverer to get concrete types
-    match (&config.provider, &config.discovery) {
-        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+    // Match on provider and framework to get concrete types
+    match (&config.provider, &config.framework) {
+        (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = PytestFramework::new(d_cfg.clone());
+            let framework = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+        (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = CargoFramework::new(d_cfg.clone());
+            let framework = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
+        (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = DefaultFramework::new(d_cfg.clone());
+            let framework = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = PytestFramework::new(d_cfg.clone());
+            let framework = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = CargoFramework::new(d_cfg.clone());
+            let framework = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
+        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Default(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = DefaultFramework::new(d_cfg.clone());
+            let framework = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+        (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = PytestFramework::new(d_cfg.clone());
+            let framework = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+        (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = CargoFramework::new(d_cfg.clone());
+            let framework = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
             )
             .await
         }
-        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
+        (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = DefaultFramework::new(d_cfg.clone());
+            let framework = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
-                discoverer,
+                framework,
                 collect_only,
                 junit_path,
                 verbose,
@@ -247,7 +247,7 @@ async fn run_tests(
 async fn run_with<P, D>(
     config: config::Config,
     provider: P,
-    discoverer: D,
+    framework: D,
     collect_only: bool,
     junit_path: Option<PathBuf>,
     verbose: bool,
@@ -257,7 +257,7 @@ where
     D: TestFramework + 'static,
 {
     if collect_only {
-        let tests = discoverer.discover(&[]).await?;
+        let tests = framework.discover(&[]).await?;
         println!("Discovered {} tests:", tests.len());
         for test in &tests {
             println!("  {}", test.id);
@@ -266,7 +266,7 @@ where
     }
 
     let reporter = create_reporter(&config, junit_path, verbose);
-    let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+    let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 
     let result = orchestrator.run().await?;
     std::process::exit(result.exit_code());
@@ -275,10 +275,10 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    let tests = match &config.discovery {
-        DiscoveryConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        DiscoveryConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        DiscoveryConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
+    let tests = match &config.framework {
+        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
+        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
+        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
     };
 
     match format {
@@ -319,12 +319,12 @@ fn validate_config(config_path: &Path) -> Result<()> {
             };
             println!("  Provider: {}", provider_name);
 
-            let discoverer_name = match &config.discovery {
-                DiscoveryConfig::Pytest(_) => "pytest",
-                DiscoveryConfig::Cargo(_) => "cargo",
-                DiscoveryConfig::Default(_) => "default",
+            let framework_name = match &config.framework {
+                FrameworkConfig::Pytest(_) => "pytest",
+                FrameworkConfig::Cargo(_) => "cargo",
+                FrameworkConfig::Default(_) => "default",
             };
-            println!("  Discovery: {}", discoverer_name);
+            println!("  Framework: {}", framework_name);
 
             Ok(())
         }
@@ -370,19 +370,19 @@ timeout_secs = 3600"#
         }
     };
 
-    let discovery_config = match framework {
+    let framework_config = match framework {
         "pytest" => {
-            r#"[discovery]
+            r#"[framework]
 type = "pytest"
 paths = ["tests"]
 python = "python""#
         }
         "cargo" => {
-            r#"[discovery]
+            r#"[framework]
 type = "cargo""#
         }
         "default" => {
-            r#"[discovery]
+            r#"[framework]
 type = "default"
 discover_command = "echo test1 test2"
 run_command = "echo Running {tests}""#
@@ -413,7 +413,7 @@ output_dir = "test-results"
 junit = true
 junit_file = "junit.xml"
 "#,
-        provider_config, discovery_config
+        provider_config, framework_config
     );
 
     let path = PathBuf::from("shotgun.toml");
