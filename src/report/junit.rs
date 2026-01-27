@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 
 use super::Reporter;
 use crate::discovery::{TestCase, TestOutcome, TestResult};
@@ -245,13 +245,12 @@ impl Reporter for JUnitReporter {
         match self.generate_xml(result) {
             Ok(xml) => {
                 // Ensure parent directory exists
-                if let Some(parent) = self.output_path.parent() {
-                    if !parent.exists() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            tracing::error!("Failed to create output directory: {}", e);
-                            return;
-                        }
-                    }
+                if let Some(parent) = self.output_path.parent()
+                    && !parent.exists()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    tracing::error!("Failed to create output directory: {}", e);
+                    return;
                 }
 
                 if let Err(e) = std::fs::write(&self.output_path, xml) {

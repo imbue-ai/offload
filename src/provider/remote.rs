@@ -275,15 +275,14 @@ impl Sandbox for ConnectorSandbox {
             .lines()
             .rev()
             .find(|line| line.trim().starts_with('{'))
+            && let Ok(parsed) = serde_json::from_str::<crate::connector::ExecResult>(json_line)
         {
-            if let Ok(parsed) = serde_json::from_str::<crate::connector::ExecResult>(json_line) {
-                return Ok(ExecResult {
-                    exit_code: parsed.exit_code,
-                    stdout: parsed.stdout,
-                    stderr: parsed.stderr,
-                    duration: start.elapsed(),
-                });
-            }
+            return Ok(ExecResult {
+                exit_code: parsed.exit_code,
+                stdout: parsed.stdout,
+                stderr: parsed.stderr,
+                duration: start.elapsed(),
+            });
         }
 
         // Fall back to raw output
@@ -302,7 +301,9 @@ impl Sandbox for ConnectorSandbox {
     }
 
     async fn upload(&self, _local: &Path, _remote: &Path) -> ProviderResult<()> {
-        warn!("upload() not supported by ConnectorSandbox - files should be included in connector image");
+        warn!(
+            "upload() not supported by ConnectorSandbox - files should be included in connector image"
+        );
         Ok(())
     }
 

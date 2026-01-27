@@ -133,7 +133,7 @@ pub mod report;
 // Re-export commonly used types for convenience.
 // These are the types most users will need when setting up shotgun.
 
-pub use config::{load_config, Config};
+pub use config::{Config, load_config};
 pub use discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
 pub use executor::{Orchestrator, RunResult};
 pub use provider::{Sandbox, SandboxProvider};
