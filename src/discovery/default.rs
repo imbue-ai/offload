@@ -60,7 +60,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutcome, TestResult};
+use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
 use crate::config::DefaultDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -122,7 +122,7 @@ impl DefaultDiscoverer {
 }
 
 #[async_trait]
-impl TestDiscoverer for DefaultDiscoverer {
+impl TestFramework for DefaultDiscoverer {
     async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Run discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");
@@ -161,7 +161,7 @@ impl TestDiscoverer for DefaultDiscoverer {
         Ok(tests)
     }
 
-    fn produce_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
         let full_command = self.substitute_tests(tests);
 
         // Parse the command into program and args

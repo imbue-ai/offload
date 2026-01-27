@@ -87,7 +87,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
-use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
+use crate::discovery::{TestCase, TestFramework, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox, SandboxProvider};
 use crate::report::Reporter;
 
@@ -216,7 +216,7 @@ impl RunResult {
 ///
 /// The orchestrator is the top-level component that ties together:
 /// - A [`SandboxProvider`] for execution environments
-/// - A [`TestDiscoverer`] for finding tests
+/// - A [`TestFramework`] for finding tests
 /// - A [`Reporter`] for output
 ///
 /// It manages the full lifecycle of a test run: discovery, scheduling,
@@ -265,7 +265,7 @@ pub struct Orchestrator<P, D, R> {
 impl<P, D, R> Orchestrator<P, D, R>
 where
     P: SandboxProvider,
-    D: TestDiscoverer,
+    D: TestFramework,
     R: Reporter,
 {
     /// Creates a new orchestrator with the given components.

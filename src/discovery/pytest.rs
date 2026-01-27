@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutcome, TestResult};
+use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
 use crate::config::PytestDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -78,7 +78,7 @@ impl PytestDiscoverer {
 }
 
 #[async_trait]
-impl TestDiscoverer for PytestDiscoverer {
+impl TestFramework for PytestDiscoverer {
     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
@@ -141,7 +141,7 @@ impl TestDiscoverer for PytestDiscoverer {
         Ok(tests)
     }
 
-    fn produce_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
         let mut cmd = Command::new(&self.config.python)
             .arg("-m")
             .arg("pytest")

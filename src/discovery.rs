@@ -2,25 +2,25 @@
 //!
 //! This module provides a framework-agnostic interface for discovering tests
 //! and parsing their results. It supports pytest, cargo test, and custom
-//! test frameworks via the [`TestDiscoverer`] trait.
+//! test frameworks via the [`TestFramework`] trait.
 //!
 //! # Architecture
 //!
 //! The discovery system has three main responsibilities:
 //!
-//! 1. **Discover**: Find tests in the codebase ([`TestDiscoverer::discover`])
-//! 2. **Run**: Generate commands to execute tests ([`TestDiscoverer::produce_command`])
-//! 3. **Parse**: Extract results from execution ([`TestDiscoverer::parse_results`])
+//! 1. **Discover**: Find tests in the codebase ([`TestFramework::discover`])
+//! 2. **Run**: Generate commands to execute tests ([`TestFramework::produce_test_execution_command`])
+//! 3. **Parse**: Extract results from execution ([`TestFramework::parse_results`])
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │                     TestDiscoverer                               │
+//! │                     TestFramework                                │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                                                                  │
 //! │  discover(&paths) ──────────► Vec<TestCase>                     │
 //! │                                    │                             │
 //! │                                    ▼                             │
-//! │  produce_command(&tests) ──► Command                            │
+//! │  produce_test_execution_command(&tests) ──► Command             │
 //! │                                    │                             │
 //! │                                    ▼ (execute in sandbox)       │
 //! │  parse_results(output) ────► Vec<TestResult>                    │
@@ -38,7 +38,7 @@
 //!
 //! # Custom Discoverers
 //!
-//! Implement [`TestDiscoverer`] to support new test frameworks:
+//! Implement [`TestFramework`] to support new test frameworks:
 //!
 //! ```no_run
 //! use async_trait::async_trait;
@@ -49,13 +49,13 @@
 //! struct MyDiscoverer;
 //!
 //! #[async_trait]
-//! impl TestDiscoverer for MyDiscoverer {
+//! impl TestFramework for MyDiscoverer {
 //!     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
 //!         // Discover tests in the given paths
 //!         todo!()
 //!     }
 //!
-//!     fn produce_command(&self, tests: &[TestCase]) -> Command {
+//!     fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
 //!         // Generate command to run these tests
 //!         todo!()
 //!     }
@@ -379,7 +379,7 @@ impl TestOutcome {
 
 /// Trait for discovering tests and parsing their results.
 ///
-/// A `TestDiscoverer` encapsulates the logic for a specific test framework.
+/// A `TestFramework` encapsulates the logic for a specific test framework.
 /// It handles three main operations:
 ///
 /// 1. **Discovery**: Find tests in the codebase
@@ -407,14 +407,14 @@ impl TestOutcome {
 /// struct JestDiscoverer { config_path: PathBuf }
 ///
 /// #[async_trait]
-/// impl TestDiscoverer for JestDiscoverer {
+/// impl TestFramework for JestDiscoverer {
 ///     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
 ///         // Run: jest --listTests
 ///         // Parse output to extract test files
 ///         todo!()
 ///     }
 ///
-///     fn produce_command(&self, tests: &[TestCase]) -> Command {
+///     fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
 ///         let test_args: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
 ///         Command::new("jest")
 ///             .args(test_args)
@@ -430,7 +430,7 @@ impl TestOutcome {
 /// }
 /// ```
 #[async_trait]
-pub trait TestDiscoverer: Send + Sync {
+pub trait TestFramework: Send + Sync {
     /// Discovers tests in the given paths.
     ///
     /// This method typically runs a framework-specific collection command
@@ -462,7 +462,7 @@ pub trait TestDiscoverer: Send + Sync {
     /// # Example Output
     ///
     /// For pytest: `pytest -v tests/test_a.py::test_func tests/test_b.py::test_other`
-    fn produce_command(&self, tests: &[TestCase]) -> Command;
+    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command;
 
     /// Parses test results from command execution.
     ///

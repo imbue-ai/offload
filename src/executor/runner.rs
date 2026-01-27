@@ -43,7 +43,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use tracing::{debug, info};
 
-use crate::discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
+use crate::discovery::{TestCase, TestFramework, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
 
 /// Callback function for streaming test output.
@@ -76,7 +76,7 @@ pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 /// # Type Parameters
 ///
 /// - `S`: The sandbox type (implements [`Sandbox`])
-/// - `D`: The discoverer type (implements [`TestDiscoverer`])
+/// - `D`: The discoverer type (implements [`TestFramework`])
 pub struct TestRunner<'a, S, D> {
     sandbox: S,
     discoverer: &'a D,
@@ -85,7 +85,7 @@ pub struct TestRunner<'a, S, D> {
     output_callback: Option<OutputCallback>,
 }
 
-impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
+impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Creates a new test runner for the given sandbox.
     ///
     /// # Arguments
@@ -163,7 +163,9 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
         info!("Running test: {}", test.id);
 
         // Generate the run command
-        let mut cmd = self.discoverer.produce_command(std::slice::from_ref(test));
+        let mut cmd = self
+            .discoverer
+            .produce_test_execution_command(std::slice::from_ref(test));
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command (streaming or buffered)
@@ -285,7 +287,7 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
         info!("Running {} tests", tests.len());
 
         // Generate the run command for all tests
-        let mut cmd = self.discoverer.produce_command(tests);
+        let mut cmd = self.discoverer.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command

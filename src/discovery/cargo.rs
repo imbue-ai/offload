@@ -33,7 +33,7 @@
 //!
 //! ```no_run
 //! use shotgun::discovery::cargo::CargoDiscoverer;
-//! use shotgun::discovery::TestDiscoverer;
+//! use shotgun::discovery::TestFramework;
 //! use shotgun::config::CargoDiscoveryConfig;
 //!
 //! #[tokio::main]
@@ -57,7 +57,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutcome, TestResult};
+use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
 use crate::config::CargoDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -138,7 +138,7 @@ impl CargoDiscoverer {
 }
 
 #[async_trait]
-impl TestDiscoverer for CargoDiscoverer {
+impl TestFramework for CargoDiscoverer {
     async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Build the cargo test --list command
         let mut cmd_args = vec!["test".to_string()];
@@ -198,7 +198,7 @@ impl TestDiscoverer for CargoDiscoverer {
         Ok(tests)
     }
 
-    fn produce_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
         let mut cmd = Command::new("cargo").arg("test");
 
         // Add package if specified

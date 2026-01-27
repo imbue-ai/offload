@@ -30,7 +30,7 @@
 //! ### Discovery ([`discovery`])
 //!
 //! Discoverers find tests and generate commands to run them. Each discoverer
-//! implements the [`TestDiscoverer`] trait:
+//! implements the [`TestFramework`] trait:
 //!
 //! - [`discovery::pytest::PytestDiscoverer`] - Discover and run pytest tests
 //! - [`discovery::cargo::CargoDiscoverer`] - Discover and run Rust tests
@@ -119,7 +119,7 @@
 //!
 //! [`SandboxProvider`]: provider::SandboxProvider
 //! [`Sandbox`]: provider::Sandbox
-//! [`TestDiscoverer`]: discovery::TestDiscoverer
+//! [`TestFramework`]: discovery::TestFramework
 //! [`Orchestrator`]: executor::Orchestrator
 
 pub mod config;
@@ -133,7 +133,7 @@ pub mod report;
 // These are the types most users will need when setting up shotgun.
 
 pub use config::{Config, load_config};
-pub use discovery::{TestCase, TestDiscoverer, TestOutcome, TestResult};
+pub use discovery::{TestCase, TestFramework, TestOutcome, TestResult};
 pub use executor::{Orchestrator, RunResult};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::Reporter;

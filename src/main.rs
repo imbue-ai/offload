@@ -9,7 +9,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use shotgun::config::{self, DiscoveryConfig, ProviderConfig};
 use shotgun::discovery::{
-    TestDiscoverer, cargo::CargoDiscoverer, default::DefaultDiscoverer, pytest::PytestDiscoverer,
+    TestFramework, cargo::CargoDiscoverer, default::DefaultDiscoverer, pytest::PytestDiscoverer,
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
@@ -254,7 +254,7 @@ async fn run_with<P, D>(
 ) -> Result<()>
 where
     P: SandboxProvider + 'static,
-    D: TestDiscoverer + 'static,
+    D: TestFramework + 'static,
 {
     if collect_only {
         let tests = discoverer.discover(&[]).await?;
