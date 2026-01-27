@@ -31,7 +31,7 @@
 //!
 //! # Execution Flow
 //!
-//! 1. **Discovery**: Find tests using the configured discoverer
+//! 1. **Discovery**: Find tests using the configured framework
 //! 2. **Scheduling**: Distribute tests into batches across sandboxes
 //! 3. **Execution**: Run test batches in parallel sandboxes
 //! 4. **Retry**: Re-run failed tests (if configured)
@@ -59,10 +59,10 @@
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
 //!     let provider = LocalProvider::new(Default::default());
-//!     let discoverer = PytestFramework::new(Default::default());
+//!     let framework = PytestFramework::new(Default::default());
 //!     let reporter = ConsoleReporter::new(true);
 //!
-//!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 //!     let result = orchestrator.run().await?;
 //!
 //!     if result.success() {
@@ -225,7 +225,7 @@ impl RunResult {
 /// # Type Parameters
 ///
 /// - `P`: The sandbox provider type
-/// - `D`: The test discoverer type
+/// - `D`: The test framework type
 /// - `R`: The reporter type
 ///
 /// # Example
@@ -243,13 +243,13 @@ impl RunResult {
 ///
 ///     // Set up components
 ///     let provider = LocalProvider::new(Default::default());
-///     let discoverer = PytestFramework::new(Default::default());
+///     let framework = PytestFramework::new(Default::default());
 ///     let reporter = MultiReporter::new()
 ///         .with_reporter(ConsoleReporter::new(true))
 ///         .with_reporter(JUnitReporter::new("results.xml".into()));
 ///
 ///     // Create orchestrator and run
-///     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+///     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 ///     let result = orchestrator.run().await?;
 ///
 ///     std::process::exit(result.exit_code());
@@ -258,7 +258,7 @@ impl RunResult {
 pub struct Orchestrator<P, D, R> {
     config: Config,
     provider: P,
-    discoverer: D,
+    framework: D,
     reporter: R,
 }
 
@@ -274,13 +274,13 @@ where
     ///
     /// * `config` - Configuration loaded from TOML
     /// * `provider` - Sandbox provider for creating execution environments
-    /// * `discoverer` - Test discoverer for finding tests
+    /// * `framework` - Test framework for finding tests
     /// * `reporter` - Reporter for outputting results
-    pub fn new(config: Config, provider: P, discoverer: D, reporter: R) -> Self {
+    pub fn new(config: Config, provider: P, framework: D, reporter: R) -> Self {
         Self {
             config,
             provider,
-            discoverer,
+            framework,
             reporter,
         }
     }
@@ -289,7 +289,7 @@ where
     ///
     /// This is the main entry point for test execution. It performs:
     ///
-    /// 1. Test discovery using the configured discoverer
+    /// 1. Test discovery using the configured framework
     /// 2. Scheduling tests into batches based on `max_parallel`
     /// 3. Parallel execution across sandboxes
     /// 4. Retrying failed tests (if `retry_count > 0`)
@@ -318,7 +318,7 @@ where
         // Discover tests
         info!("Discovering tests...");
         let paths: Vec<PathBuf> = Vec::new(); // Use default paths from config
-        let tests = self.discoverer.discover(&paths).await?;
+        let tests = self.framework.discover(&paths).await?;
 
         if tests.is_empty() {
             warn!("No tests discovered");
@@ -361,7 +361,7 @@ where
             for (batch_idx, batch) in batches.into_iter().enumerate() {
                 let results = &results;
                 let provider = &self.provider;
-                let discoverer = &self.discoverer;
+                let framework = &self.framework;
                 let reporter = &self.reporter;
                 let config = &self.config;
 
@@ -392,7 +392,7 @@ where
 
                     let mut runner = TestRunner::new(
                         initial_sandbox,
-                        discoverer,
+                        framework,
                         Duration::from_secs(config.shotgun.test_timeout_secs),
                     );
 
@@ -542,7 +542,7 @@ where
 
                 let mut runner = TestRunner::new(
                     sandbox,
-                    &self.discoverer,
+                    &self.framework,
                     Duration::from_secs(self.config.shotgun.test_timeout_secs),
                 );
 

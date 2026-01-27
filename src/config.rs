@@ -2,7 +2,7 @@
 //!
 //! This module provides types and functions for loading shotgun configuration
 //! from TOML files or strings. The configuration schema defines all settings
-//! for providers, test discovery, and reporting.
+//! for providers, test frameworks, and reporting.
 //!
 //! # Configuration File Format
 //!
@@ -19,9 +19,9 @@
 //! type = "docker"            # One of: process, docker, default
 //! # ... provider-specific settings
 //!
-//! [discovery]
+//! [framework]
 //! type = "pytest"            # One of: pytest, cargo, default
-//! # ... discovery-specific settings
+//! # ... framework-specific settings
 //!
 //! [report]
 //! output_dir = "test-results"
@@ -45,7 +45,7 @@
 //!     [provider]
 //!     type = "local"
 //!
-//!     [discovery]
+//!     [framework]
 //!     type = "pytest"
 //!     paths = ["tests"]
 //! "#;
@@ -124,7 +124,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 ///     [provider]
 ///     type = "local"
 ///
-///     [discovery]
+///     [framework]
 ///     type = "pytest"
 /// "#)?;
 ///

@@ -1,7 +1,7 @@
-//! Cargo test discovery implementation.
+//! Cargo test framework implementation.
 //!
-//! This module provides test discovery for Rust projects using `cargo test`.
-//! It uses `cargo test --list` for discovery and parses stdout for results.
+//! This module provides test framework support for Rust projects using `cargo test`.
+//! It uses `cargo test --list` for test discovery and parses stdout for results.
 //!
 //! # Discovery Process
 //!
@@ -23,7 +23,7 @@
 //! For workspaces, specify the package to test:
 //!
 //! ```toml
-//! [discovery]
+//! [framework]
 //! type = "cargo"
 //! package = "my-crate"
 //! features = ["test-utils"]
@@ -34,18 +34,18 @@
 //! ```no_run
 //! use shotgun::framework::cargo::CargoFramework;
 //! use shotgun::framework::TestFramework;
-//! use shotgun::config::CargoDiscoveryConfig;
+//! use shotgun::config::CargoFrameworkConfig;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let config = CargoDiscoveryConfig {
+//!     let config = CargoFrameworkConfig {
 //!         package: Some("my-crate".into()),
 //!         features: vec!["test-utils".into()],
 //!         ..Default::default()
 //!     };
 //!
-//!     let discoverer = CargoFramework::new(config);
-//!     let tests = discoverer.discover(&[]).await?;
+//!     let framework = CargoFramework::new(config);
+//!     let tests = framework.discover(&[]).await?;
 //!
 //!     println!("Found {} tests", tests.len());
 //!     Ok(())
@@ -57,42 +57,42 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{DiscoveryError, DiscoveryResult, TestCase, TestFramework, TestOutcome, TestResult};
-use crate::config::CargoDiscoveryConfig;
+use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use crate::config::CargoFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
-/// Test discoverer for Rust projects using `cargo test`.
+/// Test framework for Rust projects using `cargo test`.
 ///
-/// Uses `cargo test --list` for discovery and generates commands
+/// Uses `cargo test --list` for test discovery and generates commands
 /// with `--exact` flag to run specific tests.
 ///
 /// # Configuration
 ///
-/// See [`CargoDiscoveryConfig`] for available options including:
+/// See [`CargoFrameworkConfig`] for available options including:
 /// - `package`: Package to test (for workspaces)
 /// - `features`: Cargo features to enable
 /// - `bin`: Binary target name
 /// - `include_ignored`: Include `#[ignore]` tests
 pub struct CargoFramework {
-    config: CargoDiscoveryConfig,
+    config: CargoFrameworkConfig,
 }
 
 impl CargoFramework {
-    /// Creates a new cargo test discoverer with the given configuration.
+    /// Creates a new cargo test framework with the given configuration.
     ///
     /// # Example
     ///
     /// ```
     /// use shotgun::framework::cargo::CargoFramework;
-    /// use shotgun::config::CargoDiscoveryConfig;
+    /// use shotgun::config::CargoFrameworkConfig;
     ///
-    /// let discoverer = CargoFramework::new(CargoDiscoveryConfig {
+    /// let framework = CargoFramework::new(CargoFrameworkConfig {
     ///     package: Some("my-lib".into()),
     ///     features: vec!["test-utils".into()],
     ///     ..Default::default()
     /// });
     /// ```
-    pub fn new(config: CargoDiscoveryConfig) -> Self {
+    pub fn new(config: CargoFrameworkConfig) -> Self {
         Self { config }
     }
 
@@ -139,7 +139,7 @@ impl CargoFramework {
 
 #[async_trait]
 impl TestFramework for CargoFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
+    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
         // Build the cargo test --list command
         let mut cmd_args = vec!["test".to_string()];
 
@@ -173,13 +173,13 @@ impl TestFramework for CargoFramework {
             .args(&cmd_args)
             .output()
             .await
-            .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;
+            .map_err(|e| FrameworkError::DiscoveryFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
-            return Err(DiscoveryError::DiscoveryFailed(format!(
+            return Err(FrameworkError::DiscoveryFailed(format!(
                 "cargo test --list failed: {}",
                 stderr
             )));
@@ -243,13 +243,13 @@ impl TestFramework for CargoFramework {
         &self,
         output: &ExecResult,
         _result_file: Option<&str>,
-    ) -> DiscoveryResult<Vec<TestResult>> {
+    ) -> FrameworkResult<Vec<TestResult>> {
         parse_cargo_test_output(&output.stdout, &output.stderr)
     }
 }
 
 /// Parse cargo test output to extract test results.
-fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<TestResult>> {
+fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestResult>> {
     let mut results = Vec::new();
 
     // Match lines like:

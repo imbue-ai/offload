@@ -34,7 +34,7 @@
 //!
 //! - [`framework::pytest::PytestFramework`] - Discover and run pytest tests
 //! - [`framework::cargo::CargoFramework`] - Discover and run Rust tests
-//! - [`framework::default::DefaultFramework`] - Custom discovery via shell commands
+//! - [`framework::default::DefaultFramework`] - Custom framework via shell commands
 //!
 //! ### Executor ([`executor`])
 //!
@@ -70,8 +70,8 @@
 //!     // Create provider (runs tests as local processes)
 //!     let provider = LocalProvider::new(Default::default());
 //!
-//!     // Create discoverer (finds pytest tests)
-//!     let discoverer = PytestFramework::new(Default::default());
+//!     // Create framework (finds pytest tests)
+//!     let framework = PytestFramework::new(Default::default());
 //!
 //!     // Create reporter (console + JUnit XML)
 //!     let reporter = MultiReporter::new()
@@ -79,7 +79,7 @@
 //!         .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
 //!
 //!     // Run tests
-//!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 //!     let result = orchestrator.run().await?;
 //!
 //!     std::process::exit(result.exit_code());
@@ -102,7 +102,7 @@
 //! volumes = [".:/app"]
 //! working_dir = "/app"
 //!
-//! [discovery]
+//! [framework]
 //! type = "pytest"
 //! paths = ["tests"]
 //!
