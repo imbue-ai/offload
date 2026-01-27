@@ -32,28 +32,9 @@
 //!
 //! | Discoverer | Framework | Discovery Method |
 //! |------------|-----------|------------------|
-//! | [`pytest::PytestDiscoverer`] | pytest | `pytest --collect-only` |
+//! | [`pytest::PytestDiscoverer`] | pytest | `pytest --collect-only -q` |
 //! | [`cargo::CargoDiscoverer`] | Rust | `cargo test --list` |
 //! | [`default::DefaultDiscoverer`] | Any | Custom shell commands |
-//!
-//! # Test Case Model
-//!
-//! A [`TestCase`] represents a single test with metadata:
-//!
-//! - **id**: Unique identifier (e.g., `"tests/test_math.py::test_add"`)
-//! - **name**: Display name (e.g., `"test_add"`)
-//! - **file/line**: Source location (optional)
-//! - **markers**: Tags/labels (e.g., `["slow", "integration"]`)
-//! - **flaky/skipped**: Special status flags
-//!
-//! # Test Result Model
-//!
-//! A [`TestResult`] captures the outcome of running a test:
-//!
-//! - **outcome**: [`TestOutcome`] (Passed, Failed, Skipped, Error)
-//! - **duration**: How long the test took
-//! - **stdout/stderr**: Captured output
-//! - **error_message/stack_trace**: Failure details
 //!
 //! # Custom Discoverers
 //!
