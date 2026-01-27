@@ -59,7 +59,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -85,7 +84,7 @@ use crate::config::{LocalProviderConfig, SandboxConfig};
 /// Sandbox creation and listing are protected by internal locks.
 pub struct LocalProvider {
     config: LocalProviderConfig,
-    sandboxes: Arc<Mutex<Vec<SandboxInfo>>>,
+    sandboxes: Mutex<Vec<SandboxInfo>>,
 }
 
 impl LocalProvider {
@@ -116,7 +115,7 @@ impl LocalProvider {
     pub fn new(config: LocalProviderConfig) -> Self {
         Self {
             config,
-            sandboxes: Arc::new(Mutex::new(Vec::new())),
+            sandboxes: Mutex::new(Vec::new()),
         }
     }
 }

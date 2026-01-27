@@ -85,7 +85,7 @@ use crate::connector::{Connector, ShellConnector};
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
-    sandboxes: Arc<Mutex<HashMap<String, DefaultSandboxInfo>>>,
+    sandboxes: Mutex<HashMap<String, DefaultSandboxInfo>>,
 }
 
 #[allow(dead_code)]
@@ -131,7 +131,7 @@ impl DefaultProvider {
         Self {
             connector: Arc::new(connector),
             config,
-            sandboxes: Arc::new(Mutex::new(HashMap::new())),
+            sandboxes: Mutex::new(HashMap::new()),
         }
     }
 }

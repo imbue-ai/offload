@@ -109,7 +109,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::discovery::TestCase;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
 use futures::stream::StreamExt;
@@ -418,58 +417,24 @@ impl Connector for ShellConnector {
     }
 }
 
-/// Converts test ID strings into [`TestCase`] structs.
-///
-/// Parses test IDs in the common `path::module::test_name` format and
-/// creates [`TestCase`] instances with the appropriate fields populated.
-///
-/// # ID Format
-///
-/// The function handles IDs with `::` separators:
-/// - The part before the first `::` is treated as the file path
-/// - The part after the last `::` is treated as the test name
-///
-/// # Example
-///
-/// ```
-/// use shotgun::connector::test_ids_to_cases;
-///
-/// let ids = vec![
-///     "tests/test_math.py::test_addition".to_string(),
-///     "tests/test_math.py::TestClass::test_method".to_string(),
-/// ];
-///
-/// let cases = test_ids_to_cases(ids);
-///
-/// assert_eq!(cases[0].id, "tests/test_math.py::test_addition");
-/// assert_eq!(cases[0].name, "test_addition");
-///
-/// assert_eq!(cases[1].id, "tests/test_math.py::TestClass::test_method");
-/// assert_eq!(cases[1].name, "test_method");
-/// ```
-///
-/// # Use Case
-///
-/// This function is useful when you have raw test IDs from command output
-/// (e.g., from `pytest --collect-only`) and need to convert them to
-/// [`TestCase`] structs for further processing.
-pub fn test_ids_to_cases(ids: Vec<String>) -> Vec<TestCase> {
-    ids.into_iter()
-        .map(|id| TestCase {
-            id: id.clone(),
-            name: id.split("::").last().unwrap_or(&id).to_string(),
-            file: id.split("::").next().map(PathBuf::from),
-            line: None,
-            markers: Vec::new(),
-            skipped: false,
-            flaky: false,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discovery::TestCase;
+
+    fn test_ids_to_cases(ids: Vec<String>) -> Vec<TestCase> {
+        ids.into_iter()
+            .map(|id| TestCase {
+                id: id.clone(),
+                name: id.split("::").last().unwrap_or(&id).to_string(),
+                file: id.split("::").next().map(PathBuf::from),
+                line: None,
+                markers: Vec::new(),
+                skipped: false,
+                flaky: false,
+            })
+            .collect()
+    }
 
     #[test]
     fn test_parse_test_id() {

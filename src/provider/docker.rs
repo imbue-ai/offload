@@ -90,7 +90,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -122,7 +121,7 @@ use crate::config::{DockerProviderConfig, SandboxConfig};
 pub struct DockerProvider {
     docker: Docker,
     config: DockerProviderConfig,
-    containers: Arc<Mutex<HashMap<String, ContainerInfo>>>,
+    containers: Mutex<HashMap<String, ContainerInfo>>,
 }
 
 #[derive(Clone)]
@@ -181,7 +180,7 @@ impl DockerProvider {
         Ok(Self {
             docker,
             config,
-            containers: Arc::new(Mutex::new(HashMap::new())),
+            containers: Mutex::new(HashMap::new()),
         })
     }
 
