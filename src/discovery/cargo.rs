@@ -198,7 +198,7 @@ impl TestDiscoverer for CargoDiscoverer {
         Ok(tests)
     }
 
-    fn run_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_command(&self, tests: &[TestCase]) -> Command {
         let mut cmd = Command::new("cargo").arg("test");
 
         // Add package if specified
@@ -245,10 +245,6 @@ impl TestDiscoverer for CargoDiscoverer {
         _result_file: Option<&str>,
     ) -> DiscoveryResult<Vec<TestResult>> {
         parse_cargo_test_output(&output.stdout, &output.stderr)
-    }
-
-    fn name(&self) -> &'static str {
-        "cargo"
     }
 }
 

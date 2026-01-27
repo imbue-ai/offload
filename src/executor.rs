@@ -366,7 +366,7 @@ where
                 let config = &self.config;
 
                 scope.spawn(async move {
-                    // Create initial sandbox to check if it's single-use
+                    // Create sandbox for this batch
                     let sandbox_config = SandboxConfig {
                         id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
                         working_dir: config

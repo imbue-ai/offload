@@ -201,10 +201,6 @@ impl SandboxProvider for SshProvider {
             })
             .collect())
     }
-
-    fn name(&self) -> &'static str {
-        "ssh"
-    }
 }
 
 /// A sandbox that executes commands on a remote host via SSH.

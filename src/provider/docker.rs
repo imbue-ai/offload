@@ -302,10 +302,6 @@ impl SandboxProvider for DockerProvider {
             })
             .collect())
     }
-
-    fn name(&self) -> &'static str {
-        "docker"
-    }
 }
 
 /// A sandbox backed by a running Docker container.

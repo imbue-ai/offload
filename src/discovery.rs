@@ -9,7 +9,7 @@
 //! The discovery system has three main responsibilities:
 //!
 //! 1. **Discover**: Find tests in the codebase ([`TestDiscoverer::discover`])
-//! 2. **Run**: Generate commands to execute tests ([`TestDiscoverer::run_command`])
+//! 2. **Run**: Generate commands to execute tests ([`TestDiscoverer::produce_command`])
 //! 3. **Parse**: Extract results from execution ([`TestDiscoverer::parse_results`])
 //!
 //! ```text
@@ -20,7 +20,7 @@
 //! │  discover(&paths) ──────────► Vec<TestCase>                     │
 //! │                                    │                             │
 //! │                                    ▼                             │
-//! │  run_command(&tests) ──────► Command                            │
+//! │  produce_command(&tests) ──► Command                            │
 //! │                                    │                             │
 //! │                                    ▼ (execute in sandbox)       │
 //! │  parse_results(output) ────► Vec<TestResult>                    │
@@ -34,7 +34,7 @@
 //! |------------|-----------|------------------|
 //! | [`pytest::PytestDiscoverer`] | pytest | `pytest --collect-only` |
 //! | [`cargo::CargoDiscoverer`] | Rust | `cargo test --list` |
-//! | [`generic::GenericDiscoverer`] | Any | Custom shell commands |
+//! | [`default::DefaultDiscoverer`] | Any | Custom shell commands |
 //!
 //! # Test Case Model
 //!
@@ -74,7 +74,7 @@
 //!         todo!()
 //!     }
 //!
-//!     fn run_command(&self, tests: &[TestCase]) -> Command {
+//!     fn produce_command(&self, tests: &[TestCase]) -> Command {
 //!         // Generate command to run these tests
 //!         todo!()
 //!     }
@@ -84,13 +84,11 @@
 //!         // Parse test results from output
 //!         todo!()
 //!     }
-//!
-//!     fn name(&self) -> &'static str { "my-framework" }
 //! }
 //! ```
 
 pub mod cargo;
-pub mod generic;
+pub mod default;
 pub mod pytest;
 
 use std::path::PathBuf;
@@ -147,7 +145,7 @@ pub enum DiscoveryError {
 ///
 /// - **pytest**: `tests/test_math.py::TestClass::test_method`
 /// - **cargo**: `tests::module::test_name`
-/// - **generic**: User-defined format
+/// - **default**: User-defined format
 ///
 /// # Builder Pattern
 ///
@@ -411,7 +409,7 @@ impl TestOutcome {
 ///
 /// - [`pytest::PytestDiscoverer`] - Python pytest framework
 /// - [`cargo::CargoDiscoverer`] - Rust cargo test framework
-/// - [`generic::GenericDiscoverer`] - Custom shell-based discovery
+/// - [`default::DefaultDiscoverer`] - Custom shell-based discovery
 ///
 /// # Thread Safety
 ///
@@ -435,7 +433,7 @@ impl TestOutcome {
 ///         todo!()
 ///     }
 ///
-///     fn run_command(&self, tests: &[TestCase]) -> Command {
+///     fn produce_command(&self, tests: &[TestCase]) -> Command {
 ///         let test_args: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
 ///         Command::new("jest")
 ///             .args(test_args)
@@ -448,8 +446,6 @@ impl TestOutcome {
 ///         // Parse JUnit XML from jest-junit reporter
 ///         todo!()
 ///     }
-///
-///     fn name(&self) -> &'static str { "jest" }
 /// }
 /// ```
 #[async_trait]
@@ -485,7 +481,7 @@ pub trait TestDiscoverer: Send + Sync {
     /// # Example Output
     ///
     /// For pytest: `pytest -v tests/test_a.py::test_func tests/test_b.py::test_other`
-    fn run_command(&self, tests: &[TestCase]) -> Command;
+    fn produce_command(&self, tests: &[TestCase]) -> Command;
 
     /// Parses test results from command execution.
     ///
@@ -508,10 +504,4 @@ pub trait TestDiscoverer: Send + Sync {
         output: &ExecResult,
         result_file: Option<&str>,
     ) -> DiscoveryResult<Vec<TestResult>>;
-
-    /// Returns the framework name for logging and identification.
-    ///
-    /// Should be a short, lowercase identifier like `"pytest"`, `"cargo"`,
-    /// or `"jest"`.
-    fn name(&self) -> &'static str;
 }

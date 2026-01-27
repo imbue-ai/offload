@@ -163,7 +163,7 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
         info!("Running test: {}", test.id);
 
         // Generate the run command
-        let mut cmd = self.discoverer.run_command(std::slice::from_ref(test));
+        let mut cmd = self.discoverer.produce_command(std::slice::from_ref(test));
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command (streaming or buffered)
@@ -285,7 +285,7 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
         info!("Running {} tests", tests.len());
 
         // Generate the run command for all tests
-        let mut cmd = self.discoverer.run_command(tests);
+        let mut cmd = self.discoverer.produce_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command

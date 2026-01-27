@@ -1,11 +1,11 @@
-//! Generic test discovery implementation.
+//! Default test discovery implementation.
 //!
 //! This discoverer enables integration with any test framework by using
 //! custom shell commands for discovery and execution.
 //!
 //! # When to Use
 //!
-//! Use the generic discoverer when:
+//! Use the default discoverer when:
 //! - Your framework isn't directly supported (Jest, Mocha, Go, etc.)
 //! - You have custom test organization that standard discoverers don't handle
 //! - You need specialized discovery logic
@@ -41,7 +41,7 @@
 //!
 //! ```toml
 //! [discovery]
-//! type = "generic"
+//! type = "default"
 //! discover_command = "jest --listTests --json | jq -r '.[]' | xargs -I{} basename {}"
 //! run_command = "jest {tests} --ci --reporters=jest-junit"
 //! result_file = "junit.xml"
@@ -51,7 +51,7 @@
 //!
 //! ```toml
 //! [discovery]
-//! type = "generic"
+//! type = "default"
 //! discover_command = "go test -list '.*' ./... 2>/dev/null | grep -E '^Test'"
 //! run_command = "go test -v -run '^({tests})$' ./..."
 //! ```
@@ -61,7 +61,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use super::{DiscoveryError, DiscoveryResult, TestCase, TestDiscoverer, TestOutcome, TestResult};
-use crate::config::GenericDiscoveryConfig;
+use crate::config::DefaultDiscoveryConfig;
 use crate::provider::{Command, ExecResult};
 
 /// Test discoverer using custom shell commands.
@@ -71,32 +71,32 @@ use crate::provider::{Command, ExecResult};
 ///
 /// # Configuration
 ///
-/// See [`GenericDiscoveryConfig`] for available options including:
+/// See [`DefaultDiscoveryConfig`] for available options including:
 /// - `discover_command`: Shell command that outputs test IDs
 /// - `run_command`: Command template with `{tests}` placeholder
 /// - `result_file`: Optional JUnit XML path for detailed results
 /// - `working_dir`: Directory for running commands
-pub struct GenericDiscoverer {
-    config: GenericDiscoveryConfig,
+pub struct DefaultDiscoverer {
+    config: DefaultDiscoveryConfig,
 }
 
-impl GenericDiscoverer {
-    /// Creates a new generic discoverer with the given configuration.
+impl DefaultDiscoverer {
+    /// Creates a new default discoverer with the given configuration.
     ///
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::generic::GenericDiscoverer;
-    /// use shotgun::config::GenericDiscoveryConfig;
+    /// use shotgun::discovery::default::DefaultDiscoverer;
+    /// use shotgun::config::DefaultDiscoveryConfig;
     ///
-    /// let discoverer = GenericDiscoverer::new(GenericDiscoveryConfig {
+    /// let discoverer = DefaultDiscoverer::new(DefaultDiscoveryConfig {
     ///     discover_command: "find tests -name '*.test.js' -exec basename {} \\;".into(),
     ///     run_command: "jest {tests}".into(),
     ///     result_file: Some("junit.xml".into()),
     ///     working_dir: None,
     /// });
     /// ```
-    pub fn new(config: GenericDiscoveryConfig) -> Self {
+    pub fn new(config: DefaultDiscoveryConfig) -> Self {
         Self { config }
     }
 
@@ -122,7 +122,7 @@ impl GenericDiscoverer {
 }
 
 #[async_trait]
-impl TestDiscoverer for GenericDiscoverer {
+impl TestDiscoverer for DefaultDiscoverer {
     async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Run discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");
@@ -161,7 +161,7 @@ impl TestDiscoverer for GenericDiscoverer {
         Ok(tests)
     }
 
-    fn run_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_command(&self, tests: &[TestCase]) -> Command {
         let full_command = self.substitute_tests(tests);
 
         // Parse the command into program and args
@@ -215,10 +215,6 @@ impl TestDiscoverer for GenericDiscoverer {
                 stack_trace: None,
             }])
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "generic"
     }
 }
 

@@ -154,10 +154,6 @@ impl SandboxProvider for ProcessProvider {
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
         Ok(self.sandboxes.lock().await.clone())
     }
-
-    fn name(&self) -> &'static str {
-        "process"
-    }
 }
 
 /// A sandbox that runs commands as local child processes.

@@ -9,11 +9,11 @@ use tracing_subscriber::FmtSubscriber;
 
 use shotgun::config::{self, DiscoveryConfig, ProviderConfig};
 use shotgun::discovery::{
-    TestDiscoverer, cargo::CargoDiscoverer, generic::GenericDiscoverer, pytest::PytestDiscoverer,
+    TestDiscoverer, cargo::CargoDiscoverer, default::DefaultDiscoverer, pytest::PytestDiscoverer,
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
-    SandboxProvider, docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
+    SandboxProvider, default::DefaultProvider, docker::DockerProvider, process::ProcessProvider,
     ssh::SshProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
@@ -151,9 +151,9 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = ProcessProvider::new(p_cfg.clone());
-            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -190,9 +190,9 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+        (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -229,9 +229,9 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
+        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = SshProvider::new(p_cfg.clone());
-            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -242,8 +242,8 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
-            let provider = ConnectorProvider::from_config(p_cfg.clone());
+        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone());
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -255,8 +255,8 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
-            let provider = ConnectorProvider::from_config(p_cfg.clone());
+        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone());
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -268,9 +268,9 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Remote(p_cfg), DiscoveryConfig::Generic(d_cfg)) => {
-            let provider = ConnectorProvider::from_config(p_cfg.clone());
-            let discoverer = GenericDiscoverer::new(d_cfg.clone());
+        (ProviderConfig::Default(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone());
+            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -296,9 +296,6 @@ where
     P: SandboxProvider + 'static,
     D: TestDiscoverer + 'static,
 {
-    info!("Using provider: {}", provider.name());
-    info!("Using discoverer: {}", discoverer.name());
-
     if collect_only {
         let tests = discoverer.discover(&[]).await?;
         println!("Discovered {} tests:", tests.len());
@@ -321,7 +318,7 @@ async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let tests = match &config.discovery {
         DiscoveryConfig::Pytest(cfg) => PytestDiscoverer::new(cfg.clone()).discover(&[]).await?,
         DiscoveryConfig::Cargo(cfg) => CargoDiscoverer::new(cfg.clone()).discover(&[]).await?,
-        DiscoveryConfig::Generic(cfg) => GenericDiscoverer::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Default(cfg) => DefaultDiscoverer::new(cfg.clone()).discover(&[]).await?,
     };
 
     match format {
@@ -359,14 +356,14 @@ fn validate_config(config_path: &Path) -> Result<()> {
                 ProviderConfig::Process(_) => "process",
                 ProviderConfig::Docker(_) => "docker",
                 ProviderConfig::Ssh(_) => "ssh",
-                ProviderConfig::Remote(_) => "remote",
+                ProviderConfig::Default(_) => "default",
             };
             println!("  Provider: {}", provider_name);
 
             let discoverer_name = match &config.discovery {
                 DiscoveryConfig::Pytest(_) => "pytest",
                 DiscoveryConfig::Cargo(_) => "cargo",
-                DiscoveryConfig::Generic(_) => "generic",
+                DiscoveryConfig::Default(_) => "default",
             };
             println!("  Discovery: {}", discoverer_name);
 
@@ -402,9 +399,9 @@ user = "ubuntu"
 port = 22
 working_dir = "/home/ubuntu/workspace""#
         }
-        "remote" => {
+        "default" => {
             r#"[provider]
-type = "remote"
+type = "default"
 # Your script that handles everything: spin up cloud compute, run tests, return results
 # Test command is appended to this
 execute_command = "./scripts/run-remote.sh"
@@ -415,7 +412,7 @@ timeout_secs = 3600"#
         }
         _ => {
             eprintln!(
-                "Unknown provider: {}. Use: process, docker, ssh, remote",
+                "Unknown provider: {}. Use: process, docker, ssh, default",
                 provider
             );
             std::process::exit(1);
@@ -433,15 +430,15 @@ python = "python""#
             r#"[discovery]
 type = "cargo""#
         }
-        "generic" => {
+        "default" => {
             r#"[discovery]
-type = "generic"
+type = "default"
 discover_command = "echo test1 test2"
 run_command = "echo Running {tests}""#
         }
         _ => {
             eprintln!(
-                "Unknown framework: {}. Use: pytest, cargo, generic",
+                "Unknown framework: {}. Use: pytest, cargo, default",
                 framework
             );
             std::process::exit(1);

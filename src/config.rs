@@ -16,11 +16,11 @@
 //! stream_output = false      # Stream output in real-time
 //!
 //! [provider]
-//! type = "docker"            # One of: process, docker, ssh, remote
+//! type = "docker"            # One of: process, docker, ssh, default
 //! # ... provider-specific settings
 //!
 //! [discovery]
-//! type = "pytest"            # One of: pytest, cargo, generic
+//! type = "pytest"            # One of: pytest, cargo, default
 //! # ... discovery-specific settings
 //!
 //! [report]

@@ -19,7 +19,6 @@
 //! │                                                              │
 //! │  create_sandbox() ──────────► Sandbox                       │
 //! │  list_sandboxes()              │                            │
-//! │  name()                        │                            │
 //! └────────────────────────────────┼────────────────────────────┘
 //!                                  │
 //!                                  ▼
@@ -43,7 +42,7 @@
 //! | Process | [`process`] | Run tests as local child processes |
 //! | Docker | [`docker`] | Run tests in Docker containers |
 //! | SSH | [`ssh`] | Run tests on remote machines via SSH |
-//! | Connector | [`remote`] | Run tests via custom shell commands |
+//! | Default | [`default`] | Run tests via custom shell commands |
 //!
 //! # Implementing a Custom Provider
 //!
@@ -77,7 +76,6 @@
 //!     type Sandbox = MyCloudSandbox;
 //!     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> { todo!() }
 //!     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> { todo!() }
-//!     fn name(&self) -> &'static str { "my-cloud" }
 //! }
 //! ```
 //!
@@ -87,9 +85,9 @@
 //! [`ProviderError`]. Errors are categorized by failure type to enable
 //! appropriate handling (e.g., retry on timeout, fail fast on auth errors).
 
+pub mod default;
 pub mod docker;
 pub mod process;
-pub mod remote;
 pub mod ssh;
 
 use std::path::Path;
@@ -511,7 +509,7 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// - [`process::ProcessSandbox`] - Local process execution
 /// - [`docker::DockerSandbox`] - Docker container execution
 /// - [`ssh::SshSandbox`] - Remote SSH execution
-/// - [`remote::ConnectorSandbox`] - Custom remote execution
+/// - [`default::DefaultSandbox`] - Custom remote execution
 ///
 /// # Thread Safety
 ///
@@ -650,12 +648,12 @@ fn shell_escape(s: &str) -> String {
 /// - [`process::ProcessProvider`] - Creates local process sandboxes
 /// - [`docker::DockerProvider`] - Creates Docker container sandboxes
 /// - [`ssh::SshProvider`] - Creates SSH connection sandboxes
-/// - [`remote::ConnectorProvider`] - Creates custom remote sandboxes
+/// - [`default::DefaultProvider`] - Creates custom remote sandboxes
 ///
 /// # Thread Safety
 ///
 /// Providers must be both `Send` and `Sync` to allow sharing across
-/// async tasks. The orchestrator holds an `Arc<P>` to the provider.
+/// async tasks via scoped spawns.
 ///
 /// # Example
 ///
@@ -718,10 +716,4 @@ pub trait SandboxProvider: Send + Sync {
     /// Returns metadata about active sandboxes including their IDs,
     /// status, and creation time. Useful for monitoring and cleanup.
     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;
-
-    /// Returns the provider's name for logging and identification.
-    ///
-    /// This should return a short, descriptive name like `"docker"`,
-    /// `"ssh"`, or `"process"`.
-    fn name(&self) -> &'static str;
 }

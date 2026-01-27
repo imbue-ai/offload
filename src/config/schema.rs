@@ -206,7 +206,7 @@ fn default_retry_count() -> usize {
 ///
 /// # Custom remote execution (e.g., Modal)
 /// [provider]
-/// type = "remote"
+/// type = "default"
 /// create_command = "modal sandbox create"
 /// exec_command = "modal sandbox exec {sandbox_id} -- {command}"
 /// destroy_command = "modal sandbox delete {sandbox_id}"
@@ -237,7 +237,7 @@ pub enum ProviderConfig {
     /// Defines create/exec/destroy commands for lifecycle management.
     /// Use this to integrate with cloud providers like Modal, AWS Lambda,
     /// or any custom execution environment.
-    Remote(RemoteProviderConfig),
+    Default(DefaultProviderConfig),
 }
 
 /// Configuration for the local process provider.
@@ -487,7 +487,7 @@ fn default_ssh_port() -> u16 {
 ///
 /// ```toml
 /// [provider]
-/// type = "remote"
+/// type = "default"
 /// create_command = "modal sandbox create --image python:3.11"
 /// exec_command = "modal sandbox exec {sandbox_id} -- sh -c {command}"
 /// destroy_command = "modal sandbox delete {sandbox_id}"
@@ -498,14 +498,14 @@ fn default_ssh_port() -> u16 {
 ///
 /// ```toml
 /// [provider]
-/// type = "remote"
+/// type = "default"
 /// working_dir = "/path/to/scripts"
 /// create_command = "./create_worker.sh"
 /// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
 /// destroy_command = "./destroy_worker.sh {sandbox_id}"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RemoteProviderConfig {
+pub struct DefaultProviderConfig {
     /// Command to create a new sandbox instance.
     ///
     /// Must print a unique sandbox ID to stdout. This ID will be passed
@@ -584,7 +584,7 @@ fn default_remote_timeout() -> u64 {
 ///
 /// # Generic discovery
 /// [discovery]
-/// type = "generic"
+/// type = "default"
 /// discover_command = "find tests -name '*.test.js' -exec basename {} \\;"
 /// run_command = "jest {tests}"
 /// ```
@@ -598,7 +598,7 @@ pub enum DiscoveryConfig {
     Cargo(CargoDiscoveryConfig),
 
     /// Discover and run tests with custom shell commands.
-    Generic(GenericDiscoveryConfig),
+    Default(DefaultDiscoveryConfig),
 }
 
 /// Configuration for pytest test discovery.
@@ -720,7 +720,7 @@ pub struct CargoDiscoveryConfig {
 ///
 /// ```toml
 /// [discovery]
-/// type = "generic"
+/// type = "default"
 /// discover_command = "jest --listTests --json | jq -r '.[]'"
 /// run_command = "jest {tests} --ci --reporters=jest-junit"
 /// result_file = "junit.xml"
@@ -730,12 +730,12 @@ pub struct CargoDiscoveryConfig {
 ///
 /// ```toml
 /// [discovery]
-/// type = "generic"
+/// type = "default"
 /// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
 /// run_command = "go test -v -run '{tests}' ./..."
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GenericDiscoveryConfig {
+pub struct DefaultDiscoveryConfig {
     /// Command to discover test IDs.
     ///
     /// Should output one test ID per line to stdout. Lines starting with `#`

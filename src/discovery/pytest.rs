@@ -257,7 +257,7 @@ impl TestDiscoverer for PytestDiscoverer {
         Ok(tests)
     }
 
-    fn run_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_command(&self, tests: &[TestCase]) -> Command {
         let mut cmd = Command::new(&self.config.python)
             .arg("-m")
             .arg("pytest")
@@ -296,10 +296,6 @@ impl TestDiscoverer for PytestDiscoverer {
         }
 
         Ok(results)
-    }
-
-    fn name(&self) -> &'static str {
-        "pytest"
     }
 }
 

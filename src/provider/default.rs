@@ -38,7 +38,7 @@
 //!
 //! ```toml
 //! [provider]
-//! type = "remote"
+//! type = "default"
 //! create_command = "python -c 'import uuid; print(uuid.uuid4())'"
 //! exec_command = "modal run --sandbox-id {sandbox_id} -- {command}"
 //! destroy_command = "modal sandbox delete {sandbox_id}"
@@ -48,7 +48,7 @@
 //!
 //! ```toml
 //! [provider]
-//! type = "remote"
+//! type = "default"
 //! working_dir = "/path/to/scripts"
 //! create_command = "./k8s-create-pod.sh"
 //! exec_command = "./k8s-exec.sh {sandbox_id} {command}"
@@ -69,7 +69,7 @@ use super::{
     Command, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo,
     SandboxProvider, SandboxStatus,
 };
-use crate::config::{RemoteProviderConfig, SandboxConfig};
+use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
@@ -82,20 +82,20 @@ use crate::connector::{Connector, ShellConnector};
 ///
 /// The `create_command` is run and must print a unique sandbox ID to stdout.
 /// This ID is then used in subsequent exec and destroy commands.
-pub struct ConnectorProvider {
+pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
-    config: RemoteProviderConfig,
-    sandboxes: Arc<Mutex<HashMap<String, ConnectorSandboxInfo>>>,
+    config: DefaultProviderConfig,
+    sandboxes: Arc<Mutex<HashMap<String, DefaultSandboxInfo>>>,
 }
 
 #[allow(dead_code)]
-struct ConnectorSandboxInfo {
+struct DefaultSandboxInfo {
     remote_id: String,
     status: SandboxStatus,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl ConnectorProvider {
+impl DefaultProvider {
     /// Creates a new provider from the given configuration.
     ///
     /// The configuration specifies the shell commands used for sandbox
@@ -108,10 +108,10 @@ impl ConnectorProvider {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::remote::ConnectorProvider;
-    /// use shotgun::config::RemoteProviderConfig;
+    /// use shotgun::provider::default::DefaultProvider;
+    /// use shotgun::config::DefaultProviderConfig;
     ///
-    /// let config = RemoteProviderConfig {
+    /// let config = DefaultProviderConfig {
     ///     create_command: "uuidgen".to_string(),
     ///     exec_command: "echo 'Running on {sandbox_id}'; {command}".to_string(),
     ///     destroy_command: "echo 'Cleaned up {sandbox_id}'".to_string(),
@@ -119,9 +119,9 @@ impl ConnectorProvider {
     ///     timeout_secs: 3600,
     /// };
     ///
-    /// let provider = ConnectorProvider::from_config(config);
+    /// let provider = DefaultProvider::from_config(config);
     /// ```
-    pub fn from_config(config: RemoteProviderConfig) -> Self {
+    pub fn from_config(config: DefaultProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
@@ -137,10 +137,10 @@ impl ConnectorProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for ConnectorProvider {
-    type Sandbox = ConnectorSandbox;
+impl SandboxProvider for DefaultProvider {
+    type Sandbox = DefaultSandbox;
 
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ConnectorSandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         info!("Creating connector sandbox: {}", config.id);
 
         // Run the create command to get a sandbox_id
@@ -162,14 +162,14 @@ impl SandboxProvider for ConnectorProvider {
 
         info!("Created remote sandbox: {}", remote_id);
 
-        let info = ConnectorSandboxInfo {
+        let info = DefaultSandboxInfo {
             remote_id: remote_id.clone(),
             status: SandboxStatus::Running,
             created_at: chrono::Utc::now(),
         };
         self.sandboxes.lock().await.insert(config.id.clone(), info);
 
-        Ok(ConnectorSandbox {
+        Ok(DefaultSandbox {
             id: config.id.clone(),
             remote_id,
             connector: self.connector.clone(),
@@ -188,10 +188,6 @@ impl SandboxProvider for ConnectorProvider {
                 created_at: info.created_at,
             })
             .collect())
-    }
-
-    fn name(&self) -> &'static str {
-        "connector"
     }
 }
 
@@ -217,7 +213,7 @@ impl SandboxProvider for ConnectorProvider {
 /// The exec command can optionally return JSON on stdout for structured
 /// results. If the last line of output is valid JSON with `exit_code`,
 /// `stdout`, and `stderr` fields, those are used as the result.
-pub struct ConnectorSandbox {
+pub struct DefaultSandbox {
     /// Local sandbox ID
     id: String,
     /// Remote sandbox ID from create command
@@ -230,7 +226,7 @@ pub struct ConnectorSandbox {
     destroy_command: String,
 }
 
-impl ConnectorSandbox {
+impl DefaultSandbox {
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
         // Build the inner command with properly escaped arguments
@@ -256,7 +252,7 @@ impl ConnectorSandbox {
 }
 
 #[async_trait]
-impl Sandbox for ConnectorSandbox {
+impl Sandbox for DefaultSandbox {
     fn id(&self) -> &str {
         &self.id
     }
@@ -302,13 +298,13 @@ impl Sandbox for ConnectorSandbox {
 
     async fn upload(&self, _local: &Path, _remote: &Path) -> ProviderResult<()> {
         warn!(
-            "upload() not supported by ConnectorSandbox - files should be included in connector image"
+            "upload() not supported by DefaultSandbox - files should be included in connector image"
         );
         Ok(())
     }
 
     async fn download(&self, _remote: &Path, _local: &Path) -> ProviderResult<()> {
-        warn!("download() not supported by ConnectorSandbox");
+        warn!("download() not supported by DefaultSandbox");
         Ok(())
     }
 

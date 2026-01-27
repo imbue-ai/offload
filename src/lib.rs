@@ -26,7 +26,7 @@
 //! - [`provider::process::ProcessProvider`] - Run tests as local processes
 //! - [`provider::docker::DockerProvider`] - Run tests in Docker containers
 //! - [`provider::ssh::SshProvider`] - Run tests on remote machines via SSH
-//! - [`provider::remote::ConnectorProvider`] - Run tests using custom shell commands
+//! - [`provider::default::DefaultProvider`] - Run tests using custom shell commands
 //!
 //! ### Discovery ([`discovery`])
 //!
@@ -35,7 +35,7 @@
 //!
 //! - [`discovery::pytest::PytestDiscoverer`] - Discover and run pytest tests
 //! - [`discovery::cargo::CargoDiscoverer`] - Discover and run Rust tests
-//! - [`discovery::generic::GenericDiscoverer`] - Custom discovery via shell commands
+//! - [`discovery::default::DefaultDiscoverer`] - Custom discovery via shell commands
 //!
 //! ### Executor ([`executor`])
 //!
@@ -116,7 +116,7 @@
 //!
 //! You can implement custom providers for cloud platforms like Modal, AWS Lambda,
 //! or Kubernetes by implementing the [`SandboxProvider`] and [`Sandbox`] traits,
-//! or by using the [`provider::remote::ConnectorProvider`] with custom shell commands.
+//! or by using the [`provider::default::DefaultProvider`] with custom shell commands.
 //!
 //! [`SandboxProvider`]: provider::SandboxProvider
 //! [`Sandbox`]: provider::Sandbox
