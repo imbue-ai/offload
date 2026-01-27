@@ -94,12 +94,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use bollard::Docker;
 use bollard::container::{
     Config as ContainerConfig, CreateContainerOptions, LogOutput, RemoveContainerOptions,
     StartContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::Docker;
 use futures::StreamExt;
 use tokio::sync::Mutex;
 

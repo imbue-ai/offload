@@ -253,12 +253,6 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
             if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR")
             {
                 0
-            } else if stdout.contains("FAILED")
-                || stdout.contains("ERROR")
-                || stdout.contains("error")
-                || stderr.contains("error")
-            {
-                1
             } else {
                 1 // Assume failure if no clear success indicators (safer default)
             };
@@ -362,12 +356,10 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
                 .download(std::path::Path::new(path), &temp_path)
                 .await
                 .is_ok()
+                && let Ok(content) = std::fs::read_to_string(&temp_path)
+                && !content.is_empty()
             {
-                if let Ok(content) = std::fs::read_to_string(&temp_path) {
-                    if !content.is_empty() {
-                        return Some(content);
-                    }
-                }
+                return Some(content);
             }
         }
 

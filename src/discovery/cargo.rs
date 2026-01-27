@@ -288,8 +288,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> DiscoveryResult<Vec<T
     // this is likely a doc test run (individual doc test names have spaces and don't match \S+)
     // Look for summary line: "test result: ok. N passed; M failed; ..."
     if results.is_empty() {
-        let summary_re =
-            Regex::new(r"test result: ok\. (\d+) passed; (\d+) failed;").unwrap();
+        let summary_re = Regex::new(r"test result: ok\. (\d+) passed; (\d+) failed;").unwrap();
         if let Some(cap) = summary_re.captures(stdout) {
             let passed: u32 = cap[1].parse().unwrap_or(0);
             let failed: u32 = cap[2].parse().unwrap_or(0);

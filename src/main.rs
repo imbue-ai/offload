@@ -4,17 +4,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 use shotgun::config::{self, DiscoveryConfig, ProviderConfig};
 use shotgun::discovery::{
-    cargo::CargoDiscoverer, generic::GenericDiscoverer, pytest::PytestDiscoverer, TestDiscoverer,
+    TestDiscoverer, cargo::CargoDiscoverer, generic::GenericDiscoverer, pytest::PytestDiscoverer,
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
-    docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider, ssh::SshProvider,
-    SandboxProvider,
+    SandboxProvider, docker::DockerProvider, process::ProcessProvider, remote::ConnectorProvider,
+    ssh::SshProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
