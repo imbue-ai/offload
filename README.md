@@ -284,6 +284,16 @@ output_dir = "test-results"
 junit = true
 ```
 
+### Testing
+
+Use the project to test itself with:
+
+```
+cargo run -- -c shotgun-modal.toml run
+```
+
+(Requires valid Modal API key)
+
 ## License
 
 MIT
