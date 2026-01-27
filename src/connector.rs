@@ -82,13 +82,13 @@
 //! use shotgun::connector::{Connector, ExecResult};
 //! use shotgun::provider::{OutputStream, ProviderResult};
 //!
-//! struct ApiConnector {
+//! struct DefaultConnector {
 //!     endpoint: String,
 //!     api_key: String,
 //! }
 //!
 //! #[async_trait]
-//! impl Connector for ApiConnector {
+//! impl Connector for DefaultConnector {
 //!     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
 //!         // Execute via API...
 //!         # todo!()
@@ -99,9 +99,6 @@
 //!         # todo!()
 //!     }
 //!
-//!     fn name(&self) -> &str {
-//!         "api"
-//!     }
 //! }
 //! ```
 
@@ -190,10 +187,6 @@ pub struct ExecResult {
 ///         // Execute command and stream output...
 ///         # todo!()
 ///     }
-///
-///     fn name(&self) -> &str {
-///         "my-connector"
-///     }
 /// }
 /// ```
 #[async_trait]
@@ -239,11 +232,6 @@ pub trait Connector: Send + Sync {
     /// use [`run`](Self::run) instead or check command output for success/failure
     /// indicators.
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream>;
-
-    /// Returns the connector name for logging and debugging.
-    ///
-    /// Should return a short, descriptive name like `"shell"`, `"api"`, or `"docker"`.
-    fn name(&self) -> &str;
 }
 
 /// A connector that executes commands via the local shell.
@@ -427,10 +415,6 @@ impl Connector for ShellConnector {
         let combined = futures::stream::select(stdout_stream, stderr_stream);
 
         Ok(Box::pin(combined))
-    }
-
-    fn name(&self) -> &str {
-        "shell"
     }
 }
 
