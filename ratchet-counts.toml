@@ -1,0 +1,125 @@
+# Ratchet violation budgets
+# These counts represent the maximum tolerated violations.
+# Counts can only be reduced (tightened) or explicitly bumped with justification.
+
+[no-args-in-docstrings]
+"." = 0
+
+[no-asyncio-import]
+"." = 0
+
+[no-bare-except]
+"." = 0
+"scripts" = 3
+
+[no-bare-generic-types]
+"." = 0
+
+[no-bare-print]
+"." = 0
+"scripts" = 22
+
+[no-base-exception]
+"." = 0
+
+[no-broad-exception]
+"." = 0
+"scripts" = 1
+
+[no-builtin-exception-raises]
+"." = 0
+
+[no-click-echo]
+"." = 0
+
+[no-dataclasses-import]
+"." = 0
+
+[no-eval-usage]
+"." = 0
+
+[no-exec-usage]
+"." = 0
+"scripts" = 1
+
+[no-expect]
+"." = 0
+
+[no-fixme-comments]
+"." = 0
+
+[no-fstring-logging]
+"." = 0
+
+[no-global-keyword]
+"." = 0
+
+[no-if-elif-without-else]
+"." = 0
+
+[no-import-datetime]
+"." = 0
+
+[no-init-docstrings]
+"." = 0
+
+[no-init-in-non-exception-classes]
+"." = 0
+
+[no-inline-functions]
+"." = 0
+
+[no-inline-imports]
+"." = 0
+"scripts" = 1
+
+[no-literal-multi-options]
+"." = 0
+
+[no-namedtuple-usage]
+"." = 0
+
+[no-num-prefix]
+"." = 0
+
+[no-pandas-import]
+"." = 0
+
+[no-panic]
+"." = 0
+
+[no-relative-imports]
+"." = 0
+
+[no-returns-in-docstrings]
+"." = 0
+
+[no-time-sleep]
+"." = 0
+"examples/tests" = 4
+
+[no-todo-comments]
+"." = 0
+"src" = 18
+
+[no-trailing-comments]
+"." = 0
+"scripts" = 5
+
+[no-typing-builtin-imports]
+"." = 0
+
+[no-underscore-imports]
+"." = 0
+
+[no-unwrap]
+"." = 0
+"src" = 4
+"src/framework" = 11
+
+[no-while-true]
+"." = 0
+
+[no-yaml-usage]
+"." = 0
+

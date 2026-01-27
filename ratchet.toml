@@ -1,0 +1,19 @@
+[ratchet]
+version = "1"
+
+# Languages to enable (uncomment as needed)
+languages = ["rust", "python"]
+
+# File patterns to include (defaults to all)
+# include = ["src/**", "tests/**"]
+
+# File patterns to exclude
+# exclude = ["**/generated/**"]
+
+[rules]
+# Built-in rules are enabled by default
+# Disable a rule: rule-name = false
+# Configure a rule: rule-name = { severity = "warning" }
+
+[output]
+format = "human"
