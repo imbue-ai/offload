@@ -10,10 +10,9 @@
 //! Config (root)
 //! ├── ShotgunConfig          - Core settings (parallelism, timeouts, retries)
 //! ├── ProviderConfig         - Tagged enum selecting provider type
-//! │   ├── Process            - Local process execution
+//! │   ├── Local              - Local process execution
 //! │   ├── Docker             - Docker container execution
-//! │   ├── Ssh                - Remote SSH execution
-//! │   └── Remote             - Custom remote execution (Modal, etc.)
+//! │   └── Default            - Custom remote execution (Modal, etc.)
 //! ├── DiscoveryConfig        - Tagged enum selecting discovery type
 //! │   ├── Pytest             - pytest test discovery
 //! │   ├── Cargo              - Rust/Cargo test discovery
@@ -61,7 +60,7 @@ use serde::{Deserialize, Serialize};
 ///     max_parallel = 2
 ///
 ///     [provider]
-///     type = "process"
+///     type = "local"
 ///
 ///     [discovery]
 ///     type = "pytest"
@@ -113,8 +112,8 @@ pub struct ShotgunConfig {
     /// Maximum number of sandboxes to run in parallel.
     ///
     /// Higher values increase throughput but require more resources.
-    /// Each sandbox may correspond to a Docker container, SSH connection,
-    /// or local process depending on the provider.
+    /// Each sandbox may correspond to a Docker container or local process
+    /// depending on the provider.
     ///
     /// Default: 10
     #[serde(default = "default_max_parallel")]
@@ -178,17 +177,16 @@ fn default_retry_count() -> usize {
 ///
 /// | Type | Description | Use Case |
 /// |------|-------------|----------|
-/// | `process` | Local processes | Development, CI without containers |
+/// | `local` | Local processes | Development, CI without containers |
 /// | `docker` | Docker containers | Isolated, reproducible test environments |
-/// | `ssh` | Remote SSH machines | Distributed testing across VMs/servers |
-/// | `remote` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
+/// | `default` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
 ///
 /// # Example
 ///
 /// ```toml
 /// # Local process execution
 /// [provider]
-/// type = "process"
+/// type = "local"
 /// working_dir = "/path/to/project"
 ///
 /// # Docker container execution
@@ -196,13 +194,6 @@ fn default_retry_count() -> usize {
 /// type = "docker"
 /// image = "python:3.11"
 /// volumes = [".:/app"]
-///
-/// # SSH remote execution
-/// [provider]
-/// type = "ssh"
-/// hosts = ["worker1.example.com", "worker2.example.com"]
-/// user = "ubuntu"
-/// key_path = "~/.ssh/id_rsa"
 ///
 /// # Custom remote execution (e.g., Modal)
 /// [provider]
@@ -218,19 +209,13 @@ pub enum ProviderConfig {
     ///
     /// The simplest provider - tests run directly on the host machine.
     /// Useful for development and CI environments without containerization.
-    Process(ProcessProviderConfig),
+    Local(LocalProviderConfig),
 
     /// Run tests in Docker containers.
     ///
     /// Each sandbox is a Docker container providing isolation and
     /// reproducibility. Requires Docker to be installed and running.
     Docker(DockerProviderConfig),
-
-    /// Run tests on remote machines via SSH.
-    ///
-    /// Connects to specified hosts and executes tests remotely.
-    /// Useful for distributed testing across cloud VMs or bare metal servers.
-    Ssh(SshProviderConfig),
 
     /// Run tests using custom shell commands.
     ///
@@ -249,7 +234,7 @@ pub enum ProviderConfig {
 ///
 /// ```toml
 /// [provider]
-/// type = "process"
+/// type = "local"
 /// working_dir = "/path/to/project"
 /// shell = "/bin/bash"
 ///
@@ -258,7 +243,7 @@ pub enum ProviderConfig {
 /// DEBUG = "1"
 /// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct ProcessProviderConfig {
+pub struct LocalProviderConfig {
     /// Working directory for spawned processes.
     ///
     /// If not specified, uses the current working directory.
@@ -395,75 +380,6 @@ pub struct DockerResourceConfig {
     /// Set equal to `memory_limit` to disable swap.
     /// Set to -1 for unlimited swap.
     pub memory_swap: Option<i64>,
-}
-
-/// Configuration for the SSH remote execution provider.
-///
-/// Tests run on remote machines accessed via SSH. Sandboxes are distributed
-/// across the configured hosts in round-robin fashion, enabling parallel
-/// execution across multiple servers.
-///
-/// # Prerequisites
-///
-/// - SSH access to all specified hosts
-/// - Test code and dependencies available on remote hosts
-/// - SSH key authentication configured (password auth not supported)
-///
-/// # Example
-///
-/// ```toml
-/// [provider]
-/// type = "ssh"
-/// hosts = ["worker1.example.com", "worker2.example.com", "worker3.example.com"]
-/// user = "ubuntu"
-/// key_path = "~/.ssh/id_rsa"
-/// port = 22
-/// working_dir = "/home/ubuntu/project"
-/// disable_host_key_check = false
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SshProviderConfig {
-    /// List of remote hosts to distribute tests across.
-    ///
-    /// Tests are assigned to hosts in round-robin fashion.
-    /// More hosts enable higher parallelism.
-    pub hosts: Vec<String>,
-
-    /// SSH username for connecting to hosts.
-    pub user: String,
-
-    /// Path to SSH private key file.
-    ///
-    /// Supports `~` expansion for home directory.
-    /// If not specified, uses default SSH key locations.
-    pub key_path: Option<PathBuf>,
-
-    /// SSH port number.
-    ///
-    /// Default: 22
-    #[serde(default = "default_ssh_port")]
-    pub port: u16,
-
-    /// Working directory on remote hosts.
-    ///
-    /// Test commands will `cd` to this directory before running.
-    pub working_dir: Option<String>,
-
-    /// Path to known_hosts file for host key verification.
-    pub known_hosts: Option<PathBuf>,
-
-    /// Disable SSH host key checking.
-    ///
-    /// **Warning**: Only use for testing. Disabling host key checking
-    /// makes connections vulnerable to man-in-the-middle attacks.
-    ///
-    /// Default: false
-    #[serde(default)]
-    pub disable_host_key_check: bool,
-}
-
-fn default_ssh_port() -> u16 {
-    22
 }
 
 /// Configuration for custom remote execution provider.
@@ -860,11 +776,11 @@ pub struct SandboxConfig {
 /// These limits constrain the resources available to tests running
 /// in a sandbox. Not all providers support all resource types.
 ///
-/// | Resource | Docker | SSH | Process | Remote |
-/// |----------|--------|-----|---------|--------|
-/// | CPU | Yes | No | No | Varies |
-/// | Memory | Yes | No | No | Varies |
-/// | Timeout | Yes | Yes | Yes | Yes |
+/// | Resource | Docker | Local | Default |
+/// |----------|--------|---------|---------|
+/// | CPU | Yes | No | Varies |
+/// | Memory | Yes | No | Varies |
+/// | Timeout | Yes | Yes | Yes |
 #[derive(Debug, Clone, Default)]
 pub struct SandboxResources {
     /// CPU core limit (e.g., 4.0 for 4 cores).

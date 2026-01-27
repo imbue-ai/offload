@@ -5,8 +5,8 @@
 //!
 //! ## Overview
 //!
-//! Shotgun enables distributed test execution across Docker containers, SSH-connected
-//! remote machines, local processes, or custom cloud providers (like Modal). It provides:
+//! Shotgun enables distributed test execution across Docker containers, local
+//! processes, or custom cloud providers (like Modal). It provides:
 //!
 //! - **Parallel execution** across multiple isolated sandbox environments
 //! - **Automatic test discovery** for pytest, cargo test, and custom frameworks
@@ -23,9 +23,8 @@
 //! Providers create and manage sandbox execution environments. Each provider
 //! implements the [`SandboxProvider`] trait:
 //!
-//! - [`provider::process::ProcessProvider`] - Run tests as local processes
+//! - [`provider::local::LocalProvider`] - Run tests as local processes
 //! - [`provider::docker::DockerProvider`] - Run tests in Docker containers
-//! - [`provider::ssh::SshProvider`] - Run tests on remote machines via SSH
 //! - [`provider::default::DefaultProvider`] - Run tests using custom shell commands
 //!
 //! ### Discovery ([`discovery`])
@@ -59,7 +58,7 @@
 //! ```no_run
 //! use shotgun::config::load_config;
 //! use shotgun::executor::Orchestrator;
-//! use shotgun::provider::process::ProcessProvider;
+//! use shotgun::provider::local::LocalProvider;
 //! use shotgun::discovery::pytest::PytestDiscoverer;
 //! use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 //!
@@ -69,7 +68,7 @@
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
 //!     // Create provider (runs tests as local processes)
-//!     let provider = ProcessProvider::new(Default::default());
+//!     let provider = LocalProvider::new(Default::default());
 //!
 //!     // Create discoverer (finds pytest tests)
 //!     let discoverer = PytestDiscoverer::new(Default::default());

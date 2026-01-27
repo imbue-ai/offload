@@ -13,8 +13,7 @@ use shotgun::discovery::{
 };
 use shotgun::executor::Orchestrator;
 use shotgun::provider::{
-    SandboxProvider, default::DefaultProvider, docker::DockerProvider, process::ProcessProvider,
-    ssh::SshProvider,
+    SandboxProvider, default::DefaultProvider, docker::DockerProvider, local::LocalProvider,
 };
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
@@ -64,8 +63,8 @@ enum Commands {
 
     /// Initialize a new configuration file
     Init {
-        /// Provider type (process, docker, ssh, remote)
-        #[arg(short, long, default_value = "process")]
+        /// Provider type (local, docker, default)
+        #[arg(short, long, default_value = "local")]
         provider: String,
 
         /// Test framework (pytest, cargo, generic)
@@ -125,8 +124,8 @@ async fn run_tests(
 
     // Match on provider and discoverer to get concrete types
     match (&config.provider, &config.discovery) {
-        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
-            let provider = ProcessProvider::new(p_cfg.clone());
+        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
+            let provider = LocalProvider::new(p_cfg.clone());
             let discoverer = PytestDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -138,8 +137,8 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
-            let provider = ProcessProvider::new(p_cfg.clone());
+        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
+            let provider = LocalProvider::new(p_cfg.clone());
             let discoverer = CargoDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -151,8 +150,8 @@ async fn run_tests(
             )
             .await
         }
-        (ProviderConfig::Process(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
-            let provider = ProcessProvider::new(p_cfg.clone());
+        (ProviderConfig::Local(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
+            let provider = LocalProvider::new(p_cfg.clone());
             let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -192,45 +191,6 @@ async fn run_tests(
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                discoverer,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
-            let provider = SshProvider::new(p_cfg.clone());
-            let discoverer = PytestDiscoverer::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                discoverer,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
-            let provider = SshProvider::new(p_cfg.clone());
-            let discoverer = CargoDiscoverer::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                discoverer,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Ssh(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
-            let provider = SshProvider::new(p_cfg.clone());
             let discoverer = DefaultDiscoverer::new(d_cfg.clone());
             run_with(
                 config,
@@ -353,9 +313,8 @@ fn validate_config(config_path: &Path) -> Result<()> {
             println!("  Retry count: {}", config.shotgun.retry_count);
 
             let provider_name = match &config.provider {
-                ProviderConfig::Process(_) => "process",
+                ProviderConfig::Local(_) => "local",
                 ProviderConfig::Docker(_) => "docker",
-                ProviderConfig::Ssh(_) => "ssh",
                 ProviderConfig::Default(_) => "default",
             };
             println!("  Provider: {}", provider_name);
@@ -378,9 +337,9 @@ fn validate_config(config_path: &Path) -> Result<()> {
 
 fn init_config(provider: &str, framework: &str) -> Result<()> {
     let provider_config = match provider {
-        "process" => {
+        "local" => {
             r#"[provider]
-type = "process"
+type = "local"
 working_dir = "."
 shell = "/bin/sh""#
         }
@@ -390,14 +349,6 @@ type = "docker"
 image = "python:3.11"
 volumes = []
 working_dir = "/workspace""#
-        }
-        "ssh" => {
-            r#"[provider]
-type = "ssh"
-hosts = ["localhost"]
-user = "ubuntu"
-port = 22
-working_dir = "/home/ubuntu/workspace""#
         }
         "default" => {
             r#"[provider]
@@ -412,7 +363,7 @@ timeout_secs = 3600"#
         }
         _ => {
             eprintln!(
-                "Unknown provider: {}. Use: process, docker, ssh, default",
+                "Unknown provider: {}. Use: local, docker, default",
                 provider
             );
             std::process::exit(1);

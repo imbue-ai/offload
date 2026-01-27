@@ -2,8 +2,8 @@
 //!
 //! This module defines the core abstractions for executing tests in isolated
 //! environments. The provider system is designed to be pluggable, allowing
-//! shotgun to work with any execution backend: Docker containers, SSH-connected
-//! machines, local processes, or custom cloud providers.
+//! shotgun to work with any execution backend: Docker containers, local
+//! processes, or custom cloud providers.
 //!
 //! # Architecture
 //!
@@ -39,9 +39,8 @@
 //!
 //! | Provider | Module | Description |
 //! |----------|--------|-------------|
-//! | Process | [`process`] | Run tests as local child processes |
+//! | Local | [`local`] | Run tests as local child processes |
 //! | Docker | [`docker`] | Run tests in Docker containers |
-//! | SSH | [`ssh`] | Run tests on remote machines via SSH |
 //! | Default | [`default`] | Run tests via custom shell commands |
 //!
 //! # Implementing a Custom Provider
@@ -87,8 +86,7 @@
 
 pub mod default;
 pub mod docker;
-pub mod process;
-pub mod ssh;
+pub mod local;
 
 use std::path::Path;
 use std::pin::Pin;
@@ -156,7 +154,6 @@ pub enum ProviderError {
 
     /// Failed to establish or maintain connection to the execution environment.
     ///
-    /// For SSH: connection refused, auth failed, network unreachable.
     /// For Docker: daemon not running, socket not accessible.
     #[error("Connection error: {0}")]
     Connection(String),
@@ -209,7 +206,6 @@ pub enum SandboxStatus {
     /// Sandbox is being created and is not yet ready.
     ///
     /// For Docker: container is starting.
-    /// For SSH: connection is being established.
     Creating,
 
     /// Sandbox is running and ready to accept commands.
@@ -506,9 +502,8 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 ///
 /// # Implementors
 ///
-/// - [`process::ProcessSandbox`] - Local process execution
+/// - [`local::LocalSandbox`] - Local process execution
 /// - [`docker::DockerSandbox`] - Docker container execution
-/// - [`ssh::SshSandbox`] - Remote SSH execution
 /// - [`default::DefaultSandbox`] - Custom remote execution
 ///
 /// # Thread Safety
@@ -595,10 +590,9 @@ pub trait Sandbox: Send {
     ///
     /// # Provider Support
     ///
-    /// - **Process**: Copies to working directory
+    /// - **Local**: Copies to working directory
     /// - **Docker**: Uses `docker cp`
-    /// - **SSH**: Uses `scp`
-    /// - **Remote**: Usually not supported (returns `Ok(())`)
+    /// - **Default**: Usually not supported (returns `Ok(())`)
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
     /// Downloads a file or directory from the sandbox.
@@ -639,15 +633,14 @@ fn shell_escape(s: &str) -> String {
 
 /// Factory for creating and managing sandbox instances.
 ///
-/// A `SandboxProvider` represents an execution backend (Docker, SSH, etc.)
+/// A `SandboxProvider` represents an execution backend (Docker, local, etc.)
 /// and is responsible for creating [`Sandbox`] instances on demand. The
 /// provider manages the pool of sandboxes and tracks their lifecycle.
 ///
 /// # Implementors
 ///
-/// - [`process::ProcessProvider`] - Creates local process sandboxes
+/// - [`local::LocalProvider`] - Creates local process sandboxes
 /// - [`docker::DockerProvider`] - Creates Docker container sandboxes
-/// - [`ssh::SshProvider`] - Creates SSH connection sandboxes
 /// - [`default::DefaultProvider`] - Creates custom remote sandboxes
 ///
 /// # Thread Safety
@@ -660,12 +653,12 @@ fn shell_escape(s: &str) -> String {
 /// ```no_run
 /// use std::sync::Arc;
 /// use shotgun::provider::{SandboxProvider, Sandbox};
-/// use shotgun::provider::process::ProcessProvider;
+/// use shotgun::provider::local::LocalProvider;
 /// use shotgun::config::{SandboxConfig, SandboxResources};
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
-///     let provider = ProcessProvider::new(Default::default());
+///     let provider = LocalProvider::new(Default::default());
 ///
 ///     let config = SandboxConfig {
 ///         id: "test-sandbox-1".to_string(),
@@ -689,7 +682,7 @@ pub trait SandboxProvider: Send + Sync {
     /// The concrete [`Sandbox`] type created by this provider.
     ///
     /// Each provider creates a specific sandbox implementation:
-    /// - `ProcessProvider` creates `ProcessSandbox`
+    /// - `LocalProvider` creates `LocalSandbox`
     /// - `DockerProvider` creates `DockerSandbox`
     /// - etc.
     type Sandbox: Sandbox;

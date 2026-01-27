@@ -16,7 +16,7 @@
 //! stream_output = false      # Stream output in real-time
 //!
 //! [provider]
-//! type = "docker"            # One of: process, docker, ssh, default
+//! type = "docker"            # One of: process, docker, default
 //! # ... provider-specific settings
 //!
 //! [discovery]
@@ -43,7 +43,7 @@
 //!     max_parallel = 2
 //!
 //!     [provider]
-//!     type = "process"
+//!     type = "local"
 //!
 //!     [discovery]
 //!     type = "pytest"
@@ -122,7 +122,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 ///     max_parallel = 4
 ///
 ///     [provider]
-///     type = "process"
+///     type = "local"
 ///
 ///     [discovery]
 ///     type = "pytest"

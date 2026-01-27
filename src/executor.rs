@@ -50,7 +50,7 @@
 //! ```no_run
 //! use shotgun::executor::Orchestrator;
 //! use shotgun::config::load_config;
-//! use shotgun::provider::process::ProcessProvider;
+//! use shotgun::provider::local::LocalProvider;
 //! use shotgun::discovery::pytest::PytestDiscoverer;
 //! use shotgun::report::ConsoleReporter;
 //!
@@ -58,7 +58,7 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
-//!     let provider = ProcessProvider::new(Default::default());
+//!     let provider = LocalProvider::new(Default::default());
 //!     let discoverer = PytestDiscoverer::new(Default::default());
 //!     let reporter = ConsoleReporter::new(true);
 //!
@@ -233,7 +233,7 @@ impl RunResult {
 /// ```no_run
 /// use shotgun::executor::Orchestrator;
 /// use shotgun::config::load_config;
-/// use shotgun::provider::process::ProcessProvider;
+/// use shotgun::provider::local::LocalProvider;
 /// use shotgun::discovery::pytest::PytestDiscoverer;
 /// use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 ///
@@ -242,7 +242,7 @@ impl RunResult {
 ///     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 ///
 ///     // Set up components
-///     let provider = ProcessProvider::new(Default::default());
+///     let provider = LocalProvider::new(Default::default());
 ///     let discoverer = PytestDiscoverer::new(Default::default());
 ///     let reporter = MultiReporter::new()
 ///         .with_reporter(ConsoleReporter::new(true))

@@ -25,7 +25,7 @@
 //!           ▼                       ▼
 //! ┌─────────────────┐     ┌─────────────────┐
 //! │ ShellConnector  │     │ Custom Connector│
-//! │ (local shell)   │     │ (SSH, API, etc) │
+//! │ (local shell)   │     │ (API, etc)      │
 //! └─────────────────┘     └─────────────────┘
 //! ```
 //!
@@ -82,25 +82,25 @@
 //! use shotgun::connector::{Connector, ExecResult};
 //! use shotgun::provider::{OutputStream, ProviderResult};
 //!
-//! struct SshConnector {
-//!     host: String,
-//!     user: String,
+//! struct ApiConnector {
+//!     endpoint: String,
+//!     api_key: String,
 //! }
 //!
 //! #[async_trait]
-//! impl Connector for SshConnector {
+//! impl Connector for ApiConnector {
 //!     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
-//!         // Execute via SSH...
+//!         // Execute via API...
 //!         # todo!()
 //!     }
 //!
 //!     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-//!         // Stream output via SSH...
+//!         // Stream output via API...
 //!         # todo!()
 //!     }
 //!
 //!     fn name(&self) -> &str {
-//!         "ssh"
+//!         "api"
 //!     }
 //! }
 //! ```
@@ -242,7 +242,7 @@ pub trait Connector: Send + Sync {
 
     /// Returns the connector name for logging and debugging.
     ///
-    /// Should return a short, descriptive name like `"shell"`, `"ssh"`, or `"docker"`.
+    /// Should return a short, descriptive name like `"shell"`, `"api"`, or `"docker"`.
     fn name(&self) -> &str;
 }
 

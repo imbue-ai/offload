@@ -16,12 +16,12 @@
 //! ```no_run
 //! use std::time::Duration;
 //! use shotgun::executor::TestRunner;
-//! use shotgun::provider::process::ProcessSandbox;
+//! use shotgun::provider::local::LocalSandbox;
 //! use shotgun::discovery::pytest::PytestDiscoverer;
 //! use shotgun::discovery::TestCase;
 //!
 //! async fn run_test_example(
-//!     sandbox: ProcessSandbox,
+//!     sandbox: LocalSandbox,
 //!     discoverer: &PytestDiscoverer,
 //! ) -> anyhow::Result<()> {
 //!     let mut runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300));
@@ -118,11 +118,11 @@ impl<'a, S: Sandbox, D: TestDiscoverer> TestRunner<'a, S, D> {
     /// use std::sync::Arc;
     /// use shotgun::executor::TestRunner;
     /// use shotgun::provider::OutputLine;
-    /// # use shotgun::provider::process::ProcessSandbox;
+    /// # use shotgun::provider::local::LocalSandbox;
     /// # use shotgun::discovery::pytest::PytestDiscoverer;
     /// # use std::time::Duration;
     ///
-    /// # fn example(sandbox: ProcessSandbox, discoverer: &PytestDiscoverer) {
+    /// # fn example(sandbox: LocalSandbox, discoverer: &PytestDiscoverer) {
     /// let runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300))
     ///     .with_streaming(Arc::new(|test_id, line| {
     ///         match line {

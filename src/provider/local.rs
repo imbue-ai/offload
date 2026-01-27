@@ -23,7 +23,7 @@
 //!
 //! ```toml
 //! [provider]
-//! type = "process"
+//! type = "local"
 //! working_dir = "/path/to/project"
 //! shell = "/bin/bash"
 //!
@@ -34,13 +34,13 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use shotgun::provider::process::ProcessProvider;
+//! use shotgun::provider::local::LocalProvider;
 //! use shotgun::provider::{SandboxProvider, Sandbox, Command};
-//! use shotgun::config::{ProcessProviderConfig, SandboxConfig, SandboxResources};
+//! use shotgun::config::{LocalProviderConfig, SandboxConfig, SandboxResources};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let provider = ProcessProvider::new(ProcessProviderConfig::default());
+//!     let provider = LocalProvider::new(LocalProviderConfig::default());
 //!
 //!     let config = SandboxConfig {
 //!         id: "test-1".to_string(),
@@ -71,7 +71,7 @@ use super::{
     Command, ExecResult, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
     SandboxInfo, SandboxProvider, SandboxStatus,
 };
-use crate::config::{ProcessProviderConfig, SandboxConfig};
+use crate::config::{LocalProviderConfig, SandboxConfig};
 
 /// Provider that runs tests as local child processes.
 ///
@@ -83,12 +83,12 @@ use crate::config::{ProcessProviderConfig, SandboxConfig};
 ///
 /// The provider is thread-safe and can be shared across async tasks.
 /// Sandbox creation and listing are protected by internal locks.
-pub struct ProcessProvider {
-    config: ProcessProviderConfig,
+pub struct LocalProvider {
+    config: LocalProviderConfig,
     sandboxes: Arc<Mutex<Vec<SandboxInfo>>>,
 }
 
-impl ProcessProvider {
+impl LocalProvider {
     /// Creates a new process provider with the given configuration.
     ///
     /// # Arguments
@@ -99,21 +99,21 @@ impl ProcessProvider {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::process::ProcessProvider;
-    /// use shotgun::config::ProcessProviderConfig;
+    /// use shotgun::provider::local::LocalProvider;
+    /// use shotgun::config::LocalProviderConfig;
     ///
     /// // With defaults
-    /// let provider = ProcessProvider::new(ProcessProviderConfig::default());
+    /// let provider = LocalProvider::new(LocalProviderConfig::default());
     ///
     /// // With custom config
-    /// let config = ProcessProviderConfig {
+    /// let config = LocalProviderConfig {
     ///     working_dir: Some("/app".into()),
     ///     shell: "/bin/bash".to_string(),
     ///     ..Default::default()
     /// };
-    /// let provider = ProcessProvider::new(config);
+    /// let provider = LocalProvider::new(config);
     /// ```
-    pub fn new(config: ProcessProviderConfig) -> Self {
+    pub fn new(config: LocalProviderConfig) -> Self {
         Self {
             config,
             sandboxes: Arc::new(Mutex::new(Vec::new())),
@@ -122,10 +122,10 @@ impl ProcessProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for ProcessProvider {
-    type Sandbox = ProcessSandbox;
+impl SandboxProvider for LocalProvider {
+    type Sandbox = LocalSandbox;
 
-    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ProcessSandbox> {
+    async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<LocalSandbox> {
         let working_dir = config
             .working_dir
             .as_ref()
@@ -133,7 +133,7 @@ impl SandboxProvider for ProcessProvider {
             .or_else(|| self.config.working_dir.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let sandbox = ProcessSandbox {
+        let sandbox = LocalSandbox {
             id: config.id.clone(),
             working_dir,
             env: config.env.clone(),
@@ -172,7 +172,7 @@ impl SandboxProvider for ProcessProvider {
 ///
 /// Since processes are transient, termination is a no-op. The sandbox
 /// can be safely dropped without cleanup.
-pub struct ProcessSandbox {
+pub struct LocalSandbox {
     id: String,
     working_dir: PathBuf,
     env: Vec<(String, String)>,
@@ -180,7 +180,7 @@ pub struct ProcessSandbox {
 }
 
 #[async_trait]
-impl Sandbox for ProcessSandbox {
+impl Sandbox for LocalSandbox {
     fn id(&self) -> &str {
         &self.id
     }
