@@ -28,28 +28,28 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! # Built-in Discoverers
+//! # Built-in Frameworks
 //!
-//! | Discoverer | Framework | Discovery Method |
+//! | Framework | Framework | Discovery Method |
 //! |------------|-----------|------------------|
-//! | [`pytest::PytestDiscoverer`] | pytest | `pytest --collect-only -q` |
-//! | [`cargo::CargoDiscoverer`] | Rust | `cargo test --list` |
-//! | [`default::DefaultDiscoverer`] | Any | Custom shell commands |
+//! | [`pytest::PytestFramework`] | pytest | `pytest --collect-only -q` |
+//! | [`cargo::CargoFramework`] | Rust | `cargo test --list` |
+//! | [`default::DefaultFramework`] | Any | Custom shell commands |
 //!
-//! # Custom Discoverers
+//! # Custom Frameworks
 //!
 //! Implement [`TestFramework`] to support new test frameworks:
 //!
 //! ```no_run
 //! use async_trait::async_trait;
-//! use shotgun::discovery::*;
+//! use shotgun::framework::*;
 //! use shotgun::provider::{Command, ExecResult};
 //! use std::path::PathBuf;
 //!
-//! struct MyDiscoverer;
+//! struct MyFramework;
 //!
 //! #[async_trait]
-//! impl TestFramework for MyDiscoverer {
+//! impl TestFramework for MyFramework {
 //!     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
 //!         // Discover tests in the given paths
 //!         todo!()
@@ -133,7 +133,7 @@ pub enum DiscoveryError {
 /// Test cases can be constructed using the builder pattern:
 ///
 /// ```
-/// use shotgun::discovery::TestCase;
+/// use shotgun::framework::TestCase;
 ///
 /// let test = TestCase::new("tests/test_math.py::test_add")
 ///     .with_file("tests/test_math.py")
@@ -200,7 +200,7 @@ impl TestCase {
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let test = TestCase::new("tests/math.py::TestCalc::test_add");
     /// assert_eq!(test.name, "test_add");
@@ -224,7 +224,7 @@ impl TestCase {
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let test = TestCase::new("test_add").with_file("tests/test_math.py");
     /// ```
@@ -238,7 +238,7 @@ impl TestCase {
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let test = TestCase::new("test_add").with_line(42);
     /// ```
@@ -254,7 +254,7 @@ impl TestCase {
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let test = TestCase::new("test_db")
     ///     .with_marker("slow")
@@ -365,7 +365,7 @@ impl TestOutcome {
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::TestOutcome;
+    /// use shotgun::framework::TestOutcome;
     ///
     /// assert!(TestOutcome::Passed.is_success());
     /// assert!(TestOutcome::Skipped.is_success());
@@ -388,26 +388,26 @@ impl TestOutcome {
 ///
 /// # Implementors
 ///
-/// - [`pytest::PytestDiscoverer`] - Python pytest framework
-/// - [`cargo::CargoDiscoverer`] - Rust cargo test framework
-/// - [`default::DefaultDiscoverer`] - Custom shell-based discovery
+/// - [`pytest::PytestFramework`] - Python pytest framework
+/// - [`cargo::CargoFramework`] - Rust cargo test framework
+/// - [`default::DefaultFramework`] - Custom shell-based discovery
 ///
 /// # Thread Safety
 ///
-/// Discoverers must be `Send + Sync` to allow sharing across async tasks.
+/// Frameworks must be `Send + Sync` to allow sharing across async tasks.
 ///
 /// # Example Implementation
 ///
 /// ```no_run
 /// use async_trait::async_trait;
-/// use shotgun::discovery::*;
+/// use shotgun::framework::*;
 /// use shotgun::provider::{Command, ExecResult};
 /// use std::path::PathBuf;
 ///
-/// struct JestDiscoverer { config_path: PathBuf }
+/// struct JestFramework { config_path: PathBuf }
 ///
 /// #[async_trait]
-/// impl TestFramework for JestDiscoverer {
+/// impl TestFramework for JestFramework {
 ///     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
 ///         // Run: jest --listTests
 ///         // Parse output to extract test files

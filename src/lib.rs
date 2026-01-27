@@ -27,14 +27,14 @@
 //! - [`provider::docker::DockerProvider`] - Run tests in Docker containers
 //! - [`provider::default::DefaultProvider`] - Run tests using custom shell commands
 //!
-//! ### Discovery ([`discovery`])
+//! ### Framework ([`framework`])
 //!
-//! Discoverers find tests and generate commands to run them. Each discoverer
+//! Frameworks find tests and generate commands to run them. Each framework
 //! implements the [`TestFramework`] trait:
 //!
-//! - [`discovery::pytest::PytestDiscoverer`] - Discover and run pytest tests
-//! - [`discovery::cargo::CargoDiscoverer`] - Discover and run Rust tests
-//! - [`discovery::default::DefaultDiscoverer`] - Custom discovery via shell commands
+//! - [`framework::pytest::PytestFramework`] - Discover and run pytest tests
+//! - [`framework::cargo::CargoFramework`] - Discover and run Rust tests
+//! - [`framework::default::DefaultFramework`] - Custom discovery via shell commands
 //!
 //! ### Executor ([`executor`])
 //!
@@ -59,7 +59,7 @@
 //! use shotgun::config::load_config;
 //! use shotgun::executor::Orchestrator;
 //! use shotgun::provider::local::LocalProvider;
-//! use shotgun::discovery::pytest::PytestDiscoverer;
+//! use shotgun::framework::pytest::PytestFramework;
 //! use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 //!
 //! #[tokio::main]
@@ -71,7 +71,7 @@
 //!     let provider = LocalProvider::new(Default::default());
 //!
 //!     // Create discoverer (finds pytest tests)
-//!     let discoverer = PytestDiscoverer::new(Default::default());
+//!     let discoverer = PytestFramework::new(Default::default());
 //!
 //!     // Create reporter (console + JUnit XML)
 //!     let reporter = MultiReporter::new()
@@ -119,13 +119,13 @@
 //!
 //! [`SandboxProvider`]: provider::SandboxProvider
 //! [`Sandbox`]: provider::Sandbox
-//! [`TestFramework`]: discovery::TestFramework
+//! [`TestFramework`]: framework::TestFramework
 //! [`Orchestrator`]: executor::Orchestrator
 
 pub mod config;
 pub mod connector;
-pub mod discovery;
 pub mod executor;
+pub mod framework;
 pub mod provider;
 pub mod report;
 
@@ -133,7 +133,7 @@ pub mod report;
 // These are the types most users will need when setting up shotgun.
 
 pub use config::{Config, load_config};
-pub use discovery::{TestCase, TestFramework, TestOutcome, TestResult};
 pub use executor::{Orchestrator, RunResult};
+pub use framework::{TestCase, TestFramework, TestOutcome, TestResult};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::Reporter;

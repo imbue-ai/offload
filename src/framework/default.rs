@@ -76,20 +76,20 @@ use crate::provider::{Command, ExecResult};
 /// - `run_command`: Command template with `{tests}` placeholder
 /// - `result_file`: Optional JUnit XML path for detailed results
 /// - `working_dir`: Directory for running commands
-pub struct DefaultDiscoverer {
+pub struct DefaultFramework {
     config: DefaultDiscoveryConfig,
 }
 
-impl DefaultDiscoverer {
+impl DefaultFramework {
     /// Creates a new default discoverer with the given configuration.
     ///
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::default::DefaultDiscoverer;
+    /// use shotgun::framework::default::DefaultFramework;
     /// use shotgun::config::DefaultDiscoveryConfig;
     ///
-    /// let discoverer = DefaultDiscoverer::new(DefaultDiscoveryConfig {
+    /// let discoverer = DefaultFramework::new(DefaultDiscoveryConfig {
     ///     discover_command: "find tests -name '*.test.js' -exec basename {} \\;".into(),
     ///     run_command: "jest {tests}".into(),
     ///     result_file: Some("junit.xml".into()),
@@ -122,7 +122,7 @@ impl DefaultDiscoverer {
 }
 
 #[async_trait]
-impl TestFramework for DefaultDiscoverer {
+impl TestFramework for DefaultFramework {
     async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Run discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");

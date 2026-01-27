@@ -17,12 +17,12 @@
 //! use std::time::Duration;
 //! use shotgun::executor::TestRunner;
 //! use shotgun::provider::local::LocalSandbox;
-//! use shotgun::discovery::pytest::PytestDiscoverer;
-//! use shotgun::discovery::TestCase;
+//! use shotgun::framework::pytest::PytestFramework;
+//! use shotgun::framework::TestCase;
 //!
 //! async fn run_test_example(
 //!     sandbox: LocalSandbox,
-//!     discoverer: &PytestDiscoverer,
+//!     discoverer: &PytestFramework,
 //! ) -> anyhow::Result<()> {
 //!     let mut runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300));
 //!
@@ -43,7 +43,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use tracing::{debug, info};
 
-use crate::discovery::{TestCase, TestFramework, TestOutcome, TestResult};
+use crate::framework::{TestCase, TestFramework, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
 
 /// Callback function for streaming test output.
@@ -119,10 +119,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// use shotgun::executor::TestRunner;
     /// use shotgun::provider::OutputLine;
     /// # use shotgun::provider::local::LocalSandbox;
-    /// # use shotgun::discovery::pytest::PytestDiscoverer;
+    /// # use shotgun::framework::pytest::PytestFramework;
     /// # use std::time::Duration;
     ///
-    /// # fn example(sandbox: LocalSandbox, discoverer: &PytestDiscoverer) {
+    /// # fn example(sandbox: LocalSandbox, discoverer: &PytestFramework) {
     /// let runner = TestRunner::new(sandbox, discoverer, Duration::from_secs(300))
     ///     .with_streaming(Arc::new(|test_id, line| {
     ///         match line {

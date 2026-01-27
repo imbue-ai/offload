@@ -32,8 +32,8 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use shotgun::discovery::cargo::CargoDiscoverer;
-//! use shotgun::discovery::TestFramework;
+//! use shotgun::framework::cargo::CargoFramework;
+//! use shotgun::framework::TestFramework;
 //! use shotgun::config::CargoDiscoveryConfig;
 //!
 //! #[tokio::main]
@@ -44,7 +44,7 @@
 //!         ..Default::default()
 //!     };
 //!
-//!     let discoverer = CargoDiscoverer::new(config);
+//!     let discoverer = CargoFramework::new(config);
 //!     let tests = discoverer.discover(&[]).await?;
 //!
 //!     println!("Found {} tests", tests.len());
@@ -73,20 +73,20 @@ use crate::provider::{Command, ExecResult};
 /// - `features`: Cargo features to enable
 /// - `bin`: Binary target name
 /// - `include_ignored`: Include `#[ignore]` tests
-pub struct CargoDiscoverer {
+pub struct CargoFramework {
     config: CargoDiscoveryConfig,
 }
 
-impl CargoDiscoverer {
+impl CargoFramework {
     /// Creates a new cargo test discoverer with the given configuration.
     ///
     /// # Example
     ///
     /// ```
-    /// use shotgun::discovery::cargo::CargoDiscoverer;
+    /// use shotgun::framework::cargo::CargoFramework;
     /// use shotgun::config::CargoDiscoveryConfig;
     ///
-    /// let discoverer = CargoDiscoverer::new(CargoDiscoveryConfig {
+    /// let discoverer = CargoFramework::new(CargoDiscoveryConfig {
     ///     package: Some("my-lib".into()),
     ///     features: vec!["test-utils".into()],
     ///     ..Default::default()
@@ -138,7 +138,7 @@ impl CargoDiscoverer {
 }
 
 #[async_trait]
-impl TestFramework for CargoDiscoverer {
+impl TestFramework for CargoFramework {
     async fn discover(&self, _paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Build the cargo test --list command
         let mut cmd_args = vec!["test".to_string()];

@@ -51,11 +51,11 @@ use crate::provider::{Command, ExecResult};
 /// - `markers`: Filter expression (e.g., `"not slow"`)
 /// - `python`: Python interpreter path
 /// - `extra_args`: Additional pytest arguments
-pub struct PytestDiscoverer {
+pub struct PytestFramework {
     config: PytestDiscoveryConfig,
 }
 
-impl PytestDiscoverer {
+impl PytestFramework {
     /// Creates a new pytest discoverer with the given configuration.
     pub fn new(config: PytestDiscoveryConfig) -> Self {
         Self { config }
@@ -78,7 +78,7 @@ impl PytestDiscoverer {
 }
 
 #[async_trait]
-impl TestFramework for PytestDiscoverer {
+impl TestFramework for PytestFramework {
     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);

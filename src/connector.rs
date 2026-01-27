@@ -420,7 +420,7 @@ impl Connector for ShellConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::TestCase;
+    use crate::framework::TestCase;
 
     fn test_ids_to_cases(ids: Vec<String>) -> Vec<TestCase> {
         ids.into_iter()

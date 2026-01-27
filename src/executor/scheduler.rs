@@ -18,7 +18,7 @@
 //!
 //! ```
 //! use shotgun::executor::Scheduler;
-//! use shotgun::discovery::TestCase;
+//! use shotgun::framework::TestCase;
 //!
 //! let scheduler = Scheduler::new(4); // 4 parallel sandboxes
 //!
@@ -30,7 +30,7 @@
 //! assert_eq!(batches.len(), 4); // 4 batches for 4 sandboxes
 //! ```
 
-use crate::discovery::TestCase;
+use crate::framework::TestCase;
 
 /// Distributes tests across parallel sandboxes.
 ///
@@ -78,7 +78,7 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let scheduler = Scheduler::new(2);
     /// let tests = vec![
@@ -128,7 +128,7 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let scheduler = Scheduler::new(10);
     /// let tests: Vec<_> = (0..25).map(|i| TestCase::new(format!("test_{}", i))).collect();
@@ -170,7 +170,7 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::discovery::TestCase;
+    /// use shotgun::framework::TestCase;
     ///
     /// let scheduler = Scheduler::new(2);
     /// let tests = vec![

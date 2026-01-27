@@ -8,10 +8,10 @@ use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 use shotgun::config::{self, DiscoveryConfig, ProviderConfig};
-use shotgun::discovery::{
-    TestFramework, cargo::CargoDiscoverer, default::DefaultDiscoverer, pytest::PytestDiscoverer,
-};
 use shotgun::executor::Orchestrator;
+use shotgun::framework::{
+    TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
+};
 use shotgun::provider::{
     SandboxProvider, default::DefaultProvider, docker::DockerProvider, local::LocalProvider,
 };
@@ -126,7 +126,7 @@ async fn run_tests(
     match (&config.provider, &config.discovery) {
         (ProviderConfig::Local(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            let discoverer = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -139,7 +139,7 @@ async fn run_tests(
         }
         (ProviderConfig::Local(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            let discoverer = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -152,7 +152,7 @@ async fn run_tests(
         }
         (ProviderConfig::Local(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -165,7 +165,7 @@ async fn run_tests(
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            let discoverer = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -178,7 +178,7 @@ async fn run_tests(
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            let discoverer = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -191,7 +191,7 @@ async fn run_tests(
         }
         (ProviderConfig::Docker(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = DockerProvider::new(p_cfg.clone())?;
-            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -204,7 +204,7 @@ async fn run_tests(
         }
         (ProviderConfig::Default(p_cfg), DiscoveryConfig::Pytest(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = PytestDiscoverer::new(d_cfg.clone());
+            let discoverer = PytestFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -217,7 +217,7 @@ async fn run_tests(
         }
         (ProviderConfig::Default(p_cfg), DiscoveryConfig::Cargo(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = CargoDiscoverer::new(d_cfg.clone());
+            let discoverer = CargoFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -230,7 +230,7 @@ async fn run_tests(
         }
         (ProviderConfig::Default(p_cfg), DiscoveryConfig::Default(d_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            let discoverer = DefaultDiscoverer::new(d_cfg.clone());
+            let discoverer = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
                 provider,
@@ -276,9 +276,9 @@ async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
     let tests = match &config.discovery {
-        DiscoveryConfig::Pytest(cfg) => PytestDiscoverer::new(cfg.clone()).discover(&[]).await?,
-        DiscoveryConfig::Cargo(cfg) => CargoDiscoverer::new(cfg.clone()).discover(&[]).await?,
-        DiscoveryConfig::Default(cfg) => DefaultDiscoverer::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
+        DiscoveryConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
     };
 
     match format {

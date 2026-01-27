@@ -26,7 +26,7 @@
 //! ```no_run
 //! use async_trait::async_trait;
 //! use shotgun::report::Reporter;
-//! use shotgun::discovery::{TestCase, TestResult};
+//! use shotgun::framework::{TestCase, TestResult};
 //! use shotgun::executor::RunResult;
 //!
 //! struct SlackReporter {
@@ -69,8 +69,8 @@ pub mod junit;
 
 use async_trait::async_trait;
 
-use crate::discovery::{TestCase, TestResult};
 use crate::executor::RunResult;
+use crate::framework::{TestCase, TestResult};
 
 pub use junit::JUnitReporter;
 
@@ -286,13 +286,13 @@ impl Reporter for ConsoleReporter {
             pb.inc(1);
 
             let status = match result.outcome {
-                crate::discovery::TestOutcome::Passed => console::style("PASS").green(),
-                crate::discovery::TestOutcome::Failed => console::style("FAIL").red(),
-                crate::discovery::TestOutcome::Skipped => console::style("SKIP").yellow(),
-                crate::discovery::TestOutcome::Error => console::style("ERR ").red().bold(),
+                crate::framework::TestOutcome::Passed => console::style("PASS").green(),
+                crate::framework::TestOutcome::Failed => console::style("FAIL").red(),
+                crate::framework::TestOutcome::Skipped => console::style("SKIP").yellow(),
+                crate::framework::TestOutcome::Error => console::style("ERR ").red().bold(),
             };
 
-            if self.verbose || result.outcome != crate::discovery::TestOutcome::Passed {
+            if self.verbose || result.outcome != crate::framework::TestOutcome::Passed {
                 pb.println(format!("{} {}", status, result.test.id));
             }
         }
@@ -339,8 +339,8 @@ impl Reporter for ConsoleReporter {
             println!();
             println!("Failed tests:");
             for r in &result.results {
-                if r.outcome == crate::discovery::TestOutcome::Failed
-                    || r.outcome == crate::discovery::TestOutcome::Error
+                if r.outcome == crate::framework::TestOutcome::Failed
+                    || r.outcome == crate::framework::TestOutcome::Error
                 {
                     println!("  - {}", r.test.id);
                     if let Some(msg) = &r.error_message {

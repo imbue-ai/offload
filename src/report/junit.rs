@@ -42,8 +42,8 @@ use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 
 use super::Reporter;
-use crate::discovery::{TestCase, TestOutcome, TestResult};
 use crate::executor::RunResult;
+use crate::framework::{TestCase, TestOutcome, TestResult};
 
 /// Reporter that generates JUnit XML test reports.
 ///

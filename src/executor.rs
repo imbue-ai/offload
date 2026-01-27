@@ -12,7 +12,7 @@
 //! │  (coordinates the entire test run)                                  │
 //! │                                                                      │
 //! │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐            │
-//! │  │  Discoverer  │   │   Scheduler  │   │   Reporter   │            │
+//! │  │  Framework  │   │   Scheduler  │   │   Reporter   │            │
 //! │  │   (finds     │   │ (distributes │   │   (reports   │            │
 //! │  │    tests)    │   │    tests)    │   │   results)   │            │
 //! │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘            │
@@ -51,7 +51,7 @@
 //! use shotgun::executor::Orchestrator;
 //! use shotgun::config::load_config;
 //! use shotgun::provider::local::LocalProvider;
-//! use shotgun::discovery::pytest::PytestDiscoverer;
+//! use shotgun::framework::pytest::PytestFramework;
 //! use shotgun::report::ConsoleReporter;
 //!
 //! #[tokio::main]
@@ -59,7 +59,7 @@
 //!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
 //!
 //!     let provider = LocalProvider::new(Default::default());
-//!     let discoverer = PytestDiscoverer::new(Default::default());
+//!     let discoverer = PytestFramework::new(Default::default());
 //!     let reporter = ConsoleReporter::new(true);
 //!
 //!     let orchestrator = Orchestrator::new(config, provider, discoverer, reporter);
@@ -87,7 +87,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
-use crate::discovery::{TestCase, TestFramework, TestOutcome, TestResult};
+use crate::framework::{TestCase, TestFramework, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox, SandboxProvider};
 use crate::report::Reporter;
 
@@ -234,7 +234,7 @@ impl RunResult {
 /// use shotgun::executor::Orchestrator;
 /// use shotgun::config::load_config;
 /// use shotgun::provider::local::LocalProvider;
-/// use shotgun::discovery::pytest::PytestDiscoverer;
+/// use shotgun::framework::pytest::PytestFramework;
 /// use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 ///
 /// #[tokio::main]
@@ -243,7 +243,7 @@ impl RunResult {
 ///
 ///     // Set up components
 ///     let provider = LocalProvider::new(Default::default());
-///     let discoverer = PytestDiscoverer::new(Default::default());
+///     let discoverer = PytestFramework::new(Default::default());
 ///     let reporter = MultiReporter::new()
 ///         .with_reporter(ConsoleReporter::new(true))
 ///         .with_reporter(JUnitReporter::new("results.xml".into()));
