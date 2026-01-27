@@ -1,7 +1,7 @@
 //! pytest test discovery implementation.
 //!
 //! This module provides test discovery for Python projects using pytest.
-//! It uses `pytest --collect-only` for discovery and parses JUnit XML
+//! It uses `pytest --collect-only -q` for discovery and parses JUnit XML
 //! or stdout for results.
 //!
 //! # Discovery Process
@@ -29,34 +29,6 @@
 //! type = "pytest"
 //! markers = "not slow and not integration"
 //! ```
-//!
-//! # Example Usage
-//!
-//! ```no_run
-//! use shotgun::discovery::pytest::PytestDiscoverer;
-//! use shotgun::discovery::TestDiscoverer;
-//! use shotgun::config::PytestDiscoveryConfig;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let config = PytestDiscoveryConfig {
-//!         paths: vec!["tests".into()],
-//!         markers: Some("not slow".into()),
-//!         python: "python3".into(),
-//!         ..Default::default()
-//!     };
-//!
-//!     let discoverer = PytestDiscoverer::new(config);
-//!     let tests = discoverer.discover(&[]).await?;
-//!
-//!     println!("Found {} tests", tests.len());
-//!     for test in &tests {
-//!         println!("  - {}", test.id);
-//!     }
-//!
-//!     Ok(())
-//! }
-//! ```
 
 use std::path::PathBuf;
 
@@ -69,7 +41,7 @@ use crate::provider::{Command, ExecResult};
 
 /// Test discoverer for Python pytest projects.
 ///
-/// Uses `pytest --collect-only` for test discovery and generates
+/// Uses `pytest --collect-only -q` for test discovery and generates
 /// commands with JUnit XML output for structured result parsing.
 ///
 /// # Configuration
@@ -85,90 +57,19 @@ pub struct PytestDiscoverer {
 
 impl PytestDiscoverer {
     /// Creates a new pytest discoverer with the given configuration.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use shotgun::discovery::pytest::PytestDiscoverer;
-    /// use shotgun::config::PytestDiscoveryConfig;
-    ///
-    /// let discoverer = PytestDiscoverer::new(PytestDiscoveryConfig {
-    ///     paths: vec!["tests".into(), "integration".into()],
-    ///     markers: Some("not slow".into()),
-    ///     ..Default::default()
-    /// });
-    /// ```
     pub fn new(config: PytestDiscoveryConfig) -> Self {
         Self { config }
     }
 
-    /// Parse pytest --collect-only output to extract test cases.
+    /// Parse `pytest --collect-only -q` output to extract test cases.
     fn parse_collect_output(&self, output: &str) -> Vec<TestCase> {
         let mut tests = Vec::new();
 
-        // Match lines like:
-        // <Module tests/test_foo.py>
-        //   <Function test_bar>
-        //   <Class TestBaz>
-        //     <Function test_qux>
-        let test_pattern = Regex::new(r"<(?:Function|Method)\s+(\S+)>").unwrap();
-        let module_pattern = Regex::new(r"<Module\s+(\S+)>").unwrap();
-        let class_pattern = Regex::new(r"<Class\s+(\S+)>").unwrap();
-
-        let mut current_module: Option<String> = None;
-        let mut current_class: Option<String> = None;
-
         for line in output.lines() {
             let trimmed = line.trim();
-
-            if let Some(caps) = module_pattern.captures(trimmed) {
-                current_module = Some(caps[1].to_string());
-                current_class = None;
-            } else if let Some(caps) = class_pattern.captures(trimmed) {
-                current_class = Some(caps[1].to_string());
-            } else if let Some(caps) = test_pattern.captures(trimmed) {
-                let test_name = &caps[1];
-
-                // Build the full test ID
-                let test_id = match (&current_module, &current_class) {
-                    (Some(module), Some(class)) => {
-                        format!("{}::{}::{}", module, class, test_name)
-                    }
-                    (Some(module), None) => {
-                        format!("{}::{}", module, test_name)
-                    }
-                    _ => test_name.to_string(),
-                };
-
-                let mut test = TestCase::new(&test_id);
-
-                // Extract file path from module
-                if let Some(module) = &current_module {
-                    test = test.with_file(module.clone());
-                }
-
-                // Check for skip marker in the line
-                if trimmed.contains("skip") {
-                    test = test.skipped();
-                }
-
-                // Check for flaky marker
-                if trimmed.contains("flaky") {
-                    test = test.flaky();
-                }
-
-                tests.push(test);
-            }
-        }
-
-        // Also try parsing the simpler format from pytest --collect-only -q
-        if tests.is_empty() {
-            for line in output.lines() {
-                let trimmed = line.trim();
-                // Simple format: tests/test_foo.py::test_bar
-                if trimmed.contains("::") && !trimmed.starts_with('<') && !trimmed.contains(' ') {
-                    tests.push(TestCase::new(trimmed));
-                }
+            // Simple format: tests/test_foo.py::test_bar
+            if trimmed.contains("::") && !trimmed.starts_with('<') && !trimmed.contains(' ') {
+                tests.push(TestCase::new(trimmed));
             }
         }
 
@@ -180,20 +81,18 @@ impl PytestDiscoverer {
 impl TestDiscoverer for PytestDiscoverer {
     async fn discover(&self, paths: &[PathBuf]) -> DiscoveryResult<Vec<TestCase>> {
         // Build the pytest --collect-only command
-        let mut cmd = Command::new(&self.config.python)
-            .arg("-m")
-            .arg("pytest")
-            .arg("--collect-only")
-            .arg("-q");
+        let mut cmd = tokio::process::Command::new(&self.config.python);
+
+        cmd.arg("-m").arg("pytest").arg("--collect-only").arg("-q");
 
         // Add marker filter if specified
         if let Some(markers) = &self.config.markers {
-            cmd = cmd.arg("-m").arg(markers);
+            cmd.arg("-m").arg(markers);
         }
 
         // Add extra args
         for arg in &self.config.extra_args {
-            cmd = cmd.arg(arg);
+            cmd.arg(arg);
         }
 
         // Add paths to search
@@ -211,25 +110,10 @@ impl TestDiscoverer for PytestDiscoverer {
         };
 
         for path in &search_paths {
-            cmd = cmd.arg(path);
+            cmd.arg(path);
         }
 
-        // For local discovery, we run the command directly
-        // In the actual execution, the orchestrator will run this in a sandbox
-        let output = tokio::process::Command::new(&self.config.python)
-            .arg("-m")
-            .arg("pytest")
-            .arg("--collect-only")
-            .arg("-q")
-            .args(
-                self.config
-                    .markers
-                    .as_ref()
-                    .map(|m| vec!["-m".to_string(), m.clone()])
-                    .unwrap_or_default(),
-            )
-            .args(&self.config.extra_args)
-            .args(&search_paths)
+        let output = cmd
             .output()
             .await
             .map_err(|e| DiscoveryError::DiscoveryFailed(e.to_string()))?;

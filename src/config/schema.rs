@@ -474,36 +474,6 @@ fn default_remote_timeout() -> u64 {
 ///
 /// This is a tagged enum that selects the discovery method based on the
 /// `type` field in TOML. Each variant contains framework-specific settings.
-///
-/// # Discovery Types
-///
-/// | Type | Framework | Discovery Method |
-/// |------|-----------|------------------|
-/// | `pytest` | Python pytest | `pytest --collect-only` |
-/// | `cargo` | Rust | `cargo test --list` |
-/// | `generic` | Any | Custom shell command |
-///
-/// # Example
-///
-/// ```toml
-/// # pytest discovery
-/// [discovery]
-/// type = "pytest"
-/// paths = ["tests", "integration_tests"]
-/// markers = "not slow"
-///
-/// # cargo test discovery
-/// [discovery]
-/// type = "cargo"
-/// package = "my-crate"
-/// features = ["test-utils"]
-///
-/// # Generic discovery
-/// [discovery]
-/// type = "default"
-/// discover_command = "find tests -name '*.test.js' -exec basename {} \\;"
-/// run_command = "jest {tests}"
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum DiscoveryConfig {
@@ -518,55 +488,22 @@ pub enum DiscoveryConfig {
 }
 
 /// Configuration for pytest test discovery.
-///
-/// Uses `pytest --collect-only` to discover tests, then runs them with
-/// standard pytest options. Supports markers, fixtures, and all pytest features.
-///
-/// # Example
-///
-/// ```toml
-/// [discovery]
-/// type = "pytest"
-/// paths = ["tests", "integration"]
-/// markers = "not slow and not integration"
-/// python = "python3.11"
-/// extra_args = ["--ignore=tests/legacy"]
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PytestDiscoveryConfig {
-    /// Directories to search for tests.
-    ///
-    /// Paths are relative to the working directory.
+    /// Directories to search for tests, relative to the working directory.
     ///
     /// Default: `["tests"]`
     #[serde(default = "default_test_paths")]
     pub paths: Vec<PathBuf>,
 
     /// pytest marker expression to filter tests.
-    ///
-    /// Uses pytest's `-m` flag. Supports boolean expressions.
-    ///
-    /// # Examples
-    /// - `"not slow"` - Exclude tests marked with `@pytest.mark.slow`
-    /// - `"unit or integration"` - Include only unit or integration tests
-    /// - `"not (slow or flaky)"` - Exclude slow and flaky tests
     pub markers: Option<String>,
 
     /// Additional pytest arguments for test collection.
-    ///
-    /// These are passed to both `--collect-only` and test execution.
-    ///
-    /// # Examples
-    /// - `["--ignore=tests/legacy"]` - Ignore a directory
-    /// - `["-x"]` - Stop on first failure
     #[serde(default)]
     pub extra_args: Vec<String>,
 
     /// Python interpreter to use.
-    ///
-    /// Can be a path or command name found in PATH.
-    ///
-    /// Default: `"python"`
     #[serde(default = "default_python")]
     pub python: String,
 }
@@ -580,19 +517,6 @@ fn default_python() -> String {
 }
 
 /// Configuration for Rust/Cargo test discovery.
-///
-/// Uses `cargo test --list` to discover tests, then runs them with
-/// `cargo test -- --exact`. Supports workspaces, features, and all cargo options.
-///
-/// # Example
-///
-/// ```toml
-/// [discovery]
-/// type = "cargo"
-/// package = "my-crate"
-/// features = ["test-utils", "mock-server"]
-/// include_ignored = false
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CargoDiscoveryConfig {
     /// Package to test in a Cargo workspace.
