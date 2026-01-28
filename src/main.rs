@@ -375,17 +375,17 @@ timeout_secs = 3600"#
 
     let framework_config = match framework {
         "pytest" => {
-            r#"[framework]
+            r#"[groups.default.framework]
 type = "pytest"
 paths = ["tests"]
 python = "python""#
         }
         "cargo" => {
-            r#"[framework]
+            r#"[groups.default.framework]
 type = "cargo""#
         }
         "default" => {
-            r#"[framework]
+            r#"[groups.default.framework]
 type = "default"
 discover_command = "echo test1 test2"
 run_command = "echo Running {tests}""#
