@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```
-//! use shotgun::executor::Scheduler;
+//! use shotgun::orchestrator::Scheduler;
 //! use shotgun::framework::TestRecord;
 //!
 //! let scheduler = Scheduler::new(4); // 4 parallel sandboxes
@@ -54,7 +54,7 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::executor::Scheduler;
+    /// use shotgun::orchestrator::Scheduler;
     ///
     /// let scheduler = Scheduler::new(4);
     /// ```
@@ -78,7 +78,7 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::executor::Scheduler;
+    /// use shotgun::orchestrator::Scheduler;
     /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
@@ -130,7 +130,7 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::executor::Scheduler;
+    /// use shotgun::orchestrator::Scheduler;
     /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(10);
@@ -173,7 +173,7 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::executor::Scheduler;
+    /// use shotgun::orchestrator::Scheduler;
     /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_schedule_single() {
         let scheduler = Scheduler::new(4);
-        let records = vec![TestRecord::new("test1")];
+        let records = [TestRecord::new("test1")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let batches = scheduler.schedule(&tests);
 
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn test_schedule_round_robin() {
         let scheduler = Scheduler::new(2);
-        let records = vec![
+        let records = [
             TestRecord::new("test1"),
             TestRecord::new("test2"),
             TestRecord::new("test3"),
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn test_schedule_individual() {
         let scheduler = Scheduler::new(4);
-        let records = vec![
+        let records = [
             TestRecord::new("test1"),
             TestRecord::new("test2"),
             TestRecord::new("test3"),

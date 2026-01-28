@@ -35,14 +35,14 @@
 //! - [`framework::cargo::CargoFramework`] - Discover and run Rust tests
 //! - [`framework::default::DefaultFramework`] - Custom framework via shell commands
 //!
-//! ### Executor ([`executor`])
+//! ### Orchestrator ([`orchestrator`])
 //!
-//! The executor module coordinates test distribution and execution:
+//! The orchestrator module coordinates test distribution and execution:
 //!
 //! - [`Orchestrator`] - Main entry point that coordinates the entire test run
-//! - [`executor::Scheduler`] - Distributes tests across available sandboxes
-//! - [`executor::TestRunner`] - Executes tests within a single sandbox
-//! - [`executor::RetryManager`] - Handles retry logic and flaky test detection
+//! - [`orchestrator::Scheduler`] - Distributes tests across available sandboxes
+//! - [`orchestrator::TestRunner`] - Executes tests within a single sandbox
+//! - [`orchestrator::RetryManager`] - Handles retry logic and flaky test detection
 //!
 //! ### Reporting ([`report`])
 //!
@@ -56,7 +56,7 @@
 //!
 //! ```no_run
 //! use shotgun::config::load_config;
-//! use shotgun::executor::Orchestrator;
+//! use shotgun::orchestrator::Orchestrator;
 //! use shotgun::provider::local::LocalProvider;
 //! use shotgun::framework::pytest::PytestFramework;
 //! use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
@@ -98,12 +98,12 @@
 //! [`SandboxProvider`]: provider::SandboxProvider
 //! [`Sandbox`]: provider::Sandbox
 //! [`TestFramework`]: framework::TestFramework
-//! [`Orchestrator`]: executor::Orchestrator
+//! [`Orchestrator`]: orchestrator::Orchestrator
 
 pub mod config;
 pub mod connector;
-pub mod executor;
 pub mod framework;
+pub mod orchestrator;
 pub mod provider;
 pub mod report;
 
@@ -111,7 +111,7 @@ pub mod report;
 // These are the types most users will need when setting up shotgun.
 
 pub use config::{Config, load_config};
-pub use executor::{Orchestrator, RunResult};
 pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
+pub use orchestrator::{Orchestrator, RunResult};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::Reporter;

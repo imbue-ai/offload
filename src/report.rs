@@ -27,7 +27,7 @@
 //! use async_trait::async_trait;
 //! use shotgun::report::Reporter;
 //! use shotgun::framework::{TestRecord, TestResult};
-//! use shotgun::executor::RunResult;
+//! use shotgun::orchestrator::RunResult;
 //!
 //! struct SlackReporter {
 //!     webhook_url: String,
@@ -69,8 +69,8 @@ pub mod junit;
 
 use async_trait::async_trait;
 
-use crate::executor::RunResult;
 use crate::framework::{TestRecord, TestResult};
+use crate::orchestrator::RunResult;
 
 pub use junit::JUnitReporter;
 
