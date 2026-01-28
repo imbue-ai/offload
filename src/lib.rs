@@ -102,6 +102,7 @@
 //! [`TestFramework`]: framework::TestFramework
 //! [`Orchestrator`]: orchestrator::Orchestrator
 
+pub mod batteries;
 pub mod config;
 pub mod connector;
 pub mod framework;
