@@ -137,10 +137,10 @@ impl RetryManager {
 
     /// Checks if a test should be retried.
     ///
-    /// Returns `true` if the test hasn't exceeded max_retries.
+    /// Returns `true` if the test hasn't exceeded max_retries and hasn't passed yet.
     pub fn should_retry(&self, test_id: &str) -> bool {
-        let (count, _) = self.attempts.get(test_id).unwrap_or(&(0, 0));
-        *count < self.max_retries
+        let (count, successes) = self.attempts.get(test_id).unwrap_or(&(0, 0));
+        *count < self.max_retries && *successes == 0
     }
 
     /// Records a test attempt (success or failure).
