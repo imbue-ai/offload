@@ -7,14 +7,23 @@ retry_count = 0
 stream_output = true
 
 [provider]
-type = "process"
+type = "local"
 shell = "/bin/sh"
 
-[discovery]
+[groups.unit.framework]
 type = "pytest"
 paths = ["examples/tests"]
+# markers = "not slow"
 python = "python3"
 extra_args = ["-s"]  # -s disables output capture so we see prints
+
+# [groups.slow.framework]
+# type = "pytest"
+# paths = ["examples/tests"]
+# markers = "slow"
+# python = "python3"
+# extra_args = ["-s"]  # -s disables output capture so we see prints
+
 
 [report]
 output_dir = "test-results"

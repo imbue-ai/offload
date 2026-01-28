@@ -16,7 +16,13 @@ timeout_secs = 600
 [groups.unit.framework]
 type = "pytest"
 paths = ["examples/tests"]
-markers = "not flaky"
+markers = "not slow"
+python = "python3"
+
+[groups.slow.framework]
+type = "pytest"
+paths = ["examples/tests"]
+markers = "slow"
 python = "python3"
 
 [report]
