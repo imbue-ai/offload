@@ -13,13 +13,13 @@ exec_command = "uv run --with=modal scripts/modal-exec.py {sandbox_id} {command}
 destroy_command = "uv run --with=modal scripts/modal-destroy.py {sandbox_id}"
 timeout_secs = 600
 
-[groups.unit.framework]
+[groups.unit]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "not slow"
 python = "python3"
 
-[groups.slow.framework]
+[groups.slow]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "slow"
