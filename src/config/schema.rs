@@ -13,11 +13,10 @@
 //! │   ├── Local              - Local process execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
 //! ├── Groups                 - Named test groups (HashMap<String, GroupConfig>)
-//! │   └── GroupConfig        - Per-group settings
-//! │       └── FrameworkConfig - Tagged enum selecting framework type
-//! │           ├── Pytest     - pytest test framework
-//! │           ├── Cargo      - Rust/Cargo test framework
-//! │           └── Default    - Custom shell-based framework
+//! │   └── GroupConfig        - Flattened FrameworkConfig (write [groups.name] directly)
+//! │       ├── Pytest         - pytest test framework
+//! │       ├── Cargo          - Rust/Cargo test framework
+//! │       └── Default        - Custom shell-based framework
 //! └── ReportConfig           - Output and reporting settings
 //! ```
 
@@ -263,9 +262,27 @@ fn default_remote_timeout() -> u64 {
     3600 // 1 hour
 }
 
+/// Configuration for a test group.
+///
+/// Groups allow organizing tests by framework or purpose. The framework
+/// configuration is flattened, so you write `[groups.mygroup]` directly
+/// with the framework fields.
+///
+/// # Example
+///
+/// ```toml
+/// [groups.python]
+/// type = "pytest"
+/// paths = ["tests"]
+///
+/// [groups.rust]
+/// type = "cargo"
+/// package = "my-crate"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GroupConfig {
-    /// Framework configuration for this group.
+    /// Framework configuration for this group (flattened in TOML).
+    #[serde(flatten)]
     pub framework: FrameworkConfig,
 }
 
@@ -358,7 +375,7 @@ pub struct CargoFrameworkConfig {
 /// # Example: Jest
 ///
 /// ```toml
-/// [groups.javascript.framework]
+/// [groups.javascript]
 /// type = "default"
 /// discover_command = "jest --listTests --json | jq -r '.[]'"
 /// run_command = "jest {tests} --ci --reporters=jest-junit"
@@ -368,7 +385,7 @@ pub struct CargoFrameworkConfig {
 /// # Example: Go tests
 ///
 /// ```toml
-/// [groups.go.framework]
+/// [groups.go]
 /// type = "default"
 /// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
 /// run_command = "go test -v -run '{tests}' ./..."

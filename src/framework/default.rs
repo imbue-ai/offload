@@ -40,7 +40,7 @@
 //! # Example: Jest
 //!
 //! ```toml
-//! [groups.javascript.framework]
+//! [groups.javascript]
 //! type = "default"
 //! discover_command = "jest --listTests --json | jq -r '.[]' | xargs -I{} basename {}"
 //! run_command = "jest {tests} --ci --reporters=jest-junit"
@@ -50,7 +50,7 @@
 //! # Example: Go
 //!
 //! ```toml
-//! [groups.go.framework]
+//! [groups.go]
 //! type = "default"
 //! discover_command = "go test -list '.*' ./... 2>/dev/null | grep -E '^Test'"
 //! run_command = "go test -v -run '^({tests})$' ./..."

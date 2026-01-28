@@ -25,7 +25,7 @@
 //! The `markers` configuration option filters tests during discovery:
 //!
 //! ```toml
-//! [groups.python.framework]
+//! [groups.python]
 //! type = "pytest"
 //! markers = "not slow and not integration"
 //! ```

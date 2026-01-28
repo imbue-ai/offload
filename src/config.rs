@@ -77,7 +77,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 ///     [provider]
 ///     type = "local"
 ///
-///     [groups.all.framework]
+///     [groups.all]
 ///     type = "pytest"
 /// "#)?;
 ///
