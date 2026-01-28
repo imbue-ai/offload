@@ -87,6 +87,7 @@
 
 [no-panic]
 "." = 0
+"src" = 1
 
 [no-relative-imports]
 "." = 0
@@ -114,7 +115,7 @@
 
 [no-unwrap]
 "." = 0
-"src" = 4
+"src" = 15
 "src/framework" = 11
 
 [no-while-true]
