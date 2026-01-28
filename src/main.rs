@@ -125,7 +125,7 @@ async fn run_tests(
     let mut set = JoinSet::<Result<()>>::new();
 
     // config.groups is a HashMap<String, GroupConfig>. Let's iterate over it.
-    for group_config in config.groups.values() {
+    for (group_name, group_config) in config.clone().groups {
         // We know these are immutable, and we clone them to hand to the async task.
         let config = config.clone();
         let group_config = group_config.clone();
@@ -139,6 +139,7 @@ async fn run_tests(
                     let framework = PytestFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -152,6 +153,7 @@ async fn run_tests(
                     let framework = CargoFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -165,6 +167,7 @@ async fn run_tests(
                     let framework = DefaultFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -178,6 +181,7 @@ async fn run_tests(
                     let framework = PytestFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -191,6 +195,7 @@ async fn run_tests(
                     let framework = CargoFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -204,6 +209,7 @@ async fn run_tests(
                     let framework = DefaultFramework::new(d_cfg.clone());
                     run_with(
                         &config,
+                        &group_name,
                         provider,
                         framework,
                         collect_only,
@@ -250,8 +256,10 @@ impl fmt::Display for AggregateError {
 
 impl std::error::Error for AggregateError {}
 
+/// run_with actually runs the tests using the given provider and framework.
 async fn run_with<P, D>(
     config: &config::Config,
+    group_name: &str,
     provider: P,
     framework: D,
     collect_only: bool,
@@ -272,10 +280,16 @@ where
     }
 
     let reporter = create_reporter(config, junit_path, verbose);
-    let orchestrator = Orchestrator::new(config.clone(), provider, framework, reporter);
+    let orchestrator = Orchestrator::new(
+        config.clone(),
+        group_name.to_string(),
+        provider,
+        framework,
+        reporter,
+    );
 
-    let result = orchestrator.run().await?;
-    std::process::exit(result.exit_code());
+    orchestrator.run().await?;
+    Ok(())
 }
 
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {

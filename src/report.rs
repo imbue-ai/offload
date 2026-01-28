@@ -21,38 +21,6 @@
 //! | [`MultiReporter`] | Combines multiple reporters |
 //! | [`NullReporter`] | Discards all events (for testing) |
 //!
-//! # Example: Custom Reporter
-//!
-//! ```no_run
-//! use async_trait::async_trait;
-//! use shotgun::report::Reporter;
-//! use shotgun::framework::{TestRecord, TestResult};
-//! use shotgun::orchestrator::RunResult;
-//!
-//! struct SlackReporter {
-//!     webhook_url: String,
-//! }
-//!
-//! #[async_trait]
-//! impl Reporter for SlackReporter {
-//!     async fn on_discovery_complete(&self, tests: &[TestRecord]) {
-//!         // Could post "Starting test run with N tests"
-//!     }
-//!
-//!     async fn on_test_start(&self, _test: &TestRecord) {}
-//!     async fn on_test_complete(&self, _result: &TestResult) {}
-//!
-//!     async fn on_run_complete(&self, result: &RunResult) {
-//!         // Post summary to Slack webhook
-//!         let msg = format!(
-//!             "Tests complete: {} passed, {} failed",
-//!             result.passed, result.failed
-//!         );
-//!         // ... send to webhook_url
-//!     }
-//! }
-//! ```
-//!
 //! # Combining Reporters
 //!
 //! Use [`MultiReporter`] to send events to multiple reporters:
@@ -112,7 +80,7 @@ pub trait Reporter: Send + Sync {
     ///
     /// Receives the aggregated run result with all test outcomes.
     /// Use this for final summary output or file generation.
-    async fn on_run_complete(&self, result: &RunResult);
+    async fn on_run_complete(&self, result: &RunResult, group_name: &str);
 }
 
 /// A reporter that discards all events.
@@ -133,7 +101,7 @@ impl Reporter for NullReporter {
     async fn on_discovery_complete(&self, _tests: &[TestRecord]) {}
     async fn on_test_start(&self, _test: &TestRecord) {}
     async fn on_test_complete(&self, _result: &TestResult) {}
-    async fn on_run_complete(&self, _result: &RunResult) {}
+    async fn on_run_complete(&self, _result: &RunResult, _group_name: &str) {}
 }
 
 /// A reporter that forwards events to multiple child reporters.
@@ -208,9 +176,9 @@ impl Reporter for MultiReporter {
         }
     }
 
-    async fn on_run_complete(&self, result: &RunResult) {
+    async fn on_run_complete(&self, result: &RunResult, group_name: &str) {
         for reporter in &self.reporters {
-            reporter.on_run_complete(result).await;
+            reporter.on_run_complete(result, group_name).await;
         }
     }
 }
@@ -298,13 +266,13 @@ impl Reporter for ConsoleReporter {
         }
     }
 
-    async fn on_run_complete(&self, result: &RunResult) {
+    async fn on_run_complete(&self, result: &RunResult, group_name: &str) {
         if let Some(pb) = self.progress.lock().unwrap().take() {
             pb.finish_and_clear();
         }
 
         println!();
-        println!("Test Results:");
+        println!("Test Results for group {}:", group_name);
         println!("  Total:   {}", result.total_tests);
         println!("  Passed:  {}", console::style(result.passed).green());
         println!("  Failed:  {}", console::style(result.failed).red());
@@ -322,7 +290,12 @@ impl Reporter for ConsoleReporter {
 
         if result.success() {
             println!();
-            println!("{}", console::style("All tests passed!").green().bold());
+            println!(
+                "{} '{}' {}",
+                console::style("All tests in group").green().bold(),
+                console::style(group_name).bold(),
+                console::style("passed!").green().bold()
+            );
         } else if result.not_run > 0 && result.failed == 0 {
             println!();
             println!(

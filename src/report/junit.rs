@@ -241,7 +241,7 @@ impl Reporter for JUnitReporter {
         self.results.lock().unwrap().push(result.clone());
     }
 
-    async fn on_run_complete(&self, result: &RunResult) {
+    async fn on_run_complete(&self, result: &RunResult, _group_name: &str) {
         match self.generate_xml(result) {
             Ok(xml) => {
                 // Ensure parent directory exists
