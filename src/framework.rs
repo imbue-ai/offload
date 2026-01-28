@@ -17,7 +17,7 @@
 //! │                     TestFramework                                │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                                                                  │
-//! │  discover(&paths) ──────────► Vec<TestCase>                     │
+//! │  discover(&paths) ──────────► Vec<TestRecord>                   │
 //! │                                    │                             │
 //! │                                    ▼                             │
 //! │  produce_test_execution_command(&tests) ──► Command             │
@@ -50,12 +50,12 @@
 //!
 //! #[async_trait]
 //! impl TestFramework for MyFramework {
-//!     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+//!     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
 //!         // Discover tests in the given paths
 //!         todo!()
 //!     }
 //!
-//!     fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
+//!     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
 //!         // Generate command to run these tests
 //!         todo!()
 //!     }
@@ -72,7 +72,8 @@ pub mod cargo;
 pub mod default;
 pub mod pytest;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -119,92 +120,57 @@ pub enum FrameworkError {
     Other(#[from] anyhow::Error),
 }
 
-/// A single test case discovered in the codebase.
+/// A record of a test and its execution history.
 ///
-/// Test cases are identified by their unique `id` which typically includes
-/// the file path and test name. The format depends on the test framework:
+/// `TestRecord` owns the test metadata and collects results from multiple
+/// execution attempts. This enables flaky test detection and retry tracking.
 ///
-/// - **pytest**: `tests/test_math.py::TestClass::test_method`
-/// - **cargo**: `tests::module::test_name`
-/// - **default**: User-defined format
+/// # Thread Safety
 ///
-/// # Builder Pattern
+/// Results are stored in a `Mutex` to allow concurrent updates from
+/// multiple test executions.
 ///
-/// Test cases can be constructed using the builder pattern:
+/// # Example
 ///
 /// ```
-/// use shotgun::framework::TestCase;
+/// use shotgun::framework::TestRecord;
 ///
-/// let test = TestCase::new("tests/test_math.py::test_add")
-///     .with_file("tests/test_math.py")
-///     .with_line(42)
-///     .with_marker("slow")
-///     .with_marker("integration");
+/// let record = TestRecord::new("tests/test_math.py::test_add");
+/// let test = record.test();
+/// // ... execute test in sandbox ...
+/// // test.record_result(result);
 /// ```
-///
-/// # Serialization
-///
-/// Test cases implement `Serialize` and `Deserialize` for caching discovered
-/// tests or transmitting them between processes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestCase {
+#[derive(Serialize, Deserialize)]
+pub struct TestRecord {
     /// Unique identifier for this test.
-    ///
-    /// This ID is used to select tests for execution and to correlate
-    /// results back to the original test. Format is framework-specific.
     pub id: String,
 
     /// Human-readable display name.
-    ///
-    /// Typically the function/method name without the full path.
-    /// Derived from `id` by default.
     pub name: String,
 
     /// Source file where the test is defined.
-    ///
-    /// Used for filtering and reporting. May be `None` if the framework
-    /// doesn't provide file information.
     pub file: Option<PathBuf>,
 
     /// Line number where the test is defined.
-    ///
-    /// Enables IDE integration and precise error reporting.
     pub line: Option<u32>,
 
     /// Tags, markers, or labels associated with the test.
-    ///
-    /// Used for filtering (e.g., `@pytest.mark.slow`, `#[ignore]`).
-    #[serde(default)]
     pub markers: Vec<String>,
 
     /// Whether this test is known to be flaky.
-    ///
-    /// Flaky tests may be handled differently (e.g., more retries,
-    /// non-blocking failures).
-    #[serde(default)]
     pub flaky: bool,
 
     /// Whether this test should be skipped.
-    ///
-    /// Skipped tests are reported but not executed.
-    #[serde(default)]
     pub skipped: bool,
+
+    /// Results from each execution attempt.
+    /// Skipped during serialization as it contains runtime state.
+    #[serde(skip)]
+    results: Mutex<Vec<TestResult>>,
 }
 
-impl TestCase {
-    /// Creates a new test case with the given ID.
-    ///
-    /// The display name is automatically derived from the ID by taking
-    /// the last `::` separated component.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use shotgun::framework::TestCase;
-    ///
-    /// let test = TestCase::new("tests/math.py::TestCalc::test_add");
-    /// assert_eq!(test.name, "test_add");
-    /// ```
+impl TestRecord {
+    /// Creates a new test record with the given ID.
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
         let name = id.split("::").last().unwrap_or(&id).to_string();
@@ -216,70 +182,171 @@ impl TestCase {
             markers: Vec::new(),
             flaky: false,
             skipped: false,
+            results: Mutex::new(Vec::new()),
         }
     }
 
     /// Sets the source file path.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use shotgun::framework::TestCase;
-    ///
-    /// let test = TestCase::new("test_add").with_file("tests/test_math.py");
-    /// ```
     pub fn with_file(mut self, file: impl Into<PathBuf>) -> Self {
         self.file = Some(file.into());
         self
     }
 
     /// Sets the source line number.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use shotgun::framework::TestCase;
-    ///
-    /// let test = TestCase::new("test_add").with_line(42);
-    /// ```
     pub fn with_line(mut self, line: u32) -> Self {
         self.line = Some(line);
         self
     }
 
     /// Adds a marker/tag to the test.
-    ///
-    /// Can be called multiple times to add multiple markers.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use shotgun::framework::TestCase;
-    ///
-    /// let test = TestCase::new("test_db")
-    ///     .with_marker("slow")
-    ///     .with_marker("integration");
-    /// ```
     pub fn with_marker(mut self, marker: impl Into<String>) -> Self {
         self.markers.push(marker.into());
         self
     }
 
     /// Marks this test as flaky.
-    ///
-    /// Flaky tests are tests that intermittently fail and may need
-    /// special handling (more retries, quarantine, etc.).
-    pub fn flaky(mut self) -> Self {
+    pub fn set_flaky(mut self) -> Self {
         self.flaky = true;
         self
     }
 
     /// Marks this test as skipped.
-    ///
-    /// Skipped tests will not be executed but will be reported.
-    pub fn skipped(mut self) -> Self {
+    pub fn set_skipped(mut self) -> Self {
         self.skipped = true;
         self
+    }
+
+    /// Creates a `TestInstance` handle for execution in a sandbox.
+    pub fn test(&self) -> TestInstance<'_> {
+        TestInstance::new(self)
+    }
+
+    /// Records a result from a test execution.
+    pub fn record_result(&self, result: TestResult) {
+        self.results.lock().unwrap().push(result);
+    }
+
+    /// Returns the results collected so far.
+    pub fn results(&self) -> Vec<TestResult> {
+        self.results.lock().unwrap().clone()
+    }
+
+    /// Returns true if test passed at least once and failed at least once.
+    pub fn is_flaky(&self) -> bool {
+        let results = self.results.lock().unwrap();
+        let has_pass = results.iter().any(|r| r.outcome == TestOutcome::Passed);
+        let has_fail = results
+            .iter()
+            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
+        has_pass && has_fail
+    }
+
+    /// Returns true if the most recent attempt passed.
+    pub fn passed(&self) -> bool {
+        self.results
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|r| r.outcome == TestOutcome::Passed)
+    }
+
+    /// Returns the number of execution attempts.
+    pub fn attempt_count(&self) -> usize {
+        self.results.lock().unwrap().len()
+    }
+
+    /// Returns the final/canonical result (last result).
+    pub fn final_result(&self) -> Option<TestResult> {
+        self.results.lock().unwrap().last().cloned()
+    }
+}
+
+impl std::fmt::Debug for TestRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestRecord")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("file", &self.file)
+            .field("line", &self.line)
+            .field("markers", &self.markers)
+            .field("flaky", &self.flaky)
+            .field("skipped", &self.skipped)
+            .field("results", &self.results.lock().unwrap())
+            .finish()
+    }
+}
+
+/// A lightweight handle to a test for execution in a sandbox.
+///
+/// `TestInstance` holds a reference to a [`TestRecord`] and provides read access
+/// to test metadata plus the ability to record results. Sandboxes only
+/// see `TestInstance`, while `TestRecord` owns the data and aggregates results.
+///
+/// # Lifetime
+///
+/// The lifetime `'a` ties this `TestInstance` to its associated `TestRecord`.
+#[derive(Debug, Clone, Copy)]
+pub struct TestInstance<'a> {
+    /// Reference to the test record containing all data.
+    record: &'a TestRecord,
+}
+
+impl<'a> TestInstance<'a> {
+    /// Creates a new test handle for the given record.
+    pub fn new(record: &'a TestRecord) -> Self {
+        Self { record }
+    }
+
+    /// Returns the unique identifier for this test.
+    pub fn id(&self) -> &str {
+        &self.record.id
+    }
+
+    /// Returns the human-readable display name.
+    pub fn name(&self) -> &str {
+        &self.record.name
+    }
+
+    /// Returns the source file where the test is defined.
+    pub fn file(&self) -> Option<&Path> {
+        self.record.file.as_deref()
+    }
+
+    /// Returns the line number where the test is defined.
+    pub fn line(&self) -> Option<u32> {
+        self.record.line
+    }
+
+    /// Returns the tags/markers associated with the test.
+    pub fn markers(&self) -> &[String] {
+        &self.record.markers
+    }
+
+    /// Returns whether this test is known to be flaky.
+    pub fn flaky(&self) -> bool {
+        self.record.flaky
+    }
+
+    /// Returns whether this test should be skipped.
+    pub fn skipped(&self) -> bool {
+        self.record.skipped
+    }
+
+    /// Returns the test ID as an owned String.
+    pub fn id_owned(&self) -> String {
+        self.record.id.clone()
+    }
+
+    /// Returns the underlying test record.
+    pub fn record(&self) -> &'a TestRecord {
+        self.record
+    }
+
+    /// Records a result from executing this test.
+    ///
+    /// The result is stored in the associated `TestRecord`.
+    pub fn record_result(&self, result: TestResult) {
+        self.record.record_result(result);
     }
 }
 
@@ -293,8 +360,8 @@ impl TestCase {
 /// Results can be serialized for caching, logging, or transmission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
-    /// The test case that was executed.
-    pub test: TestCase,
+    /// The ID of the test that was executed.
+    pub test_id: String,
 
     /// The outcome of the test execution.
     pub outcome: TestOutcome,
@@ -319,6 +386,51 @@ pub struct TestResult {
     ///
     /// Provides detailed debugging information for failures.
     pub stack_trace: Option<String>,
+}
+
+impl TestResult {
+    /// Creates a new test result for the given test ID.
+    pub fn new(test_id: impl Into<String>, outcome: TestOutcome) -> Self {
+        Self {
+            test_id: test_id.into(),
+            outcome,
+            duration: std::time::Duration::ZERO,
+            stdout: String::new(),
+            stderr: String::new(),
+            error_message: None,
+            stack_trace: None,
+        }
+    }
+
+    /// Sets the duration.
+    pub fn with_duration(mut self, duration: std::time::Duration) -> Self {
+        self.duration = duration;
+        self
+    }
+
+    /// Sets the stdout.
+    pub fn with_stdout(mut self, stdout: impl Into<String>) -> Self {
+        self.stdout = stdout.into();
+        self
+    }
+
+    /// Sets the stderr.
+    pub fn with_stderr(mut self, stderr: impl Into<String>) -> Self {
+        self.stderr = stderr.into();
+        self
+    }
+
+    /// Sets the error message.
+    pub fn with_error(mut self, message: impl Into<String>) -> Self {
+        self.error_message = Some(message.into());
+        self
+    }
+
+    /// Sets the stack trace.
+    pub fn with_stack_trace(mut self, trace: impl Into<String>) -> Self {
+        self.stack_trace = Some(trace.into());
+        self
+    }
 }
 
 /// The outcome status of a test execution.
@@ -408,14 +520,14 @@ impl TestOutcome {
 ///
 /// #[async_trait]
 /// impl TestFramework for JestFramework {
-///     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+///     async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
 ///         // Run: jest --listTests
 ///         // Parse output to extract test files
 ///         todo!()
 ///     }
 ///
-///     fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
-///         let test_args: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
+///     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
+///         let test_args: Vec<_> = tests.iter().map(|t| t.id()).collect();
 ///         Command::new("jest")
 ///             .args(test_args)
 ///             .arg("--ci")
@@ -435,7 +547,7 @@ pub trait TestFramework: Send + Sync {
     ///
     /// This method typically runs a framework-specific discovery command
     /// (e.g., `pytest --collect-only`, `cargo test --list`) and parses
-    /// the output to extract test cases.
+    /// the output to extract test records.
     ///
     /// # Arguments
     ///
@@ -444,9 +556,9 @@ pub trait TestFramework: Send + Sync {
     ///
     /// # Returns
     ///
-    /// A list of discovered [`TestCase`] objects, or an error if discovery
+    /// A list of discovered [`TestRecord`] objects, or an error if discovery
     /// failed (command error, parse error, etc.).
-    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>>;
+    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>>;
 
     /// Generates a command to run the specified tests.
     ///
@@ -457,12 +569,12 @@ pub trait TestFramework: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `tests` - Test cases to execute (from previous discovery)
+    /// * `tests` - Tests to execute (borrowed from TestRecords)
     ///
     /// # Example Output
     ///
     /// For pytest: `pytest -v tests/test_a.py::test_func tests/test_b.py::test_other`
-    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command;
+    fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command;
 
     /// Parses test results from command execution.
     ///

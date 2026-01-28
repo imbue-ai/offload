@@ -35,7 +35,10 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestOutcome, TestRecord,
+    TestResult,
+};
 use crate::config::PytestFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -61,15 +64,15 @@ impl PytestFramework {
         Self { config }
     }
 
-    /// Parse `pytest --collect-only -q` output to extract test cases.
-    fn parse_collect_output(&self, output: &str) -> Vec<TestCase> {
+    /// Parse `pytest --collect-only -q` output to extract test records.
+    fn parse_collect_output(&self, output: &str) -> Vec<TestRecord> {
         let mut tests = Vec::new();
 
         for line in output.lines() {
             let trimmed = line.trim();
             // Simple format: tests/test_foo.py::test_bar
             if trimmed.contains("::") && !trimmed.starts_with('<') && !trimmed.contains(' ') {
-                tests.push(TestCase::new(trimmed));
+                tests.push(TestRecord::new(trimmed));
             }
         }
 
@@ -79,7 +82,7 @@ impl PytestFramework {
 
 #[async_trait]
 impl TestFramework for PytestFramework {
-    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
 
@@ -141,7 +144,7 @@ impl TestFramework for PytestFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
         let mut cmd = Command::new(&self.config.python)
             .arg("-m")
             .arg("pytest")
@@ -156,7 +159,7 @@ impl TestFramework for PytestFramework {
 
         // Add test IDs
         for test in tests {
-            cmd = cmd.arg(&test.id);
+            cmd = cmd.arg(test.id());
         }
 
         cmd
@@ -205,7 +208,6 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         let time: f64 = cap[3].parse().unwrap_or(0.0);
 
         let test_id = format!("{}::{}", classname.replace('.', "/"), name);
-        let test = TestCase::new(&test_id);
 
         // Find the content between this testcase and the next (or </testcase>)
         let start = cap.get(0).unwrap().end();
@@ -227,7 +229,7 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         };
 
         results.push(TestResult {
-            test,
+            test_id,
             outcome,
             duration: std::time::Duration::from_secs_f64(time),
             stdout: String::new(),
@@ -262,7 +264,7 @@ fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestR
         };
 
         results.push(TestResult {
-            test: TestCase::new(test_id),
+            test_id: test_id.to_string(),
             outcome,
             duration: std::time::Duration::ZERO,
             stdout: String::new(),

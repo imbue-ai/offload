@@ -420,32 +420,31 @@ impl Connector for ShellConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::TestCase;
+    use crate::framework::TestRecord;
 
-    fn test_ids_to_cases(ids: Vec<String>) -> Vec<TestCase> {
+    fn test_ids_to_records(ids: Vec<String>) -> Vec<TestRecord> {
         ids.into_iter()
-            .map(|id| TestCase {
-                id: id.clone(),
-                name: id.split("::").last().unwrap_or(&id).to_string(),
-                file: id.split("::").next().map(PathBuf::from),
-                line: None,
-                markers: Vec::new(),
-                skipped: false,
-                flaky: false,
+            .map(|id| {
+                let file = id.split("::").next().map(PathBuf::from);
+                let mut record = TestRecord::new(id);
+                if let Some(f) = file {
+                    record = record.with_file(f);
+                }
+                record
             })
             .collect()
     }
 
     #[test]
     fn test_parse_test_id() {
-        let cases = test_ids_to_cases(vec![
+        let records = test_ids_to_records(vec![
             "tests/test_math.py::test_addition".to_string(),
             "tests/test_math.py::TestClass::test_method".to_string(),
         ]);
 
-        assert_eq!(cases.len(), 2);
-        assert_eq!(cases[0].name, "test_addition");
-        assert_eq!(cases[0].file, Some(PathBuf::from("tests/test_math.py")));
-        assert_eq!(cases[1].name, "test_method");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "test_addition");
+        assert_eq!(records[0].file, Some(PathBuf::from("tests/test_math.py")));
+        assert_eq!(records[1].name, "test_method");
     }
 }

@@ -26,7 +26,7 @@
 //! ```no_run
 //! use async_trait::async_trait;
 //! use shotgun::report::Reporter;
-//! use shotgun::framework::{TestCase, TestResult};
+//! use shotgun::framework::{TestRecord, TestResult};
 //! use shotgun::executor::RunResult;
 //!
 //! struct SlackReporter {
@@ -35,11 +35,11 @@
 //!
 //! #[async_trait]
 //! impl Reporter for SlackReporter {
-//!     async fn on_discovery_complete(&self, tests: &[TestCase]) {
+//!     async fn on_discovery_complete(&self, tests: &[TestRecord]) {
 //!         // Could post "Starting test run with N tests"
 //!     }
 //!
-//!     async fn on_test_start(&self, _test: &TestCase) {}
+//!     async fn on_test_start(&self, _test: &TestRecord) {}
 //!     async fn on_test_complete(&self, _result: &TestResult) {}
 //!
 //!     async fn on_run_complete(&self, result: &RunResult) {
@@ -70,7 +70,7 @@ pub mod junit;
 use async_trait::async_trait;
 
 use crate::executor::RunResult;
-use crate::framework::{TestCase, TestResult};
+use crate::framework::{TestRecord, TestResult};
 
 pub use junit::JUnitReporter;
 
@@ -96,12 +96,12 @@ pub trait Reporter: Send + Sync {
     ///
     /// Receives the full list of discovered tests before execution begins.
     /// Useful for setting up progress tracking or initial reporting.
-    async fn on_discovery_complete(&self, tests: &[TestCase]);
+    async fn on_discovery_complete(&self, tests: &[TestRecord]);
 
     /// Called when a test starts executing.
     ///
     /// May be called concurrently for parallel tests.
-    async fn on_test_start(&self, test: &TestCase);
+    async fn on_test_start(&self, test: &TestRecord);
 
     /// Called when a test completes with its result.
     ///
@@ -130,8 +130,8 @@ pub struct NullReporter;
 
 #[async_trait]
 impl Reporter for NullReporter {
-    async fn on_discovery_complete(&self, _tests: &[TestCase]) {}
-    async fn on_test_start(&self, _test: &TestCase) {}
+    async fn on_discovery_complete(&self, _tests: &[TestRecord]) {}
+    async fn on_test_start(&self, _test: &TestRecord) {}
     async fn on_test_complete(&self, _result: &TestResult) {}
     async fn on_run_complete(&self, _result: &RunResult) {}
 }
@@ -190,13 +190,13 @@ impl Default for MultiReporter {
 
 #[async_trait]
 impl Reporter for MultiReporter {
-    async fn on_discovery_complete(&self, tests: &[TestCase]) {
+    async fn on_discovery_complete(&self, tests: &[TestRecord]) {
         for reporter in &self.reporters {
             reporter.on_discovery_complete(tests).await;
         }
     }
 
-    async fn on_test_start(&self, test: &TestCase) {
+    async fn on_test_start(&self, test: &TestRecord) {
         for reporter in &self.reporters {
             reporter.on_test_start(test).await;
         }
@@ -259,7 +259,7 @@ impl ConsoleReporter {
 
 #[async_trait]
 impl Reporter for ConsoleReporter {
-    async fn on_discovery_complete(&self, tests: &[TestCase]) {
+    async fn on_discovery_complete(&self, tests: &[TestRecord]) {
         println!("Discovered {} tests", tests.len());
 
         let pb = indicatif::ProgressBar::new(tests.len() as u64);
@@ -275,7 +275,7 @@ impl Reporter for ConsoleReporter {
         *self.progress.lock().unwrap() = Some(pb);
     }
 
-    async fn on_test_start(&self, test: &TestCase) {
+    async fn on_test_start(&self, test: &TestRecord) {
         if self.verbose {
             println!("Running: {}", test.id);
         }
@@ -293,7 +293,7 @@ impl Reporter for ConsoleReporter {
             };
 
             if self.verbose || result.outcome != crate::framework::TestOutcome::Passed {
-                pb.println(format!("{} {}", status, result.test.id));
+                pb.println(format!("{} {}", status, result.test_id));
             }
         }
     }
@@ -342,7 +342,7 @@ impl Reporter for ConsoleReporter {
                 if r.outcome == crate::framework::TestOutcome::Failed
                     || r.outcome == crate::framework::TestOutcome::Error
                 {
-                    println!("  - {}", r.test.id);
+                    println!("  - {}", r.test_id);
                     if let Some(msg) = &r.error_message {
                         println!("    {}", console::style(msg).dim());
                     }

@@ -87,7 +87,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
-use crate::framework::{TestCase, TestFramework, TestOutcome, TestResult};
+use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox, SandboxProvider};
 use crate::report::Reporter;
 
@@ -337,8 +337,12 @@ where
         info!("Discovered {} tests", tests.len());
         self.reporter.on_discovery_complete(&tests).await;
 
-        // Filter out skipped tests
-        let tests_to_run: Vec<_> = tests.iter().filter(|t| !t.skipped).cloned().collect();
+        // Filter out skipped tests and create Test handles
+        let tests_to_run: Vec<TestInstance<'_>> = tests
+            .iter()
+            .filter(|t| !t.skipped)
+            .map(|t| t.test())
+            .collect();
 
         let skipped_count = tests.len() - tests_to_run.len();
 
@@ -406,19 +410,20 @@ where
                     }
 
                     for test in &batch {
-                        reporter.on_test_start(test).await;
+                        reporter.on_test_start(test.record()).await;
 
-                        let result = runner.run_test(test).await;
-
-                        match &result {
-                            Ok(r) => {
-                                reporter.on_test_complete(r).await;
-                                results.lock().await.push(r.clone());
+                        match runner.run_test(test).await {
+                            Ok(()) => {
+                                // Result is now stored in the TestRecord
+                                if let Some(r) = test.record().final_result() {
+                                    reporter.on_test_complete(&r).await;
+                                    results.lock().await.push(r);
+                                }
                             }
                             Err(e) => {
                                 error!("Test execution error: {}", e);
                                 let failed_result = TestResult {
-                                    test: test.clone(),
+                                    test_id: test.id_owned(),
                                     outcome: TestOutcome::Error,
                                     duration: Duration::ZERO,
                                     stdout: String::new(),
@@ -426,6 +431,8 @@ where
                                     error_message: Some(e.to_string()),
                                     stack_trace: None,
                                 };
+                                // Also record the error result into the TestRecord
+                                test.record_result(failed_result.clone());
                                 reporter.on_test_complete(&failed_result).await;
                                 results.lock().await.push(failed_result);
                             }
@@ -443,17 +450,24 @@ where
         // Collect results
         let mut all_results = results.into_inner();
 
-        // Identify failed tests for retry
-        let failed_tests: Vec<_> = all_results
+        // Identify failed test IDs for retry
+        let failed_test_ids: Vec<String> = all_results
             .iter()
             .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
-            .map(|r| r.test.clone())
+            .map(|r| r.test_id.clone())
             .collect();
 
         // Retry failed tests
         let mut flaky_count = 0;
-        if !failed_tests.is_empty() && self.config.shotgun.retry_count > 0 {
-            info!("Retrying {} failed tests...", failed_tests.len());
+        if !failed_test_ids.is_empty() && self.config.shotgun.retry_count > 0 {
+            info!("Retrying {} failed tests...", failed_test_ids.len());
+
+            // Get Test references for failed tests from the original records
+            let failed_tests: Vec<TestInstance<'_>> = tests
+                .iter()
+                .filter(|r| failed_test_ids.contains(&r.id))
+                .map(|r| r.test())
+                .collect();
 
             let retry_results = self.retry_tests(&failed_tests, &mut retry_manager).await?;
 
@@ -466,7 +480,7 @@ where
                     // Update the original result
                     if let Some(original) = all_results
                         .iter_mut()
-                        .find(|r| r.test.id == retry_result.test.id)
+                        .find(|r| r.test_id == retry_result.test_id)
                     {
                         original.outcome = TestOutcome::Passed;
                         original.error_message = Some("Flaky - passed on retry".to_string());
@@ -509,13 +523,13 @@ where
     /// Retry failed tests.
     async fn retry_tests(
         &self,
-        tests: &[TestCase],
+        tests: &[TestInstance<'_>],
         retry_manager: &mut RetryManager,
     ) -> anyhow::Result<Vec<TestResult>> {
         let mut retry_results = Vec::new();
 
         for test in tests {
-            if !retry_manager.should_retry(&test.id) {
+            if !retry_manager.should_retry(test.id()) {
                 continue;
             }
 
@@ -547,18 +561,27 @@ where
                 );
 
                 match runner.run_test(test).await {
-                    Ok(result) => {
-                        retry_manager
-                            .record_attempt(&test.id, result.outcome == TestOutcome::Passed);
+                    Ok(()) => {
+                        // Get the result from the TestRecord
+                        if let Some(result) = test.record().final_result() {
+                            let passed = result.outcome == TestOutcome::Passed;
+                            retry_manager.record_attempt(test.id(), passed);
 
-                        if result.outcome == TestOutcome::Passed {
-                            retry_results.push(result);
-                            break;
+                            if passed {
+                                retry_results.push(result);
+                                // Terminate sandbox before breaking
+                                if let Err(e) = runner.sandbox().terminate().await {
+                                    warn!("Failed to terminate retry sandbox: {}", e);
+                                }
+                                break;
+                            }
+                        } else {
+                            retry_manager.record_attempt(test.id(), false);
                         }
                     }
                     Err(e) => {
                         warn!("Retry attempt {} failed: {}", attempt + 1, e);
-                        retry_manager.record_attempt(&test.id, false);
+                        retry_manager.record_attempt(test.id(), false);
                     }
                 }
 

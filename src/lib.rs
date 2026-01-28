@@ -134,6 +134,6 @@ pub mod report;
 
 pub use config::{Config, load_config};
 pub use executor::{Orchestrator, RunResult};
-pub use framework::{TestCase, TestFramework, TestOutcome, TestResult};
+pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::Reporter;

@@ -18,19 +18,20 @@
 //!
 //! ```
 //! use shotgun::executor::Scheduler;
-//! use shotgun::framework::TestCase;
+//! use shotgun::framework::TestRecord;
 //!
 //! let scheduler = Scheduler::new(4); // 4 parallel sandboxes
 //!
-//! let tests: Vec<TestCase> = (0..10)
-//!     .map(|i| TestCase::new(format!("test_{}", i)))
+//! let records: Vec<TestRecord> = (0..10)
+//!     .map(|i| TestRecord::new(format!("test_{}", i)))
 //!     .collect();
 //!
+//! let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 //! let batches = scheduler.schedule(&tests);
 //! assert_eq!(batches.len(), 4); // 4 batches for 4 sandboxes
 //! ```
 
-use crate::framework::TestCase;
+use crate::framework::TestInstance;
 
 /// Distributes tests across parallel sandboxes.
 ///
@@ -78,15 +79,16 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::framework::TestCase;
+    /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
-    /// let tests = vec![
-    ///     TestCase::new("test_a"),
-    ///     TestCase::new("test_b"),
-    ///     TestCase::new("test_c"),
-    ///     TestCase::new("test_d"),
+    /// let records = vec![
+    ///     TestRecord::new("test_a"),
+    ///     TestRecord::new("test_b"),
+    ///     TestRecord::new("test_c"),
+    ///     TestRecord::new("test_d"),
     /// ];
+    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
     ///
     /// let batches = scheduler.schedule(&tests);
     /// // Batch 0: test_a, test_c
@@ -94,17 +96,18 @@ impl Scheduler {
     /// assert_eq!(batches.len(), 2);
     /// assert_eq!(batches[0].len(), 2);
     /// ```
-    pub fn schedule(&self, tests: &[TestCase]) -> Vec<Vec<TestCase>> {
+    pub fn schedule<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
             return Vec::new();
         }
 
         // Simple round-robin distribution
-        let mut batches: Vec<Vec<TestCase>> = (0..self.max_parallel).map(|_| Vec::new()).collect();
+        let mut batches: Vec<Vec<TestInstance<'a>>> =
+            (0..self.max_parallel).map(|_| Vec::new()).collect();
 
         for (i, test) in tests.iter().enumerate() {
             let batch_idx = i % self.max_parallel;
-            batches[batch_idx].push(test.clone());
+            batches[batch_idx].push(*test);
         }
 
         // Remove empty batches
@@ -128,10 +131,11 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::framework::TestCase;
+    /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(10);
-    /// let tests: Vec<_> = (0..25).map(|i| TestCase::new(format!("test_{}", i))).collect();
+    /// let records: Vec<_> = (0..25).map(|i| TestRecord::new(format!("test_{}", i))).collect();
+    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
     ///
     /// let batches = scheduler.schedule_with_batch_size(&tests, 10);
     /// assert_eq!(batches.len(), 3);
@@ -139,11 +143,11 @@ impl Scheduler {
     /// assert_eq!(batches[1].len(), 10);
     /// assert_eq!(batches[2].len(), 5);
     /// ```
-    pub fn schedule_with_batch_size(
+    pub fn schedule_with_batch_size<'a>(
         &self,
-        tests: &[TestCase],
+        tests: &[TestInstance<'a>],
         max_batch_size: usize,
-    ) -> Vec<Vec<TestCase>> {
+    ) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
             return Vec::new();
         }
@@ -170,43 +174,45 @@ impl Scheduler {
     ///
     /// ```
     /// use shotgun::executor::Scheduler;
-    /// use shotgun::framework::TestCase;
+    /// use shotgun::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
-    /// let tests = vec![
-    ///     TestCase::new("test_a"),
-    ///     TestCase::new("test_b"),
-    ///     TestCase::new("test_c"),
+    /// let records = vec![
+    ///     TestRecord::new("test_a"),
+    ///     TestRecord::new("test_b"),
+    ///     TestRecord::new("test_c"),
     /// ];
+    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
     ///
     /// let batches = scheduler.schedule_individual(&tests);
     /// assert_eq!(batches.len(), 3);
     /// assert!(batches.iter().all(|b| b.len() == 1));
     /// ```
-    pub fn schedule_individual(&self, tests: &[TestCase]) -> Vec<Vec<TestCase>> {
-        tests.iter().map(|t| vec![t.clone()]).collect()
+    pub fn schedule_individual<'a>(
+        &self,
+        tests: &[TestInstance<'a>],
+    ) -> Vec<Vec<TestInstance<'a>>> {
+        tests.iter().map(|t| vec![*t]).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_test(id: &str) -> TestCase {
-        TestCase::new(id)
-    }
+    use crate::framework::TestRecord;
 
     #[test]
     fn test_schedule_empty() {
         let scheduler = Scheduler::new(4);
-        let batches = scheduler.schedule(&[]);
+        let batches: Vec<Vec<TestInstance>> = scheduler.schedule(&[]);
         assert!(batches.is_empty());
     }
 
     #[test]
     fn test_schedule_single() {
         let scheduler = Scheduler::new(4);
-        let tests = vec![make_test("test1")];
+        let records = vec![TestRecord::new("test1")];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let batches = scheduler.schedule(&tests);
 
         assert_eq!(batches.len(), 1);
@@ -216,27 +222,33 @@ mod tests {
     #[test]
     fn test_schedule_round_robin() {
         let scheduler = Scheduler::new(2);
-        let tests = vec![
-            make_test("test1"),
-            make_test("test2"),
-            make_test("test3"),
-            make_test("test4"),
+        let records = vec![
+            TestRecord::new("test1"),
+            TestRecord::new("test2"),
+            TestRecord::new("test3"),
+            TestRecord::new("test4"),
         ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let batches = scheduler.schedule(&tests);
 
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 2);
         assert_eq!(batches[1].len(), 2);
-        assert_eq!(batches[0][0].id, "test1");
-        assert_eq!(batches[0][1].id, "test3");
-        assert_eq!(batches[1][0].id, "test2");
-        assert_eq!(batches[1][1].id, "test4");
+        assert_eq!(batches[0][0].id(), "test1");
+        assert_eq!(batches[0][1].id(), "test3");
+        assert_eq!(batches[1][0].id(), "test2");
+        assert_eq!(batches[1][1].id(), "test4");
     }
 
     #[test]
     fn test_schedule_individual() {
         let scheduler = Scheduler::new(4);
-        let tests = vec![make_test("test1"), make_test("test2"), make_test("test3")];
+        let records = vec![
+            TestRecord::new("test1"),
+            TestRecord::new("test2"),
+            TestRecord::new("test3"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let batches = scheduler.schedule_individual(&tests);
 
         assert_eq!(batches.len(), 3);
@@ -248,7 +260,10 @@ mod tests {
     #[test]
     fn test_schedule_with_batch_size() {
         let scheduler = Scheduler::new(4);
-        let tests: Vec<_> = (0..10).map(|i| make_test(&format!("test{}", i))).collect();
+        let records: Vec<_> = (0..10)
+            .map(|i| TestRecord::new(format!("test{}", i)))
+            .collect();
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let batches = scheduler.schedule_with_batch_size(&tests, 3);
 
         assert_eq!(batches.len(), 4);

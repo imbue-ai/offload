@@ -18,7 +18,7 @@
 //! use shotgun::executor::TestRunner;
 //! use shotgun::provider::local::LocalSandbox;
 //! use shotgun::framework::pytest::PytestFramework;
-//! use shotgun::framework::TestCase;
+//! use shotgun::framework::TestRecord;
 //!
 //! async fn run_test_example(
 //!     sandbox: LocalSandbox,
@@ -26,11 +26,15 @@
 //! ) -> anyhow::Result<()> {
 //!     let mut runner = TestRunner::new(sandbox, framework, Duration::from_secs(300));
 //!
-//!     let test = TestCase::new("tests/test_math.py::test_add");
-//!     let result = runner.run_test(&test).await?;
+//!     let record = TestRecord::new("tests/test_math.py::test_add");
+//!     let test = record.test();
+//!     runner.run_test(&test).await?;
 //!
-//!     if result.outcome.is_success() {
-//!         println!("Test passed!");
+//!     // Results are stored in the TestRecord
+//!     if let Some(result) = record.final_result() {
+//!         if result.outcome.is_success() {
+//!             println!("Test passed!");
+//!         }
 //!     }
 //!     Ok(())
 //! }
@@ -43,7 +47,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use tracing::{debug, info};
 
-use crate::framework::{TestCase, TestFramework, TestOutcome, TestResult};
+use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
 
 /// Callback function for streaming test output.
@@ -145,22 +149,24 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         &self.sandbox
     }
 
-    /// Runs a single test and returns its result.
+    /// Runs a single test and records its result into the TestRecord.
     ///
     /// Generates a command for the test using the framework, executes it
-    /// in the sandbox, and parses the results.
+    /// in the sandbox, and parses the results. The result is automatically
+    /// recorded into the test's associated [`TestRecord`].
     ///
     /// # Arguments
     ///
-    /// * `test` - The test case to execute
+    /// * `test` - The test to execute
     ///
     /// # Returns
     ///
-    /// The test result including outcome, duration, and captured output.
-    pub async fn run_test(&mut self, test: &TestCase) -> Result<TestResult> {
+    /// `Ok(())` on successful execution, or an error if execution failed.
+    /// Use [`TestRecord::final_result`] to retrieve the test result.
+    pub async fn run_test(&mut self, test: &TestInstance<'_>) -> Result<()> {
         let start = std::time::Instant::now();
 
-        info!("Running test: {}", test.id);
+        info!("Running test: {}", test.id());
 
         // Generate the run command
         let mut cmd = self
@@ -170,7 +176,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         // Execute the command (streaming or buffered)
         let exec_result = if self.stream_output {
-            self.exec_streaming(&cmd, &test.id).await?
+            self.exec_streaming(&cmd, test.id()).await?
         } else {
             self.sandbox.exec(&cmd).await?
         };
@@ -179,7 +185,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         debug!(
             "Test {} completed with exit code {} in {:?}",
-            test.id, exec_result.exit_code, duration
+            test.id(),
+            exec_result.exit_code,
+            duration
         );
 
         // Try to download and parse JUnit results
@@ -193,11 +201,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         // Find the result for this specific test
         let test_result = results
             .into_iter()
-            .find(|r| r.test.id == test.id)
+            .find(|r| r.test_id == test.id())
             .unwrap_or_else(|| {
                 // If we couldn't parse specific results, infer from exit code
                 TestResult {
-                    test: test.clone(),
+                    test_id: test.id_owned(),
                     outcome: if exec_result.success() {
                         TestOutcome::Passed
                     } else {
@@ -215,7 +223,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 }
             });
 
-        Ok(test_result)
+        // Record the result into the TestRecord
+        test.record_result(test_result);
+
+        Ok(())
     }
 
     /// Execute command with streaming output.
@@ -267,21 +278,22 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         })
     }
 
-    /// Runs multiple tests in a batch and returns all results.
+    /// Runs multiple tests in a batch and records results into TestRecords.
     ///
     /// Generates a single command for all tests, executes it, and parses
     /// the combined results. More efficient than running tests individually
-    /// but provides less isolation.
+    /// but provides less isolation. Results are automatically recorded into
+    /// each test's associated [`TestRecord`].
     ///
     /// # Arguments
     ///
-    /// * `tests` - The test cases to execute as a batch
+    /// * `tests` - The tests to execute as a batch
     ///
     /// # Returns
     ///
-    /// Results for all tests. If parsing fails, infers results from the
-    /// overall exit code.
-    pub async fn run_tests(&mut self, tests: &[TestCase]) -> Result<Vec<TestResult>> {
+    /// `Ok(())` on successful execution, or an error if execution failed.
+    /// Use [`TestRecord::final_result`] to retrieve individual test results.
+    pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<()> {
         let start = std::time::Instant::now();
 
         info!("Running {} tests", tests.len());
@@ -304,39 +316,44 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let result_content = self.try_download_results().await;
 
         // Parse results
-        let mut results = self
+        let parsed_results = self
             .framework
             .parse_results(&exec_result, result_content.as_deref())?;
 
-        // If parsing failed, create results based on exit code
-        if results.is_empty() {
-            let overall_outcome = if exec_result.success() {
-                TestOutcome::Passed
-            } else {
-                TestOutcome::Failed
-            };
-
-            for test in tests {
-                results.push(TestResult {
-                    test: test.clone(),
-                    outcome: overall_outcome,
-                    duration: duration / tests.len() as u32,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    error_message: if !exec_result.success() {
-                        Some(format!(
-                            "Batch failed with exit code: {}",
-                            exec_result.exit_code
-                        ))
+        // Record results into each TestRecord
+        for test in tests {
+            let result = parsed_results
+                .iter()
+                .find(|r| r.test_id == test.id())
+                .cloned()
+                .unwrap_or_else(|| {
+                    // If no parsed result for this test, infer from exit code
+                    let overall_outcome = if exec_result.success() {
+                        TestOutcome::Passed
                     } else {
-                        None
-                    },
-                    stack_trace: None,
+                        TestOutcome::Failed
+                    };
+                    TestResult {
+                        test_id: test.id_owned(),
+                        outcome: overall_outcome,
+                        duration: duration / tests.len() as u32,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        error_message: if !exec_result.success() {
+                            Some(format!(
+                                "Batch failed with exit code: {}",
+                                exec_result.exit_code
+                            ))
+                        } else {
+                            None
+                        },
+                        stack_trace: None,
+                    }
                 });
-            }
+            test.record_result(result);
         }
 
-        Ok(results)
+        Ok(())
     }
 
     /// Try to download JUnit results from the sandbox.
