@@ -44,37 +44,6 @@
 //! - [`TestRunner`]: Executes tests in a single sandbox
 //! - [`RetryManager`]: Handles retry logic and flaky test detection
 //! - [`RunResult`]: Aggregated results of the entire test run
-//!
-//! # Example
-//!
-//! ```no_run
-//! use shotgun::orchestrator::Orchestrator;
-//! use shotgun::config::load_config;
-//! use shotgun::provider::local::LocalProvider;
-//! use shotgun::framework::pytest::PytestFramework;
-//! use shotgun::report::ConsoleReporter;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
-//!
-//!     let provider = LocalProvider::new(Default::default());
-//!     let framework = PytestFramework::new(Default::default());
-//!     let reporter = ConsoleReporter::new(true);
-//!
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
-//!     let result = orchestrator.run().await?;
-//!
-//!     if result.success() {
-//!         println!("All tests passed!");
-//!     } else {
-//!         println!("{} tests failed", result.failed);
-//!     }
-//!
-//!     std::process::exit(result.exit_code());
-//! }
-//! ```
-
 pub mod retry;
 pub mod runner;
 pub mod scheduler;
@@ -109,27 +78,7 @@ pub use scheduler::Scheduler;
 /// |------|---------|
 /// | 0 | All tests passed |
 /// | 1 | Some tests failed or weren't run |
-/// | 34 | All tests passed but some were flaky |
-///
-/// # Example
-///
-/// ```no_run
-/// use shotgun::orchestrator::RunResult;
-///
-/// fn print_summary(result: &RunResult) {
-///     println!("Test Results:");
-///     println!("  Total:   {}", result.total_tests);
-///     println!("  Passed:  {}", result.passed);
-///     println!("  Failed:  {}", result.failed);
-///     println!("  Skipped: {}", result.skipped);
-///     println!("  Flaky:   {}", result.flaky);
-///     println!("  Duration: {:?}", result.duration);
-///
-///     if result.success() {
-///         println!("All tests passed!");
-///     }
-/// }
-/// ```
+/// | 2 | All tests passed but some were flaky |
 #[derive(Debug, Clone)]
 pub struct RunResult {
     /// Total number of tests discovered.
@@ -192,20 +141,11 @@ impl RunResult {
     }
 
     /// Returns an appropriate process exit code for this result.
-    ///
-    /// | Condition | Exit Code |
-    /// |-----------|-----------|
-    /// | Tests failed or not run | 1 |
-    /// | All passed but some flaky | 34 |
-    /// | All passed cleanly | 0 |
-    ///
-    /// Exit code 34 is used for flaky tests to distinguish from clean
-    /// passes while still indicating the run succeeded.
     pub fn exit_code(&self) -> i32 {
         if self.failed > 0 || self.not_run > 0 {
             1
         } else if self.flaky > 0 {
-            34 // Same as original test_shotgun
+            2 // 2 is the convention that shotgun has decided to store for flakiness
         } else {
             0
         }
@@ -257,6 +197,7 @@ impl RunResult {
 /// ```
 pub struct Orchestrator<P, D, R> {
     config: Config,
+    group_name: String,
     provider: P,
     framework: D,
     reporter: R,
@@ -276,9 +217,10 @@ where
     /// * `provider` - Sandbox provider for creating execution environments
     /// * `framework` - Test framework for finding tests
     /// * `reporter` - Reporter for outputting results
-    pub fn new(config: Config, provider: P, framework: D, reporter: R) -> Self {
+    pub fn new(config: Config, group_name: String, provider: P, framework: D, reporter: R) -> Self {
         Self {
             config,
+            group_name,
             provider,
             framework,
             reporter,
@@ -513,7 +455,9 @@ where
             results: all_results,
         };
 
-        self.reporter.on_run_complete(&run_result).await;
+        self.reporter
+            .on_run_complete(&run_result, &self.group_name)
+            .await;
 
         Ok(run_result)
     }
