@@ -9,7 +9,7 @@ stream_output = true
 [provider]
 type = "process"
 
-[discovery]
+[groups.all]
 type = "cargo"
 
 [report]
