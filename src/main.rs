@@ -9,11 +9,13 @@ use tokio::task::JoinSet;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
+use tokio::sync::Mutex;
+
 use shotgun::config::{self, FrameworkConfig, ProviderConfig};
 use shotgun::framework::{
     TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
 };
-use shotgun::orchestrator::Orchestrator;
+use shotgun::orchestrator::{Orchestrator, SandboxPool};
 use shotgun::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
@@ -288,7 +290,12 @@ where
         reporter,
     );
 
-    orchestrator.run().await?;
+    let sandbox_pool = Mutex::new(SandboxPool::new());
+    orchestrator.run(&sandbox_pool).await?;
+
+    // Terminate all sandboxes
+    sandbox_pool.lock().await.terminate_all().await;
+
     Ok(())
 }
 

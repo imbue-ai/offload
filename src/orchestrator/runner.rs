@@ -149,6 +149,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         &self.sandbox
     }
 
+    /// Consumes the runner and returns the owned sandbox.
+    ///
+    /// Use this to return the sandbox to a pool for reuse.
+    pub fn into_sandbox(self) -> S {
+        self.sandbox
+    }
+
     /// Runs a single test and records its result into the TestRecord.
     ///
     /// Generates a command for the test using the framework, executes it

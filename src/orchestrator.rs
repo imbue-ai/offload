@@ -44,6 +44,40 @@
 //! - [`TestRunner`]: Executes tests in a single sandbox
 //! - [`RetryManager`]: Handles retry logic and flaky test detection
 //! - [`RunResult`]: Aggregated results of the entire test run
+//!
+//! # Example
+//!
+//! ```no_run
+//! use tokio::sync::Mutex;
+//! use shotgun::orchestrator::{Orchestrator, SandboxPool};
+//! use shotgun::config::load_config;
+//! use shotgun::provider::local::LocalProvider;
+//! use shotgun::framework::pytest::PytestFramework;
+//! use shotgun::report::ConsoleReporter;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+//!
+//!     let provider = LocalProvider::new(Default::default());
+//!     let framework = PytestFramework::new(Default::default());
+//!     let reporter = ConsoleReporter::new(true);
+//!
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+//!     let sandbox_pool = Mutex::new(SandboxPool::new());
+//!     let result = orchestrator.run(&sandbox_pool).await?;
+//!
+//!     if result.success() {
+//!         println!("All tests passed!");
+//!     } else {
+//!         println!("{} tests failed", result.failed);
+//!     }
+//!
+//!     std::process::exit(result.exit_code());
+//! }
+//! ```
+
+pub mod pool;
 pub mod retry;
 pub mod runner;
 pub mod scheduler;
@@ -57,9 +91,10 @@ use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
 use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
-use crate::provider::{OutputLine, Sandbox, SandboxProvider};
+use crate::provider::{OutputLine, SandboxProvider};
 use crate::report::Reporter;
 
+pub use pool::SandboxPool;
 pub use retry::RetryManager;
 pub use runner::{OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
@@ -171,7 +206,8 @@ impl RunResult {
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::orchestrator::Orchestrator;
+/// use tokio::sync::Mutex;
+/// use shotgun::orchestrator::{Orchestrator, SandboxPool};
 /// use shotgun::config::load_config;
 /// use shotgun::provider::local::LocalProvider;
 /// use shotgun::framework::pytest::PytestFramework;
@@ -190,7 +226,8 @@ impl RunResult {
 ///
 ///     // Create orchestrator and run
 ///     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
-///     let result = orchestrator.run().await?;
+///     let sandbox_pool = Mutex::new(SandboxPool::new());
+///     let result = orchestrator.run(&sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
 /// }
@@ -233,9 +270,15 @@ where
     ///
     /// 1. Test discovery using the configured framework
     /// 2. Scheduling tests into batches based on `max_parallel`
-    /// 3. Parallel execution across sandboxes
+    /// 3. Parallel execution across sandboxes (reusing from pool or creating new)
     /// 4. Retrying failed tests (if `retry_count > 0`)
     /// 5. Aggregating results and notifying the reporter
+    ///
+    /// # Arguments
+    ///
+    /// * `sandbox_pool` - Pool of sandboxes to use. Takes from pool if available,
+    ///   creates new sandboxes if needed. All sandboxes are returned to the pool
+    ///   after execution.
     ///
     /// # Returns
     ///
@@ -247,7 +290,10 @@ where
     /// - Test discovery fails completely
     /// - All sandbox creations fail
     /// - Critical infrastructure errors occur
-    pub async fn run(&self) -> anyhow::Result<RunResult> {
+    pub async fn run(
+        &self,
+        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
+    ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
         // Clear output directory to avoid stale results
@@ -312,30 +358,36 @@ where
                 let config = &self.config;
 
                 scope.spawn(async move {
-                    // Create sandbox for this batch
-                    let sandbox_config = SandboxConfig {
-                        id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
-                        working_dir: config
-                            .shotgun
-                            .working_dir
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().to_string()),
-                        env: Vec::new(),
-                        resources: SandboxResources {
-                            timeout_secs: Some(config.shotgun.test_timeout_secs),
-                        },
-                    };
-
-                    let initial_sandbox = match provider.create_sandbox(&sandbox_config).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to create sandbox: {}", e);
-                            return;
+                    // Take sandbox from pool or create new one
+                    let sandbox = {
+                        let existing = sandbox_pool.lock().await.take_one();
+                        if let Some(s) = existing {
+                            s
+                        } else {
+                            let sandbox_config = SandboxConfig {
+                                id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
+                                working_dir: config
+                                    .shotgun
+                                    .working_dir
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string()),
+                                env: Vec::new(),
+                                resources: SandboxResources {
+                                    timeout_secs: Some(config.shotgun.test_timeout_secs),
+                                },
+                            };
+                            match provider.create_sandbox(&sandbox_config).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    error!("Failed to create sandbox: {}", e);
+                                    return;
+                                }
+                            }
                         }
                     };
 
                     let mut runner = TestRunner::new(
-                        initial_sandbox,
+                        sandbox,
                         framework,
                         Duration::from_secs(config.shotgun.test_timeout_secs),
                     );
@@ -379,10 +431,9 @@ where
                         }
                     }
 
-                    // Terminate sandbox after all tests
-                    if let Err(e) = runner.sandbox().terminate().await {
-                        warn!("Failed to terminate sandbox: {}", e);
-                    }
+                    // Return sandbox to pool for reuse (don't terminate)
+                    let sandbox = runner.into_sandbox();
+                    sandbox_pool.lock().await.add(sandbox);
                 });
             }
         });
@@ -409,7 +460,9 @@ where
                 .map(|r| r.test())
                 .collect();
 
-            let retry_results = self.retry_tests(&failed_tests, &mut retry_manager).await?;
+            let retry_results = self
+                .retry_tests(&failed_tests, &mut retry_manager, sandbox_pool)
+                .await?;
 
             // Update results based on retries
             for retry_result in retry_results {
@@ -462,77 +515,116 @@ where
         Ok(run_result)
     }
 
-    /// Retry failed tests.
+    /// Retry failed tests using sandboxes from the pool.
+    ///
+    /// Tests are batched across available sandboxes and run in parallel,
+    /// similar to the initial test run.
     async fn retry_tests(
         &self,
         tests: &[TestInstance<'_>],
         retry_manager: &mut RetryManager,
+        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
     ) -> anyhow::Result<Vec<TestResult>> {
-        let mut retry_results = Vec::new();
+        // Filter to tests that should be retried
+        let tests_to_retry: Vec<_> = tests
+            .iter()
+            .filter(|t| retry_manager.should_retry(t.id()))
+            .copied()
+            .collect();
 
-        for test in tests {
-            if !retry_manager.should_retry(test.id()) {
-                continue;
-            }
-
-            for attempt in 0..retry_manager.max_retries() {
-                let sandbox_config = SandboxConfig {
-                    id: format!("shotgun-retry-{}-{}", uuid::Uuid::new_v4(), attempt),
-                    working_dir: self
-                        .config
-                        .shotgun
-                        .working_dir
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string()),
-                    env: Vec::new(),
-                    resources: SandboxResources::default(),
-                };
-
-                let sandbox = match self.provider.create_sandbox(&sandbox_config).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!("Failed to create retry sandbox: {}", e);
-                        continue;
-                    }
-                };
-
-                let mut runner = TestRunner::new(
-                    sandbox,
-                    &self.framework,
-                    Duration::from_secs(self.config.shotgun.test_timeout_secs),
-                );
-
-                match runner.run_test(test).await {
-                    Ok(()) => {
-                        // Get the result from the TestRecord
-                        if let Some(result) = test.record().final_result() {
-                            let passed = result.outcome == TestOutcome::Passed;
-                            retry_manager.record_attempt(test.id(), passed);
-
-                            if passed {
-                                retry_results.push(result);
-                                // Terminate sandbox before breaking
-                                if let Err(e) = runner.sandbox().terminate().await {
-                                    warn!("Failed to terminate retry sandbox: {}", e);
-                                }
-                                break;
-                            }
-                        } else {
-                            retry_manager.record_attempt(test.id(), false);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Retry attempt {} failed: {}", attempt + 1, e);
-                        retry_manager.record_attempt(test.id(), false);
-                    }
-                }
-
-                if let Err(e) = runner.sandbox().terminate().await {
-                    warn!("Failed to terminate retry sandbox: {}", e);
-                }
-            }
+        if tests_to_retry.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(retry_results)
+        // Check if we have sandboxes available
+        if sandbox_pool.lock().await.is_empty() {
+            warn!("No sandboxes available for retries");
+            return Ok(Vec::new());
+        }
+
+        let retry_results = Mutex::new(Vec::new());
+        let retry_manager = Mutex::new(retry_manager);
+
+        // Run retries for each attempt
+        for attempt in 0..self.config.shotgun.retry_count {
+            // Get tests that still need retrying (haven't passed yet)
+            let still_failing: Vec<_> = {
+                let mgr = retry_manager.lock().await;
+                tests_to_retry
+                    .iter()
+                    .filter(|t| mgr.should_retry(t.id()))
+                    .copied()
+                    .collect()
+            };
+
+            if still_failing.is_empty() {
+                break;
+            }
+
+            info!(
+                "Retry attempt {} for {} tests",
+                attempt + 1,
+                still_failing.len()
+            );
+
+            // Schedule tests across available sandboxes
+            let num_sandboxes = sandbox_pool.lock().await.len();
+            let scheduler = Scheduler::new(num_sandboxes);
+            let batches = scheduler.schedule(&still_failing);
+
+            // Execute retries in parallel
+            tokio_scoped::scope(|scope| {
+                for batch in batches.into_iter() {
+                    let retry_results = &retry_results;
+                    let retry_manager = &retry_manager;
+                    let framework = &self.framework;
+                    let config = &self.config;
+
+                    scope.spawn(async move {
+                        // Take sandbox from pool
+                        let sandbox = match sandbox_pool.lock().await.take_one() {
+                            Some(s) => s,
+                            None => return,
+                        };
+
+                        let mut runner = TestRunner::new(
+                            sandbox,
+                            framework,
+                            Duration::from_secs(config.shotgun.test_timeout_secs),
+                        );
+
+                        for test in batch {
+                            match runner.run_test(&test).await {
+                                Ok(()) => {
+                                    if let Some(result) = test.record().final_result() {
+                                        let passed = result.outcome == TestOutcome::Passed;
+                                        retry_manager
+                                            .lock()
+                                            .await
+                                            .record_attempt(test.id(), passed);
+
+                                        if passed {
+                                            retry_results.lock().await.push(result);
+                                        }
+                                    } else {
+                                        retry_manager.lock().await.record_attempt(test.id(), false);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Retry failed for {}: {}", test.id(), e);
+                                    retry_manager.lock().await.record_attempt(test.id(), false);
+                                }
+                            }
+                        }
+
+                        // Return sandbox to pool
+                        let sandbox = runner.into_sandbox();
+                        sandbox_pool.lock().await.add(sandbox);
+                    });
+                }
+            });
+        }
+
+        Ok(retry_results.into_inner())
     }
 }

@@ -55,8 +55,9 @@
 //! ## Quick Start
 //!
 //! ```no_run
+//! use tokio::sync::Mutex;
 //! use shotgun::config::load_config;
-//! use shotgun::orchestrator::Orchestrator;
+//! use shotgun::orchestrator::{Orchestrator, SandboxPool};
 //! use shotgun::provider::local::LocalProvider;
 //! use shotgun::framework::pytest::PytestFramework;
 //! use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
@@ -79,7 +80,8 @@
 //!
 //!     // Run tests
 //!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
-//!     let result = orchestrator.run().await?;
+//!     let sandbox_pool = Mutex::new(SandboxPool::new());
+//!     let result = orchestrator.run(&sandbox_pool).await?;
 //!
 //!     std::process::exit(result.exit_code());
 //! }
@@ -112,6 +114,6 @@ pub mod report;
 
 pub use config::{Config, load_config};
 pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
-pub use orchestrator::{Orchestrator, RunResult};
+pub use orchestrator::{Orchestrator, RunResult, SandboxPool};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::Reporter;
