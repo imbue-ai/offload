@@ -10,10 +10,10 @@ use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 use shotgun::config::{self, FrameworkConfig, ProviderConfig};
-use shotgun::executor::Orchestrator;
 use shotgun::framework::{
     TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
 };
+use shotgun::orchestrator::Orchestrator;
 use shotgun::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
@@ -271,7 +271,7 @@ where
         return Ok(());
     }
 
-    let reporter = create_reporter(&config, junit_path, verbose);
+    let reporter = create_reporter(config, junit_path, verbose);
     let orchestrator = Orchestrator::new(config.clone(), provider, framework, reporter);
 
     let result = orchestrator.run().await?;
@@ -281,7 +281,7 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    for (_, group_config) in &config.groups {
+    for group_config in config.groups.values() {
         let tests = match &group_config.framework {
             FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
             FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,

@@ -48,7 +48,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use shotgun::executor::Orchestrator;
+//! use shotgun::orchestrator::Orchestrator;
 //! use shotgun::config::load_config;
 //! use shotgun::provider::local::LocalProvider;
 //! use shotgun::framework::pytest::PytestFramework;
@@ -114,7 +114,7 @@ pub use scheduler::Scheduler;
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::executor::RunResult;
+/// use shotgun::orchestrator::RunResult;
 ///
 /// fn print_summary(result: &RunResult) {
 ///     println!("Test Results:");
@@ -171,7 +171,7 @@ impl RunResult {
     /// # Example
     ///
     /// ```
-    /// use shotgun::executor::RunResult;
+    /// use shotgun::orchestrator::RunResult;
     /// use std::time::Duration;
     ///
     /// let result = RunResult {
@@ -231,7 +231,7 @@ impl RunResult {
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::executor::Orchestrator;
+/// use shotgun::orchestrator::Orchestrator;
 /// use shotgun::config::load_config;
 /// use shotgun::provider::local::LocalProvider;
 /// use shotgun::framework::pytest::PytestFramework;

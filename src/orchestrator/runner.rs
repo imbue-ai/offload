@@ -15,7 +15,7 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use shotgun::executor::TestRunner;
+//! use shotgun::orchestrator::TestRunner;
 //! use shotgun::provider::local::LocalSandbox;
 //! use shotgun::framework::pytest::PytestFramework;
 //! use shotgun::framework::TestRecord;
@@ -59,7 +59,7 @@ use crate::provider::{OutputLine, Sandbox};
 ///
 /// ```
 /// use std::sync::Arc;
-/// use shotgun::executor::OutputCallback;
+/// use shotgun::orchestrator::OutputCallback;
 /// use shotgun::provider::OutputLine;
 ///
 /// let callback: OutputCallback = Arc::new(|test_id, line| {
@@ -120,7 +120,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// ```no_run
     /// use std::sync::Arc;
-    /// use shotgun::executor::TestRunner;
+    /// use shotgun::orchestrator::TestRunner;
     /// use shotgun::provider::OutputLine;
     /// # use shotgun::provider::local::LocalSandbox;
     /// # use shotgun::framework::pytest::PytestFramework;
