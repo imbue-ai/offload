@@ -12,10 +12,12 @@
 //! ├── ProviderConfig         - Tagged enum selecting provider type
 //! │   ├── Local              - Local process execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
-//! ├── FrameworkConfig        - Tagged enum selecting framework type
-//! │   ├── Pytest             - pytest test framework
-//! │   ├── Cargo              - Rust/Cargo test framework
-//! │   └── Default            - Custom shell-based framework
+//! ├── Groups                 - Named test groups (HashMap<String, GroupConfig>)
+//! │   └── GroupConfig        - Per-group settings
+//! │       └── FrameworkConfig - Tagged enum selecting framework type
+//! │           ├── Pytest     - pytest test framework
+//! │           ├── Cargo      - Rust/Cargo test framework
+//! │           └── Default    - Custom shell-based framework
 //! └── ReportConfig           - Output and reporting settings
 //! ```
 
@@ -356,7 +358,7 @@ pub struct CargoFrameworkConfig {
 /// # Example: Jest
 ///
 /// ```toml
-/// [framework]
+/// [groups.javascript.framework]
 /// type = "default"
 /// discover_command = "jest --listTests --json | jq -r '.[]'"
 /// run_command = "jest {tests} --ci --reporters=jest-junit"
@@ -366,7 +368,7 @@ pub struct CargoFrameworkConfig {
 /// # Example: Go tests
 ///
 /// ```toml
-/// [framework]
+/// [groups.go.framework]
 /// type = "default"
 /// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
 /// run_command = "go test -v -run '{tests}' ./..."
