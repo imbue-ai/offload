@@ -125,14 +125,11 @@ async fn run_tests(
     let mut set = JoinSet::<Result<()>>::new();
 
     // config.groups is a HashMap<String, GroupConfig>. Let's iterate over it.
-    for group_config_key in config.groups.keys() {
-        let junit_path = junit_path.clone();
-
+    for group_config in config.groups.values() {
+        // We know these are immutable, and we clone them to hand to the async task.
         let config = config.clone();
-
-        let Some(group_config) = config.groups.get(group_config_key).cloned() else {
-            continue;
-        };
+        let group_config = group_config.clone();
+        let junit_path = junit_path.clone();
 
         // Match on provider and framework to get concrete types
         set.spawn(async move {
