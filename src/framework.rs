@@ -30,8 +30,8 @@
 //!
 //! # Built-in Frameworks
 //!
-//! | Framework | Framework | Discovery Method |
-//! |------------|-----------|------------------|
+//! | Implementation | Target | Discovery Method |
+//! |----------------|--------|------------------|
 //! | [`pytest::PytestFramework`] | pytest | `pytest --collect-only -q` |
 //! | [`cargo::CargoFramework`] | Rust | `cargo test --list` |
 //! | [`default::DefaultFramework`] | Any | Custom shell commands |
