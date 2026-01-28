@@ -10,7 +10,7 @@ retry_count = 2
 type = "process"
 working_dir = "."
 
-[discovery]
+[groups.all]
 type = "pytest"
 paths = ["examples/tests"]
 python = "python3"
