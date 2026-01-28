@@ -60,7 +60,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestOutcome, TestRecord,
+    TestResult,
+};
 use crate::config::DefaultFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -100,21 +103,21 @@ impl DefaultFramework {
         Self { config }
     }
 
-    /// Parse test discovery command output to extract test cases.
+    /// Parse test discovery command output to extract test records.
     ///
     /// Expects one test ID per line.
-    fn parse_discover_output(&self, output: &str) -> Vec<TestCase> {
+    fn parse_discover_output(&self, output: &str) -> Vec<TestRecord> {
         output
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(TestCase::new)
+            .map(TestRecord::new)
             .collect()
     }
 
     /// Substitute {tests} placeholder in run command.
-    fn substitute_tests(&self, tests: &[TestCase]) -> String {
-        let test_ids: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
+    fn substitute_tests(&self, tests: &[TestInstance]) -> String {
+        let test_ids: Vec<_> = tests.iter().map(|t| t.id()).collect();
         self.config
             .run_command
             .replace("{tests}", &test_ids.join(" "))
@@ -123,7 +126,7 @@ impl DefaultFramework {
 
 #[async_trait]
 impl TestFramework for DefaultFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
         // Run test discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c");
@@ -161,7 +164,7 @@ impl TestFramework for DefaultFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
         let full_command = self.substitute_tests(tests);
 
         // Parse the command into program and args
@@ -196,7 +199,7 @@ impl TestFramework for DefaultFramework {
         // This is a simple implementation - users should use JUnit XML for detailed results
         if output.success() {
             Ok(vec![TestResult {
-                test: TestCase::new("all_tests"),
+                test_id: "all_tests".to_string(),
                 outcome: TestOutcome::Passed,
                 duration: output.duration,
                 stdout: output.stdout.clone(),
@@ -206,7 +209,7 @@ impl TestFramework for DefaultFramework {
             }])
         } else {
             Ok(vec![TestResult {
-                test: TestCase::new("all_tests"),
+                test_id: "all_tests".to_string(),
                 outcome: TestOutcome::Failed,
                 duration: output.duration,
                 stdout: output.stdout.clone(),
@@ -244,8 +247,6 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
             format!("{}::{}", classname, name)
         };
 
-        let test = TestCase::new(&test_id);
-
         let (outcome, error_message) = if inner.contains("<failure") {
             let msg = msg_re.captures(inner).map(|c| c[1].to_string());
             (TestOutcome::Failed, msg)
@@ -259,7 +260,7 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         };
 
         results.push(TestResult {
-            test,
+            test_id,
             outcome,
             duration: std::time::Duration::from_secs_f64(time),
             stdout: String::new(),

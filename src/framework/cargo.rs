@@ -57,7 +57,10 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use regex::Regex;
 
-use super::{FrameworkError, FrameworkResult, TestCase, TestFramework, TestOutcome, TestResult};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestOutcome, TestRecord,
+    TestResult,
+};
 use crate::config::CargoFrameworkConfig;
 use crate::provider::{Command, ExecResult};
 
@@ -96,8 +99,8 @@ impl CargoFramework {
         Self { config }
     }
 
-    /// Parse cargo test --list output to extract test cases.
-    fn parse_list_output(&self, output: &str) -> Vec<TestCase> {
+    /// Parse cargo test --list output to extract test records.
+    fn parse_list_output(&self, output: &str) -> Vec<TestRecord> {
         let mut tests = Vec::new();
         let mut has_doc_tests = false;
 
@@ -121,16 +124,16 @@ impl CargoFramework {
                     has_doc_tests = true;
                     continue;
                 }
-                tests.push(TestCase::new(test_name));
+                tests.push(TestRecord::new(test_name));
             } else if trimmed.ends_with(": benchmark") {
                 let test_name = trimmed.trim_end_matches(": benchmark");
-                tests.push(TestCase::new(test_name).with_marker("benchmark"));
+                tests.push(TestRecord::new(test_name).with_marker("benchmark"));
             }
         }
 
-        // Add a single grouped doc test case if any doc tests exist
+        // Add a single grouped doc test record if any doc tests exist
         if has_doc_tests {
-            tests.push(TestCase::new("__doctest__").with_marker("doctest"));
+            tests.push(TestRecord::new("__doctest__").with_marker("doctest"));
         }
 
         tests
@@ -139,7 +142,7 @@ impl CargoFramework {
 
 #[async_trait]
 impl TestFramework for CargoFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestCase>> {
+    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
         // Build the cargo test --list command
         let mut cmd_args = vec!["test".to_string()];
 
@@ -198,7 +201,7 @@ impl TestFramework for CargoFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestCase]) -> Command {
+    fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
         let mut cmd = Command::new("cargo").arg("test");
 
         // Add package if specified
@@ -222,7 +225,7 @@ impl TestFramework for CargoFramework {
         }
 
         // Check if this is a doc test run
-        let is_doctest = tests.len() == 1 && tests[0].id == "__doctest__";
+        let is_doctest = tests.len() == 1 && tests[0].id() == "__doctest__";
 
         if is_doctest {
             // Run all doc tests with --doc
@@ -232,7 +235,7 @@ impl TestFramework for CargoFramework {
 
             // Add test names
             for test in tests {
-                cmd = cmd.arg(&test.id);
+                cmd = cmd.arg(test.id());
             }
         }
 
@@ -270,7 +273,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
         };
 
         results.push(TestResult {
-            test: TestCase::new(test_id),
+            test_id: test_id.to_string(),
             outcome,
             duration: std::time::Duration::ZERO,
             stdout: String::new(),
@@ -297,7 +300,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
                 };
 
                 results.push(TestResult {
-                    test: TestCase::new("__doctest__").with_marker("doctest"),
+                    test_id: "__doctest__".to_string(),
                     outcome,
                     duration: std::time::Duration::ZERO,
                     stdout: format!("{} doc tests passed, {} failed", passed, failed),
@@ -329,7 +332,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
 
             // Find and update the corresponding result
             for result in &mut results {
-                if result.test.id == *test_id {
+                if result.test_id == *test_id {
                     result.stdout = output_content.to_string();
                     if result.outcome == TestOutcome::Failed {
                         result.error_message =

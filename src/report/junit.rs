@@ -43,7 +43,7 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 
 use super::Reporter;
 use crate::executor::RunResult;
-use crate::framework::{TestCase, TestOutcome, TestResult};
+use crate::framework::{TestOutcome, TestRecord, TestResult};
 
 /// Reporter that generates JUnit XML test reports.
 ///
@@ -162,7 +162,7 @@ impl JUnitReporter {
         result: &TestResult,
     ) -> anyhow::Result<()> {
         // Parse classname and name from test ID
-        let (classname, name) = parse_test_id(&result.test.id);
+        let (classname, name) = parse_test_id(&result.test_id);
 
         let mut testcase = BytesStart::new("testcase");
         testcase.push_attribute(("classname", classname.as_str()));
@@ -233,9 +233,9 @@ impl JUnitReporter {
 
 #[async_trait]
 impl Reporter for JUnitReporter {
-    async fn on_discovery_complete(&self, _tests: &[TestCase]) {}
+    async fn on_discovery_complete(&self, _tests: &[TestRecord]) {}
 
-    async fn on_test_start(&self, _test: &TestCase) {}
+    async fn on_test_start(&self, _test: &TestRecord) {}
 
     async fn on_test_complete(&self, result: &TestResult) {
         self.results.lock().unwrap().push(result.clone());
