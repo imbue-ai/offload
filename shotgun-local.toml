@@ -3,7 +3,7 @@
 [shotgun]
 max_parallel = 2
 test_timeout_secs = 60
-retry_count = 0
+retry_count = 3
 stream_output = true
 
 [provider]
