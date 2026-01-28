@@ -29,52 +29,16 @@ use serde::{Deserialize, Serialize};
 /// This struct represents the complete configuration loaded from a TOML file.
 /// It contains all settings needed to run tests: core settings, provider
 /// configuration, test framework configuration, and reporting options.
-///
-/// # TOML Structure
-///
-/// ```toml
-/// [shotgun]
-/// max_parallel = 4
-/// test_timeout_secs = 300
-///
-/// [provider]
-/// type = "local"
-/// image = "python:3.11"
-///
-/// [framework]
-/// type = "pytest"
-/// paths = ["tests"]
-///
-/// [report]
-/// output_dir = "test-results"
-/// ```
-///
-/// # Example
-///
-/// ```
-/// use shotgun::config::Config;
-///
-/// let config: Config = toml::from_str(r#"
-///     [shotgun]
-///     max_parallel = 2
-///
-///     [provider]
-///     type = "local"
-///
-///     [framework]
-///     type = "pytest"
-/// "#).unwrap();
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    /// Core shotgun settings (parallelism, timeouts, retries).
+    /// Core shotgun settings
     pub shotgun: ShotgunConfig,
 
-    /// Provider configuration determining where tests run.
+    /// Provider configuration determines where tests are run
     pub provider: ProviderConfig,
 
-    /// Test framework configuration determining how tests are found.
-    pub framework: FrameworkConfig,
+    /// Group configuration allows segmenting tests into named groups
+    pub groups: HashMap<String, GroupConfig>,
 
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
@@ -85,27 +49,6 @@ pub struct Config {
 ///
 /// These settings control the fundamental behavior of test execution:
 /// how many tests run in parallel, timeout limits, and retry behavior.
-///
-/// # Defaults
-///
-/// | Field | Default |
-/// |-------|---------|
-/// | `max_parallel` | 10 |
-/// | `test_timeout_secs` | 900 (15 minutes) |
-/// | `retry_count` | 3 |
-/// | `working_dir` | None (current directory) |
-/// | `stream_output` | false |
-///
-/// # Example
-///
-/// ```toml
-/// [shotgun]
-/// max_parallel = 4
-/// test_timeout_secs = 300
-/// retry_count = 2
-/// working_dir = "/path/to/project"
-/// stream_output = true
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShotgunConfig {
     /// Maximum number of sandboxes to run in parallel.
@@ -316,6 +259,12 @@ pub struct DefaultProviderConfig {
 
 fn default_remote_timeout() -> u64 {
     3600 // 1 hour
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GroupConfig {
+    /// Framework configuration for this group.
+    pub framework: FrameworkConfig,
 }
 
 /// Test framework configuration specifying how tests are found and run.
