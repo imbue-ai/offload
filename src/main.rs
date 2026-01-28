@@ -12,9 +12,7 @@ use shotgun::executor::Orchestrator;
 use shotgun::framework::{
     TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
 };
-use shotgun::provider::{
-    SandboxProvider, default::DefaultProvider, docker::DockerProvider, local::LocalProvider,
-};
+use shotgun::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
 use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
 #[derive(Parser)]
@@ -63,7 +61,7 @@ enum Commands {
 
     /// Initialize a new configuration file
     Init {
-        /// Provider type (local, docker, default)
+        /// Provider type (local, default)
         #[arg(short, long, default_value = "local")]
         provider: String,
 
@@ -152,45 +150,6 @@ async fn run_tests(
         }
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(d_cfg)) => {
             let provider = LocalProvider::new(p_cfg.clone());
-            let framework = DefaultFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
-            let provider = DockerProvider::new(p_cfg.clone())?;
-            let framework = PytestFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
-            let provider = DockerProvider::new(p_cfg.clone())?;
-            let framework = CargoFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Docker(p_cfg), FrameworkConfig::Default(d_cfg)) => {
-            let provider = DockerProvider::new(p_cfg.clone())?;
             let framework = DefaultFramework::new(d_cfg.clone());
             run_with(
                 config,
@@ -314,7 +273,6 @@ fn validate_config(config_path: &Path) -> Result<()> {
 
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
-                ProviderConfig::Docker(_) => "docker",
                 ProviderConfig::Default(_) => "default",
             };
             println!("  Provider: {}", provider_name);
@@ -343,13 +301,6 @@ type = "local"
 working_dir = "."
 shell = "/bin/sh""#
         }
-        "docker" => {
-            r#"[provider]
-type = "docker"
-image = "python:3.11"
-volumes = []
-working_dir = "/workspace""#
-        }
         "default" => {
             r#"[provider]
 type = "default"
@@ -362,10 +313,7 @@ setup_command = "./scripts/sync-code.sh"
 timeout_secs = 3600"#
         }
         _ => {
-            eprintln!(
-                "Unknown provider: {}. Use: local, docker, default",
-                provider
-            );
+            eprintln!("Unknown provider: {}. Use: local, default", provider);
             std::process::exit(1);
         }
     };

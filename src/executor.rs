@@ -376,8 +376,6 @@ where
                             .map(|p| p.to_string_lossy().to_string()),
                         env: Vec::new(),
                         resources: SandboxResources {
-                            cpu: None,
-                            memory: None,
                             timeout_secs: Some(config.shotgun.test_timeout_secs),
                         },
                     };

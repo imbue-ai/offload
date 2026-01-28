@@ -2,8 +2,8 @@
 //!
 //! This module defines the core abstractions for executing tests in isolated
 //! environments. The provider system is designed to be pluggable, allowing
-//! shotgun to work with any execution backend: Docker containers, local
-//! processes, or custom cloud providers.
+//! shotgun to work with any execution backend: local processes, or
+//! custom cloud providers.
 //!
 //! # Architecture
 //!
@@ -40,7 +40,6 @@
 //! | Provider | Module | Description |
 //! |----------|--------|-------------|
 //! | Local | [`local`] | Run tests as local child processes |
-//! | Docker | [`docker`] | Run tests in Docker containers |
 //! | Default | [`default`] | Run tests via custom shell commands |
 //!
 //! # Implementing a Custom Provider
@@ -85,7 +84,6 @@
 //! appropriate handling (e.g., retry on timeout, fail fast on auth errors).
 
 pub mod default;
-pub mod docker;
 pub mod local;
 
 use std::path::Path;
@@ -153,8 +151,6 @@ pub enum ProviderError {
     NotFound(String),
 
     /// Failed to establish or maintain connection to the execution environment.
-    ///
-    /// For Docker: daemon not running, socket not accessible.
     #[error("Connection error: {0}")]
     Connection(String),
 
@@ -204,8 +200,6 @@ pub struct SandboxInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
     /// Sandbox is being created and is not yet ready.
-    ///
-    /// For Docker: container is starting.
     Creating,
 
     /// Sandbox is running and ready to accept commands.
@@ -500,42 +494,11 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// - **Lifecycle management**: Check [`status`](Self::status) and
 ///   [`terminate`](Self::terminate) when done
 ///
-/// # Implementors
-///
-/// - [`local::LocalSandbox`] - Local process execution
-/// - [`docker::DockerSandbox`] - Docker container execution
-/// - [`default::DefaultSandbox`] - Custom remote execution
-///
 /// # Thread Safety
 ///
 /// Sandboxes must be `Send` to allow passing between async tasks.
 /// Most implementations are also safe to share (`Sync`), but this is
 /// not required by the trait.
-///
-/// # Example
-///
-/// ```no_run
-/// use shotgun::provider::{Command, Sandbox};
-///
-/// async fn run_tests(sandbox: &impl Sandbox) -> bool {
-///     let cmd = Command::new("pytest")
-///         .arg("-v")
-///         .arg("tests/")
-///         .timeout(300);
-///
-///     match sandbox.exec(&cmd).await {
-///         Ok(result) => {
-///             println!("Exit code: {}", result.exit_code);
-///             println!("Duration: {:?}", result.duration);
-///             result.success()
-///         }
-///         Err(e) => {
-///             eprintln!("Execution failed: {}", e);
-///             false
-///         }
-///     }
-/// }
-/// ```
 #[async_trait]
 pub trait Sandbox: Send {
     /// Returns the unique identifier for this sandbox.
@@ -587,12 +550,6 @@ pub trait Sandbox: Send {
     ///
     /// * `local` - Path on the local filesystem
     /// * `remote` - Destination path inside the sandbox
-    ///
-    /// # Provider Support
-    ///
-    /// - **Local**: Copies to working directory
-    /// - **Docker**: Uses `docker cp`
-    /// - **Default**: Usually not supported (returns `Ok(())`)
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
     /// Downloads a file or directory from the sandbox.
@@ -633,15 +590,9 @@ fn shell_escape(s: &str) -> String {
 
 /// Factory for creating and managing sandbox instances.
 ///
-/// A `SandboxProvider` represents an execution backend (Docker, local, etc.)
+/// A `SandboxProvider` represents an execution backend (local, etc.)
 /// and is responsible for creating [`Sandbox`] instances on demand. The
 /// provider manages the pool of sandboxes and tracks their lifecycle.
-///
-/// # Implementors
-///
-/// - [`local::LocalProvider`] - Creates local process sandboxes
-/// - [`docker::DockerProvider`] - Creates Docker container sandboxes
-/// - [`default::DefaultProvider`] - Creates custom remote sandboxes
 ///
 /// # Thread Safety
 ///
@@ -681,10 +632,7 @@ fn shell_escape(s: &str) -> String {
 pub trait SandboxProvider: Send + Sync {
     /// The concrete [`Sandbox`] type created by this provider.
     ///
-    /// Each provider creates a specific sandbox implementation:
-    /// - `LocalProvider` creates `LocalSandbox`
-    /// - `DockerProvider` creates `DockerSandbox`
-    /// - etc.
+    /// Each provider creates a specific sandbox implementation
     type Sandbox: Sandbox;
 
     /// Creates a new sandbox with the given configuration.

@@ -5,8 +5,8 @@
 //!
 //! ## Overview
 //!
-//! Shotgun enables distributed test execution across Docker containers, local
-//! processes, or custom cloud providers (like Modal). It provides:
+//! Shotgun enables distributed test execution across local processes, or custom
+//! cloud providers (like Modal). It provides:
 //!
 //! - **Parallel execution** across multiple isolated sandbox environments
 //! - **Automatic test discovery** for pytest, cargo test, and custom frameworks
@@ -24,7 +24,6 @@
 //! implements the [`SandboxProvider`] trait:
 //!
 //! - [`provider::local::LocalProvider`] - Run tests as local processes
-//! - [`provider::docker::DockerProvider`] - Run tests in Docker containers
 //! - [`provider::default::DefaultProvider`] - Run tests using custom shell commands
 //!
 //! ### Framework ([`framework`])
@@ -89,27 +88,6 @@
 //! ## Configuration
 //!
 //! Shotgun is configured via TOML files. See [`config`] module for schema details.
-//!
-//! ```toml
-//! [shotgun]
-//! max_parallel = 4
-//! test_timeout_secs = 300
-//! retry_count = 2
-//!
-//! [provider]
-//! type = "docker"
-//! image = "python:3.11"
-//! volumes = [".:/app"]
-//! working_dir = "/app"
-//!
-//! [framework]
-//! type = "pytest"
-//! paths = ["tests"]
-//!
-//! [report]
-//! output_dir = "test-results"
-//! junit = true
-//! ```
 //!
 //! ## Custom Providers
 //!
