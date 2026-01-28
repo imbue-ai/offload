@@ -1,9 +1,11 @@
 //! shotgun CLI - Flexible parallel test runner.
 
+use core::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
+use tokio::task::JoinSet;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -120,91 +122,136 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Match on provider and framework to get concrete types
-    match (&config.provider, &config.framework) {
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
-            let provider = LocalProvider::new(p_cfg.clone());
-            let framework = PytestFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
+    let mut set = JoinSet::<Result<()>>::new();
+
+    // config.groups is a HashMap<String, GroupConfig>. Let's iterate over it.
+    for group_config in config.groups.values() {
+        // We know these are immutable, and we clone them to hand to the async task.
+        let config = config.clone();
+        let group_config = group_config.clone();
+        let junit_path = junit_path.clone();
+
+        // Match on provider and framework to get concrete types
+        set.spawn(async move {
+            match (&config.provider, &group_config.framework) {
+                (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
+                    let provider = LocalProvider::new(p_cfg.clone());
+                    let framework = PytestFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+                (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
+                    let provider = LocalProvider::new(p_cfg.clone());
+                    let framework = CargoFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+                (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(d_cfg)) => {
+                    let provider = LocalProvider::new(p_cfg.clone());
+                    let framework = DefaultFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+                (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
+                    let provider = DefaultProvider::from_config(p_cfg.clone());
+                    let framework = PytestFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+                (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
+                    let provider = DefaultProvider::from_config(p_cfg.clone());
+                    let framework = CargoFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+                (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(d_cfg)) => {
+                    let provider = DefaultProvider::from_config(p_cfg.clone());
+                    let framework = DefaultFramework::new(d_cfg.clone());
+                    run_with(
+                        &config,
+                        provider,
+                        framework,
+                        collect_only,
+                        junit_path,
+                        verbose,
+                    )
+                    .await
+                }
+            }
+        });
+    }
+
+    let mut errors = Vec::new();
+
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => errors.push(e),
+            Err(join_err) => errors.push(anyhow!(join_err)), // panic/cancel etc
         }
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
-            let provider = LocalProvider::new(p_cfg.clone());
-            let framework = CargoFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(d_cfg)) => {
-            let provider = LocalProvider::new(p_cfg.clone());
-            let framework = DefaultFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone());
-            let framework = PytestFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone());
-            let framework = CargoFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(d_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone());
-            let framework = DefaultFramework::new(d_cfg.clone());
-            run_with(
-                config,
-                provider,
-                framework,
-                collect_only,
-                junit_path,
-                verbose,
-            )
-            .await
-        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AggregateError { errors }.into())
     }
 }
 
+#[derive(Debug)]
+struct AggregateError {
+    errors: Vec<anyhow::Error>,
+}
+
+impl fmt::Display for AggregateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} task(s) failed:", self.errors.len())?;
+        for (i, e) in self.errors.iter().enumerate() {
+            writeln!(f, "  {i}: {e:#}")?; // {:#} prints anyhow chains nicely
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for AggregateError {}
+
 async fn run_with<P, D>(
-    config: config::Config,
+    config: &config::Config,
     provider: P,
     framework: D,
     collect_only: bool,
@@ -225,7 +272,7 @@ where
     }
 
     let reporter = create_reporter(&config, junit_path, verbose);
-    let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+    let orchestrator = Orchestrator::new(config.clone(), provider, framework, reporter);
 
     let result = orchestrator.run().await?;
     std::process::exit(result.exit_code());
@@ -234,26 +281,30 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    let tests = match &config.framework {
-        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
-    };
+    for (_, group_config) in &config.groups {
+        let tests = match &group_config.framework {
+            FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
+            FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone()).discover(&[]).await?
+            }
+        };
 
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(&tests)?;
-            println!("{}", json);
-        }
-        _ => {
-            println!("Discovered {} tests:", tests.len());
-            for test in &tests {
-                let markers = if test.markers.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", test.markers.join(", "))
-                };
-                println!("  {}{}", test.id, markers);
+        match format {
+            "json" => {
+                let json = serde_json::to_string_pretty(&tests)?;
+                println!("{}", json);
+            }
+            _ => {
+                println!("Discovered {} tests:", tests.len());
+                for test in &tests {
+                    let markers = if test.markers.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", test.markers.join(", "))
+                    };
+                    println!("  {}{}", test.id, markers);
+                }
             }
         }
     }
@@ -277,12 +328,16 @@ fn validate_config(config_path: &Path) -> Result<()> {
             };
             println!("  Provider: {}", provider_name);
 
-            let framework_name = match &config.framework {
-                FrameworkConfig::Pytest(_) => "pytest",
-                FrameworkConfig::Cargo(_) => "cargo",
-                FrameworkConfig::Default(_) => "default",
-            };
-            println!("  Framework: {}", framework_name);
+            // TODO: validate each group
+
+            for (group_name, group_config) in &config.groups {
+                let framework_name = match group_config.framework {
+                    FrameworkConfig::Pytest(_) => "pytest",
+                    FrameworkConfig::Cargo(_) => "cargo",
+                    FrameworkConfig::Default(_) => "default",
+                };
+                println!("Group: {}  Framework: {}", group_name, framework_name);
+            }
 
             Ok(())
         }

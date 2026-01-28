@@ -1,8 +1,10 @@
 """Simple math tests."""
 
 import time
+import pytest
 
 
+@pytest.mark.slow
 def test_addition():
     time.sleep(2)
     assert 1 + 1 == 2
