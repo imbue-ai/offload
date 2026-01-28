@@ -4,54 +4,7 @@
 //! from TOML files or strings. The configuration schema defines all settings
 //! for providers, test frameworks, and reporting.
 //!
-//! # Configuration File Format
-//!
-//! Shotgun configuration files use TOML format with four main sections:
-//!
-//! ```toml
-//! [shotgun]
-//! max_parallel = 4           # Number of parallel sandboxes
-//! test_timeout_secs = 300    # Timeout per test batch
-//! retry_count = 2            # Retry failed tests up to N times
-//! stream_output = false      # Stream output in real-time
-//!
-//! [provider]
-//! type = "docker"            # One of: process, docker, default
-//! # ... provider-specific settings
-//!
-//! [framework]
-//! type = "pytest"            # One of: pytest, cargo, default
-//! # ... framework-specific settings
-//!
-//! [report]
-//! output_dir = "test-results"
-//! junit = true
-//! ```
-//!
-//! # Example
-//!
-//! ```no_run
-//! use shotgun::config::{load_config, load_config_str};
-//! use std::path::Path;
-//!
-//! // Load from file
-//! let config = load_config(Path::new("shotgun.toml"))?;
-//!
-//! // Or load from string
-//! let toml = r#"
-//!     [shotgun]
-//!     max_parallel = 2
-//!
-//!     [provider]
-//!     type = "local"
-//!
-//!     [framework]
-//!     type = "pytest"
-//!     paths = ["tests"]
-//! "#;
-//! let config = load_config_str(toml)?;
-//! # Ok::<(), anyhow::Error>(())
-//! ```
+//! # The Configuration File Format is described in the README.
 
 pub mod schema;
 

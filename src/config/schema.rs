@@ -11,7 +11,6 @@
 //! ├── ShotgunConfig          - Core settings (parallelism, timeouts, retries)
 //! ├── ProviderConfig         - Tagged enum selecting provider type
 //! │   ├── Local              - Local process execution
-//! │   ├── Docker             - Docker container execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
 //! ├── FrameworkConfig        - Tagged enum selecting framework type
 //! │   ├── Pytest             - pytest test framework
@@ -39,7 +38,7 @@ use serde::{Deserialize, Serialize};
 /// test_timeout_secs = 300
 ///
 /// [provider]
-/// type = "docker"
+/// type = "local"
 /// image = "python:3.11"
 ///
 /// [framework]
@@ -112,10 +111,8 @@ pub struct ShotgunConfig {
     /// Maximum number of sandboxes to run in parallel.
     ///
     /// Higher values increase throughput but require more resources.
-    /// Each sandbox may correspond to a Docker container or local process
-    /// depending on the provider.
-    ///
-    /// Default: 10
+    /// Each sandbox may correspond to a local process or a ephemeral
+    /// compute resource depending on the provider.
     #[serde(default = "default_max_parallel")]
     pub max_parallel: usize,
 
@@ -124,8 +121,6 @@ pub struct ShotgunConfig {
     /// If a test batch takes longer than this, it will be terminated.
     /// Set this high enough for your slowest tests but low enough to
     /// catch hung tests.
-    ///
-    /// Default: 900 (15 minutes)
     #[serde(default = "default_test_timeout")]
     pub test_timeout_secs: u64,
 
@@ -133,8 +128,6 @@ pub struct ShotgunConfig {
     ///
     /// Failed tests are retried up to this many times. If a test passes
     /// on retry, it's marked as "flaky". Set to 0 to disable retries.
-    ///
-    /// Default: 3
     #[serde(default = "default_retry_count")]
     pub retry_count: usize,
 
@@ -150,8 +143,6 @@ pub struct ShotgunConfig {
     /// (default), output is collected and displayed after each test completes.
     /// Streaming is useful for debugging but may interleave output from
     /// parallel tests.
-    ///
-    /// Default: false
     #[serde(default)]
     pub stream_output: bool,
 }
@@ -178,30 +169,7 @@ fn default_retry_count() -> usize {
 /// | Type | Description | Use Case |
 /// |------|-------------|----------|
 /// | `local` | Local processes | Development, CI without containers |
-/// | `docker` | Docker containers | Isolated, reproducible test environments |
 /// | `default` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
-///
-/// # Example
-///
-/// ```toml
-/// # Local process execution
-/// [provider]
-/// type = "local"
-/// working_dir = "/path/to/project"
-///
-/// # Docker container execution
-/// [provider]
-/// type = "docker"
-/// image = "python:3.11"
-/// volumes = [".:/app"]
-///
-/// # Custom remote execution (e.g., Modal)
-/// [provider]
-/// type = "default"
-/// create_command = "modal sandbox create"
-/// exec_command = "modal sandbox exec {sandbox_id} -- {command}"
-/// destroy_command = "modal sandbox delete {sandbox_id}"
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
@@ -210,12 +178,6 @@ pub enum ProviderConfig {
     /// The simplest provider - tests run directly on the host machine.
     /// Useful for development and CI environments without containerization.
     Local(LocalProviderConfig),
-
-    /// Run tests in Docker containers.
-    ///
-    /// Each sandbox is a Docker container providing isolation and
-    /// reproducibility. Requires Docker to be installed and running.
-    Docker(DockerProviderConfig),
 
     /// Run tests using custom shell commands.
     ///
@@ -266,120 +228,6 @@ pub struct LocalProviderConfig {
 
 fn default_shell() -> String {
     "/bin/sh".to_string()
-}
-
-/// Configuration for the Docker container provider.
-///
-/// Each sandbox is a Docker container that runs tests in isolation.
-/// Containers are created with `docker create`, executed with `docker exec`,
-/// and removed with `docker rm`.
-///
-/// # Example
-///
-/// ```toml
-/// [provider]
-/// type = "docker"
-/// image = "python:3.11-slim"
-/// volumes = [".:/app:ro", "./test-results:/results"]
-/// working_dir = "/app"
-/// network_mode = "bridge"
-///
-/// [provider.env]
-/// PYTHONDONTWRITEBYTECODE = "1"
-///
-/// [provider.resources]
-/// cpu_limit = 2.0
-/// memory_limit = 2147483648  # 2GB
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DockerProviderConfig {
-    /// Docker image to use for containers.
-    ///
-    /// This image should have all dependencies needed to run your tests.
-    /// It will be pulled automatically if not present locally.
-    pub image: String,
-
-    /// Volume mounts in `host:container[:options]` format.
-    ///
-    /// Common options include `:ro` for read-only and `:rw` for read-write.
-    ///
-    /// # Example
-    /// ```toml
-    /// volumes = [
-    ///     ".:/app:ro",           # Mount current dir read-only
-    ///     "/tmp/cache:/cache"    # Mount cache directory
-    /// ]
-    /// ```
-    #[serde(default)]
-    pub volumes: Vec<String>,
-
-    /// Environment variables to set in containers.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-
-    /// Working directory inside the container.
-    ///
-    /// Test commands will run from this directory.
-    pub working_dir: Option<String>,
-
-    /// Docker network mode.
-    ///
-    /// Common values: `bridge` (default), `host`, `none`.
-    ///
-    /// Default: `bridge`
-    #[serde(default = "default_network_mode")]
-    pub network_mode: String,
-
-    /// Docker daemon URL.
-    ///
-    /// If not specified, uses the local Docker socket.
-    /// Set this to connect to a remote Docker daemon.
-    ///
-    /// # Example
-    /// ```toml
-    /// docker_host = "tcp://192.168.1.100:2375"
-    /// ```
-    pub docker_host: Option<String>,
-
-    /// Resource limits for containers.
-    #[serde(default)]
-    pub resources: DockerResourceConfig,
-}
-
-fn default_network_mode() -> String {
-    "bridge".to_string()
-}
-
-/// Resource limits for Docker containers.
-///
-/// These settings constrain CPU and memory usage per container.
-/// Useful for preventing tests from consuming excessive resources.
-///
-/// # Example
-///
-/// ```toml
-/// [provider.resources]
-/// cpu_limit = 2.0           # 2 CPU cores
-/// memory_limit = 2147483648 # 2GB RAM
-/// memory_swap = 4294967296  # 4GB swap
-/// ```
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct DockerResourceConfig {
-    /// CPU core limit (e.g., 2.0 for 2 CPU cores).
-    ///
-    /// Fractional values are allowed (e.g., 0.5 for half a core).
-    pub cpu_limit: Option<f64>,
-
-    /// Memory limit in bytes.
-    ///
-    /// Container will be OOM-killed if it exceeds this limit.
-    pub memory_limit: Option<i64>,
-
-    /// Memory + swap limit in bytes.
-    ///
-    /// Set equal to `memory_limit` to disable swap.
-    /// Set to -1 for unlimited swap.
-    pub memory_swap: Option<i64>,
 }
 
 /// Configuration for custom remote execution provider.
@@ -696,30 +544,10 @@ pub struct SandboxConfig {
 }
 
 /// Resource limits for a sandbox instance.
-///
-/// These limits constrain the resources available to tests running
-/// in a sandbox. Not all providers support all resource types.
-///
-/// | Resource | Docker | Local | Default |
-/// |----------|--------|---------|---------|
-/// | CPU | Yes | No | Varies |
-/// | Memory | Yes | No | Varies |
-/// | Timeout | Yes | Yes | Yes |
 #[derive(Debug, Clone, Default)]
 pub struct SandboxResources {
-    /// CPU core limit (e.g., 4.0 for 4 cores).
-    ///
-    /// Supported by: Docker
-    pub cpu: Option<f64>,
-
-    /// Memory limit in bytes.
-    ///
-    /// Supported by: Docker
-    pub memory: Option<u64>,
-
     /// Execution timeout in seconds.
     ///
     /// Commands exceeding this limit are terminated.
-    /// Supported by: All providers
     pub timeout_secs: Option<u64>,
 }
