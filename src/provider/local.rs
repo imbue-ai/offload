@@ -35,8 +35,9 @@
 //!
 //! ```no_run
 //! use offload::provider::local::LocalProvider;
-//! use offload::provider::{SandboxProvider, Sandbox, Command};
+//! use offload::provider::{SandboxProvider, Sandbox, Command, OutputLine};
 //! use offload::config::{LocalProviderConfig, SandboxConfig, SandboxResources};
+//! use futures::StreamExt;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -50,8 +51,13 @@
 //!     };
 //!
 //!     let sandbox = provider.create_sandbox(&config).await?;
-//!     let result = sandbox.exec(&Command::new("echo").arg("hello")).await?;
-//!     println!("Output: {}", result.stdout);
+//!     let mut stream = sandbox.exec_stream(&Command::new("echo").arg("hello")).await?;
+//!     while let Some(line) = stream.next().await {
+//!         match line {
+//!             OutputLine::Stdout(s) => println!("{}", s),
+//!             OutputLine::Stderr(s) => eprintln!("{}", s),
+//!         }
+//!     }
 //!
 //!     Ok(())
 //! }
@@ -59,7 +65,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -67,8 +72,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 
 use super::{
-    Command, ExecResult, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
-    SandboxInfo, SandboxProvider, SandboxStatus,
+    Command, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo,
+    SandboxProvider, SandboxStatus,
 };
 use crate::config::{LocalProviderConfig, SandboxConfig};
 
@@ -182,56 +187,6 @@ pub struct LocalSandbox {
 impl Sandbox for LocalSandbox {
     fn id(&self) -> &str {
         &self.id
-    }
-
-    async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult> {
-        let start = Instant::now();
-
-        // Build the shell command
-        let shell_cmd = cmd.to_shell_string();
-
-        let mut process = tokio::process::Command::new(&self.shell);
-        process.arg("-c").arg(&shell_cmd);
-        process.current_dir(&self.working_dir);
-
-        // Set environment variables
-        for (key, value) in &self.env {
-            process.env(key, value);
-        }
-        for (key, value) in &cmd.env {
-            process.env(key, value);
-        }
-
-        // Set working directory if specified
-        if let Some(dir) = &cmd.working_dir {
-            process.current_dir(dir);
-        }
-
-        process.stdout(Stdio::piped());
-        process.stderr(Stdio::piped());
-
-        let output = if let Some(timeout) = cmd.timeout_secs {
-            tokio::time::timeout(std::time::Duration::from_secs(timeout), process.output())
-                .await
-                .map_err(|_| {
-                    ProviderError::Timeout(format!("Command timed out after {}s", timeout))
-                })?
-                .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
-        } else {
-            process
-                .output()
-                .await
-                .map_err(|e| ProviderError::ExecFailed(e.to_string()))?
-        };
-
-        let duration = start.elapsed();
-
-        Ok(ExecResult {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            duration,
-        })
     }
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {

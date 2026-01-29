@@ -59,15 +59,14 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::{
-    Command, ExecResult, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo,
-    SandboxProvider, SandboxStatus,
+    Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo, SandboxProvider,
+    SandboxStatus,
 };
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
@@ -255,39 +254,6 @@ impl DefaultSandbox {
 impl Sandbox for DefaultSandbox {
     fn id(&self) -> &str {
         &self.id
-    }
-
-    async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult> {
-        let start = Instant::now();
-        let shell_cmd = self.build_exec_command(cmd);
-
-        debug!("Executing on {}: {}", self.remote_id, shell_cmd);
-
-        let result = self.connector.run(&shell_cmd).await?;
-
-        // Try to parse JSON result from stdout (connector protocol)
-        if let Some(json_line) = result
-            .stdout
-            .lines()
-            .rev()
-            .find(|line| line.trim().starts_with('{'))
-            && let Ok(parsed) = serde_json::from_str::<crate::connector::ExecResult>(json_line)
-        {
-            return Ok(ExecResult {
-                exit_code: parsed.exit_code,
-                stdout: parsed.stdout,
-                stderr: parsed.stderr,
-                duration: start.elapsed(),
-            });
-        }
-
-        // Fall back to raw output
-        Ok(ExecResult {
-            exit_code: result.exit_code,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            duration: start.elapsed(),
-        })
     }
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {

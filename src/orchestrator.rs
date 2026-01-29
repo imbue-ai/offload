@@ -392,28 +392,35 @@ where
                         Duration::from_secs(config.offload.test_timeout_secs),
                     );
 
-                    // Enable streaming if configured
+                    // Enable output callback if streaming is configured
                     if config.offload.stream_output {
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
                         });
-                        runner = runner.with_streaming(callback);
+                        runner = runner.with_output_callback(callback);
                     }
 
+                    // Report all tests as starting
                     for test in &batch {
                         reporter.on_test_start(test.record()).await;
+                    }
 
-                        match runner.run_test(test).await {
-                            Ok(()) => {
-                                // Result is now stored in the TestRecord
+                    // Run all tests in batch with a single command
+                    match runner.run_tests(&batch).await {
+                        Ok(()) => {
+                            // Results are stored in each TestRecord
+                            for test in &batch {
                                 if let Some(r) = test.record().final_result() {
                                     reporter.on_test_complete(&r).await;
                                     results.lock().await.push(r);
                                 }
                             }
-                            Err(e) => {
-                                error!("Test execution error: {}", e);
+                        }
+                        Err(e) => {
+                            error!("Batch execution error: {}", e);
+                            // Mark all tests in batch as errors
+                            for test in &batch {
                                 let failed_result = TestResult {
                                     test_id: test.id_owned(),
                                     outcome: TestOutcome::Error,
@@ -423,7 +430,6 @@ where
                                     error_message: Some(e.to_string()),
                                     stack_trace: None,
                                 };
-                                // Also record the error result into the TestRecord
                                 test.record_result(failed_result.clone());
                                 reporter.on_test_complete(&failed_result).await;
                                 results.lock().await.push(failed_result);
@@ -593,9 +599,10 @@ where
                             Duration::from_secs(config.offload.test_timeout_secs),
                         );
 
-                        for test in batch {
-                            match runner.run_test(&test).await {
-                                Ok(()) => {
+                        // Run all tests in batch with a single command
+                        match runner.run_tests(&batch).await {
+                            Ok(()) => {
+                                for test in &batch {
                                     if let Some(result) = test.record().final_result() {
                                         let passed = result.outcome == TestOutcome::Passed;
                                         retry_manager
@@ -610,8 +617,10 @@ where
                                         retry_manager.lock().await.record_attempt(test.id(), false);
                                     }
                                 }
-                                Err(e) => {
-                                    warn!("Retry failed for {}: {}", test.id(), e);
+                            }
+                            Err(e) => {
+                                warn!("Batch retry failed: {}", e);
+                                for test in &batch {
                                     retry_manager.lock().await.record_attempt(test.id(), false);
                                 }
                             }

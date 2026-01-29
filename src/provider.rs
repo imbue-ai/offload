@@ -59,7 +59,6 @@
 //! #[async_trait]
 //! impl Sandbox for MyCloudSandbox {
 //!     fn id(&self) -> &str { todo!() }
-//!     async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult> { todo!() }
 //!     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> { todo!() }
 //!     async fn upload(&self, local: &std::path::Path, remote: &std::path::Path) -> ProviderResult<()> { todo!() }
 //!     async fn download(&self, remote: &std::path::Path, local: &std::path::Path) -> ProviderResult<()> { todo!() }
@@ -507,30 +506,10 @@ pub trait Sandbox: Send {
     /// sandbox's lifetime. It's used for logging, tracking, and cleanup.
     fn id(&self) -> &str;
 
-    /// Executes a command and waits for completion.
-    ///
-    /// This is the primary method for running commands. It blocks until
-    /// the command completes (or times out) and returns all output.
-    ///
-    /// # Arguments
-    ///
-    /// * `cmd` - The command to execute, including args, env, and timeout
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(ExecResult)` - Command completed (check `exit_code` for success)
-    /// - `Err(ProviderError::Timeout)` - Command exceeded timeout
-    /// - `Err(ProviderError::ExecFailed)` - Failed to run command
-    async fn exec(&self, cmd: &Command) -> ProviderResult<ExecResult>;
-
     /// Executes a command and streams output in real-time.
     ///
-    /// Unlike [`exec`](Self::exec), this returns immediately with a stream
-    /// that yields output lines as they're produced. Useful for long-running
-    /// commands or real-time progress monitoring.
-    ///
-    /// **Note**: The stream does not provide an exit code. If you need the
-    /// exit code, use [`exec`](Self::exec) instead.
+    /// Returns immediately with a stream that yields output lines as they're
+    /// produced. Useful for long-running commands or real-time progress monitoring.
     ///
     /// # Arguments
     ///

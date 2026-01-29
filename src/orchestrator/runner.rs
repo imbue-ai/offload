@@ -1,14 +1,12 @@
 //! Test runner for executing tests in a sandbox.
 //!
 //! The [`TestRunner`] is responsible for executing tests within a single
-//! sandbox and parsing their results. It handles both single-test and
-//! batch execution modes.
+//! sandbox and parsing their results.
 //!
 //! # Features
 //!
-//! - **Single test execution**: Run one test at a time with [`run_test`](TestRunner::run_test)
-//! - **Batch execution**: Run multiple tests with [`run_tests`](TestRunner::run_tests)
-//! - **Streaming output**: Real-time output via callback with [`with_streaming`](TestRunner::with_streaming)
+//! - **Test execution**: Run tests with [`run_tests`](TestRunner::run_tests)
+//! - **Output callback**: Real-time output via callback with [`with_output_callback`](TestRunner::with_output_callback)
 //! - **Result parsing**: Automatic parsing via the framework
 //!
 //! # Example
@@ -28,7 +26,7 @@
 //!
 //!     let record = TestRecord::new("tests/test_math.py::test_add");
 //!     let test = record.test();
-//!     runner.run_test(&test).await?;
+//!     runner.run_tests(&[test]).await?;
 //!
 //!     // Results are stored in the TestRecord
 //!     if let Some(result) = record.final_result() {
@@ -49,6 +47,14 @@ use tracing::{debug, info};
 
 use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
+
+/// JSON result format from remote sandboxes.
+#[derive(serde::Deserialize)]
+struct JsonExecResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
 
 /// Callback function for streaming test output.
 ///
@@ -85,7 +91,6 @@ pub struct TestRunner<'a, S, D> {
     sandbox: S,
     framework: &'a D,
     timeout: Duration,
-    stream_output: bool,
     output_callback: Option<OutputCallback>,
 }
 
@@ -102,15 +107,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             sandbox,
             framework,
             timeout,
-            stream_output: false,
             output_callback: None,
         }
     }
 
-    /// Enables streaming output with a callback.
+    /// Sets a callback for test output.
     ///
-    /// When enabled, test output is sent to the callback as it occurs
-    /// rather than being buffered.
+    /// When set, test output is sent to the callback as it occurs.
+    /// This is useful for real-time output display.
     ///
     /// # Arguments
     ///
@@ -128,7 +132,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// # fn example(sandbox: LocalSandbox, framework: &PytestFramework) {
     /// let runner = TestRunner::new(sandbox, framework, Duration::from_secs(300))
-    ///     .with_streaming(Arc::new(|test_id, line| {
+    ///     .with_output_callback(Arc::new(|test_id, line| {
     ///         match line {
     ///             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
     ///             OutputLine::Stderr(s) => eprintln!("[{}] ERR: {}", test_id, s),
@@ -136,8 +140,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///     }));
     /// # }
     /// ```
-    pub fn with_streaming(mut self, callback: OutputCallback) -> Self {
-        self.stream_output = true;
+    pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
         self.output_callback = Some(callback);
         self
     }
@@ -156,91 +159,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self.sandbox
     }
 
-    /// Runs a single test and records its result into the TestRecord.
+    /// Execute command with streaming, collecting output and parsing JSON result.
     ///
-    /// Generates a command for the test using the framework, executes it
-    /// in the sandbox, and parses the results. The result is automatically
-    /// recorded into the test's associated [`TestRecord`].
-    ///
-    /// # Arguments
-    ///
-    /// * `test` - The test to execute
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` on successful execution, or an error if execution failed.
-    /// Use [`TestRecord::final_result`] to retrieve the test result.
-    pub async fn run_test(&mut self, test: &TestInstance<'_>) -> Result<()> {
-        let start = std::time::Instant::now();
-
-        info!("Running test: {}", test.id());
-
-        // Generate the run command
-        let mut cmd = self
-            .framework
-            .produce_test_execution_command(std::slice::from_ref(test));
-        cmd = cmd.timeout(self.timeout.as_secs());
-
-        // Execute the command (streaming or buffered)
-        let exec_result = if self.stream_output {
-            self.exec_streaming(&cmd, test.id()).await?
-        } else {
-            self.sandbox.exec(&cmd).await?
-        };
-
-        let duration = start.elapsed();
-
-        debug!(
-            "Test {} completed with exit code {} in {:?}",
-            test.id(),
-            exec_result.exit_code,
-            duration
-        );
-
-        // Try to download and parse JUnit results
-        let result_content = self.try_download_results().await;
-
-        // Parse results
-        let results = self
-            .framework
-            .parse_results(&exec_result, result_content.as_deref())?;
-
-        // Find the result for this specific test
-        let test_result = results
-            .into_iter()
-            .find(|r| r.test_id == test.id())
-            .unwrap_or_else(|| {
-                // If we couldn't parse specific results, infer from exit code
-                TestResult {
-                    test_id: test.id_owned(),
-                    outcome: if exec_result.success() {
-                        TestOutcome::Passed
-                    } else {
-                        TestOutcome::Failed
-                    },
-                    duration,
-                    stdout: exec_result.stdout.clone(),
-                    stderr: exec_result.stderr.clone(),
-                    error_message: if !exec_result.success() {
-                        Some(format!("Exit code: {}", exec_result.exit_code))
-                    } else {
-                        None
-                    },
-                    stack_trace: None,
-                }
-            });
-
-        // Record the result into the TestRecord
-        test.record_result(test_result);
-
-        Ok(())
-    }
-
-    /// Execute command with streaming output.
-    async fn exec_streaming(
+    /// The `output_id` is passed to the output callback to identify the source.
+    async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
-        test_id: &str,
+        output_id: &str,
     ) -> Result<crate::provider::ExecResult> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
@@ -251,7 +176,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         while let Some(line) = stream.next().await {
             // Call the output callback if set
             if let Some(ref callback) = self.output_callback {
-                callback(test_id, &line);
+                callback(output_id, &line);
             }
 
             // Collect output
@@ -267,14 +192,29 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        // Infer exit code from output (streaming doesn't give us exit code directly)
-        // Look for pytest/test framework exit patterns
+        // Try to parse JSON result from stdout (connector protocol)
+        // This handles remote sandboxes that return JSON with exit_code, stdout, stderr
+        if let Some(json_line) = stdout
+            .lines()
+            .rev()
+            .find(|line| line.trim().starts_with('{'))
+            && let Ok(parsed) = serde_json::from_str::<JsonExecResult>(json_line)
+        {
+            return Ok(crate::provider::ExecResult {
+                exit_code: parsed.exit_code,
+                stdout: parsed.stdout,
+                stderr: parsed.stderr,
+                duration: start.elapsed(),
+            });
+        }
+
+        // Fall back to inferring exit code from output
         let exit_code =
             if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR")
             {
                 0
             } else {
-                1 // Assume failure if no clear success indicators (safer default)
+                1
             };
 
         Ok(crate::provider::ExecResult {
@@ -309,8 +249,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
-        // Execute the command
-        let exec_result = self.sandbox.exec(&cmd).await?;
+        // Execute the command with streaming (always use streaming for connector support)
+        let exec_result = self.exec_with_streaming(&cmd, "batch").await?;
 
         let duration = start.elapsed();
 
@@ -327,9 +267,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             .framework
             .parse_results(&exec_result, result_content.as_deref())?;
 
+        // Estimate per-test duration from wall-clock time
+        let estimated_duration = duration / tests.len() as u32;
+
         // Record results into each TestRecord
         for test in tests {
-            let result = parsed_results
+            let mut result = parsed_results
                 .iter()
                 .find(|r| r.test_id == test.id())
                 .cloned()
@@ -343,7 +286,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     TestResult {
                         test_id: test.id_owned(),
                         outcome: overall_outcome,
-                        duration: duration / tests.len() as u32,
+                        duration: estimated_duration,
                         stdout: String::new(),
                         stderr: String::new(),
                         error_message: if !exec_result.success() {
@@ -357,6 +300,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         stack_trace: None,
                     }
                 });
+
+            // If parsed result has zero duration, use estimated wall-clock duration
+            if result.duration.is_zero() {
+                result.duration = estimated_duration;
+            }
+
             test.record_result(result);
         }
 
