@@ -7,7 +7,7 @@ retry_count = 1
 stream_output = true
 
 [provider]
-type = "remote"
+type = "default"
 create_command = "uv run @modal_sandbox.py create sculptor"
 exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
 destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
