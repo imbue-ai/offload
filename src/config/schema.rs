@@ -1,4 +1,4 @@
-//! Configuration schema definitions for shotgun.
+//! Configuration schema definitions for offload.
 //!
 //! This module defines all configuration types that can be deserialized from
 //! TOML configuration files. The schema uses serde for serialization and
@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Config (root)
-//! ├── ShotgunConfig          - Core settings (parallelism, timeouts, retries)
+//! ├── OffloadConfig          - Core settings (parallelism, timeouts, retries)
 //! ├── ProviderConfig         - Tagged enum selecting provider type
 //! │   ├── Local              - Local process execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
@@ -25,15 +25,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Root configuration structure for shotgun.
+/// Root configuration structure for offload.
 ///
 /// This struct represents the complete configuration loaded from a TOML file.
 /// It contains all settings needed to run tests: core settings, provider
 /// configuration, test framework configuration, and reporting options.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    /// Core shotgun settings
-    pub shotgun: ShotgunConfig,
+    /// Core offload settings
+    pub offload: OffloadConfig,
 
     /// Provider configuration determines where tests are run
     pub provider: ProviderConfig,
@@ -46,12 +46,12 @@ pub struct Config {
     pub report: ReportConfig,
 }
 
-/// Core shotgun execution settings.
+/// Core offload execution settings.
 ///
 /// These settings control the fundamental behavior of test execution:
 /// how many tests run in parallel, timeout limits, and retry behavior.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ShotgunConfig {
+pub struct OffloadConfig {
     /// Maximum number of sandboxes to run in parallel.
     ///
     /// Higher values increase throughput but require more resources.
@@ -133,7 +133,7 @@ pub enum ProviderConfig {
 
 /// Configuration for the local process provider.
 ///
-/// Tests run as child processes of shotgun on the local machine.
+/// Tests run as child processes of offload on the local machine.
 /// This is the simplest provider and requires no external dependencies.
 ///
 /// # Example
@@ -413,7 +413,7 @@ pub struct DefaultFrameworkConfig {
 
     /// Path to JUnit XML result file produced by the test runner.
     ///
-    /// If specified, shotgun will parse this file for detailed test results.
+    /// If specified, offload will parse this file for detailed test results.
     /// Without this, results are inferred from exit codes only.
     pub result_file: Option<PathBuf>,
 

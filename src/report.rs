@@ -26,7 +26,7 @@
 //! Use [`MultiReporter`] to send events to multiple reporters:
 //!
 //! ```
-//! use shotgun::report::{MultiReporter, ConsoleReporter, JUnitReporter};
+//! use offload::report::{MultiReporter, ConsoleReporter, JUnitReporter};
 //!
 //! let reporter = MultiReporter::new()
 //!     .with_reporter(ConsoleReporter::new(true))
@@ -90,7 +90,7 @@ pub trait Reporter: Send + Sync {
 /// # Example
 ///
 /// ```
-/// use shotgun::report::NullReporter;
+/// use offload::report::NullReporter;
 ///
 /// let reporter = NullReporter;
 /// ```
@@ -112,7 +112,7 @@ impl Reporter for NullReporter {
 /// # Example
 ///
 /// ```
-/// use shotgun::report::{MultiReporter, ConsoleReporter, JUnitReporter, NullReporter};
+/// use offload::report::{MultiReporter, ConsoleReporter, JUnitReporter, NullReporter};
 ///
 /// let reporter = MultiReporter::new()
 ///     .with_reporter(ConsoleReporter::new(true))
@@ -139,7 +139,7 @@ impl MultiReporter {
     /// # Example
     ///
     /// ```
-    /// use shotgun::report::{MultiReporter, ConsoleReporter};
+    /// use offload::report::{MultiReporter, ConsoleReporter};
     ///
     /// let reporter = MultiReporter::new()
     ///     .with_reporter(ConsoleReporter::new(false));
@@ -197,7 +197,7 @@ impl Reporter for MultiReporter {
 /// # Example
 ///
 /// ```
-/// use shotgun::report::ConsoleReporter;
+/// use offload::report::ConsoleReporter;
 ///
 /// // Show all results
 /// let verbose_reporter = ConsoleReporter::new(true);

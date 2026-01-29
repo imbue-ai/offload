@@ -11,7 +11,7 @@
 //! ```xml
 //! <?xml version="1.0" encoding="UTF-8"?>
 //! <testsuites tests="3" failures="1" errors="0" time="1.234">
-//!   <testsuite name="shotgun" tests="3" failures="1" errors="0" skipped="0" time="1.234">
+//!   <testsuite name="offload" tests="3" failures="1" errors="0" skipped="0" time="1.234">
 //!     <testcase classname="tests.test_math" name="test_add" time="0.100"/>
 //!     <testcase classname="tests.test_math" name="test_sub" time="0.150">
 //!       <failure message="AssertionError" type="AssertionError">
@@ -28,7 +28,7 @@
 //! # Example
 //!
 //! ```
-//! use shotgun::report::JUnitReporter;
+//! use offload::report::JUnitReporter;
 //!
 //! let reporter = JUnitReporter::new("test-results/junit.xml".into())
 //!     .with_testsuite_name("my-project-tests");
@@ -58,7 +58,7 @@ use crate::orchestrator::RunResult;
 /// # Example
 ///
 /// ```
-/// use shotgun::report::JUnitReporter;
+/// use offload::report::JUnitReporter;
 ///
 /// let reporter = JUnitReporter::new("build/test-results/junit.xml".into())
 ///     .with_testsuite_name("my-app");
@@ -79,13 +79,13 @@ impl JUnitReporter {
         Self {
             output_path,
             results: Mutex::new(Vec::new()),
-            testsuite_name: "shotgun".to_string(),
+            testsuite_name: "offload".to_string(),
         }
     }
 
     /// Sets the test suite name in the XML output.
     ///
-    /// The default name is `"shotgun"`. Set this to your project name
+    /// The default name is `"offload"`. Set this to your project name
     /// for better identification in CI dashboards.
     ///
     /// # Arguments

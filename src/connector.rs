@@ -38,7 +38,7 @@
 //! # Example: Using ShellConnector
 //!
 //! ```no_run
-//! use shotgun::connector::{Connector, ShellConnector};
+//! use offload::connector::{Connector, ShellConnector};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let connector = ShellConnector::new()
@@ -57,8 +57,8 @@
 //! # Example: Streaming Output
 //!
 //! ```no_run
-//! use shotgun::connector::{Connector, ShellConnector};
-//! use shotgun::provider::OutputLine;
+//! use offload::connector::{Connector, ShellConnector};
+//! use offload::provider::OutputLine;
 //! use futures::StreamExt;
 //!
 //! # async fn example() -> anyhow::Result<()> {
@@ -97,7 +97,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 /// # Example
 ///
 /// ```
-/// use shotgun::connector::ExecResult;
+/// use offload::connector::ExecResult;
 ///
 /// let result = ExecResult {
 ///     exit_code: 0,
@@ -201,7 +201,7 @@ pub trait Connector: Send + Sync {
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::connector::{Connector, ShellConnector};
+/// use offload::connector::{Connector, ShellConnector};
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// // Basic usage
@@ -238,7 +238,7 @@ impl ShellConnector {
     /// # Example
     ///
     /// ```
-    /// use shotgun::connector::ShellConnector;
+    /// use offload::connector::ShellConnector;
     ///
     /// let connector = ShellConnector::new();
     /// ```
@@ -261,7 +261,7 @@ impl ShellConnector {
     /// # Example
     ///
     /// ```
-    /// use shotgun::connector::ShellConnector;
+    /// use offload::connector::ShellConnector;
     ///
     /// let connector = ShellConnector::new()
     ///     .with_working_dir("/home/user/project".into());
@@ -283,7 +283,7 @@ impl ShellConnector {
     /// # Example
     ///
     /// ```
-    /// use shotgun::connector::ShellConnector;
+    /// use offload::connector::ShellConnector;
     ///
     /// let connector = ShellConnector::new()
     ///     .with_timeout(600); // 10 minute timeout

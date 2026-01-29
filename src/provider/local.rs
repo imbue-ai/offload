@@ -34,9 +34,9 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use shotgun::provider::local::LocalProvider;
-//! use shotgun::provider::{SandboxProvider, Sandbox, Command};
-//! use shotgun::config::{LocalProviderConfig, SandboxConfig, SandboxResources};
+//! use offload::provider::local::LocalProvider;
+//! use offload::provider::{SandboxProvider, Sandbox, Command};
+//! use offload::config::{LocalProviderConfig, SandboxConfig, SandboxResources};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -76,7 +76,7 @@ use crate::config::{LocalProviderConfig, SandboxConfig};
 ///
 /// This is the simplest provider implementation. Each sandbox is just
 /// a logical grouping with a shared configuration - commands are run
-/// as child processes of the shotgun process itself.
+/// as child processes of the offload process itself.
 ///
 /// # Thread Safety
 ///
@@ -98,8 +98,8 @@ impl LocalProvider {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::local::LocalProvider;
-    /// use shotgun::config::LocalProviderConfig;
+    /// use offload::provider::local::LocalProvider;
+    /// use offload::config::LocalProviderConfig;
     ///
     /// // With defaults
     /// let provider = LocalProvider::new(LocalProviderConfig::default());

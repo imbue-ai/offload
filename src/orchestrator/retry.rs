@@ -25,7 +25,7 @@
 //! # Example
 //!
 //! ```
-//! use shotgun::orchestrator::RetryManager;
+//! use offload::orchestrator::RetryManager;
 //!
 //! let mut manager = RetryManager::new(3); // Up to 3 retries
 //!
@@ -104,7 +104,7 @@ impl RetryManager {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::RetryManager;
+    /// use offload::orchestrator::RetryManager;
     ///
     /// let manager = RetryManager::new(3); // Up to 3 retries
     /// ```

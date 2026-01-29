@@ -2,7 +2,7 @@
 //!
 //! This module defines the core abstractions for executing tests in isolated
 //! environments. The provider system is designed to be pluggable, allowing
-//! shotgun to work with any execution backend: local processes, or
+//! offload to work with any execution backend: local processes, or
 //! custom cloud providers.
 //!
 //! # Architecture
@@ -51,8 +51,8 @@
 //!
 //! ```no_run
 //! use async_trait::async_trait;
-//! use shotgun::provider::*;
-//! use shotgun::config::SandboxConfig;
+//! use offload::provider::*;
+//! use offload::config::SandboxConfig;
 //!
 //! struct MyCloudSandbox { /* ... */ }
 //!
@@ -110,7 +110,7 @@ pub type ProviderResult<T> = Result<T, ProviderError>;
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::provider::{ProviderError, ProviderResult};
+/// use offload::provider::{ProviderError, ProviderResult};
 ///
 /// fn handle_error(result: ProviderResult<()>) {
 ///     match result {
@@ -231,7 +231,7 @@ pub enum SandboxStatus {
 /// # Example
 ///
 /// ```
-/// use shotgun::provider::Command;
+/// use offload::provider::Command;
 ///
 /// let cmd = Command::new("pytest")
 ///     .arg("-v")
@@ -274,7 +274,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("python");
     /// ```
     pub fn new(program: impl Into<String>) -> Self {
@@ -292,7 +292,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("cargo").arg("test").arg("--release");
     /// ```
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
@@ -305,7 +305,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let tests = vec!["test_a", "test_b", "test_c"];
     /// let cmd = Command::new("pytest").args(tests);
     /// ```
@@ -323,7 +323,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("make").arg("test").working_dir("/project");
     /// ```
     pub fn working_dir(mut self, dir: impl Into<String>) -> Self {
@@ -338,7 +338,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("pytest")
     ///     .env("PYTHONPATH", "/app")
     ///     .env("DEBUG", "1");
@@ -355,7 +355,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("pytest").timeout(300); // 5 minute timeout
     /// ```
     pub fn timeout(mut self, secs: u64) -> Self {
@@ -370,7 +370,7 @@ impl Command {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::Command;
+    /// use offload::provider::Command;
     /// let cmd = Command::new("echo").arg("hello world");
     /// assert_eq!(cmd.to_shell_string(), "echo 'hello world'");
     /// ```
@@ -391,9 +391,9 @@ impl Command {
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::provider::{Command, ExecResult};
+/// use offload::provider::{Command, ExecResult};
 ///
-/// async fn run_test(sandbox: &impl shotgun::provider::Sandbox) {
+/// async fn run_test(sandbox: &impl offload::provider::Sandbox) {
 ///     let cmd = Command::new("pytest").arg("test_math.py");
 ///     let result = sandbox.exec(&cmd).await.unwrap();
 ///
@@ -429,7 +429,7 @@ impl ExecResult {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::ExecResult;
+    /// use offload::provider::ExecResult;
     /// use std::time::Duration;
     ///
     /// let result = ExecResult {
@@ -466,7 +466,7 @@ pub enum OutputLine {
 ///
 /// ```no_run
 /// use futures::StreamExt;
-/// use shotgun::provider::{Command, OutputLine, Sandbox};
+/// use offload::provider::{Command, OutputLine, Sandbox};
 ///
 /// async fn stream_output(sandbox: &impl Sandbox) {
 ///     let cmd = Command::new("pytest").arg("-v");
@@ -603,9 +603,9 @@ fn shell_escape(s: &str) -> String {
 ///
 /// ```no_run
 /// use std::sync::Arc;
-/// use shotgun::provider::{SandboxProvider, Sandbox};
-/// use shotgun::provider::local::LocalProvider;
-/// use shotgun::config::{SandboxConfig, SandboxResources};
+/// use offload::provider::{SandboxProvider, Sandbox};
+/// use offload::provider::local::LocalProvider;
+/// use offload::config::{SandboxConfig, SandboxResources};
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {

@@ -32,9 +32,9 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use shotgun::framework::cargo::CargoFramework;
-//! use shotgun::framework::TestFramework;
-//! use shotgun::config::CargoFrameworkConfig;
+//! use offload::framework::cargo::CargoFramework;
+//! use offload::framework::TestFramework;
+//! use offload::config::CargoFrameworkConfig;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -86,8 +86,8 @@ impl CargoFramework {
     /// # Example
     ///
     /// ```
-    /// use shotgun::framework::cargo::CargoFramework;
-    /// use shotgun::config::CargoFrameworkConfig;
+    /// use offload::framework::cargo::CargoFramework;
+    /// use offload::config::CargoFrameworkConfig;
     ///
     /// let framework = CargoFramework::new(CargoFrameworkConfig {
     ///     package: Some("my-lib".into()),

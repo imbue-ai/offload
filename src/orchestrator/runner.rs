@@ -15,10 +15,10 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use shotgun::orchestrator::TestRunner;
-//! use shotgun::provider::local::LocalSandbox;
-//! use shotgun::framework::pytest::PytestFramework;
-//! use shotgun::framework::TestRecord;
+//! use offload::orchestrator::TestRunner;
+//! use offload::provider::local::LocalSandbox;
+//! use offload::framework::pytest::PytestFramework;
+//! use offload::framework::TestRecord;
 //!
 //! async fn run_test_example(
 //!     sandbox: LocalSandbox,
@@ -59,8 +59,8 @@ use crate::provider::{OutputLine, Sandbox};
 ///
 /// ```
 /// use std::sync::Arc;
-/// use shotgun::orchestrator::OutputCallback;
-/// use shotgun::provider::OutputLine;
+/// use offload::orchestrator::OutputCallback;
+/// use offload::provider::OutputLine;
 ///
 /// let callback: OutputCallback = Arc::new(|test_id, line| {
 ///     match line {
@@ -120,10 +120,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// ```no_run
     /// use std::sync::Arc;
-    /// use shotgun::orchestrator::TestRunner;
-    /// use shotgun::provider::OutputLine;
-    /// # use shotgun::provider::local::LocalSandbox;
-    /// # use shotgun::framework::pytest::PytestFramework;
+    /// use offload::orchestrator::TestRunner;
+    /// use offload::provider::OutputLine;
+    /// # use offload::provider::local::LocalSandbox;
+    /// # use offload::framework::pytest::PytestFramework;
     /// # use std::time::Duration;
     ///
     /// # fn example(sandbox: LocalSandbox, framework: &PytestFramework) {

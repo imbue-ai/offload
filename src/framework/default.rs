@@ -89,8 +89,8 @@ impl DefaultFramework {
     /// # Example
     ///
     /// ```
-    /// use shotgun::framework::default::DefaultFramework;
-    /// use shotgun::config::DefaultFrameworkConfig;
+    /// use offload::framework::default::DefaultFramework;
+    /// use offload::config::DefaultFrameworkConfig;
     ///
     /// let framework = DefaultFramework::new(DefaultFrameworkConfig {
     ///     discover_command: "find tests -name '*.test.js' -exec basename {} \\;".into(),

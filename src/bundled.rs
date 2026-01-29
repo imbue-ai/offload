@@ -51,10 +51,10 @@ pub enum BundledError {
 /// Returns the cache directory for extracted scripts.
 ///
 /// Uses platform-appropriate cache locations:
-/// - macOS: `~/Library/Caches/shotgun/scripts`
-/// - Linux: `$XDG_CACHE_HOME/shotgun/scripts` or `~/.cache/shotgun/scripts`
-/// - Windows: `%LOCALAPPDATA%/shotgun/scripts`
-/// - Fallback: `/tmp/shotgun/scripts`
+/// - macOS: `~/Library/Caches/offload/scripts`
+/// - Linux: `$XDG_CACHE_HOME/offload/scripts` or `~/.cache/offload/scripts`
+/// - Windows: `%LOCALAPPDATA%/offload/scripts`
+/// - Fallback: `/tmp/offload/scripts`
 fn get_cache_dir() -> BundledResult<PathBuf> {
     let base_cache = if cfg!(target_os = "macos") {
         env::var("HOME")
@@ -76,7 +76,7 @@ fn get_cache_dir() -> BundledResult<PathBuf> {
 
     let cache_dir = base_cache
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("shotgun")
+        .join("offload")
         .join("scripts");
 
     fs::create_dir_all(&cache_dir).map_err(BundledError::CacheCreationFailed)?;
@@ -224,7 +224,7 @@ mod tests {
 
         assert!(!expanded.contains('@'));
         assert!(expanded.contains("modal_sandbox.py"));
-        assert!(expanded.contains("shotgun/scripts"));
+        assert!(expanded.contains("offload/scripts"));
     }
 
     #[test]
