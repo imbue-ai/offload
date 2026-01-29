@@ -44,7 +44,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
                 try:
                     sandbox.mkdir(remote_parent, parents=True)
                 except modal.exception.FilesystemExecutionError:
-                    pass  # Already exists
+                    pass
 
             # Copy file
             with open(local_path, "rb") as f:
@@ -136,7 +136,7 @@ def create_computronium(gi_path: str):
     print("Building image (cached after first run)...", file=sys.stderr)
     image = (
         modal.Image.debian_slim(python_version="3.11")
-        .run_commands("echo 'cache-bust-v4'")  # Force rebuild
+        .run_commands("echo 'cache-bust-v4'")
         .pip_install(
             # Core test deps
             "pytest",
@@ -216,7 +216,7 @@ def create_sculptor(gi_path: str | None):
     print("Building image with dependencies...", file=sys.stderr)
     image = (
         modal.Image.debian_slim(python_version="3.11")
-        .run_commands("echo 'cache-bust-v18'")  # Force rebuild
+        .run_commands("echo 'cache-bust-v18'")
         .apt_install(
             "git",
             "libgit2-dev",  # Required for pygit2
@@ -322,7 +322,7 @@ def create_sculptor(gi_path: str | None):
         )
         print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
         print(sandbox.object_id)
-    except Exception as e:
+    except modal.exception.Error as e:
         print(f"Error creating sandbox: {e}", file=sys.stderr)
         raise
 
@@ -396,7 +396,7 @@ def create_mngr(mngr_path: str | None):
             # ===== dev tools for ratchet tests =====
             "ruff>=0.12.0",
             "ty>=0.0.8",
-            "uv",  # Required for test_no_type_errors which runs "uv run ty check"
+            "uv",
             # ===== Additional deps for type checking apps/ =====
             "fastapi",
             "uvicorn",
@@ -432,8 +432,8 @@ def create_mngr(mngr_path: str | None):
             "pip install -e /app/libs/concurrency_group",
             "pip install -e /app/libs/flexmux",
             "pip install -e /app/apps/claude_web_view",
-            "pip install -e /app/apps/sculptor_desktop || true",  # May not exist
-            "pip install -e /app/apps/sculptor_web || true",  # May not exist
+            "pip install -e /app/apps/sculptor_desktop || true",
+            "pip install -e /app/apps/sculptor_web || true",
         )
         # Run uv sync to create proper venv for type checker tests
         .run_commands(
@@ -451,7 +451,7 @@ def create_mngr(mngr_path: str | None):
         )
         print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
         print(sandbox.object_id)
-    except Exception as e:
+    except modal.exception.Error as e:
         print(f"Error creating sandbox: {e}", file=sys.stderr)
         raise
 
