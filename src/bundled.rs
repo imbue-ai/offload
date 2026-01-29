@@ -4,23 +4,6 @@
 //! binary and extracts them on demand to a cache directory. Users can
 //! reference these scripts in their configuration using `@filename.ext` syntax.
 //!
-//! # Usage
-//!
-//! ```toml
-//! [provider]
-//! type = "default"
-//! create_command = "uv run @modal_sandbox.py create default"
-//! exec_command = "uv run @modal_sandbox.py exec {sandbox_id} -- {command}"
-//! destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
-//! ```
-//!
-//! The `@modal_sandbox.py` reference is expanded to the full cache path
-//! when commands are executed.
-//!
-//! # Supported Scripts
-//!
-//! - `modal_sandbox.py` - Modal cloud sandbox management
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -194,14 +177,6 @@ fn get_script_pattern() -> BundledResult<&'static Regex> {
 /// Returns an error if:
 /// - Script extraction fails
 /// - A referenced script is not bundled
-///
-/// # Example
-///
-/// ```ignore
-/// let cmd = "uv run @modal_sandbox.py create default";
-/// let expanded = expand_command(cmd)?;
-/// // expanded = "uv run /home/user/.cache/shotgun/scripts/modal_sandbox.py create default"
-/// ```
 pub fn expand_command(command: &str) -> BundledResult<String> {
     let pattern = get_script_pattern()?;
 
