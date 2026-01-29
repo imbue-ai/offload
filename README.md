@@ -1,4 +1,4 @@
-# shotgun
+# offload
 
 A flexible parallel test runner written in Rust with pluggable execution providers.
 
@@ -20,22 +20,22 @@ cargo install --path .
 
 1. Initialize a config file:
 ```bash
-shotgun init --provider process --framework pytest
+offload init --provider process --framework pytest
 ```
 
 2. Run tests:
 ```bash
-shotgun run
+offload run
 ```
 
 ## Configuration
 
-Create a `shotgun.toml` file in your project root.
+Create a `offload.toml` file in your project root.
 
 ### Core Settings
 
 ```toml
-[shotgun]
+[offload]
 max_parallel = 4          # Number of parallel sandboxes
 test_timeout_secs = 300   # Timeout per test
 retry_count = 2           # Retries for failed tests
@@ -83,24 +83,24 @@ The `{tests}` placeholder is replaced with discovered test names.
 
 ```bash
 # Run all tests
-shotgun run
+offload run
 
 # Run with more parallelism
-shotgun run --parallel 8
+offload run --parallel 8
 
 # Discover tests without running
-shotgun collect
+offload collect
 
 # Validate configuration
-shotgun validate
+offload validate
 
 # Initialize new config
-shotgun init --provider ssh --framework pytest
+offload init --provider ssh --framework pytest
 ```
 
 ## Example Configurations
 
-Example configurations have been provided in the root of this repo. See shotgut-*.toml for examples.
+Example configurations have been provided in the root of this repo. See offload-*.toml for examples.
 
 
 ### Testing
@@ -108,7 +108,7 @@ Example configurations have been provided in the root of this repo. See shotgut-
 Use the project to test itself with:
 
 ```
-cargo run -- -c shotgun-modal.toml run
+cargo run -- -c offload-modal.toml run
 ```
 
 (Requires valid Modal API key)
