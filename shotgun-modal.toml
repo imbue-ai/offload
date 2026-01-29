@@ -17,13 +17,15 @@ timeout_secs = 600
 type = "pytest"
 paths = ["examples/tests"]
 markers = "not slow"
-python = "python3"
+python = "uv"
+extra_args = ["run", "--with=pytest"]
 
 [groups.slow]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "slow"
-python = "python3"
+python = "uv"
+extra_args = ["run", "--with=pytest"]
 
 [report]
 output_dir = "test-results"
