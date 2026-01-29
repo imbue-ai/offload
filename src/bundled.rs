@@ -1,4 +1,4 @@
-//! Bundled scripts ("batteries") for common provider integrations.
+//! Bundled scripts for common provider integrations.
 //!
 //! This module embeds scripts (like `modal_sandbox.py`) directly into the
 //! binary and extracts them on demand to a cache directory. Users can
@@ -33,17 +33,17 @@ use regex::Regex;
 static SCRIPTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/scripts");
 
 /// Lazily initialized cache of extracted scripts.
-static SCRIPTS_CACHE: OnceLock<Result<PathBuf, BatteriesError>> = OnceLock::new();
+static SCRIPTS_CACHE: OnceLock<Result<PathBuf, BundledError>> = OnceLock::new();
 
 /// Lazily compiled regex for `@filename.ext` patterns.
-static SCRIPT_PATTERN: OnceLock<Result<Regex, BatteriesError>> = OnceLock::new();
+static SCRIPT_PATTERN: OnceLock<Result<Regex, BundledError>> = OnceLock::new();
 
-/// Result type for batteries operations.
-pub type BatteriesResult<T> = Result<T, BatteriesError>;
+/// Result type for bundled script operations.
+pub type BundledResult<T> = Result<T, BundledError>;
 
-/// Errors that can occur during batteries operations.
+/// Errors that can occur during bundled script operations.
 #[derive(Debug, thiserror::Error)]
-pub enum BatteriesError {
+pub enum BundledError {
     /// Failed to create cache directory.
     #[error("Failed to create cache directory: {0}")]
     CacheCreationFailed(std::io::Error),
@@ -61,7 +61,7 @@ pub enum BatteriesError {
     RegexCompilationFailed(regex::Error),
 
     /// Referenced script is not bundled.
-    #[error("Script not found in bundled batteries: {0}")]
+    #[error("Script not found in bundled scripts: {0}")]
     ScriptNotFound(String),
 }
 
@@ -72,7 +72,7 @@ pub enum BatteriesError {
 /// - Linux: `$XDG_CACHE_HOME/shotgun/scripts` or `~/.cache/shotgun/scripts`
 /// - Windows: `%LOCALAPPDATA%/shotgun/scripts`
 /// - Fallback: `/tmp/shotgun/scripts`
-fn get_cache_dir() -> BatteriesResult<PathBuf> {
+fn get_cache_dir() -> BundledResult<PathBuf> {
     let base_cache = if cfg!(target_os = "macos") {
         env::var("HOME")
             .ok()
@@ -96,7 +96,7 @@ fn get_cache_dir() -> BatteriesResult<PathBuf> {
         .join("shotgun")
         .join("scripts");
 
-    fs::create_dir_all(&cache_dir).map_err(BatteriesError::CacheCreationFailed)?;
+    fs::create_dir_all(&cache_dir).map_err(BundledError::CacheCreationFailed)?;
 
     Ok(cache_dir)
 }
@@ -104,7 +104,7 @@ fn get_cache_dir() -> BatteriesResult<PathBuf> {
 /// Extracts all bundled scripts to the cache directory (once).
 ///
 /// This is called lazily on first use and cached thereafter.
-fn ensure_scripts_extracted() -> BatteriesResult<PathBuf> {
+fn ensure_scripts_extracted() -> BundledResult<PathBuf> {
     let result = SCRIPTS_CACHE.get_or_init(|| {
         let cache_dir = get_cache_dir()?;
 
@@ -121,11 +121,11 @@ fn ensure_scripts_extracted() -> BatteriesResult<PathBuf> {
 
             // Create parent directories if needed
             if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent).map_err(BatteriesError::CacheCreationFailed)?;
+                fs::create_dir_all(parent).map_err(BundledError::CacheCreationFailed)?;
             }
 
             fs::write(&target_path, file.contents()).map_err(|e| {
-                BatteriesError::ExtractionFailed {
+                BundledError::ExtractionFailed {
                     name: file.path().display().to_string(),
                     source: e,
                 }
@@ -136,14 +136,14 @@ fn ensure_scripts_extracted() -> BatteriesResult<PathBuf> {
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = fs::metadata(&target_path)
-                    .map_err(|e| BatteriesError::ExtractionFailed {
+                    .map_err(|e| BundledError::ExtractionFailed {
                         name: file.path().display().to_string(),
                         source: e,
                     })?
                     .permissions();
                 perms.set_mode(0o755);
                 fs::set_permissions(&target_path, perms).map_err(|e| {
-                    BatteriesError::ExtractionFailed {
+                    BundledError::ExtractionFailed {
                         name: file.path().display().to_string(),
                         source: e,
                     }
@@ -157,7 +157,7 @@ fn ensure_scripts_extracted() -> BatteriesResult<PathBuf> {
     // Clone the result since we can't move out of the OnceLock
     match result {
         Ok(path) => Ok(path.clone()),
-        Err(e) => Err(BatteriesError::ExtractionFailed {
+        Err(e) => Err(BundledError::ExtractionFailed {
             name: "cache initialization".to_string(),
             source: std::io::Error::other(e.to_string()),
         }),
@@ -165,16 +165,16 @@ fn ensure_scripts_extracted() -> BatteriesResult<PathBuf> {
 }
 
 /// Returns the compiled regex for script patterns.
-fn get_script_pattern() -> BatteriesResult<&'static Regex> {
+fn get_script_pattern() -> BundledResult<&'static Regex> {
     let result = SCRIPT_PATTERN.get_or_init(|| {
-        Regex::new(r"@([\w\-]+\.\w+)").map_err(BatteriesError::RegexCompilationFailed)
+        Regex::new(r"@([\w\-]+\.\w+)").map_err(BundledError::RegexCompilationFailed)
     });
 
     match result {
         Ok(regex) => Ok(regex),
-        Err(e) => Err(BatteriesError::RegexCompilationFailed(
-            regex::Error::Syntax(e.to_string()),
-        )),
+        Err(e) => Err(BundledError::RegexCompilationFailed(regex::Error::Syntax(
+            e.to_string(),
+        ))),
     }
 }
 
@@ -202,7 +202,7 @@ fn get_script_pattern() -> BatteriesResult<&'static Regex> {
 /// let expanded = expand_command(cmd)?;
 /// // expanded = "uv run /home/user/.cache/shotgun/scripts/modal_sandbox.py create default"
 /// ```
-pub fn expand_command(command: &str) -> BatteriesResult<String> {
+pub fn expand_command(command: &str) -> BundledResult<String> {
     let pattern = get_script_pattern()?;
 
     // Check if there are any matches first
@@ -221,7 +221,7 @@ pub fn expand_command(command: &str) -> BatteriesResult<String> {
 
         // Verify the script exists in our bundled set
         if SCRIPTS_DIR.get_file(script_name).is_none() {
-            return Err(BatteriesError::ScriptNotFound(script_name.to_string()));
+            return Err(BundledError::ScriptNotFound(script_name.to_string()));
         }
 
         let full_match = &cap[0]; // e.g., "@modal_sandbox.py"
@@ -271,7 +271,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(BatteriesError::ScriptNotFound(name)) => {
+            Err(BundledError::ScriptNotFound(name)) => {
                 assert_eq!(name, "nonexistent.py");
             }
             _ => panic!("Expected ScriptNotFound error"),

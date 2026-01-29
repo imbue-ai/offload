@@ -109,7 +109,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::batteries;
+use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
 use futures::stream::StreamExt;
@@ -353,7 +353,7 @@ impl Default for ShellConnector {
 impl Connector for ShellConnector {
     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
         // Expand @filename.ext references to full paths
-        let expanded_command = batteries::expand_command(command)
+        let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
         debug!("Running: {}", expanded_command);
@@ -384,7 +384,7 @@ impl Connector for ShellConnector {
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
         // Expand @filename.ext references to full paths
-        let expanded_command = batteries::expand_command(command)
+        let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
         debug!("Streaming: {}", expanded_command);
