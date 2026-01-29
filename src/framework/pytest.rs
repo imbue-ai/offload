@@ -86,16 +86,16 @@ impl TestFramework for PytestFramework {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
 
+        // Add extra args
+        for arg in &self.config.extra_args {
+            cmd.arg(arg);
+        }
+
         cmd.arg("-m").arg("pytest").arg("--collect-only").arg("-q");
 
         // Add marker filter if specified
         if let Some(markers) = &self.config.markers {
             cmd.arg("-m").arg(markers);
-        }
-
-        // Add extra args
-        for arg in &self.config.extra_args {
-            cmd.arg(arg);
         }
 
         // Add paths to search
@@ -145,7 +145,13 @@ impl TestFramework for PytestFramework {
     }
 
     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
-        let mut cmd = Command::new(&self.config.python)
+        let mut cmd = Command::new(&self.config.python);
+
+        for arg in &self.config.extra_args {
+            cmd = cmd.arg(arg);
+        }
+
+        cmd = cmd
             .arg("-m")
             .arg("pytest")
             .arg("-v")

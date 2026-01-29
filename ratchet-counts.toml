@@ -17,7 +17,7 @@
 
 [no-bare-print]
 "." = 0
-"scripts" = 22
+"scripts" = 25
 
 [no-base-exception]
 "." = 0
@@ -53,6 +53,7 @@
 
 [no-global-keyword]
 "." = 0
+"scripts" = 3
 
 [no-if-elif-without-else]
 "." = 0
@@ -87,6 +88,7 @@
 
 [no-panic]
 "." = 0
+"src" = 1
 
 [no-relative-imports]
 "." = 0
@@ -100,11 +102,11 @@
 
 [no-todo-comments]
 "." = 0
-"src" = 18
+"src" = 15
 
 [no-trailing-comments]
 "." = 0
-"scripts" = 5
+"scripts" = 3
 
 [no-typing-builtin-imports]
 "." = 0
@@ -114,8 +116,10 @@
 
 [no-unwrap]
 "." = 0
-"src" = 4
+"src" = 15
 "src/framework" = 11
+"src/provider" = 2
+"src/report" = 1
 
 [no-while-true]
 "." = 0

@@ -8,22 +8,24 @@ stream_output = true
 
 [provider]
 type = "default"
-create_command = "uv run scripts/modal_sandbox.py create default"
-exec_command = "uv run scripts/modal_sandbox.py exec {sandbox_id} {command}"
-destroy_command = "uv run scripts/modal_sandbox.py destroy {sandbox_id}"
+create_command = "uv run @modal_sandbox.py create default"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 timeout_secs = 600
 
 [groups.unit]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "not slow"
-python = "python3"
+python = "uv"
+extra_args = ["run", "--with=pytest"]
 
 [groups.slow]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "slow"
-python = "python3"
+python = "uv"
+extra_args = ["run", "--with=pytest"]
 
 [report]
 output_dir = "test-results"

@@ -55,6 +55,7 @@ shell-words = "1"
 regex = "1"
 tar = "0.4"
 tokio-stream = { version = "0.1", features = ["io-util"] }
+include_dir = "0.7.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
