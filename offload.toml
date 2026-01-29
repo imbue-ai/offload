@@ -7,7 +7,7 @@ test_timeout_secs = 300
 retry_count = 2
 
 [provider]
-type = "process"
+type = "local"
 working_dir = "."
 
 [groups.all]
