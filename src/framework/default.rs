@@ -144,6 +144,9 @@ impl TestFramework for DefaultFramework {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
+        println!("{}", stdout);
+        println!("{}", stderr);
+
         if !output.status.success() {
             return Err(FrameworkError::DiscoveryFailed(format!(
                 "Discovery command failed: {}",

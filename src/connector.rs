@@ -74,33 +74,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! # Implementing a Custom Connector
-//!
-//! ```no_run
-//! use async_trait::async_trait;
-//! use shotgun::connector::{Connector, ExecResult};
-//! use shotgun::provider::{OutputStream, ProviderResult};
-//!
-//! struct DefaultConnector {
-//!     endpoint: String,
-//!     api_key: String,
-//! }
-//!
-//! #[async_trait]
-//! impl Connector for DefaultConnector {
-//!     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
-//!         // Execute via API...
-//!         # todo!()
-//!     }
-//!
-//!     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-//!         // Stream output via API...
-//!         # todo!()
-//!     }
-//!
-//! }
-//! ```
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -167,28 +140,6 @@ pub struct ExecResult {
 /// - Handle timeouts appropriately in your implementation
 /// - Stream implementations should interleave stdout/stderr as they arrive
 ///
-/// # Example
-///
-/// ```no_run
-/// use async_trait::async_trait;
-/// use shotgun::connector::{Connector, ExecResult};
-/// use shotgun::provider::{OutputStream, ProviderResult};
-///
-/// struct MyConnector;
-///
-/// #[async_trait]
-/// impl Connector for MyConnector {
-///     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
-///         // Execute command and capture output...
-///         # todo!()
-///     }
-///
-///     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-///         // Execute command and stream output...
-///         # todo!()
-///     }
-/// }
-/// ```
 #[async_trait]
 pub trait Connector: Send + Sync {
     /// Executes a command and returns the buffered result.

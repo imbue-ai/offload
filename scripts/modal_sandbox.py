@@ -43,7 +43,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
             if remote_parent and remote_parent != remote_dir:
                 try:
                     sandbox.mkdir(remote_parent, parents=True)
-                except Exception:
+                except modal.exception.FilesystemExecutionError:
                     pass  # Already exists
 
             # Copy file
