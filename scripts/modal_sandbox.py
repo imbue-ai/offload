@@ -6,7 +6,7 @@
 #     "click>=8.0",
 # ]
 # ///
-"""Modal sandbox management for shotgun.
+"""Modal sandbox management for offload.
 
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 """
@@ -55,7 +55,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
 
 @click.group()
 def cli():
-    """Modal sandbox management for shotgun."""
+    """Modal sandbox management for offload."""
     pass
 
 
@@ -68,7 +68,7 @@ def create():
 @create.command("default")
 def create_default():
     """Create a basic pytest sandbox with examples/tests copied."""
-    app = modal.App.lookup("shotgun-sandbox", create_if_missing=True)
+    app = modal.App.lookup("offload-sandbox", create_if_missing=True)
     image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
 
     sandbox = modal.Sandbox.create(
@@ -91,7 +91,7 @@ def create_default():
 @create.command("rust")
 def create_rust():
     """Create a Rust sandbox with cargo toolchain."""
-    app = modal.App.lookup("shotgun-rust-sandbox", create_if_missing=True)
+    app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
 
     image = (
         modal.Image.debian_slim()
@@ -131,7 +131,7 @@ def create_rust():
 def create_computronium(gi_path: str):
     """Create a computronium test sandbox."""
     print("Creating Modal app...", file=sys.stderr)
-    app = modal.App.lookup("shotgun-computronium", create_if_missing=True)
+    app = modal.App.lookup("offload-computronium", create_if_missing=True)
 
     print("Building image (cached after first run)...", file=sys.stderr)
     image = (
@@ -211,7 +211,7 @@ def create_sculptor(gi_path: str | None):
 
     print(f"Using GI_PATH: {gi_path}", file=sys.stderr)
     print("Creating Modal app...", file=sys.stderr)
-    app = modal.App.lookup("shotgun-sculptor", create_if_missing=True)
+    app = modal.App.lookup("offload-sculptor", create_if_missing=True)
 
     print("Building image with dependencies...", file=sys.stderr)
     image = (
@@ -334,7 +334,7 @@ def create_mngr():
 
     mngr_path = os.getcwd()
     print(f"Using MNGR_PATH: {mngr_path}", file=sys.stderr)
-    app = modal.App.lookup("shotgun-mngr", create_if_missing=True)
+    app = modal.App.lookup("offload-mngr", create_if_missing=True)
 
     print("Building image with dependencies...", file=sys.stderr)
     image = (
@@ -492,7 +492,7 @@ def exec_command(sandbox_id: str, command: str):
 
 
 # App and function for the 'run' subcommand
-run_app = modal.App("shotgun-test")
+run_app = modal.App("offload-test")
 run_image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
 
 
@@ -520,7 +520,7 @@ def run(command: str):
     with run_app.run():
         result = _run_test.remote(command)
 
-    # Output JSON for shotgun to parse
+    # Output JSON for offload to parse
     print(json.dumps(result))
     sys.exit(result["exit_code"])
 
