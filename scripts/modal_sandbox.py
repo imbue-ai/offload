@@ -66,10 +66,15 @@ def create():
 
 
 @create.command("default")
-def create_default():
+@click.option("--dockerfile", default=None, help="Path to Dockerfile for custom image")
+def create_default(dockerfile: str | None):
     """Create a basic pytest sandbox with examples/tests copied."""
     app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-    image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+
+    if dockerfile:
+        image = modal.Image.from_dockerfile(dockerfile)
+    else:
+        image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
 
     sandbox = modal.Sandbox.create(
         app=app,
@@ -89,23 +94,27 @@ def create_default():
 
 
 @create.command("rust")
-def create_rust():
+@click.option("--dockerfile", default=None, help="Path to Dockerfile for custom image")
+def create_rust(dockerfile: str | None):
     """Create a Rust sandbox with cargo toolchain."""
     app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
 
-    image = (
-        modal.Image.debian_slim()
-        .apt_install("curl", "build-essential")
-        .run_commands(
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-            "echo 'source $HOME/.cargo/env' >> ~/.bashrc",
+    if dockerfile:
+        image = modal.Image.from_dockerfile(dockerfile)
+    else:
+        image = (
+            modal.Image.debian_slim()
+            .apt_install("curl", "build-essential")
+            .run_commands(
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+                "echo 'source $HOME/.cargo/env' >> ~/.bashrc",
+            )
+            .env(
+                {
+                    "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                }
+            )
         )
-        .env(
-            {
-                "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            }
-        )
-    )
 
     sandbox = modal.Sandbox.create(
         app=app,
