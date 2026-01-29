@@ -63,7 +63,7 @@
 //!     let framework = PytestFramework::new(Default::default());
 //!     let reporter = ConsoleReporter::new(true);
 //!
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+//!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run(&sandbox_pool).await?;
 //!
@@ -225,7 +225,7 @@ impl RunResult {
 ///         .with_reporter(JUnitReporter::new("results.xml".into()));
 ///
 ///     // Create orchestrator and run
-///     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+///     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
 ///     let result = orchestrator.run(&sandbox_pool).await?;
 ///

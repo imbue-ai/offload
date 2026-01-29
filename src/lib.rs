@@ -79,7 +79,7 @@
 //!         .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
 //!
 //!     // Run tests
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+//!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run(&sandbox_pool).await?;
 //!
