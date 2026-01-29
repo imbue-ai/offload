@@ -328,22 +328,15 @@ def create_sculptor(gi_path: str | None):
 
 
 @create.command("mngr")
-@click.option(
-    "--mngr-path",
-    envvar="MNGR_PATH",
-    default=None,
-    help="Path to mngr repository",
-)
 def create_mngr(mngr_path: str | None):
     """Create a mngr test sandbox."""
     modal.enable_output()
 
-    # Default to the directory containing this script's grandparent
+    # Default to the current working director
     if mngr_path is None:
-        mngr_path = str(Path(__file__).parent.parent.parent / "mngr")
+        mngr_path = os.getcwd()
 
     print(f"Using MNGR_PATH: {mngr_path}", file=sys.stderr)
-    print("Creating Modal app...", file=sys.stderr)
     app = modal.App.lookup("shotgun-mngr", create_if_missing=True)
 
     print("Building image with dependencies...", file=sys.stderr)
@@ -403,18 +396,30 @@ def create_mngr(mngr_path: str | None):
             "flask",
         )
         # Set PYTHONPATH and other env vars
-        .env({
-            "PYTHONPATH": "/app/libs/imbue_common:/app/libs/mngr:/app/libs/mngr_opencode:/app/libs/concurrency_group:/app/libs/flexmux:/app/apps/claude_web_view:/app/apps/sculptor_desktop:/app/apps/sculptor_web",
-            "EDITOR": "cat",  # Simple editor for tests that check --edit-message flag validation
-            "VISUAL": "cat",
-            # Unset HISTFILE so test_unset_vars_applied_during_agent_start passes
-            # (the test expects HISTFILE to be unset, but debian bash sets it by default)
-            "HISTFILE": "",
-        })
+        .env(
+            {
+                "PYTHONPATH": "/app/libs/imbue_common:/app/libs/mngr:/app/libs/mngr_opencode:/app/libs/concurrency_group:/app/libs/flexmux:/app/apps/claude_web_view:/app/apps/sculptor_desktop:/app/apps/sculptor_web",
+                "EDITOR": "cat",  # Simple editor for tests that check --edit-message flag validation
+                "VISUAL": "cat",
+                # Unset HISTFILE so test_unset_vars_applied_during_agent_start passes
+                # (the test expects HISTFILE to be unset, but debian bash sets it by default)
+                "HISTFILE": "",
+            }
+        )
         # Mirror the exact source structure so test paths match
         # Using copy=True so we can run git init after adding files
-        .add_local_dir(f"{mngr_path}/libs", "/app/libs", ignore=["*.pyc", "__pycache__", ".venv", "venv", "node_modules"], copy=True)
-        .add_local_dir(f"{mngr_path}/apps", "/app/apps", ignore=["*.pyc", "__pycache__", ".venv", "venv", "node_modules"], copy=True)
+        .add_local_dir(
+            f"{mngr_path}/libs",
+            "/app/libs",
+            ignore=["*.pyc", "__pycache__", ".venv", "venv", "node_modules"],
+            copy=True,
+        )
+        .add_local_dir(
+            f"{mngr_path}/apps",
+            "/app/apps",
+            ignore=["*.pyc", "__pycache__", ".venv", "venv", "node_modules"],
+            copy=True,
+        )
         # Include root conftest.py for test fixtures
         .add_local_file(f"{mngr_path}/conftest.py", "/app/conftest.py", copy=True)
         # Include pyproject.toml for pytest configuration
@@ -436,9 +441,7 @@ def create_mngr(mngr_path: str | None):
             "pip install -e /app/apps/sculptor_web || true",
         )
         # Run uv sync to create proper venv for type checker tests
-        .run_commands(
-            "cd /app && uv sync --all-packages"
-        )
+        .run_commands("cd /app && uv sync --all-packages")
     )
 
     print("Creating sandbox...", file=sys.stderr)
