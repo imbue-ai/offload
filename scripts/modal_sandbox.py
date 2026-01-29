@@ -328,14 +328,11 @@ def create_sculptor(gi_path: str | None):
 
 
 @create.command("mngr")
-def create_mngr(mngr_path: str | None):
+def create_mngr():
     """Create a mngr test sandbox."""
     modal.enable_output()
 
-    # Default to the current working director
-    if mngr_path is None:
-        mngr_path = os.getcwd()
-
+    mngr_path = os.getcwd()
     print(f"Using MNGR_PATH: {mngr_path}", file=sys.stderr)
     app = modal.App.lookup("shotgun-mngr", create_if_missing=True)
 
