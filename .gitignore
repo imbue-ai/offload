@@ -31,7 +31,7 @@ id_rsa*
 id_ed25519*
 
 # Local config overrides
-shotgun.local.toml
+offload.local.toml
 
 # Python
 __pycache__/

@@ -1,6 +1,6 @@
-//! Configuration loading and schema definitions for shotgun.
+//! Configuration loading and schema definitions for offload.
 //!
-//! This module provides types and functions for loading shotgun configuration
+//! This module provides types and functions for loading offload configuration
 //! from TOML files or strings. The configuration schema defines all settings
 //! for providers, test frameworks, and reporting.
 //!
@@ -14,10 +14,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Loads shotgun configuration from a TOML file.
+/// Loads offload configuration from a TOML file.
 ///
 /// This is the primary way to load configuration. The file must be valid TOML
-/// and conform to the shotgun configuration schema.
+/// and conform to the offload configuration schema.
 ///
 /// # Arguments
 ///
@@ -33,11 +33,11 @@ use anyhow::{Context, Result};
 /// # Example
 ///
 /// ```no_run
-/// use shotgun::config::load_config;
+/// use offload::config::load_config;
 /// use std::path::Path;
 ///
-/// let config = load_config(Path::new("shotgun.toml"))?;
-/// println!("Max parallel: {}", config.shotgun.max_parallel);
+/// let config = load_config(Path::new("offload.toml"))?;
+/// println!("Max parallel: {}", config.offload.max_parallel);
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn load_config(path: &Path) -> Result<Config> {
@@ -50,7 +50,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// Loads shotgun configuration from a TOML string.
+/// Loads offload configuration from a TOML string.
 ///
 /// Useful for testing, embedding configuration, or generating configuration
 /// programmatically.
@@ -68,10 +68,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// # Example
 ///
 /// ```
-/// use shotgun::config::load_config_str;
+/// use offload::config::load_config_str;
 ///
 /// let config = load_config_str(r#"
-///     [shotgun]
+///     [offload]
 ///     max_parallel = 4
 ///
 ///     [provider]
@@ -81,7 +81,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 ///     type = "pytest"
 /// "#)?;
 ///
-/// assert_eq!(config.shotgun.max_parallel, 4);
+/// assert_eq!(config.offload.max_parallel, 4);
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn load_config_str(content: &str) -> Result<Config> {

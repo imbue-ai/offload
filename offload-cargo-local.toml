@@ -1,6 +1,6 @@
-# shotgun configuration for running cargo tests locally
+# offload configuration for running cargo tests locally
 
-[shotgun]
+[offload]
 max_parallel = 2
 test_timeout_secs = 300
 retry_count = 0

@@ -108,8 +108,8 @@ impl DefaultProvider {
     /// # Example
     ///
     /// ```
-    /// use shotgun::provider::default::DefaultProvider;
-    /// use shotgun::config::DefaultProviderConfig;
+    /// use offload::provider::default::DefaultProvider;
+    /// use offload::config::DefaultProviderConfig;
     ///
     /// let config = DefaultProviderConfig {
     ///     create_command: "uuidgen".to_string(),

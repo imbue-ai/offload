@@ -1,7 +1,7 @@
-# shotgun configuration file
+# offload configuration file
 # Example configuration using the process provider with pytest
 
-[shotgun]
+[offload]
 max_parallel = 4
 test_timeout_secs = 300
 retry_count = 2

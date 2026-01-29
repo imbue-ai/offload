@@ -1,11 +1,11 @@
-//! # shotgun-rs
+//! # offload-rs
 //!
 //! A flexible, high-performance parallel test runner that executes tests across
 //! multiple isolated sandboxes with pluggable execution providers.
 //!
 //! ## Overview
 //!
-//! Shotgun enables distributed test execution across local processes, or custom
+//! Offload enables distributed test execution across local processes, or custom
 //! cloud providers (like Modal). It provides:
 //!
 //! - **Parallel execution** across multiple isolated sandbox environments
@@ -56,16 +56,16 @@
 //!
 //! ```no_run
 //! use tokio::sync::Mutex;
-//! use shotgun::config::load_config;
-//! use shotgun::orchestrator::{Orchestrator, SandboxPool};
-//! use shotgun::provider::local::LocalProvider;
-//! use shotgun::framework::pytest::PytestFramework;
-//! use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
+//! use offload::config::load_config;
+//! use offload::orchestrator::{Orchestrator, SandboxPool};
+//! use offload::provider::local::LocalProvider;
+//! use offload::framework::pytest::PytestFramework;
+//! use offload::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     // Load configuration from TOML file
-//!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+//!     let config = load_config(std::path::Path::new("offload.toml"))?;
 //!
 //!     // Create provider (runs tests as local processes)
 //!     let provider = LocalProvider::new(Default::default());
@@ -89,7 +89,7 @@
 //!
 //! ## Configuration
 //!
-//! Shotgun is configured via TOML files. See [`config`] module for schema details.
+//! Offload is configured via TOML files. See [`config`] module for schema details.
 //!
 //! ## Custom Providers
 //!
@@ -111,7 +111,7 @@ pub mod provider;
 pub mod report;
 
 // Re-export commonly used types for convenience.
-// These are the types most users will need when setting up shotgun.
+// These are the types most users will need when setting up offload.
 
 pub use config::{Config, load_config};
 pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};

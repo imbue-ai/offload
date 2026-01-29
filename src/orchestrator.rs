@@ -49,15 +49,15 @@
 //!
 //! ```no_run
 //! use tokio::sync::Mutex;
-//! use shotgun::orchestrator::{Orchestrator, SandboxPool};
-//! use shotgun::config::load_config;
-//! use shotgun::provider::local::LocalProvider;
-//! use shotgun::framework::pytest::PytestFramework;
-//! use shotgun::report::ConsoleReporter;
+//! use offload::orchestrator::{Orchestrator, SandboxPool};
+//! use offload::config::load_config;
+//! use offload::provider::local::LocalProvider;
+//! use offload::framework::pytest::PytestFramework;
+//! use offload::report::ConsoleReporter;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+//!     let config = load_config(std::path::Path::new("offload.toml"))?;
 //!
 //!     let provider = LocalProvider::new(Default::default());
 //!     let framework = PytestFramework::new(Default::default());
@@ -155,7 +155,7 @@ impl RunResult {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::RunResult;
+    /// use offload::orchestrator::RunResult;
     /// use std::time::Duration;
     ///
     /// let result = RunResult {
@@ -180,7 +180,7 @@ impl RunResult {
         if self.failed > 0 || self.not_run > 0 {
             1
         } else if self.flaky > 0 {
-            2 // 2 is the convention that shotgun has decided to store for flakiness
+            2 // 2 is the convention that offload has decided to store for flakiness
         } else {
             0
         }
@@ -207,15 +207,15 @@ impl RunResult {
 ///
 /// ```no_run
 /// use tokio::sync::Mutex;
-/// use shotgun::orchestrator::{Orchestrator, SandboxPool};
-/// use shotgun::config::load_config;
-/// use shotgun::provider::local::LocalProvider;
-/// use shotgun::framework::pytest::PytestFramework;
-/// use shotgun::report::{ConsoleReporter, MultiReporter, JUnitReporter};
+/// use offload::orchestrator::{Orchestrator, SandboxPool};
+/// use offload::config::load_config;
+/// use offload::provider::local::LocalProvider;
+/// use offload::framework::pytest::PytestFramework;
+/// use offload::report::{ConsoleReporter, MultiReporter, JUnitReporter};
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
-///     let config = load_config(std::path::Path::new("shotgun.toml"))?;
+///     let config = load_config(std::path::Path::new("offload.toml"))?;
 ///
 ///     // Set up components
 ///     let provider = LocalProvider::new(Default::default());
@@ -335,7 +335,7 @@ where
         let skipped_count = tests.len() - tests_to_run.len();
 
         // Schedule tests into batches
-        let scheduler = Scheduler::new(self.config.shotgun.max_parallel);
+        let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
         info!(
@@ -346,7 +346,7 @@ where
 
         // Run tests in parallel
         let results = Mutex::new(Vec::new());
-        let mut retry_manager = RetryManager::new(self.config.shotgun.retry_count);
+        let mut retry_manager = RetryManager::new(self.config.offload.retry_count);
 
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
@@ -365,15 +365,15 @@ where
                             s
                         } else {
                             let sandbox_config = SandboxConfig {
-                                id: format!("shotgun-{}-{}", uuid::Uuid::new_v4(), batch_idx),
+                                id: format!("offload-{}-{}", uuid::Uuid::new_v4(), batch_idx),
                                 working_dir: config
-                                    .shotgun
+                                    .offload
                                     .working_dir
                                     .as_ref()
                                     .map(|p| p.to_string_lossy().to_string()),
                                 env: Vec::new(),
                                 resources: SandboxResources {
-                                    timeout_secs: Some(config.shotgun.test_timeout_secs),
+                                    timeout_secs: Some(config.offload.test_timeout_secs),
                                 },
                             };
                             match provider.create_sandbox(&sandbox_config).await {
@@ -389,11 +389,11 @@ where
                     let mut runner = TestRunner::new(
                         sandbox,
                         framework,
-                        Duration::from_secs(config.shotgun.test_timeout_secs),
+                        Duration::from_secs(config.offload.test_timeout_secs),
                     );
 
                     // Enable streaming if configured
-                    if config.shotgun.stream_output {
+                    if config.offload.stream_output {
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
@@ -450,7 +450,7 @@ where
 
         // Retry failed tests
         let mut flaky_count = 0;
-        if !failed_test_ids.is_empty() && self.config.shotgun.retry_count > 0 {
+        if !failed_test_ids.is_empty() && self.config.offload.retry_count > 0 {
             info!("Retrying {} failed tests...", failed_test_ids.len());
 
             // Get Test references for failed tests from the original records
@@ -546,7 +546,7 @@ where
         let retry_manager = Mutex::new(retry_manager);
 
         // Run retries for each attempt
-        for attempt in 0..self.config.shotgun.retry_count {
+        for attempt in 0..self.config.offload.retry_count {
             // Get tests that still need retrying (haven't passed yet)
             let still_failing: Vec<_> = {
                 let mgr = retry_manager.lock().await;
@@ -590,7 +590,7 @@ where
                         let mut runner = TestRunner::new(
                             sandbox,
                             framework,
-                            Duration::from_secs(config.shotgun.test_timeout_secs),
+                            Duration::from_secs(config.offload.test_timeout_secs),
                         );
 
                         for test in batch {

@@ -1,6 +1,6 @@
-# shotgun configuration for Modal execution
+# offload configuration for Modal execution
 
-[shotgun]
+[offload]
 max_parallel = 4
 test_timeout_secs = 600
 retry_count = 2

@@ -42,8 +42,8 @@
 //!
 //! ```no_run
 //! use async_trait::async_trait;
-//! use shotgun::framework::*;
-//! use shotgun::provider::{Command, ExecResult};
+//! use offload::framework::*;
+//! use offload::provider::{Command, ExecResult};
 //! use std::path::PathBuf;
 //!
 //! struct MyFramework;
@@ -133,7 +133,7 @@ pub enum FrameworkError {
 /// # Example
 ///
 /// ```
-/// use shotgun::framework::TestRecord;
+/// use offload::framework::TestRecord;
 ///
 /// let record = TestRecord::new("tests/test_math.py::test_add");
 /// let test = record.test();
@@ -477,7 +477,7 @@ impl TestOutcome {
     /// # Example
     ///
     /// ```
-    /// use shotgun::framework::TestOutcome;
+    /// use offload::framework::TestOutcome;
     ///
     /// assert!(TestOutcome::Passed.is_success());
     /// assert!(TestOutcome::Skipped.is_success());
@@ -512,8 +512,8 @@ impl TestOutcome {
 ///
 /// ```no_run
 /// use async_trait::async_trait;
-/// use shotgun::framework::*;
-/// use shotgun::provider::{Command, ExecResult};
+/// use offload::framework::*;
+/// use offload::provider::{Command, ExecResult};
 /// use std::path::PathBuf;
 ///
 /// struct JestFramework { config_path: PathBuf }

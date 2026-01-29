@@ -1,4 +1,4 @@
-//! shotgun CLI - Flexible parallel test runner.
+//! offload CLI - Flexible parallel test runner.
 
 use core::fmt;
 use std::path::{Path, PathBuf};
@@ -11,21 +11,21 @@ use tracing_subscriber::FmtSubscriber;
 
 use tokio::sync::Mutex;
 
-use shotgun::config::{self, FrameworkConfig, ProviderConfig};
-use shotgun::framework::{
+use offload::config::{self, FrameworkConfig, ProviderConfig};
+use offload::framework::{
     TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
 };
-use shotgun::orchestrator::{Orchestrator, SandboxPool};
-use shotgun::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
-use shotgun::report::{ConsoleReporter, JUnitReporter, MultiReporter};
+use offload::orchestrator::{Orchestrator, SandboxPool};
+use offload::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
+use offload::report::{ConsoleReporter, JUnitReporter, MultiReporter};
 
 #[derive(Parser)]
-#[command(name = "shotgun")]
+#[command(name = "offload")]
 #[command(about = "Flexible parallel test runner", long_about = None)]
 #[command(version)]
 struct Cli {
     /// Configuration file path
-    #[arg(short, long, default_value = "shotgun.toml")]
+    #[arg(short, long, default_value = "offload.toml")]
     config: PathBuf,
 
     /// Verbose output
@@ -119,7 +119,7 @@ async fn run_tests(
 
     // Apply overrides
     if let Some(parallel) = parallel_override {
-        config.shotgun.max_parallel = parallel;
+        config.offload.max_parallel = parallel;
     }
 
     info!("Loaded configuration from {}", config_path.display());
@@ -339,9 +339,9 @@ fn validate_config(config_path: &Path) -> Result<()> {
             println!("Configuration is valid!");
             println!();
             println!("Settings:");
-            println!("  Max parallel: {}", config.shotgun.max_parallel);
-            println!("  Test timeout: {}s", config.shotgun.test_timeout_secs);
-            println!("  Retry count: {}", config.shotgun.retry_count);
+            println!("  Max parallel: {}", config.offload.max_parallel);
+            println!("  Test timeout: {}s", config.offload.test_timeout_secs);
+            println!("  Retry count: {}", config.offload.retry_count);
 
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
@@ -421,9 +421,9 @@ run_command = "echo Running {tests}""#
     };
 
     let config = format!(
-        r#"# shotgun configuration file
+        r#"# offload configuration file
 
-[shotgun]
+[offload]
 max_parallel = 10
 test_timeout_secs = 900
 retry_count = 3
@@ -440,17 +440,17 @@ junit_file = "junit.xml"
         provider_config, framework_config
     );
 
-    let path = PathBuf::from("shotgun.toml");
+    let path = PathBuf::from("offload.toml");
     if path.exists() {
-        eprintln!("shotgun.toml already exists. Remove it first or edit manually.");
+        eprintln!("offload.toml already exists. Remove it first or edit manually.");
         std::process::exit(1);
     }
 
     std::fs::write(&path, config)?;
-    println!("Created shotgun.toml");
+    println!("Created offload.toml");
     println!();
     println!("Edit the configuration as needed, then run:");
-    println!("  shotgun run");
+    println!("  offload run");
 
     Ok(())
 }

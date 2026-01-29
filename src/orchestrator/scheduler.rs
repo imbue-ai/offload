@@ -17,8 +17,8 @@
 //! # Example
 //!
 //! ```
-//! use shotgun::orchestrator::Scheduler;
-//! use shotgun::framework::TestRecord;
+//! use offload::orchestrator::Scheduler;
+//! use offload::framework::TestRecord;
 //!
 //! let scheduler = Scheduler::new(4); // 4 parallel sandboxes
 //!
@@ -54,7 +54,7 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::Scheduler;
+    /// use offload::orchestrator::Scheduler;
     ///
     /// let scheduler = Scheduler::new(4);
     /// ```
@@ -78,8 +78,8 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::Scheduler;
-    /// use shotgun::framework::TestRecord;
+    /// use offload::orchestrator::Scheduler;
+    /// use offload::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
     /// let records = vec![
@@ -130,8 +130,8 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::Scheduler;
-    /// use shotgun::framework::TestRecord;
+    /// use offload::orchestrator::Scheduler;
+    /// use offload::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(10);
     /// let records: Vec<_> = (0..25).map(|i| TestRecord::new(format!("test_{}", i))).collect();
@@ -173,8 +173,8 @@ impl Scheduler {
     /// # Example
     ///
     /// ```
-    /// use shotgun::orchestrator::Scheduler;
-    /// use shotgun::framework::TestRecord;
+    /// use offload::orchestrator::Scheduler;
+    /// use offload::framework::TestRecord;
     ///
     /// let scheduler = Scheduler::new(2);
     /// let records = vec![
