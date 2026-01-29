@@ -31,6 +31,9 @@
 //! assert_eq!(batches.len(), 4); // 4 batches for 4 sandboxes
 //! ```
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 use crate::framework::TestInstance;
 
 /// Distributes tests across parallel sandboxes.
@@ -108,6 +111,58 @@ impl Scheduler {
         for (i, test) in tests.iter().enumerate() {
             let batch_idx = i % self.max_parallel;
             batches[batch_idx].push(*test);
+        }
+
+        // Remove empty batches
+        batches.retain(|b| !b.is_empty());
+
+        batches
+    }
+
+    /// Schedules tests with random distribution across sandboxes.
+    ///
+    /// Shuffles tests randomly before distributing them across sandboxes
+    /// using round-robin. This helps avoid systematic biases in test ordering.
+    ///
+    /// # Returns
+    ///
+    /// A vector of batches with randomly distributed tests.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use offload::orchestrator::Scheduler;
+    /// use offload::framework::TestRecord;
+    ///
+    /// let scheduler = Scheduler::new(2);
+    /// let records = vec![
+    ///     TestRecord::new("test_a"),
+    ///     TestRecord::new("test_b"),
+    ///     TestRecord::new("test_c"),
+    ///     TestRecord::new("test_d"),
+    /// ];
+    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+    ///
+    /// let batches = scheduler.schedule_random(&tests);
+    /// assert_eq!(batches.len(), 2);
+    /// // Tests are randomly distributed
+    /// ```
+    pub fn schedule_random<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
+        if tests.is_empty() {
+            return Vec::new();
+        }
+
+        // Shuffle tests randomly
+        let mut shuffled: Vec<TestInstance<'a>> = tests.to_vec();
+        shuffled.shuffle(&mut thread_rng());
+
+        // Round-robin distribution of shuffled tests
+        let mut batches: Vec<Vec<TestInstance<'a>>> =
+            (0..self.max_parallel).map(|_| Vec::new()).collect();
+
+        for (i, test) in shuffled.into_iter().enumerate() {
+            let batch_idx = i % self.max_parallel;
+            batches[batch_idx].push(test);
         }
 
         // Remove empty batches

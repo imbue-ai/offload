@@ -334,9 +334,9 @@ where
 
         let skipped_count = tests.len() - tests_to_run.len();
 
-        // Schedule tests into batches
+        // Schedule tests into batches using random distribution
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
-        let batches = scheduler.schedule(&tests_to_run);
+        let batches = scheduler.schedule_random(&tests_to_run);
 
         info!(
             "Scheduled {} tests into {} batches",
@@ -570,7 +570,7 @@ where
             // Schedule tests across available sandboxes
             let num_sandboxes = sandbox_pool.lock().await.len();
             let scheduler = Scheduler::new(num_sandboxes);
-            let batches = scheduler.schedule(&still_failing);
+            let batches = scheduler.schedule_random(&still_failing);
 
             // Execute retries in parallel
             tokio_scoped::scope(|scope| {
