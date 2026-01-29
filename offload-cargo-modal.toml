@@ -1,6 +1,6 @@
-# shotgun configuration for running cargo tests on Modal
+# offload configuration for running cargo tests on Modal
 
-[shotgun]
+[offload]
 max_parallel = 4
 test_timeout_secs = 600
 retry_count = 1

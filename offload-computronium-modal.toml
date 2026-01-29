@@ -1,6 +1,6 @@
-# shotgun configuration for running computronium tests on Modal
+# offload configuration for running computronium tests on Modal
 
-[shotgun]
+[offload]
 max_parallel = 2
 test_timeout_secs = 120
 retry_count = 0

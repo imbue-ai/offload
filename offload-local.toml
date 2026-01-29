@@ -1,6 +1,6 @@
-# shotgun configuration for local process execution
+# offload configuration for local process execution
 
-[shotgun]
+[offload]
 max_parallel = 2
 test_timeout_secs = 60
 retry_count = 3
