@@ -1,16 +1,16 @@
 [package]
-name = "shotgun"
+name = "offload"
 version = "0.1.0"
 edition = "2024"
 description = "Flexible parallel test runner with pluggable cloud providers"
 license = "MIT"
 
 [[bin]]
-name = "shotgun"
+name = "offload"
 path = "src/main.rs"
 
 [lib]
-name = "shotgun"
+name = "offload"
 path = "src/lib.rs"
 
 [dependencies]
