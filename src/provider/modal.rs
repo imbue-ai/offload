@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -67,6 +67,9 @@ pub struct ModalProvider {
     cache: Mutex<ImageCache>,
     cache_dir: PathBuf,
     sandboxes: Mutex<HashMap<String, ModalSandboxInfo>>,
+    /// Tracks in-progress image builds to avoid duplicate builds.
+    /// Maps cache_key -> OnceCell that will hold the image_id once built.
+    image_builds: Mutex<HashMap<String, Arc<OnceCell<String>>>>,
 }
 
 #[allow(dead_code)]
@@ -117,6 +120,7 @@ impl ModalProvider {
             cache: Mutex::new(cache),
             cache_dir,
             sandboxes: Mutex::new(HashMap::new()),
+            image_builds: Mutex::new(HashMap::new()),
         })
     }
 
@@ -136,27 +140,28 @@ impl ModalProvider {
         }
     }
 
-    /// Gets or builds the Modal image, using cache when possible.
+    /// Checks if a cached image entry exists and is valid.
     ///
-    /// This method checks if we have a valid cached image and either returns
-    /// the cached image ID or builds a new image and updates the cache.
+    /// For Dockerfile images, validates the hash. For preset images, just checks existence.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache` - The image cache to check
+    /// * `cache_key` - The cache key to look up
     ///
     /// # Returns
     ///
-    /// The Modal image ID (e.g., "im-abc123")
+    /// `Ok(Some(entry))` if a valid cache entry exists, `Ok(None)` if no valid entry, or an error.
     ///
     /// # Errors
     ///
-    /// Returns errors if:
-    /// - Dockerfile hash cannot be computed
-    /// - Python build command fails
-    /// - Cache cannot be saved
-    async fn get_or_build_image(&self) -> ProviderResult<String> {
-        let cache_key = self.get_cache_key();
-
-        // Check cache
-        let cache = self.cache.lock().await;
-        let cached_entry = match &self.config.image_type {
+    /// Returns errors if the Dockerfile hash cannot be computed.
+    fn check_cache_entry(
+        &self,
+        cache: &ImageCache,
+        cache_key: &str,
+    ) -> ProviderResult<Option<ImageCacheEntry>> {
+        match &self.config.image_type {
             ModalImageType::Dockerfile { dockerfile } => {
                 // Compute current hash
                 let dockerfile_path = self.cache_dir.join(dockerfile);
@@ -171,29 +176,30 @@ impl ModalProvider {
                 );
 
                 // Check cache with hash validation
-                cache.get_for_dockerfile(&cache_key, &current_hash)
+                Ok(cache.get_for_dockerfile(cache_key, &current_hash).cloned())
             }
             ModalImageType::Preset { .. } => {
                 // For presets, just check if we have an entry
-                cache.get(&cache_key)
+                Ok(cache.get(cache_key).cloned())
             }
-        };
-
-        if let Some(entry) = cached_entry {
-            let image_id = entry.image_id.clone();
-            info!("Using cached Modal image for {}: {}", cache_key, image_id);
-            drop(cache);
-            return Ok(image_id);
         }
+    }
 
-        drop(cache);
-
-        // Cache miss - build the image
-        info!("Cache miss for {}, building image...", cache_key);
-        let image_id = self.call_python_build(&self.config.image_type).await?;
-
-        // Update cache
+    /// Updates the image cache with a newly built image.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_key` - The cache key to store the image under
+    /// * `image_id` - The Modal image ID that was built
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if:
+    /// - Dockerfile hash cannot be computed
+    /// - Cache cannot be saved to disk
+    async fn update_cache(&self, cache_key: &str, image_id: &str) -> ProviderResult<()> {
         let mut cache = self.cache.lock().await;
+
         let dockerfile_hash = match &self.config.image_type {
             ModalImageType::Dockerfile { dockerfile } => {
                 let dockerfile_path = self.cache_dir.join(dockerfile);
@@ -205,7 +211,7 @@ impl ModalProvider {
         };
 
         let entry = ImageCacheEntry {
-            image_id: image_id.clone(),
+            image_id: image_id.to_string(),
             dockerfile_hash,
             created_at: chrono::Utc::now().to_rfc3339(),
             image_type: match &self.config.image_type {
@@ -214,7 +220,7 @@ impl ModalProvider {
             },
         };
 
-        cache.insert(cache_key.clone(), entry);
+        cache.insert(cache_key.to_string(), entry);
 
         // Save cache to disk
         cache.save(&self.cache_dir).map_err(|e| {
@@ -223,7 +229,63 @@ impl ModalProvider {
 
         info!("Cached Modal image {}: {}", cache_key, image_id);
 
-        Ok(image_id)
+        Ok(())
+    }
+
+    /// Gets or builds the Modal image, using cache when possible.
+    ///
+    /// This method ensures that only one build happens even when multiple sandboxes
+    /// are created concurrently with a cache miss. It uses a `OnceCell` to coordinate
+    /// the build across threads.
+    ///
+    /// # Returns
+    ///
+    /// The Modal image ID (e.g., "im-abc123")
+    ///
+    /// # Errors
+    ///
+    /// Returns errors if:
+    /// - Dockerfile hash cannot be computed
+    /// - Python build command fails
+    /// - Cache cannot be saved
+    async fn get_or_build_image(&self) -> ProviderResult<String> {
+        let cache_key = self.get_cache_key();
+
+        // Quick path: check cache first
+        {
+            let cache = self.cache.lock().await;
+            if let Some(entry) = self.check_cache_entry(&cache, &cache_key)? {
+                info!(
+                    "Using cached Modal image for {}: {}",
+                    cache_key, entry.image_id
+                );
+                return Ok(entry.image_id.clone());
+            }
+        }
+
+        // Cache miss - get or create a OnceCell for this build
+        let build_cell = {
+            let mut builds = self.image_builds.lock().await;
+            builds
+                .entry(cache_key.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        // Only one thread will actually build; others wait
+        let image_id = build_cell
+            .get_or_try_init(|| async {
+                info!("Cache miss for {}, building image...", cache_key);
+                let image_id = self.call_python_build(&self.config.image_type).await?;
+
+                // Update cache
+                self.update_cache(&cache_key, &image_id).await?;
+
+                Ok::<String, ProviderError>(image_id)
+            })
+            .await?;
+
+        Ok(image_id.clone())
     }
 
     /// Calls Python script to build a Modal image.
