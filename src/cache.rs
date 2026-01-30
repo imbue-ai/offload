@@ -213,16 +213,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_empty_cache_load() {
-        let temp_dir = TempDir::new().unwrap();
+    fn test_empty_cache_load() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
         let cache = ImageCache::load(temp_dir.path());
 
         assert!(cache.entries.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_cache_save_and_load() {
-        let temp_dir = TempDir::new().unwrap();
+    fn test_cache_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
 
         // Create and save a cache
         let mut cache = ImageCache::default();
@@ -236,16 +237,17 @@ mod tests {
             },
         );
 
-        cache.save(temp_dir.path()).unwrap();
+        cache.save(temp_dir.path())?;
 
         // Load the cache and verify
         let loaded_cache = ImageCache::load(temp_dir.path());
         assert_eq!(loaded_cache.entries.len(), 1);
 
-        let entry = loaded_cache.get("default").unwrap();
+        let entry = loaded_cache.get("default").ok_or("Entry not found")?;
         assert_eq!(entry.image_id, "im-abc123");
         assert_eq!(entry.image_type, "preset");
         assert!(entry.dockerfile_hash.is_none());
+        Ok(())
     }
 
     #[test]
@@ -329,24 +331,25 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_file_hash() {
-        let temp_dir = TempDir::new().unwrap();
+    fn test_compute_file_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
         let file_path = temp_dir.path().join("test.txt");
 
         // Write test content
-        let mut file = fs::File::create(&file_path).unwrap();
-        file.write_all(b"Hello, world!").unwrap();
+        let mut file = fs::File::create(&file_path)?;
+        file.write_all(b"Hello, world!")?;
         drop(file);
 
         // Compute hash
-        let hash = compute_file_hash(&file_path).unwrap();
+        let hash = compute_file_hash(&file_path)?;
 
         // Verify hash is 64 hex characters (SHA256)
         assert_eq!(hash.len(), 64);
 
         // Verify hash is deterministic
-        let hash2 = compute_file_hash(&file_path).unwrap();
+        let hash2 = compute_file_hash(&file_path)?;
         assert_eq!(hash, hash2);
+        Ok(())
     }
 
     #[test]
@@ -356,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_insert_updates_existing() {
+    fn test_cache_insert_updates_existing() -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = ImageCache::default();
 
         cache.insert(
@@ -381,23 +384,25 @@ mod tests {
         );
 
         // Should have the new ID
-        let entry = cache.get("default").unwrap();
+        let entry = cache.get("default").ok_or("Entry not found")?;
         assert_eq!(entry.image_id, "im-xyz789");
         assert_eq!(cache.entries.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn test_cache_corrupted_json() {
-        let temp_dir = TempDir::new().unwrap();
+    fn test_cache_corrupted_json() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
         let offload_dir = temp_dir.path().join(".offload");
-        fs::create_dir_all(&offload_dir).unwrap();
+        fs::create_dir_all(&offload_dir)?;
 
         // Write invalid JSON
         let cache_path = offload_dir.join("modal_images.json");
-        fs::write(&cache_path, "{ invalid json }").unwrap();
+        fs::write(&cache_path, "{ invalid json }")?;
 
         // Should return empty cache instead of panicking
         let cache = ImageCache::load(temp_dir.path());
         assert!(cache.entries.is_empty());
+        Ok(())
     }
 }
