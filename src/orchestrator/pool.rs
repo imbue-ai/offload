@@ -82,11 +82,13 @@ impl<S: Sandbox> SandboxPool<S> {
     /// resources. Errors during termination are logged but don't prevent
     /// other sandboxes from being terminated.
     pub async fn terminate_all(&mut self) {
-        for sandbox in self.sandboxes.drain(..) {
+        let sandboxes = self.sandboxes.drain(..);
+        let futures = sandboxes.map(|sandbox| async move {
             if let Err(e) = sandbox.terminate().await {
                 tracing::warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
             }
-        }
+        });
+        futures::future::join_all(futures).await;
     }
 }
 
