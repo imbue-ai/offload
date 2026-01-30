@@ -11,13 +11,84 @@
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 """
 
+import hashlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
 import modal
+
+# Cache configuration
+CACHE_DIR = Path.home() / ".cache" / "offload"
+CACHE_FILE = "modal-images.json"
+
+
+@dataclass
+class ImageCacheEntry:
+    """Cache entry for a Modal image ID."""
+
+    image_id: str
+    dockerfile_hash: str | None
+    mtime: float | None
+    created_at: str
+    sandbox_type: str
+
+
+def get_cache_path() -> Path:
+    """Returns the full path to the cache file, creating the directory if needed."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / CACHE_FILE
+
+
+def load_cache() -> dict[str, ImageCacheEntry]:
+    """Loads the cache from disk, returns empty dict if not found."""
+    cache_path = get_cache_path()
+    if not cache_path.exists():
+        return {}
+
+    try:
+        with open(cache_path, "r") as f:
+            data = json.load(f)
+
+        # Convert dict entries to ImageCacheEntry objects
+        cache = {}
+        for key, entry in data.items():
+            cache[key] = ImageCacheEntry(**entry)
+        return cache
+    except (json.JSONDecodeError, OSError, TypeError, KeyError):
+        # If cache is corrupted or invalid, return empty dict
+        return {}
+
+
+def save_cache(cache: dict[str, ImageCacheEntry]) -> None:
+    """Saves the cache to disk as JSON."""
+    cache_path = get_cache_path()
+
+    # Convert ImageCacheEntry objects to dicts
+    data = {}
+    for key, entry in cache.items():
+        data[key] = {
+            "image_id": entry.image_id,
+            "dockerfile_hash": entry.dockerfile_hash,
+            "mtime": entry.mtime,
+            "created_at": entry.created_at,
+            "sandbox_type": entry.sandbox_type,
+        }
+
+    with open(cache_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def compute_file_hash(path: str) -> str:
+    """Computes SHA256 hash of a file's contents."""
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
