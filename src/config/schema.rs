@@ -601,7 +601,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_modal_provider_with_dockerfile() {
+    fn test_modal_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
             [offload]
             max_parallel = 4
@@ -616,7 +616,7 @@ mod tests {
             type = "pytest"
         "#;
 
-        let config: Config = toml::from_str(toml).expect("Failed to parse config");
+        let config: Config = toml::from_str(toml)?;
 
         match &config.provider {
             ProviderConfig::Modal(modal_config) => {
@@ -633,10 +633,11 @@ mod tests {
             }
             _ => panic!("Expected Modal provider"),
         }
+        Ok(())
     }
 
     #[test]
-    fn test_modal_provider_with_preset() {
+    fn test_modal_provider_with_preset() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
             [offload]
             max_parallel = 4
@@ -651,7 +652,7 @@ mod tests {
             type = "cargo"
         "#;
 
-        let config: Config = toml::from_str(toml).expect("Failed to parse config");
+        let config: Config = toml::from_str(toml)?;
 
         match &config.provider {
             ProviderConfig::Modal(modal_config) => {
@@ -668,5 +669,6 @@ mod tests {
             }
             _ => panic!("Expected Modal provider"),
         }
+        Ok(())
     }
 }
