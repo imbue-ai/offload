@@ -4,7 +4,7 @@
 [offload]
 max_parallel = 4
 test_timeout_secs = 300
-retry_count = 2
+retry_count = 4
 
 [provider]
 type = "local"
@@ -15,7 +15,10 @@ type = "pytest"
 paths = ["examples/tests"]
 python = "python3"
 
+[groups.all2]
+type = "pytest"
+paths = ["examples/tests/test_math.py"]
+python = "python3"
+
 [report]
 output_dir = "test-results"
-junit = true
-junit_file = "junit.xml"
