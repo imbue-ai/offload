@@ -618,21 +618,26 @@ mod tests {
 
         let config: Config = toml::from_str(toml)?;
 
-        match &config.provider {
-            ProviderConfig::Modal(modal_config) => {
-                assert_eq!(modal_config.app_name, "offload-sandbox");
-                assert_eq!(modal_config.timeout_secs, 600);
-                assert!(modal_config.working_dir.is_none());
+        assert!(
+            matches!(&config.provider, ProviderConfig::Modal(_)),
+            "Expected Modal provider"
+        );
 
-                match &modal_config.image_type {
-                    ModalImageType::Dockerfile { dockerfile } => {
-                        assert_eq!(dockerfile, ".devcontainer/Dockerfile");
-                    }
-                    _ => panic!("Expected Dockerfile image type"),
-                }
+        if let ProviderConfig::Modal(modal_config) = &config.provider {
+            assert_eq!(modal_config.app_name, "offload-sandbox");
+            assert_eq!(modal_config.timeout_secs, 600);
+            assert!(modal_config.working_dir.is_none());
+
+            assert!(
+                matches!(&modal_config.image_type, ModalImageType::Dockerfile { .. }),
+                "Expected Dockerfile image type"
+            );
+
+            if let ModalImageType::Dockerfile { dockerfile } = &modal_config.image_type {
+                assert_eq!(dockerfile, ".devcontainer/Dockerfile");
             }
-            _ => panic!("Expected Modal provider"),
         }
+
         Ok(())
     }
 
@@ -654,21 +659,26 @@ mod tests {
 
         let config: Config = toml::from_str(toml)?;
 
-        match &config.provider {
-            ProviderConfig::Modal(modal_config) => {
-                assert_eq!(modal_config.app_name, "test-runner");
-                assert_eq!(modal_config.timeout_secs, 3600); // default value
-                assert_eq!(modal_config.working_dir, Some(PathBuf::from("/workspace")));
+        assert!(
+            matches!(&config.provider, ProviderConfig::Modal(_)),
+            "Expected Modal provider"
+        );
 
-                match &modal_config.image_type {
-                    ModalImageType::Preset { preset } => {
-                        assert_eq!(preset, "rust");
-                    }
-                    _ => panic!("Expected Preset image type"),
-                }
+        if let ProviderConfig::Modal(modal_config) = &config.provider {
+            assert_eq!(modal_config.app_name, "test-runner");
+            assert_eq!(modal_config.timeout_secs, 3600); // default value
+            assert_eq!(modal_config.working_dir, Some(PathBuf::from("/workspace")));
+
+            assert!(
+                matches!(&modal_config.image_type, ModalImageType::Preset { .. }),
+                "Expected Preset image type"
+            );
+
+            if let ModalImageType::Preset { preset } = &modal_config.image_type {
+                assert_eq!(preset, "rust");
             }
-            _ => panic!("Expected Modal provider"),
         }
+
         Ok(())
     }
 }
