@@ -510,6 +510,7 @@ def build_default():
     app = modal.App.lookup("offload-sandbox", create_if_missing=True)
     image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -532,6 +533,7 @@ def build_rust():
         )
     )
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -551,6 +553,7 @@ def build_dockerfile(dockerfile_path: str):
     app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
     image = modal.Image.from_dockerfile(dockerfile_path)
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -627,6 +630,7 @@ def _build_computronium():
         )
     )
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -739,6 +743,7 @@ def _build_sculptor():
         .add_local_file(f"{gi_path}/sculptor/pyproject.toml", "/app/pyproject.toml")
     )
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -854,6 +859,7 @@ def _build_mngr():
         .run_commands("cd /app && uv sync --all-packages")
     )
     image.build(app)
+    image.hydrate()
     print(image.object_id)
 
 
@@ -951,6 +957,7 @@ def create_with_image(image_id: str, sandbox_type: str):
     # Load image from ID
     print(f"Loading image {image_id}...", file=sys.stderr)
     image = modal.Image.from_id(image_id)
+    image.hydrate()
 
     print("Creating sandbox...", file=sys.stderr)
     sandbox = modal.Sandbox.create(
