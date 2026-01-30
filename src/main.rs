@@ -271,6 +271,11 @@ async fn run_tests(
             )
             .await?;
         }
+        (ProviderConfig::Modal(_), _) => {
+            return Err(anyhow!(
+                "Modal provider is not yet implemented. Use 'default' provider with Modal commands as a workaround."
+            ));
+        }
     }
 
     // Phase 3: Report results per group
@@ -365,6 +370,7 @@ fn validate_config(config_path: &Path) -> Result<()> {
 
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
+                ProviderConfig::Modal(_) => "modal",
                 ProviderConfig::Default(_) => "default",
             };
             println!("  Provider: {}", provider_name);
