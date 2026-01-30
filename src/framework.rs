@@ -276,6 +276,84 @@ impl std::fmt::Debug for TestRecord {
     }
 }
 
+/// A named group of tests with their execution results.
+///
+/// `TestGroup` owns the test records for a group and allows callers to
+/// inspect results after execution completes. Results are stored in each
+/// `TestRecord` via interior mutability.
+///
+/// # Example
+///
+/// ```
+/// use offload::framework::{TestGroup, TestRecord};
+///
+/// let tests = vec![
+///     TestRecord::new("test_one"),
+///     TestRecord::new("test_two"),
+/// ];
+/// let group = TestGroup::new("my-group", tests);
+///
+/// assert_eq!(group.name(), "my-group");
+/// assert_eq!(group.tests().len(), 2);
+/// ```
+#[derive(Debug)]
+pub struct TestGroup {
+    name: String,
+    tests: Vec<TestRecord>,
+}
+
+impl TestGroup {
+    /// Creates a new test group with the given name and tests.
+    pub fn new(name: impl Into<String>, tests: Vec<TestRecord>) -> Self {
+        Self {
+            name: name.into(),
+            tests,
+        }
+    }
+
+    /// Returns the group name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns a reference to the tests in this group.
+    pub fn tests(&self) -> &[TestRecord] {
+        &self.tests
+    }
+
+    /// Returns the number of tests in this group.
+    pub fn len(&self) -> usize {
+        self.tests.len()
+    }
+
+    /// Returns true if this group has no tests.
+    pub fn is_empty(&self) -> bool {
+        self.tests.is_empty()
+    }
+
+    /// Returns the number of tests that passed.
+    pub fn passed_count(&self) -> usize {
+        self.tests.iter().filter(|t| t.passed()).count()
+    }
+
+    /// Returns the number of tests that failed.
+    pub fn failed_count(&self) -> usize {
+        self.tests
+            .iter()
+            .filter(|t| {
+                t.final_result().is_some_and(|r| {
+                    r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error
+                })
+            })
+            .count()
+    }
+
+    /// Returns the number of flaky tests (passed on retry).
+    pub fn flaky_count(&self) -> usize {
+        self.tests.iter().filter(|t| t.is_flaky()).count()
+    }
+}
+
 /// A lightweight handle to a test for execution in a sandbox.
 ///
 /// `TestInstance` holds a reference to a [`TestRecord`] and provides read access

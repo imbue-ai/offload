@@ -1,11 +1,9 @@
 //! offload CLI - Flexible parallel test runner.
 
-use core::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use tokio::task::JoinSet;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -13,7 +11,8 @@ use tokio::sync::Mutex;
 
 use offload::config::{self, FrameworkConfig, ProviderConfig};
 use offload::framework::{
-    TestFramework, cargo::CargoFramework, default::DefaultFramework, pytest::PytestFramework,
+    TestFramework, TestGroup, cargo::CargoFramework, default::DefaultFramework,
+    pytest::PytestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{SandboxProvider, default::DefaultProvider, local::LocalProvider};
@@ -124,178 +123,237 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    let mut set = JoinSet::<Result<()>>::new();
+    // Phase 1: Discover tests for all groups
+    info!("Discovering tests for all groups...");
+    let mut groups: Vec<TestGroup> = Vec::new();
 
-    // config.groups is a HashMap<String, GroupConfig>. Let's iterate over it.
-    for (group_name, group_config) in config.clone().groups {
-        // We know these are immutable, and we clone them to hand to the async task.
-        let config = config.clone();
-        let group_config = group_config.clone();
-        let junit_path = junit_path.clone();
-
-        // Match on provider and framework to get concrete types
-        set.spawn(async move {
-            match (&config.provider, &group_config.framework) {
-                (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
-                    let provider = LocalProvider::new(p_cfg.clone());
-                    let framework = PytestFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
-                (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
-                    let provider = LocalProvider::new(p_cfg.clone());
-                    let framework = CargoFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
-                (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(d_cfg)) => {
-                    let provider = LocalProvider::new(p_cfg.clone());
-                    let framework = DefaultFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
-                (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(d_cfg)) => {
-                    let provider = DefaultProvider::from_config(p_cfg.clone());
-                    let framework = PytestFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
-                (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(d_cfg)) => {
-                    let provider = DefaultProvider::from_config(p_cfg.clone());
-                    let framework = CargoFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
-                (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(d_cfg)) => {
-                    let provider = DefaultProvider::from_config(p_cfg.clone());
-                    let framework = DefaultFramework::new(d_cfg.clone());
-                    run_with(
-                        &config,
-                        &group_name,
-                        provider,
-                        framework,
-                        collect_only,
-                        junit_path,
-                        verbose,
-                    )
-                    .await
-                }
+    for (group_name, group_config) in &config.groups {
+        let tests = match &group_config.framework {
+            FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
+            FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone()).discover(&[]).await?
             }
-        });
+        };
+        info!("Group '{}': discovered {} tests", group_name, tests.len());
+        groups.push(TestGroup::new(group_name.clone(), tests));
     }
 
-    let mut errors = Vec::new();
+    let total_tests: usize = groups.iter().map(|g| g.len()).sum();
+    info!(
+        "Total: {} tests across {} groups",
+        total_tests,
+        groups.len()
+    );
 
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => errors.push(e),
-            Err(join_err) => errors.push(anyhow!(join_err)), // panic/cancel etc
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(AggregateError { errors }.into())
-    }
-}
-
-#[derive(Debug)]
-struct AggregateError {
-    errors: Vec<anyhow::Error>,
-}
-
-impl fmt::Display for AggregateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{} task(s) failed:", self.errors.len())?;
-        for (i, e) in self.errors.iter().enumerate() {
-            writeln!(f, "  {i}: {e:#}")?; // {:#} prints anyhow chains nicely
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for AggregateError {}
-
-/// run_with actually runs the tests using the given provider and framework.
-async fn run_with<P, D>(
-    config: &config::Config,
-    group_name: &str,
-    provider: P,
-    framework: D,
-    collect_only: bool,
-    junit_path: Option<PathBuf>,
-    verbose: bool,
-) -> Result<()>
-where
-    P: SandboxProvider + 'static,
-    D: TestFramework + 'static,
-{
     if collect_only {
-        let tests = framework.discover(&[]).await?;
-        println!("Discovered {} tests:", tests.len());
-        for test in &tests {
-            println!("  {}", test.id);
+        for group in &groups {
+            println!("\nGroup '{}':", group.name());
+            for test in group.tests() {
+                println!("  {}", test.id);
+            }
         }
         return Ok(());
     }
 
+    // Phase 2: Run all groups with shared sandbox pool
+    match &config.provider {
+        ProviderConfig::Local(p_cfg) => {
+            run_all_groups_local(&config, &groups, p_cfg, junit_path, verbose).await?;
+        }
+        ProviderConfig::Default(p_cfg) => {
+            run_all_groups_default(&config, &groups, p_cfg, junit_path, verbose).await?;
+        }
+    }
+
+    // Phase 3: Report results per group
+    info!("Results by group:");
+    for group in &groups {
+        let passed = group.passed_count();
+        let failed = group.failed_count();
+        let flaky = group.flaky_count();
+        info!(
+            "  {}: {} passed, {} failed, {} flaky",
+            group.name(),
+            passed,
+            failed,
+            flaky
+        );
+    }
+
+    Ok(())
+}
+
+/// Run all groups with a shared sandbox pool using LocalProvider.
+async fn run_all_groups_local(
+    config: &config::Config,
+    groups: &[TestGroup],
+    provider_config: &offload::config::LocalProviderConfig,
+    junit_path: Option<PathBuf>,
+    verbose: bool,
+) -> Result<()> {
+    let sandbox_pool: Mutex<SandboxPool<offload::provider::local::LocalSandbox>> =
+        Mutex::new(SandboxPool::new());
+
+    for group in groups {
+        if group.is_empty() {
+            continue;
+        }
+
+        let group_config = config
+            .groups
+            .get(group.name())
+            .ok_or_else(|| anyhow!("Group '{}' not found in config", group.name()))?;
+
+        // Create fresh provider for each group
+        let provider = LocalProvider::new(provider_config.clone());
+
+        match &group_config.framework {
+            FrameworkConfig::Pytest(cfg) => {
+                let framework = PytestFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                let framework = CargoFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+            FrameworkConfig::Default(cfg) => {
+                let framework = DefaultFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+        }
+    }
+
+    sandbox_pool.lock().await.terminate_all().await;
+    Ok(())
+}
+
+/// Run all groups with a shared sandbox pool using DefaultProvider.
+async fn run_all_groups_default(
+    config: &config::Config,
+    groups: &[TestGroup],
+    provider_config: &offload::config::DefaultProviderConfig,
+    junit_path: Option<PathBuf>,
+    verbose: bool,
+) -> Result<()> {
+    let sandbox_pool: Mutex<SandboxPool<offload::provider::default::DefaultSandbox>> =
+        Mutex::new(SandboxPool::new());
+
+    for group in groups {
+        if group.is_empty() {
+            continue;
+        }
+
+        let group_config = config
+            .groups
+            .get(group.name())
+            .ok_or_else(|| anyhow!("Group '{}' not found in config", group.name()))?;
+
+        // Create fresh provider for each group
+        let provider = DefaultProvider::from_config(provider_config.clone());
+
+        match &group_config.framework {
+            FrameworkConfig::Pytest(cfg) => {
+                let framework = PytestFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                let framework = CargoFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+            FrameworkConfig::Default(cfg) => {
+                let framework = DefaultFramework::new(cfg.clone());
+                run_group(
+                    config,
+                    group,
+                    provider,
+                    framework,
+                    &sandbox_pool,
+                    junit_path.clone(),
+                    verbose,
+                )
+                .await?;
+            }
+        }
+    }
+
+    sandbox_pool.lock().await.terminate_all().await;
+    Ok(())
+}
+
+/// Run a single group's tests.
+async fn run_group<P, D>(
+    config: &config::Config,
+    group: &TestGroup,
+    provider: P,
+    framework: D,
+    sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
+    junit_path: Option<PathBuf>,
+    verbose: bool,
+) -> Result<()>
+where
+    P: SandboxProvider,
+    D: TestFramework,
+{
+    info!("Running group '{}'...", group.name());
+
     let reporter = create_reporter(config, junit_path, verbose);
     let orchestrator = Orchestrator::new(
         config.clone(),
-        group_name.to_string(),
+        group.name().to_string(),
         provider,
         framework,
         reporter,
     );
 
-    let sandbox_pool = Mutex::new(SandboxPool::new());
-    let tests = orchestrator.discover(&[]).await?;
-    orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
-
-    // Terminate all sandboxes
-    sandbox_pool.lock().await.terminate_all().await;
+    orchestrator
+        .run_with_tests(group.tests(), sandbox_pool)
+        .await?;
 
     Ok(())
 }
