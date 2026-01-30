@@ -17,7 +17,6 @@
 //! | Reporter | Description |
 //! |----------|-------------|
 //! | [`ConsoleReporter`] | Terminal output with progress bar |
-//! | [`JUnitReporter`] | JUnit XML file for CI systems |
 //! | [`MultiReporter`] | Combines multiple reporters |
 //! | [`NullReporter`] | Discards all events (for testing) |
 //!
@@ -26,21 +25,16 @@
 //! Use [`MultiReporter`] to send events to multiple reporters:
 //!
 //! ```
-//! use offload::report::{MultiReporter, ConsoleReporter, JUnitReporter};
+//! use offload::report::{MultiReporter, ConsoleReporter};
 //!
 //! let reporter = MultiReporter::new()
-//!     .with_reporter(ConsoleReporter::new(true))
-//!     .with_reporter(JUnitReporter::new("results.xml".into()));
+//!     .with_reporter(ConsoleReporter::new(true));
 //! ```
-
-pub mod junit;
 
 use async_trait::async_trait;
 
 use crate::framework::{TestRecord, TestResult};
 use crate::orchestrator::RunResult;
-
-pub use junit::JUnitReporter;
 
 /// Trait for receiving test execution events.
 ///
@@ -80,7 +74,7 @@ pub trait Reporter: Send + Sync {
     ///
     /// Receives the aggregated run result with all test outcomes.
     /// Use this for final summary output or file generation.
-    async fn on_run_complete(&self, result: &RunResult, group_name: &str);
+    async fn on_run_complete(&self, result: &RunResult);
 }
 
 /// A reporter that discards all events.
@@ -101,22 +95,21 @@ impl Reporter for NullReporter {
     async fn on_discovery_complete(&self, _tests: &[TestRecord]) {}
     async fn on_test_start(&self, _test: &TestRecord) {}
     async fn on_test_complete(&self, _result: &TestResult) {}
-    async fn on_run_complete(&self, _result: &RunResult, _group_name: &str) {}
+    async fn on_run_complete(&self, _result: &RunResult) {}
 }
 
 /// A reporter that forwards events to multiple child reporters.
 ///
-/// Use this to combine different output formats (e.g., console + JUnit).
+/// Use this to combine different output formats.
 /// Events are sent to all child reporters in the order they were added.
 ///
 /// # Example
 ///
 /// ```
-/// use offload::report::{MultiReporter, ConsoleReporter, JUnitReporter, NullReporter};
+/// use offload::report::{MultiReporter, ConsoleReporter, NullReporter};
 ///
 /// let reporter = MultiReporter::new()
-///     .with_reporter(ConsoleReporter::new(true))
-///     .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
+///     .with_reporter(ConsoleReporter::new(true));
 /// ```
 pub struct MultiReporter {
     reporters: Vec<Box<dyn Reporter>>,
@@ -176,9 +169,9 @@ impl Reporter for MultiReporter {
         }
     }
 
-    async fn on_run_complete(&self, result: &RunResult, group_name: &str) {
+    async fn on_run_complete(&self, result: &RunResult) {
         for reporter in &self.reporters {
-            reporter.on_run_complete(result, group_name).await;
+            reporter.on_run_complete(result).await;
         }
     }
 }
@@ -266,13 +259,13 @@ impl Reporter for ConsoleReporter {
         }
     }
 
-    async fn on_run_complete(&self, result: &RunResult, group_name: &str) {
+    async fn on_run_complete(&self, result: &RunResult) {
         if let Some(pb) = self.progress.lock().unwrap().take() {
             pb.finish_and_clear();
         }
 
         println!();
-        println!("Test Results for group {}:", group_name);
+        println!("Test Results:");
         println!("  Total:   {}", result.total_tests);
         println!("  Passed:  {}", console::style(result.passed).green());
         println!("  Failed:  {}", console::style(result.failed).red());
@@ -290,12 +283,7 @@ impl Reporter for ConsoleReporter {
 
         if result.success() {
             println!();
-            println!(
-                "{} '{}' {}",
-                console::style("All tests in group").green().bold(),
-                console::style(group_name).bold(),
-                console::style("passed!").green().bold()
-            );
+            println!("{}", console::style("All tests passed!").green().bold());
         } else if result.not_run > 0 && result.failed == 0 {
             println!();
             println!(

@@ -52,7 +52,7 @@
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
 //! use offload::config::load_config;
 //! use offload::provider::local::LocalProvider;
-//! use offload::framework::pytest::PytestFramework;
+//! use offload::framework::{TestFramework, pytest::PytestFramework};
 //! use offload::report::ConsoleReporter;
 //!
 //! #[tokio::main]
@@ -63,9 +63,12 @@
 //!     let framework = PytestFramework::new(Default::default());
 //!     let reporter = ConsoleReporter::new(true);
 //!
-//!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
+//!     // Discover tests using the framework
+//!     let tests = framework.discover(&[]).await?;
+//!
+//!     // Run tests using the orchestrator
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let tests = orchestrator.discover(&[]).await?;
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
 //!     if result.success() {
@@ -83,7 +86,6 @@ pub mod retry;
 pub mod runner;
 pub mod scheduler;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -211,8 +213,8 @@ impl RunResult {
 /// use offload::orchestrator::{Orchestrator, SandboxPool};
 /// use offload::config::load_config;
 /// use offload::provider::local::LocalProvider;
-/// use offload::framework::pytest::PytestFramework;
-/// use offload::report::{ConsoleReporter, MultiReporter, JUnitReporter};
+/// use offload::framework::{TestFramework, pytest::PytestFramework};
+/// use offload::report::ConsoleReporter;
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -221,14 +223,14 @@ impl RunResult {
 ///     // Set up components
 ///     let provider = LocalProvider::new(Default::default());
 ///     let framework = PytestFramework::new(Default::default());
-///     let reporter = MultiReporter::new()
-///         .with_reporter(ConsoleReporter::new(true))
-///         .with_reporter(JUnitReporter::new("results.xml".into()));
+///     let reporter = ConsoleReporter::new(true);
 ///
-///     // Create orchestrator and run
-///     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
+///     // Discover tests using the framework
+///     let tests = framework.discover(&[]).await?;
+///
+///     // Create orchestrator and run tests
+///     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
-///     let tests = orchestrator.discover(&[]).await?;
 ///     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
@@ -236,7 +238,6 @@ impl RunResult {
 /// ```
 pub struct Orchestrator<P, D, R> {
     config: Config,
-    group_name: String,
     provider: P,
     framework: D,
     reporter: R,
@@ -254,40 +255,15 @@ where
     ///
     /// * `config` - Configuration loaded from TOML
     /// * `provider` - Sandbox provider for creating execution environments
-    /// * `framework` - Test framework for finding tests
+    /// * `framework` - Test framework for running tests
     /// * `reporter` - Reporter for outputting results
-    pub fn new(config: Config, group_name: String, provider: P, framework: D, reporter: R) -> Self {
+    pub fn new(config: Config, provider: P, framework: D, reporter: R) -> Self {
         Self {
             config,
-            group_name,
             provider,
             framework,
             reporter,
         }
-    }
-
-    /// Discovers tests using the configured framework.
-    ///
-    /// This method runs test discovery separately from execution, allowing
-    /// callers to inspect or filter tests before running them.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - Directories or files to search for tests. If empty,
-    ///   uses framework-default paths from configuration.
-    ///
-    /// # Returns
-    ///
-    /// A list of discovered [`TestRecord`] objects.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if test discovery fails.
-    pub async fn discover(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<TestRecord>> {
-        info!("Discovering tests...");
-        let tests = self.framework.discover(paths).await?;
-        info!("Discovered {} tests", tests.len());
-        Ok(tests)
     }
 
     /// Runs the given tests and returns the aggregated results.
@@ -527,9 +503,7 @@ where
             results: all_results,
         };
 
-        self.reporter
-            .on_run_complete(&run_result, &self.group_name)
-            .await;
+        self.reporter.on_run_complete(&run_result).await;
 
         Ok(run_result)
     }

@@ -49,7 +49,6 @@
 //! Reporters receive events during test execution:
 //!
 //! - [`report::ConsoleReporter`] - Terminal output with progress bar
-//! - [`report::JUnitReporter`] - Generate JUnit XML for CI systems
 //! - [`report::MultiReporter`] - Combine multiple reporters
 //!
 //! ## Quick Start
@@ -59,8 +58,8 @@
 //! use offload::config::load_config;
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
 //! use offload::provider::local::LocalProvider;
-//! use offload::framework::pytest::PytestFramework;
-//! use offload::report::{ConsoleReporter, MultiReporter, JUnitReporter};
+//! use offload::framework::{TestFramework, pytest::PytestFramework};
+//! use offload::report::ConsoleReporter;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -73,15 +72,15 @@
 //!     // Create framework (finds pytest tests)
 //!     let framework = PytestFramework::new(Default::default());
 //!
-//!     // Create reporter (console + JUnit XML)
-//!     let reporter = MultiReporter::new()
-//!         .with_reporter(ConsoleReporter::new(true))
-//!         .with_reporter(JUnitReporter::new("test-results/junit.xml".into()));
+//!     // Create reporter
+//!     let reporter = ConsoleReporter::new(true);
 //!
-//!     // Run tests
-//!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
+//!     // Discover tests using the framework
+//!     let tests = framework.discover(&[]).await?;
+//!
+//!     // Run tests using the orchestrator
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let tests = orchestrator.discover(&[]).await?;
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
 //!     std::process::exit(result.exit_code());

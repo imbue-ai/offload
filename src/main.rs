@@ -16,7 +16,7 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider};
-use offload::report::{ConsoleReporter, JUnitReporter, MultiReporter};
+use offload::report::ConsoleReporter;
 
 #[derive(Parser)]
 #[command(name = "offload")]
@@ -46,10 +46,6 @@ enum Commands {
         /// Only discover tests, don't run them
         #[arg(long)]
         collect_only: bool,
-
-        /// JUnit XML output path
-        #[arg(long)]
-        junit: Option<PathBuf>,
     },
 
     /// Discover tests without running them
@@ -94,8 +90,7 @@ async fn main() -> Result<()> {
         Commands::Run {
             parallel,
             collect_only,
-            junit,
-        } => run_tests(&cli.config, parallel, collect_only, junit, cli.verbose).await,
+        } => run_tests(&cli.config, parallel, collect_only, cli.verbose).await,
         Commands::Collect { format } => collect_tests(&cli.config, &format).await,
         Commands::Validate => validate_config(&cli.config),
         Commands::Init {
@@ -125,7 +120,6 @@ async fn run_tests(
     config_path: &Path,
     parallel_override: Option<usize>,
     collect_only: bool,
-    junit_path: Option<PathBuf>,
     verbose: bool,
 ) -> Result<()> {
     // Load configuration
@@ -213,7 +207,6 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 PytestFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -224,7 +217,6 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 CargoFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -235,7 +227,6 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 DefaultFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -246,7 +237,6 @@ async fn run_tests(
                 &all_tests,
                 DefaultProvider::from_config(p_cfg.clone()),
                 PytestFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -257,7 +247,6 @@ async fn run_tests(
                 &all_tests,
                 DefaultProvider::from_config(p_cfg.clone()),
                 CargoFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -268,7 +257,6 @@ async fn run_tests(
                 &all_tests,
                 DefaultProvider::from_config(p_cfg.clone()),
                 DefaultFramework::new(f_cfg.clone()),
-                junit_path,
                 verbose,
             )
             .await?;
@@ -305,7 +293,6 @@ async fn run_all_tests<P, D>(
     tests: &[TestRecord],
     provider: P,
     framework: D,
-    junit_path: Option<PathBuf>,
     verbose: bool,
 ) -> Result<()>
 where
@@ -313,14 +300,8 @@ where
     D: TestFramework,
 {
     let sandbox_pool = Mutex::new(SandboxPool::new());
-    let reporter = create_reporter(config, junit_path, verbose);
-    let orchestrator = Orchestrator::new(
-        config.clone(),
-        "all".to_string(),
-        provider,
-        framework,
-        reporter,
-    );
+    let reporter = ConsoleReporter::new(verbose);
+    let orchestrator = Orchestrator::new(config.clone(), provider, framework, reporter);
 
     orchestrator.run_with_tests(tests, &sandbox_pool).await?;
     sandbox_pool.lock().await.terminate_all().await;
@@ -482,24 +463,4 @@ junit_file = "junit.xml"
     println!("  offload run");
 
     Ok(())
-}
-
-fn create_reporter(
-    config: &config::Config,
-    junit_override: Option<PathBuf>,
-    verbose: bool,
-) -> MultiReporter {
-    let mut multi = MultiReporter::new();
-
-    // Add console reporter
-    multi = multi.with_reporter(ConsoleReporter::new(verbose));
-
-    // Add JUnit reporter if enabled
-    if config.report.junit {
-        let junit_path = junit_override
-            .unwrap_or_else(|| config.report.output_dir.join(&config.report.junit_file));
-        multi = multi.with_reporter(JUnitReporter::new(junit_path));
-    }
-
-    multi
 }
