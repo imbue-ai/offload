@@ -45,7 +45,6 @@
 
 [no-expect]
 "." = 0
-"src/config" = 2
 
 [no-fixme-comments]
 "." = 0
@@ -92,7 +91,6 @@
 [no-panic]
 "." = 0
 "src" = 1
-"src/config" = 4
 
 [no-relative-imports]
 "." = 0
@@ -120,10 +118,6 @@
 
 [no-unwrap]
 "." = 0
-"src" = 29
-"src/framework" = 11
-"src/provider" = 2
-"src/report" = 1
 
 [no-while-true]
 "." = 0
