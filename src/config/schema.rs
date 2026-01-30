@@ -356,21 +356,6 @@ pub struct DefaultProviderConfig {
     /// Default: 3600 (1 hour)
     #[serde(default = "default_remote_timeout")]
     pub timeout_secs: u64,
-
-    /// Relative path to a Dockerfile for building the sandbox image.
-    ///
-    /// When specified, the provider's create command can use this path
-    /// to build a custom Docker image. The path is relative to the
-    /// project root directory.
-    ///
-    /// # Example
-    ///
-    /// ```toml
-    /// [provider]
-    /// create_command = "uv run @modal_sandbox.py create default --dockerfile {dockerfile_path}"
-    /// ```
-    #[serde(default)]
-    pub dockerfile_path: Option<String>,
 }
 
 fn default_remote_timeout() -> u64 {
