@@ -90,7 +90,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
-use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
+use crate::framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
 use crate::provider::{OutputLine, SandboxProvider};
 use crate::report::Reporter;
 
@@ -264,6 +264,30 @@ where
         }
     }
 
+    /// Discovers tests using the configured framework.
+    ///
+    /// This method runs test discovery separately from execution, allowing
+    /// callers to inspect or filter tests before running them.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Directories or files to search for tests. If empty,
+    ///   uses framework-default paths from configuration.
+    ///
+    /// # Returns
+    ///
+    /// A list of discovered [`TestRecord`] objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if test discovery fails.
+    pub async fn discover(&self, paths: &[PathBuf]) -> anyhow::Result<Vec<TestRecord>> {
+        info!("Discovering tests...");
+        let tests = self.framework.discover(paths).await?;
+        info!("Discovered {} tests", tests.len());
+        Ok(tests)
+    }
+
     /// Runs all tests and returns the aggregated results.
     ///
     /// This is the main entry point for test execution. It performs:
@@ -294,6 +318,33 @@ where
         &self,
         sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
     ) -> anyhow::Result<RunResult> {
+        let paths: Vec<PathBuf> = Vec::new();
+        let tests = self.discover(&paths).await?;
+        self.run_with_tests(tests, sandbox_pool).await
+    }
+
+    /// Runs the given tests and returns the aggregated results.
+    ///
+    /// Unlike [`run`](Self::run), this method takes already-discovered tests
+    /// as input, allowing callers to filter or modify tests before execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `tests` - The tests to run (typically from [`discover`](Self::discover))
+    /// * `sandbox_pool` - Pool of sandboxes to use
+    ///
+    /// # Returns
+    ///
+    /// [`RunResult`] containing summary statistics and individual results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if critical infrastructure errors occur.
+    pub async fn run_with_tests(
+        &self,
+        tests: Vec<TestRecord>,
+        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
+    ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
         // Clear output directory to avoid stale results
@@ -303,13 +354,8 @@ where
         }
         std::fs::create_dir_all(output_dir).ok();
 
-        // Discover tests
-        info!("Discovering tests...");
-        let paths: Vec<PathBuf> = Vec::new(); // Use default paths from config
-        let tests = self.framework.discover(&paths).await?;
-
         if tests.is_empty() {
-            warn!("No tests discovered");
+            warn!("No tests to run");
             return Ok(RunResult {
                 total_tests: 0,
                 passed: 0,
@@ -322,7 +368,6 @@ where
             });
         }
 
-        info!("Discovered {} tests", tests.len());
         self.reporter.on_discovery_complete(&tests).await;
 
         // Filter out skipped tests and create Test handles
