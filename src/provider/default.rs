@@ -152,6 +152,19 @@ impl SandboxProvider for DefaultProvider {
         // Run the create command to get a sandbox_id
         let result = self.connector.run(&create_cmd).await?;
 
+        // Log image build vs cache status from stderr
+        for line in result.stderr.lines() {
+            if line.contains("Using cached image") {
+                info!("Using cached Modal image");
+            } else if line.contains("Building image") {
+                info!("Building Modal image (this may take a while)");
+            } else if line.contains("Creating sandbox") {
+                debug!("Creating Modal sandbox...");
+            } else if line.contains("Sandbox ready") {
+                debug!("{}", line);
+            }
+        }
+
         if result.exit_code != 0 {
             return Err(ProviderError::ExecFailed(format!(
                 "Create command failed: {}",
