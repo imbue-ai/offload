@@ -131,3 +131,6 @@
 [no-yaml-usage]
 "." = 0
 
+[rust-no-todo-comments]
+"src" = 14
+
