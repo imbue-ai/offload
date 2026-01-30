@@ -291,7 +291,8 @@ where
     );
 
     let sandbox_pool = Mutex::new(SandboxPool::new());
-    orchestrator.run(&sandbox_pool).await?;
+    let tests = orchestrator.discover(&[]).await?;
+    orchestrator.run_with_tests(tests, &sandbox_pool).await?;
 
     // Terminate all sandboxes
     sandbox_pool.lock().await.terminate_all().await;

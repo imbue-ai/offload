@@ -65,7 +65,8 @@
 //!
 //!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let result = orchestrator.run(&sandbox_pool).await?;
+//!     let tests = orchestrator.discover(&[]).await?;
+//!     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
 //!
 //!     if result.success() {
 //!         println!("All tests passed!");
@@ -227,7 +228,8 @@ impl RunResult {
 ///     // Create orchestrator and run
 ///     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
-///     let result = orchestrator.run(&sandbox_pool).await?;
+///     let tests = orchestrator.discover(&[]).await?;
+///     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
 /// }
@@ -288,45 +290,10 @@ where
         Ok(tests)
     }
 
-    /// Runs all tests and returns the aggregated results.
-    ///
-    /// This is the main entry point for test execution. It performs:
-    ///
-    /// 1. Test discovery using the configured framework
-    /// 2. Scheduling tests into batches based on `max_parallel`
-    /// 3. Parallel execution across sandboxes (reusing from pool or creating new)
-    /// 4. Retrying failed tests (if `retry_count > 0`)
-    /// 5. Aggregating results and notifying the reporter
-    ///
-    /// # Arguments
-    ///
-    /// * `sandbox_pool` - Pool of sandboxes to use. Takes from pool if available,
-    ///   creates new sandboxes if needed. All sandboxes are returned to the pool
-    ///   after execution.
-    ///
-    /// # Returns
-    ///
-    /// [`RunResult`] containing summary statistics and individual results.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Test discovery fails completely
-    /// - All sandbox creations fail
-    /// - Critical infrastructure errors occur
-    pub async fn run(
-        &self,
-        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
-    ) -> anyhow::Result<RunResult> {
-        let paths: Vec<PathBuf> = Vec::new();
-        let tests = self.discover(&paths).await?;
-        self.run_with_tests(tests, sandbox_pool).await
-    }
-
     /// Runs the given tests and returns the aggregated results.
     ///
-    /// Unlike [`run`](Self::run), this method takes already-discovered tests
-    /// as input, allowing callers to filter or modify tests before execution.
+    /// Takes already-discovered tests as input, allowing callers to
+    /// inspect or filter tests before execution.
     ///
     /// # Arguments
     ///

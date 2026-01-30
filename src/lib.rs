@@ -81,7 +81,8 @@
 //!     // Run tests
 //!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let result = orchestrator.run(&sandbox_pool).await?;
+//!     let tests = orchestrator.discover(&[]).await?;
+//!     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
 //!
 //!     std::process::exit(result.exit_code());
 //! }
