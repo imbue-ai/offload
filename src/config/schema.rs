@@ -267,11 +267,7 @@ pub struct DefaultProviderConfig {
     ///
     /// ```toml
     /// [provider]
-    /// type = "default"
-    /// dockerfile_path = ".devcontainer/Dockerfile"
     /// create_command = "uv run @modal_sandbox.py create default --dockerfile {dockerfile_path}"
-    /// exec_command = "uv run @modal_sandbox.py exec {sandbox_id} -- {command}"
-    /// destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
     /// ```
     #[serde(default)]
     pub dockerfile_path: Option<String>,
