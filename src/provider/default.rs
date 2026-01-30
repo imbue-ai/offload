@@ -116,6 +116,7 @@ impl DefaultProvider {
     ///     destroy_command: "echo 'Cleaned up {sandbox_id}'".to_string(),
     ///     working_dir: None,
     ///     timeout_secs: 3600,
+    ///     dockerfile_path: None,
     /// };
     ///
     /// let provider = DefaultProvider::from_config(config);
@@ -142,8 +143,14 @@ impl SandboxProvider for DefaultProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         info!("Creating connector sandbox: {}", config.id);
 
+        // Expand placeholders in create command
+        let create_cmd = self.config.create_command.replace(
+            "{dockerfile_path}",
+            self.config.dockerfile_path.as_deref().unwrap_or(""),
+        );
+
         // Run the create command to get a sandbox_id
-        let result = self.connector.run(&self.config.create_command).await?;
+        let result = self.connector.run(&create_cmd).await?;
 
         if result.exit_code != 0 {
             return Err(ProviderError::ExecFailed(format!(

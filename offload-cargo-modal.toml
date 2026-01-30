@@ -7,10 +7,11 @@ retry_count = 1
 stream_output = true
 
 [provider]
-type = "remote"
-create_command = "uv run scripts/modal_sandbox.py create rust"
-exec_command = "uv run scripts/modal_sandbox.py exec {sandbox_id} {command}"
-destroy_command = "uv run scripts/modal_sandbox.py destroy {sandbox_id}"
+type = "default"
+dockerfile_path = ".devcontainer/Dockerfile"
+create_command = "uv run @modal_sandbox.py create dockerfile {dockerfile_path}"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 timeout_secs = 600
 
 [groups.all]

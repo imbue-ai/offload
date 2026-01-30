@@ -8,7 +8,8 @@ stream_output = true
 
 [provider]
 type = "default"
-create_command = "uv run @modal_sandbox.py create default"
+dockerfile_path = ".devcontainer/Dockerfile"
+create_command = "uv run @modal_sandbox.py create dockerfile {dockerfile_path}"
 exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
 destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 timeout_secs = 600

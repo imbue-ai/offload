@@ -92,7 +92,6 @@ def create_default():
 def create_rust():
     """Create a Rust sandbox with cargo toolchain."""
     app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
-
     image = (
         modal.Image.debian_slim()
         .apt_install("curl", "build-essential")
@@ -115,6 +114,36 @@ def create_rust():
     )
 
     # Copy the entire project (source code needed for cargo test)
+    cwd = os.getcwd()
+    copy_dir_to_sandbox(sandbox, cwd, "/app")
+
+    print(sandbox.object_id)
+
+
+@create.command("dockerfile")
+@click.argument("dockerfile_path")
+def create_dockerfile(dockerfile_path: str):
+    """Create a sandbox from a Dockerfile.
+
+    DOCKERFILE_PATH is the path to the Dockerfile to build from.
+    This is slower than using built-in images but allows custom environments.
+    """
+    # Validate dockerfile exists
+    if not os.path.isfile(dockerfile_path):
+        print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
+        sys.exit(1)
+
+    app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
+    image = modal.Image.from_dockerfile(dockerfile_path)
+
+    sandbox = modal.Sandbox.create(
+        app=app,
+        image=image,
+        workdir="/app",
+        timeout=3600,
+    )
+
+    # Copy the project files to the sandbox
     cwd = os.getcwd()
     copy_dir_to_sandbox(sandbox, cwd, "/app")
 

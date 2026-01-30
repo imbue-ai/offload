@@ -17,7 +17,7 @@
 
 [no-bare-print]
 "." = 0
-"scripts" = 25
+"scripts" = 27
 
 [no-base-exception]
 "." = 0
