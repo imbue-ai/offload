@@ -224,16 +224,15 @@ impl Reporter for ConsoleReporter {
         println!("Discovered {} tests", tests.len());
 
         let pb = indicatif::ProgressBar::new(tests.len() as u64);
-        pb.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-                )
-                .unwrap()
-                .progress_chars("#>-"),
-        );
+        if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        ) {
+            pb.set_style(style.progress_chars("#>-"));
+        }
 
-        *self.progress.lock().unwrap() = Some(pb);
+        if let Ok(mut guard) = self.progress.lock() {
+            *guard = Some(pb);
+        }
     }
 
     async fn on_test_start(&self, test: &TestRecord) {
@@ -243,7 +242,9 @@ impl Reporter for ConsoleReporter {
     }
 
     async fn on_test_complete(&self, result: &TestResult) {
-        if let Some(pb) = self.progress.lock().unwrap().as_ref() {
+        if let Ok(guard) = self.progress.lock()
+            && let Some(pb) = guard.as_ref()
+        {
             pb.inc(1);
 
             let status = match result.outcome {
@@ -260,7 +261,9 @@ impl Reporter for ConsoleReporter {
     }
 
     async fn on_run_complete(&self, result: &RunResult) {
-        if let Some(pb) = self.progress.lock().unwrap().take() {
+        if let Ok(mut guard) = self.progress.lock()
+            && let Some(pb) = guard.take()
+        {
             pb.finish_and_clear();
         }
 
