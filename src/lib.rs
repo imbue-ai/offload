@@ -102,6 +102,7 @@
 //! [`Orchestrator`]: orchestrator::Orchestrator
 
 pub mod bundled;
+pub mod cache;
 pub mod config;
 pub mod connector;
 pub mod framework;
