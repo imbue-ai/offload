@@ -167,7 +167,17 @@ async fn run_tests(
         };
         let count = tests.len();
         info!("Group '{}': discovered {} tests", group_name, count);
-        all_tests.extend(tests);
+
+        // Set retry count for each test (group-specific or global fallback)
+        let retry_count = group_config
+            .retry_count
+            .unwrap_or(config.offload.retry_count);
+        let tests_with_retry: Vec<TestRecord> = tests
+            .into_iter()
+            .map(|t| t.with_retry_count(retry_count))
+            .collect();
+
+        all_tests.extend(tests_with_retry);
         boundaries.push(GroupBoundary {
             name: group_name.clone(),
             start,

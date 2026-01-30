@@ -1,20 +1,26 @@
 """Simple list tests."""
 
+import pytest
 
+
+@pytest.mark.group_a
 def test_append():
     lst = [1, 2]
     lst.append(3)
     assert lst == [1, 2, 3]
 
 
+@pytest.mark.group_b
 def test_length():
     assert len([1, 2, 3, 4, 5]) == 5
 
 
+@pytest.mark.group_a
 def test_slice():
     assert [1, 2, 3, 4, 5][1:4] == [2, 3, 4]
 
 
+@pytest.mark.group_b
 def test_reverse():
     lst = [1, 2, 3]
     lst.reverse()

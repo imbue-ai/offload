@@ -299,6 +299,12 @@ pub struct GroupConfig {
     /// Framework configuration for this group (flattened in TOML).
     #[serde(flatten)]
     pub framework: FrameworkConfig,
+
+    /// Number of times to retry failed tests in this group.
+    ///
+    /// Overrides the global `retry_count` setting for tests in this group.
+    /// If not specified, uses the global setting from `[offload]`.
+    pub retry_count: Option<usize>,
 }
 
 /// Test framework configuration specifying how tests are found and run.

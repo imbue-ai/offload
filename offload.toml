@@ -10,14 +10,16 @@ retry_count = 4
 type = "local"
 working_dir = "."
 
-[groups.all]
+[groups.group_a]
 type = "pytest"
 paths = ["examples/tests"]
+markers = "group_a"
 python = "python3"
 
-[groups.all2]
+[groups.group_b]
 type = "pytest"
-paths = ["examples/tests/test_math.py"]
+paths = ["examples/tests"]
+markers = "group_b"
 python = "python3"
 
 [report]

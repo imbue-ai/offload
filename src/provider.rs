@@ -385,23 +385,24 @@ impl Command {
 /// Result of executing a command in a sandbox.
 ///
 /// Contains the exit code, captured output, and execution duration.
-/// This is returned by [`Sandbox::exec`] for non-streaming execution.
 ///
 /// # Example
 ///
-/// ```no_run
-/// use offload::provider::{Command, ExecResult};
+/// ```
+/// use offload::provider::ExecResult;
+/// use std::time::Duration;
 ///
-/// async fn run_test(sandbox: &impl offload::provider::Sandbox) {
-///     let cmd = Command::new("pytest").arg("test_math.py");
-///     let result = sandbox.exec(&cmd).await.unwrap();
+/// let result = ExecResult {
+///     exit_code: 0,
+///     stdout: "All tests passed".to_string(),
+///     stderr: String::new(),
+///     duration: Duration::from_secs(5),
+/// };
 ///
-///     if result.success() {
-///         println!("Tests passed in {:?}", result.duration);
-///     } else {
-///         println!("Tests failed with code {}", result.exit_code);
-///         println!("Error output: {}", result.stderr);
-///     }
+/// if result.success() {
+///     println!("Tests passed in {:?}", result.duration);
+/// } else {
+///     println!("Tests failed with code {}", result.exit_code);
 /// }
 /// ```
 #[derive(Debug, Clone)]

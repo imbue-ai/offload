@@ -163,6 +163,10 @@ pub struct TestRecord {
     /// Whether this test should be skipped.
     pub skipped: bool,
 
+    /// Number of times to retry this test if it fails.
+    /// Set per-test to allow group-specific retry counts.
+    pub retry_count: usize,
+
     /// Results from each execution attempt.
     /// Skipped during serialization as it contains runtime state.
     #[serde(skip)]
@@ -182,8 +186,15 @@ impl TestRecord {
             markers: Vec::new(),
             flaky: false,
             skipped: false,
+            retry_count: 0,
             results: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Sets the retry count for this test.
+    pub fn with_retry_count(mut self, count: usize) -> Self {
+        self.retry_count = count;
+        self
     }
 
     /// Sets the source file path.
@@ -256,8 +267,50 @@ impl TestRecord {
     }
 
     /// Returns the final/canonical result (last result).
+    /// Returns the final result for this test.
+    ///
+    /// If multiple attempts were run in parallel, returns passed if any passed.
+    /// A test that passed after failures is marked as flaky.
     pub fn final_result(&self) -> Option<TestResult> {
-        self.results.lock().unwrap().last().cloned()
+        let results = self.results.lock().unwrap();
+        if results.is_empty() {
+            return None;
+        }
+
+        let any_passed = results.iter().any(|r| r.outcome == TestOutcome::Passed);
+        let any_failed = results
+            .iter()
+            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
+
+        // Return passed result if any passed, otherwise first failure
+        let mut result = if any_passed {
+            results
+                .iter()
+                .find(|r| r.outcome == TestOutcome::Passed)
+                .cloned()
+                .unwrap()
+        } else {
+            results.first().cloned().unwrap()
+        };
+
+        // Mark as flaky if passed but had failures
+        if any_passed && any_failed {
+            result.error_message = Some("Flaky - passed on parallel retry".to_string());
+        }
+
+        Some(result)
+    }
+
+    /// Returns whether this test is flaky based on recorded results.
+    ///
+    /// A test is flaky if it has both passes and failures across attempts.
+    pub fn is_flaky_from_results(&self) -> bool {
+        let results = self.results.lock().unwrap();
+        let any_passed = results.iter().any(|r| r.outcome == TestOutcome::Passed);
+        let any_failed = results
+            .iter()
+            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
+        any_passed && any_failed
     }
 }
 

@@ -42,7 +42,6 @@
 //! - [`Orchestrator`] - Main entry point that coordinates the entire test run
 //! - [`orchestrator::Scheduler`] - Distributes tests across available sandboxes
 //! - [`orchestrator::TestRunner`] - Executes tests within a single sandbox
-//! - [`orchestrator::RetryManager`] - Handles retry logic and flaky test detection
 //!
 //! ### Reporting ([`report`])
 //!

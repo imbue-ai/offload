@@ -7,42 +7,52 @@
 //! # Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────────┐
-//! │                         Orchestrator                                 │
-//! │  (coordinates the entire test run)                                  │
-//! │                                                                      │
-//! │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐            │
-//! │  │  Framework  │   │   Scheduler  │   │   Reporter   │            │
-//! │  │   (finds     │   │ (distributes │   │   (reports   │            │
-//! │  │    tests)    │   │    tests)    │   │   results)   │            │
-//! │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘            │
-//! │         │                  │                  │                     │
-//! │         ▼                  ▼                  │                     │
-//! │  ┌────────────────────────────────────────────────────────────┐    │
-//! │  │                      TestRunner (per sandbox)              │    │
-//! │  │  ┌────────────┐                        ┌──────────────┐   │    │
-//! │  │  │  Sandbox   │ ◄──── exec() ────────► │ RetryManager │   │    │
-//! │  │  │ (provider) │                        │  (retries)   │   │    │
-//! │  │  └────────────┘                        └──────────────┘   │    │
-//! │  └────────────────────────────────────────────────────────────┘    │
-//! │                                                                      │
-//! └─────────────────────────────────────────────────────────────────────┘
+//!   Framework                 Scheduler                Provider
+//!       │                         │                        │
+//!       │ discover()              │                        │
+//!       ▼                         │                        │
+//!  Vec<TestRecord>                │                        │
+//!       │                         │                        │
+//!       │ expand to TestInstances │                        │
+//!       ▼                         │                        │
+//!  Vec<TestInstance> ────────────►│ schedule_random()      │
+//!                                 ▼                        │
+//!                        Vec<Vec<TestInstance>> (batches)  │
+//!                                 │                        │
+//!                                 │    create_sandbox() ──►│
+//!                                 │                        ▼
+//!                                 │                     Sandbox
+//!                                 │                        │
+//!                                 └────────┬───────────────┘
+//!                                          ▼
+//!                                     TestRunner
+//!                                          │
+//!   Framework ◄─── produce_command() ──────┤
+//!       │                                  │
+//!       │                        Sandbox.exec(cmd)
+//!       │                                  │
+//!       │ parse_results() ◄─────── ExecResult
+//!       ▼
+//!  Vec<TestResult> ──► TestRecord.record_result()
+//!                                          │
+//!                                          ▼
+//!                                      Reporter
 //! ```
 //!
 //! # Execution Flow
 //!
 //! 1. **Discovery**: Find tests using the configured framework
-//! 2. **Scheduling**: Distribute tests into batches across sandboxes
-//! 3. **Execution**: Run test batches in parallel sandboxes
-//! 4. **Retry**: Re-run failed tests (if configured)
-//! 5. **Reporting**: Aggregate results and notify reporters
+//! 2. **Expansion**: Create parallel retry instances for each test
+//! 3. **Scheduling**: Distribute test instances into batches across sandboxes
+//! 4. **Execution**: Run test batches in parallel sandboxes
+//! 5. **Aggregation**: Combine results (any pass = pass, detect flaky tests)
+//! 6. **Reporting**: Notify reporters with final results
 //!
 //! # Key Components
 //!
 //! - [`Orchestrator`]: Main entry point coordinating the test run
 //! - [`Scheduler`]: Distributes tests across available sandboxes
 //! - [`TestRunner`]: Executes tests in a single sandbox
-//! - [`RetryManager`]: Handles retry logic and flaky test detection
 //! - [`RunResult`]: Aggregated results of the entire test run
 //!
 //! # Example
@@ -82,7 +92,6 @@
 //! ```
 
 pub mod pool;
-pub mod retry;
 pub mod runner;
 pub mod scheduler;
 
@@ -98,7 +107,6 @@ use crate::provider::{OutputLine, SandboxProvider};
 use crate::report::Reporter;
 
 pub use pool::SandboxPool;
-pub use retry::RetryManager;
 pub use runner::{OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
@@ -315,13 +323,17 @@ where
         self.reporter.on_discovery_complete(tests).await;
 
         // Filter out skipped tests and create Test handles
+        // For tests with retry_count > 0, create multiple instances to run in parallel
         let tests_to_run: Vec<TestInstance<'_>> = tests
             .iter()
             .filter(|t| !t.skipped)
-            .map(|t| t.test())
+            .flat_map(|t| {
+                let count = t.retry_count + 1; // 1 original + retry_count retries
+                (0..count).map(move |_| t.test())
+            })
             .collect();
 
-        let skipped_count = tests.len() - tests_to_run.len();
+        let skipped_count = tests.len() - tests.iter().filter(|t| !t.skipped).count();
 
         // Schedule tests into batches using random distribution
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
@@ -334,13 +346,9 @@ where
         );
 
         // Run tests in parallel
-        let results = Mutex::new(Vec::new());
-        let mut retry_manager = RetryManager::new(self.config.offload.retry_count);
-
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
             for (batch_idx, batch) in batches.into_iter().enumerate() {
-                let results = &results;
                 let provider = &self.provider;
                 let framework = &self.framework;
                 let reporter = &self.reporter;
@@ -399,12 +407,6 @@ where
                     match runner.run_tests(&batch).await {
                         Ok(()) => {
                             // Results are stored in each TestRecord
-                            for test in &batch {
-                                if let Some(r) = test.record().final_result() {
-                                    reporter.on_test_complete(&r).await;
-                                    results.lock().await.push(r);
-                                }
-                            }
                         }
                         Err(e) => {
                             error!("Batch execution error: {}", e);
@@ -419,9 +421,7 @@ where
                                     error_message: Some(e.to_string()),
                                     stack_trace: None,
                                 };
-                                test.record_result(failed_result.clone());
-                                reporter.on_test_complete(&failed_result).await;
-                                results.lock().await.push(failed_result);
+                                test.record_result(failed_result);
                             }
                         }
                     }
@@ -433,49 +433,20 @@ where
             }
         });
 
-        // Collect results
-        let mut all_results = results.into_inner();
-
-        // Identify failed test IDs for retry
-        let failed_test_ids: Vec<String> = all_results
+        // Aggregate results from TestRecords (handles parallel retries automatically)
+        // Each TestRecord may have multiple results; final_result() picks pass if any passed
+        let all_results: Vec<TestResult> = tests
             .iter()
-            .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
-            .map(|r| r.test_id.clone())
+            .filter(|t| !t.skipped)
+            .filter_map(|t| t.final_result())
             .collect();
 
-        // Retry failed tests
-        let mut flaky_count = 0;
-        if !failed_test_ids.is_empty() && self.config.offload.retry_count > 0 {
-            info!("Retrying {} failed tests...", failed_test_ids.len());
-
-            // Get Test references for failed tests from the original records
-            let failed_tests: Vec<TestInstance<'_>> = tests
-                .iter()
-                .filter(|r| failed_test_ids.contains(&r.id))
-                .map(|r| r.test())
-                .collect();
-
-            let retry_results = self
-                .retry_tests(&failed_tests, &mut retry_manager, sandbox_pool)
-                .await?;
-
-            // Update results based on retries
-            for retry_result in retry_results {
-                if retry_result.outcome == TestOutcome::Passed {
-                    // Mark as flaky - passed on retry
-                    flaky_count += 1;
-
-                    // Update the original result
-                    if let Some(original) = all_results
-                        .iter_mut()
-                        .find(|r| r.test_id == retry_result.test_id)
-                    {
-                        original.outcome = TestOutcome::Passed;
-                        original.error_message = Some("Flaky - passed on retry".to_string());
-                    }
-                }
-            }
-        }
+        // Count flaky tests (passed but had failures)
+        let flaky_count = tests
+            .iter()
+            .filter(|t| !t.skipped)
+            .filter(|t| t.is_flaky_from_results())
+            .count();
 
         // Calculate statistics
         let passed = all_results
@@ -490,7 +461,8 @@ where
             .iter()
             .filter(|r| r.outcome == TestOutcome::Skipped)
             .count();
-        let not_run = tests_to_run.len().saturating_sub(all_results.len());
+        let unique_tests = tests.iter().filter(|t| !t.skipped).count();
+        let not_run = unique_tests.saturating_sub(all_results.len());
 
         let run_result = RunResult {
             total_tests: tests.len(),
@@ -506,121 +478,5 @@ where
         self.reporter.on_run_complete(&run_result).await;
 
         Ok(run_result)
-    }
-
-    /// Retry failed tests using sandboxes from the pool.
-    ///
-    /// Tests are batched across available sandboxes and run in parallel,
-    /// similar to the initial test run.
-    async fn retry_tests(
-        &self,
-        tests: &[TestInstance<'_>],
-        retry_manager: &mut RetryManager,
-        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
-    ) -> anyhow::Result<Vec<TestResult>> {
-        // Filter to tests that should be retried
-        let tests_to_retry: Vec<_> = tests
-            .iter()
-            .filter(|t| retry_manager.should_retry(t.id()))
-            .copied()
-            .collect();
-
-        if tests_to_retry.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Check if we have sandboxes available
-        if sandbox_pool.lock().await.is_empty() {
-            warn!("No sandboxes available for retries");
-            return Ok(Vec::new());
-        }
-
-        let retry_results = Mutex::new(Vec::new());
-        let retry_manager = Mutex::new(retry_manager);
-
-        // Run retries for each attempt
-        for attempt in 0..self.config.offload.retry_count {
-            // Get tests that still need retrying (haven't passed yet)
-            let still_failing: Vec<_> = {
-                let mgr = retry_manager.lock().await;
-                tests_to_retry
-                    .iter()
-                    .filter(|t| mgr.should_retry(t.id()))
-                    .copied()
-                    .collect()
-            };
-
-            if still_failing.is_empty() {
-                break;
-            }
-
-            info!(
-                "Retry attempt {} for {} tests",
-                attempt + 1,
-                still_failing.len()
-            );
-
-            // Schedule tests across available sandboxes
-            let num_sandboxes = sandbox_pool.lock().await.len();
-            let scheduler = Scheduler::new(num_sandboxes);
-            let batches = scheduler.schedule_random(&still_failing);
-
-            // Execute retries in parallel
-            tokio_scoped::scope(|scope| {
-                for batch in batches.into_iter() {
-                    let retry_results = &retry_results;
-                    let retry_manager = &retry_manager;
-                    let framework = &self.framework;
-                    let config = &self.config;
-
-                    scope.spawn(async move {
-                        // Take sandbox from pool
-                        let sandbox = match sandbox_pool.lock().await.take_one() {
-                            Some(s) => s,
-                            None => return,
-                        };
-
-                        let mut runner = TestRunner::new(
-                            sandbox,
-                            framework,
-                            Duration::from_secs(config.offload.test_timeout_secs),
-                        );
-
-                        // Run all tests in batch with a single command
-                        match runner.run_tests(&batch).await {
-                            Ok(()) => {
-                                for test in &batch {
-                                    if let Some(result) = test.record().final_result() {
-                                        let passed = result.outcome == TestOutcome::Passed;
-                                        retry_manager
-                                            .lock()
-                                            .await
-                                            .record_attempt(test.id(), passed);
-
-                                        if passed {
-                                            retry_results.lock().await.push(result);
-                                        }
-                                    } else {
-                                        retry_manager.lock().await.record_attempt(test.id(), false);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Batch retry failed: {}", e);
-                                for test in &batch {
-                                    retry_manager.lock().await.record_attempt(test.id(), false);
-                                }
-                            }
-                        }
-
-                        // Return sandbox to pool
-                        let sandbox = runner.into_sandbox();
-                        sandbox_pool.lock().await.add(sandbox);
-                    });
-                }
-            });
-        }
-
-        Ok(retry_results.into_inner())
     }
 }
