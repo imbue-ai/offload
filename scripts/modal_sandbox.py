@@ -173,10 +173,22 @@ def create_default(force_rebuild: bool):
         if image is not None:
             print("Using cached image", file=sys.stderr)
 
-    # Build image if no cache hit
+    # Build image if no cache hit - also save to cache after building
     if image is None:
         print("Building image...", file=sys.stderr)
         image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+
+        # Save to cache for next time
+        cache = load_cache()
+        cache["default"] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=None,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="default",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
 
     sandbox = modal.Sandbox.create(
         app=app,
@@ -208,7 +220,7 @@ def create_rust(force_rebuild: bool):
         if image is not None:
             print("Using cached image", file=sys.stderr)
 
-    # Build image if no cache hit
+    # Build image if no cache hit - also save to cache after building
     if image is None:
         print("Building image...", file=sys.stderr)
         image = (
@@ -224,6 +236,18 @@ def create_rust(force_rebuild: bool):
                 }
             )
         )
+
+        # Save to cache for next time
+        cache = load_cache()
+        cache["rust"] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=None,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="rust",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
 
     sandbox = modal.Sandbox.create(
         app=app,
@@ -265,10 +289,22 @@ def create_dockerfile(dockerfile_path: str, force_rebuild: bool):
         if image is not None:
             print("Using cached image", file=sys.stderr)
 
-    # Build image if no cache hit
+    # Build image if no cache hit - also save to cache after building
     if image is None:
         print("Building image from Dockerfile...", file=sys.stderr)
         image = modal.Image.from_dockerfile(dockerfile_path)
+
+        # Save to cache for next time
+        cache = load_cache()
+        cache[cache_key] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=dockerfile_hash,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="dockerfile",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
 
     sandbox = modal.Sandbox.create(
         app=app,
@@ -355,6 +391,18 @@ def create_computronium(gi_path: str, force_rebuild: bool):
                 ignore=["conftest.py", "*.pyc", "__pycache__"],
             )
         )
+
+        # Save to cache for next time
+        cache = load_cache()
+        cache["computronium"] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=None,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="computronium",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
 
     print("Creating sandbox...", file=sys.stderr)
     sandbox = modal.Sandbox.create(
@@ -495,6 +543,18 @@ def create_sculptor(gi_path: str | None, force_rebuild: bool):
             .add_local_file(f"{gi_path}/sculptor/pyproject.toml", "/app/pyproject.toml")
         )
 
+        # Save to cache for next time
+        cache = load_cache()
+        cache["sculptor"] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=None,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="sculptor",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
+
     print("Creating sandbox...", file=sys.stderr)
     try:
         sandbox = modal.Sandbox.create(
@@ -633,6 +693,18 @@ def create_mngr(force_rebuild: bool):
             # Run uv sync to create proper venv for type checker tests
             .run_commands("cd /app && uv sync --all-packages")
         )
+
+        # Save to cache for next time
+        cache = load_cache()
+        cache["mngr"] = ImageCacheEntry(
+            image_id=image.object_id,
+            dockerfile_hash=None,
+            mtime=None,
+            created_at=datetime.now().isoformat(),
+            sandbox_type="mngr",
+        )
+        save_cache(cache)
+        print(f"Cached image: {image.object_id}", file=sys.stderr)
 
     print("Creating sandbox...", file=sys.stderr)
     try:
