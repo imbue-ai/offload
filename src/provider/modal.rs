@@ -1,46 +1,13 @@
 //! Modal cloud provider with image caching.
 //!
-//! This provider integrates directly with Modal cloud sandboxes, implementing
-//! intelligent image caching to avoid rebuilding unchanged images. It supports
-//! both custom Dockerfiles and Modal's preset images (default, rust, etc.).
+//! This provider integrates directly with Modal cloud sandboxes.
 //!
-//! # Features
-//!
-//! - **Image caching**: Tracks Dockerfile hashes to avoid rebuilds
-//! - **Preset images**: Use Modal's built-in images (default, rust, etc.)
-//! - **Custom Dockerfiles**: Build from custom Dockerfile paths
-//! - **Persistent cache**: Stores image IDs in `.offload/modal_images.json`
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌──────────────────────────────────────────────────────┐
-//! │              ModalProvider                           │
-//! │                                                      │
-//! │  1. Load cache from .offload/modal_images.json      │
-//! │  2. Check if image needs rebuild (hash check)       │
-//! │  3. Build/reuse image via Python script             │
-//! │  4. Save image_id to cache                          │
-//! │  5. Create sandbox with cached image                │
-//! └──────────────────────────────────────────────────────┘
-//! ```
+//! We persist a cache of Dockerfile hashes to the local disk to avoid rebuilding the Modal Sandbox Image.
 //!
 //! # Cache Keys
 //!
 //! - Dockerfile: `dockerfile:{path}` with hash validation
 //! - Preset: `preset:{name}` (e.g., `preset:default`, `preset:rust`)
-//!
-//! # Example Configuration
-//!
-//! ```toml
-//! [provider]
-//! type = "modal"
-//! app_name = "offload-sandbox"
-//! image_type = { dockerfile = ".devcontainer/Dockerfile" }
-//! working_dir = "/workspace"
-//! timeout_secs = 600
-//! ```
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,9 +25,6 @@ use crate::config::{ModalImageType, ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
 /// Provider for Modal cloud sandboxes with image caching.
-///
-/// Manages Modal sandbox lifecycle and implements intelligent image caching
-/// to avoid rebuilding images that haven't changed.
 pub struct ModalProvider {
     config: ModalProviderConfig,
     connector: Arc<ShellConnector>,
@@ -401,16 +365,13 @@ impl SandboxProvider for ModalProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ModalSandbox> {
         info!("Creating Modal sandbox: {}", config.id);
 
-        // 1. Get or build image (with caching)
         let image_id = self.get_or_build_image().await?;
 
-        // 2. Create sandbox with image
         let sandbox_type = self.get_sandbox_type();
         let remote_id = self
             .call_python_create_with_image(&image_id, &sandbox_type)
             .await?;
 
-        // 3. Track sandbox
         let info = ModalSandboxInfo {
             remote_id: remote_id.clone(),
             status: SandboxStatus::Running,

@@ -7,33 +7,6 @@
 //!
 //! The cache maps cache keys (like "default", "rust", or "dockerfile:/path/to/Dockerfile")
 //! to image metadata including the Modal image ID and optional dockerfile hash.
-//!
-//! # Example
-//!
-//! ```no_run
-//! use offload::cache::{ImageCache, ImageCacheEntry};
-//! use std::path::Path;
-//!
-//! let cache_dir = Path::new("/path/to/project");
-//! let mut cache = ImageCache::load(cache_dir);
-//!
-//! // Check if we have a cached image
-//! if let Some(entry) = cache.get("default") {
-//!     println!("Found cached image: {}", entry.image_id);
-//! }
-//!
-//! // Add a new cache entry
-//! cache.insert("default".to_string(), ImageCacheEntry {
-//!     image_id: "im-abc123".to_string(),
-//!     dockerfile_hash: None,
-//!     created_at: chrono::Utc::now().to_rfc3339(),
-//!     image_type: "preset".to_string(),
-//! });
-//!
-//! // Save the cache
-//! cache.save(cache_dir).unwrap();
-//! ```
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,9 +16,6 @@ use std::io::Read;
 use std::path::Path;
 
 /// A cache entry for a Modal image.
-///
-/// Contains metadata about a cached Modal image, including its ID and
-/// optional dockerfile hash for validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageCacheEntry {
     /// The Modal image ID (e.g., "im-abc123")
@@ -64,7 +34,7 @@ pub struct ImageCacheEntry {
 /// Cache for Modal image IDs.
 ///
 /// Manages a persistent cache of Modal image IDs to avoid rebuilding images
-/// that haven't changed. The cache is stored as JSON in `.offload/modal_images.json`.
+/// that haven't changed.
 #[derive(Debug, Clone, Default)]
 pub struct ImageCache {
     entries: HashMap<String, ImageCacheEntry>,
@@ -73,21 +43,9 @@ pub struct ImageCache {
 impl ImageCache {
     /// Loads the cache from disk.
     ///
-    /// Reads from `{cache_dir}/.offload/modal_images.json`. If the file doesn't exist
-    /// or is invalid, returns an empty cache.
-    ///
     /// # Arguments
     ///
     /// * `cache_dir` - The directory containing the `.offload` cache directory
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::cache::ImageCache;
-    /// use std::path::Path;
-    ///
-    /// let cache = ImageCache::load(Path::new("/path/to/project"));
-    /// ```
     pub fn load(cache_dir: &Path) -> Self {
         let cache_path = cache_dir.join(".offload").join("modal_images.json");
 
@@ -130,16 +88,6 @@ impl ImageCache {
     /// # Errors
     ///
     /// Returns an error if the directory cannot be created or the file cannot be written.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::cache::ImageCache;
-    /// use std::path::Path;
-    ///
-    /// let cache = ImageCache::load(Path::new("/path/to/project"));
-    /// cache.save(Path::new("/path/to/project")).unwrap();
-    /// ```
     pub fn save(&self, cache_dir: &Path) -> Result<()> {
         let offload_dir = cache_dir.join(".offload");
         let cache_path = offload_dir.join("modal_images.json");
@@ -169,18 +117,6 @@ impl ImageCache {
     /// # Returns
     ///
     /// The cache entry if found, or `None` if the key doesn't exist.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::cache::ImageCache;
-    /// use std::path::Path;
-    ///
-    /// let cache = ImageCache::load(Path::new("/path/to/project"));
-    /// if let Some(entry) = cache.get("default") {
-    ///     println!("Found cached image: {}", entry.image_id);
-    /// }
-    /// ```
     pub fn get(&self, key: &str) -> Option<&ImageCacheEntry> {
         self.entries.get(key)
     }
@@ -198,21 +134,6 @@ impl ImageCache {
     /// # Returns
     ///
     /// The cache entry if found and the hash matches, or `None` otherwise.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::cache::{ImageCache, compute_file_hash};
-    /// use std::path::Path;
-    ///
-    /// let cache = ImageCache::load(Path::new("/path/to/project"));
-    /// let dockerfile_path = Path::new("Dockerfile");
-    /// let current_hash = compute_file_hash(dockerfile_path).unwrap();
-    ///
-    /// if let Some(entry) = cache.get_for_dockerfile("dockerfile:Dockerfile", &current_hash) {
-    ///     println!("Found valid cached image: {}", entry.image_id);
-    /// }
-    /// ```
     pub fn get_for_dockerfile(&self, key: &str, current_hash: &str) -> Option<&ImageCacheEntry> {
         let entry = self.entries.get(key)?;
 
@@ -241,21 +162,6 @@ impl ImageCache {
     ///
     /// * `key` - Cache key (e.g., "default", "rust", "dockerfile:/path/to/Dockerfile")
     /// * `entry` - The cache entry to insert
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::cache::{ImageCache, ImageCacheEntry};
-    /// use std::path::Path;
-    ///
-    /// let mut cache = ImageCache::load(Path::new("/path/to/project"));
-    /// cache.insert("default".to_string(), ImageCacheEntry {
-    ///     image_id: "im-abc123".to_string(),
-    ///     dockerfile_hash: None,
-    ///     created_at: chrono::Utc::now().to_rfc3339(),
-    ///     image_type: "preset".to_string(),
-    /// });
-    /// ```
     pub fn insert(&mut self, key: String, entry: ImageCacheEntry) {
         tracing::debug!("Inserting cache entry for key '{}': {:?}", key, entry);
         self.entries.insert(key, entry);
@@ -277,16 +183,6 @@ impl ImageCache {
 /// # Errors
 ///
 /// Returns an error if the file cannot be read.
-///
-/// # Example
-///
-/// ```no_run
-/// use offload::cache::compute_file_hash;
-/// use std::path::Path;
-///
-/// let hash = compute_file_hash(Path::new("Dockerfile")).unwrap();
-/// println!("Dockerfile hash: {}", hash);
-/// ```
 pub fn compute_file_hash(path: &Path) -> Result<String> {
     let mut file =
         fs::File::open(path).context(format!("Failed to open file: {}", path.display()))?;
