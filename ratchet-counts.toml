@@ -106,7 +106,7 @@
 
 [no-todo-comments]
 "." = 0
-"src" = 15
+"src" = 14
 
 [no-trailing-comments]
 "." = 0
