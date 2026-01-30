@@ -66,7 +66,7 @@
 //!     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let tests = orchestrator.discover(&[]).await?;
-//!     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
+//!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
 //!     if result.success() {
 //!         println!("All tests passed!");
@@ -229,7 +229,7 @@ impl RunResult {
 ///     let orchestrator = Orchestrator::new(config, "example".to_string(), provider, framework, reporter);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
 ///     let tests = orchestrator.discover(&[]).await?;
-///     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
+///     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
 /// }
@@ -293,7 +293,8 @@ where
     /// Runs the given tests and returns the aggregated results.
     ///
     /// Takes already-discovered tests as input, allowing callers to
-    /// inspect or filter tests before execution.
+    /// inspect or filter tests before execution. Results are recorded
+    /// into each `TestRecord` via interior mutability.
     ///
     /// # Arguments
     ///
@@ -309,7 +310,7 @@ where
     /// Returns an error if critical infrastructure errors occur.
     pub async fn run_with_tests(
         &self,
-        tests: Vec<TestRecord>,
+        tests: &[TestRecord],
         sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
@@ -335,7 +336,7 @@ where
             });
         }
 
-        self.reporter.on_discovery_complete(&tests).await;
+        self.reporter.on_discovery_complete(tests).await;
 
         // Filter out skipped tests and create Test handles
         let tests_to_run: Vec<TestInstance<'_>> = tests
