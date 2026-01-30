@@ -177,7 +177,11 @@ impl TestRecord {
     /// Creates a new test record with the given ID.
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
-        let name = id.split("::").last().unwrap_or(&id).to_string();
+        let name = id
+            .split("::")
+            .last()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| id.clone());
         Self {
             id,
             name,
@@ -234,36 +238,44 @@ impl TestRecord {
 
     /// Records a result from a test execution.
     pub fn record_result(&self, result: TestResult) {
-        self.results.lock().unwrap().push(result);
+        if let Ok(mut guard) = self.results.lock() {
+            guard.push(result);
+        }
     }
 
     /// Returns the results collected so far.
     pub fn results(&self) -> Vec<TestResult> {
-        self.results.lock().unwrap().clone()
+        self.results
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// Returns true if test passed at least once and failed at least once.
     pub fn is_flaky(&self) -> bool {
-        let results = self.results.lock().unwrap();
-        let has_pass = results.iter().any(|r| r.outcome == TestOutcome::Passed);
-        let has_fail = results
-            .iter()
-            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
-        has_pass && has_fail
+        if let Ok(results) = self.results.lock() {
+            let has_pass = results.iter().any(|r| r.outcome == TestOutcome::Passed);
+            let has_fail = results
+                .iter()
+                .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
+            has_pass && has_fail
+        } else {
+            false
+        }
     }
 
     /// Returns true if the most recent attempt passed.
     pub fn passed(&self) -> bool {
         self.results
             .lock()
-            .unwrap()
-            .last()
-            .is_some_and(|r| r.outcome == TestOutcome::Passed)
+            .ok()
+            .and_then(|guard| guard.last().map(|r| r.outcome == TestOutcome::Passed))
+            .unwrap_or(false)
     }
 
     /// Returns the number of execution attempts.
     pub fn attempt_count(&self) -> usize {
-        self.results.lock().unwrap().len()
+        self.results.lock().map(|guard| guard.len()).unwrap_or(0)
     }
 
     /// Returns the final/canonical result (last result).
@@ -272,7 +284,7 @@ impl TestRecord {
     /// If multiple attempts were run in parallel, returns passed if any passed.
     /// A test that passed after failures is marked as flaky.
     pub fn final_result(&self) -> Option<TestResult> {
-        let results = self.results.lock().unwrap();
+        let results = self.results.lock().ok()?;
         if results.is_empty() {
             return None;
         }
@@ -287,10 +299,9 @@ impl TestRecord {
             results
                 .iter()
                 .find(|r| r.outcome == TestOutcome::Passed)
-                .cloned()
-                .unwrap()
+                .cloned()?
         } else {
-            results.first().cloned().unwrap()
+            results.first().cloned()?
         };
 
         // Mark as flaky if passed but had failures
@@ -305,7 +316,9 @@ impl TestRecord {
     ///
     /// A test is flaky if it has both passes and failures across attempts.
     pub fn is_flaky_from_results(&self) -> bool {
-        let results = self.results.lock().unwrap();
+        let Ok(results) = self.results.lock() else {
+            return false;
+        };
         let any_passed = results.iter().any(|r| r.outcome == TestOutcome::Passed);
         let any_failed = results
             .iter()
@@ -316,6 +329,12 @@ impl TestRecord {
 
 impl std::fmt::Debug for TestRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let results_debug = self
+            .results
+            .lock()
+            .as_ref()
+            .map(|guard| format!("{:?}", &**guard))
+            .unwrap_or_else(|_| "<poisoned>".to_string());
         f.debug_struct("TestRecord")
             .field("id", &self.id)
             .field("name", &self.name)
@@ -324,7 +343,7 @@ impl std::fmt::Debug for TestRecord {
             .field("markers", &self.markers)
             .field("flaky", &self.flaky)
             .field("skipped", &self.skipped)
-            .field("results", &self.results.lock().unwrap())
+            .field("results", &results_debug)
             .finish()
     }
 }
