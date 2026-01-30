@@ -1175,5 +1175,58 @@ def run(command: str):
     sys.exit(result["exit_code"])
 
 
+@cli.command("cache-status")
+def cache_status():
+    """Show status of cached Modal images."""
+    cache_path = get_cache_path()
+    print(f"Cache file: {cache_path}")
+    print()
+
+    cache = load_cache()
+    if not cache:
+        print("No cached images.")
+        return
+
+    print(f"{'Type':<25} {'Image ID':<25} {'Created At':<25} {'Status'}")
+    print("-" * 85)
+
+    for key, entry in cache.items():
+        # Check if image still exists in Modal
+        status = "valid"
+        try:
+            modal.Image.from_id(entry.image_id)
+        except modal.exception.NotFoundError:
+            status = "stale (not found)"
+        except Exception:
+            status = "unknown"
+
+        print(f"{key:<25} {entry.image_id:<25} {entry.created_at:<25} {status}")
+
+
+@cli.command("cache-clear")
+@click.option("--type", "sandbox_type", default=None, help="Clear only specific sandbox type")
+def cache_clear(sandbox_type: str | None):
+    """Clear cached Modal image IDs."""
+    cache = load_cache()
+
+    if not cache:
+        print("Cache is already empty.")
+        return
+
+    if sandbox_type is not None:
+        # Clear only specific type
+        if sandbox_type in cache:
+            del cache[sandbox_type]
+            save_cache(cache)
+            print(f"Cleared cache entry for: {sandbox_type}")
+        else:
+            print(f"No cache entry found for: {sandbox_type}")
+    else:
+        # Clear all
+        cache_path = get_cache_path()
+        cache_path.unlink(missing_ok=True)
+        print("Cleared all cached images.")
+
+
 if __name__ == "__main__":
     cli()
