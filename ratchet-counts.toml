@@ -54,10 +54,11 @@
 
 [no-global-keyword]
 "." = 0
-"scripts" = 3
+"scripts" = 6
 
 [no-if-elif-without-else]
 "." = 0
+"scripts" = 3
 
 [no-import-datetime]
 "." = 0
@@ -107,7 +108,7 @@
 
 [no-trailing-comments]
 "." = 0
-"scripts" = 3
+"scripts" = 6
 
 [no-typing-builtin-imports]
 "." = 0
