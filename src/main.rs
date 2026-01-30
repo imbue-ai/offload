@@ -15,7 +15,7 @@ use offload::framework::{
     pytest::PytestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
-use offload::provider::{default::DefaultProvider, local::LocalProvider};
+use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
 use offload::report::ConsoleReporter;
 
 #[derive(Parser)]
@@ -271,10 +271,44 @@ async fn run_tests(
             )
             .await?;
         }
-        (ProviderConfig::Modal(_), _) => {
-            return Err(anyhow!(
-                "Modal provider is not yet implemented. Use 'default' provider with Modal commands as a workaround."
-            ));
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                PytestFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                CargoFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                DefaultFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
         }
     }
 
