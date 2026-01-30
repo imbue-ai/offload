@@ -22,9 +22,9 @@ from pathlib import Path
 import click
 import modal
 
-# Cache configuration
-CACHE_DIR = Path.home() / ".cache" / "offload"
-CACHE_FILE = "modal-images.json"
+# Cache configuration - stored in project directory
+CACHE_DIR = Path.cwd() / ".offload"
+CACHE_FILE = "modal_images.json"
 
 
 @dataclass
