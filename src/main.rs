@@ -208,7 +208,11 @@ async fn run_tests(
 
     // Phase 2: Run ALL tests at once with a single orchestrator
     // Get framework config from first group (all groups have same type)
-    let first_group_config = config.groups.values().next().unwrap();
+    let first_group_config = config
+        .groups
+        .values()
+        .next()
+        .ok_or_else(|| anyhow!("No groups configured"))?;
 
     match (&config.provider, &first_group_config.framework) {
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
