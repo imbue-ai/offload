@@ -14,6 +14,7 @@ Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -947,6 +948,8 @@ def create_with_image(image_id: str, sandbox_type: str):
     IMAGE_ID is the Modal image ID to use.
     SANDBOX_TYPE is the type of sandbox (default, rust, dockerfile, etc.).
     """
+    t0 = time.time()
+
     # Map sandbox types to appropriate app names and setup logic
     app_name_map = {
         "default": "offload-sandbox",
@@ -958,31 +961,39 @@ def create_with_image(image_id: str, sandbox_type: str):
     }
 
     app_name = app_name_map.get(sandbox_type, "offload-sandbox")
+    print(f"[{time.time()-t0:.2f}s] Looking up app {app_name}...", file=sys.stderr)
     app = modal.App.lookup(app_name, create_if_missing=True)
+    print(f"[{time.time()-t0:.2f}s] App lookup complete", file=sys.stderr)
 
     # Load image from ID
-    print(f"Loading image {image_id}...", file=sys.stderr)
+    print(f"[{time.time()-t0:.2f}s] Loading image {image_id}...", file=sys.stderr)
     image = modal.Image.from_id(image_id)
+    print(f"[{time.time()-t0:.2f}s] Image loaded", file=sys.stderr)
 
-    print("Creating sandbox...", file=sys.stderr)
+    print(f"[{time.time()-t0:.2f}s] Creating sandbox...", file=sys.stderr)
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
     )
+    print(f"[{time.time()-t0:.2f}s] Sandbox created", file=sys.stderr)
 
     # Copy files based on sandbox type
     cwd = os.getcwd()
     if sandbox_type == "default":
+        print(f"[{time.time()-t0:.2f}s] Copying files for default sandbox...", file=sys.stderr)
         sandbox.mkdir("/app/examples/tests", parents=True)
         copy_dir_to_sandbox(
             sandbox, os.path.join(cwd, "examples/tests"), "/app/examples/tests"
         )
+        print(f"[{time.time()-t0:.2f}s] File copy complete", file=sys.stderr)
     elif sandbox_type in ("rust", "dockerfile"):
+        print(f"[{time.time()-t0:.2f}s] Copying files for {sandbox_type} sandbox...", file=sys.stderr)
         copy_dir_to_sandbox(sandbox, cwd, "/app")
+        print(f"[{time.time()-t0:.2f}s] File copy complete", file=sys.stderr)
 
-    print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
+    print(f"[{time.time()-t0:.2f}s] Sandbox ready: {sandbox.object_id}", file=sys.stderr)
     print(sandbox.object_id)
 
 
