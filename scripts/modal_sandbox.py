@@ -562,6 +562,8 @@ def build_dockerfile(dockerfile_path: str):
 
     DOCKERFILE_PATH is the path to the Dockerfile to build from.
     """
+    modal.enable_output()
+
     # Validate dockerfile exists
     if not os.path.isfile(dockerfile_path):
         print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
