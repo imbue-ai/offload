@@ -33,6 +33,9 @@ id_ed25519*
 # Local config overrides
 offload.local.toml
 
+# Offload local files
+.offload/*
+
 # Python
 __pycache__/
 *.pyc

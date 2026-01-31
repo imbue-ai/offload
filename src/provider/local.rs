@@ -214,8 +214,14 @@ impl Sandbox for LocalSandbox {
             .spawn()
             .map_err(|e| ProviderError::ExecFailed(e.to_string()))?;
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("stdout not captured".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("stderr not captured".to_string()))?;
 
         let stdout_reader = BufReader::new(stdout);
         let stderr_reader = BufReader::new(stderr);

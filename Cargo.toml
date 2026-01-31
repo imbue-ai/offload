@@ -57,6 +57,7 @@ tar = "0.4"
 tokio-stream = { version = "0.1", features = ["io-util"] }
 include_dir = "0.7.4"
 rand = "0.8"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"

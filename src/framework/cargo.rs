@@ -259,7 +259,8 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
     // test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     // test tests::test_foo ... ok
     // test tests::test_bar ... FAILED
-    let result_re = Regex::new(r"test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)").unwrap();
+    let result_re = Regex::new(r"test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)")
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
 
     for cap in result_re.captures_iter(stdout) {
         let test_id = &cap[1];
@@ -287,7 +288,8 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
     // this is likely a doc test run (individual doc test names have spaces and don't match \S+)
     // Look for summary line: "test result: ok. N passed; M failed; ..."
     if results.is_empty() {
-        let summary_re = Regex::new(r"test result: ok\. (\d+) passed; (\d+) failed;").unwrap();
+        let summary_re = Regex::new(r"test result: ok\. (\d+) passed; (\d+) failed;")
+            .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
         if let Some(cap) = summary_re.captures(stdout) {
             let passed: u32 = cap[1].parse().unwrap_or(0);
             let failed: u32 = cap[2].parse().unwrap_or(0);
@@ -317,7 +319,8 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
     }
 
     // Try to extract failure details by splitting on test output sections
-    let section_re = Regex::new(r"---- (\S+) stdout ----\n").unwrap();
+    let section_re = Regex::new(r"---- (\S+) stdout ----\n")
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
     let sections: Vec<_> = section_re.split(stdout).collect();
     let test_ids: Vec<_> = section_re
         .captures_iter(stdout)

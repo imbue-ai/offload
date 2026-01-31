@@ -202,11 +202,14 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
     let testcase_re = Regex::new(
         r#"<testcase[^>]*name="([^"]+)"[^>]*classname="([^"]+)"[^>]*time="([^"]+)"[^>]*>"#,
     )
-    .unwrap();
+    .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
 
-    let failure_re = Regex::new(r#"<failure[^>]*message="([^"]*)"[^>]*>"#).unwrap();
-    let error_re = Regex::new(r#"<error[^>]*message="([^"]*)"[^>]*>"#).unwrap();
-    let skipped_re = Regex::new(r#"<skipped"#).unwrap();
+    let failure_re = Regex::new(r#"<failure[^>]*message="([^"]*)"[^>]*>"#)
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
+    let error_re = Regex::new(r#"<error[^>]*message="([^"]*)"[^>]*>"#)
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
+    let skipped_re = Regex::new(r#"<skipped"#)
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
 
     for cap in testcase_re.captures_iter(content) {
         let name = &cap[1];
@@ -216,7 +219,8 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         let test_id = format!("{}::{}", classname.replace('.', "/"), name);
 
         // Find the content between this testcase and the next (or </testcase>)
-        let start = cap.get(0).unwrap().end();
+        // Group 0 always exists when a match succeeds
+        let start = cap.get(0).map_or(0, |m| m.end());
         let end = content[start..]
             .find("</testcase>")
             .map(|i| start + i)
@@ -255,7 +259,8 @@ fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestR
     // Match lines like:
     // tests/test_foo.py::test_bar PASSED
     // tests/test_foo.py::test_baz FAILED
-    let result_re = Regex::new(r"(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|ERROR)").unwrap();
+    let result_re = Regex::new(r"(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|ERROR)")
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
 
     for cap in result_re.captures_iter(stdout) {
         let test_id = &cap[1];

@@ -232,8 +232,9 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
 
     let testcase_re = Regex::new(
         r#"<testcase[^>]*name="([^"]+)"[^>]*(?:classname="([^"]+)")?[^>]*(?:time="([^"]+)")?[^>]*(?:/>|>([\s\S]*?)</testcase>)"#
-    ).unwrap();
-    let msg_re = Regex::new(r#"message="([^"]*)""#).unwrap();
+    ).map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
+    let msg_re = Regex::new(r#"message="([^"]*)""#)
+        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
 
     for cap in testcase_re.captures_iter(content) {
         let name = &cap[1];

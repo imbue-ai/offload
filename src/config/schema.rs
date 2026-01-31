@@ -113,6 +113,7 @@ fn default_retry_count() -> usize {
 /// | Type | Description | Use Case |
 /// |------|-------------|----------|
 /// | `local` | Local processes | Development, CI without containers |
+/// | `modal` | Modal cloud sandboxes | Ephemeral cloud execution with Modal |
 /// | `default` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -122,6 +123,12 @@ pub enum ProviderConfig {
     /// The simplest provider - tests run directly on the host machine.
     /// Useful for development and CI environments without containerization.
     Local(LocalProviderConfig),
+
+    /// Run tests using Modal cloud sandboxes.
+    ///
+    /// Provides first-class integration with Modal for ephemeral compute.
+    /// Supports both custom Dockerfiles and Modal's preset images.
+    Modal(ModalProviderConfig),
 
     /// Run tests using custom shell commands.
     ///
@@ -172,6 +179,99 @@ pub struct LocalProviderConfig {
 
 fn default_shell() -> String {
     "/bin/sh".to_string()
+}
+
+/// Image type specification for Modal provider.
+///
+/// Determines whether to use a custom Dockerfile or a Modal preset image.
+/// The enum uses untagged deserialization - it checks for a "dockerfile" or
+/// "preset" field to determine the variant.
+///
+/// # Example: Dockerfile
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// image_type = { dockerfile = ".devcontainer/Dockerfile" }
+/// ```
+///
+/// # Example: Preset
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// image_type = { preset = "rust" }
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ModalImageType {
+    /// Build image from a Dockerfile.
+    ///
+    /// Path is relative to the project root.
+    Dockerfile { dockerfile: String },
+
+    /// Use a Modal preset image.
+    ///
+    /// Common presets: "default", "rust", "python", "node".
+    Preset { preset: String },
+}
+
+/// Configuration for the Modal cloud provider.
+///
+/// Modal provides ephemeral cloud sandboxes with first-class Docker support.
+/// This provider integrates directly with Modal APIs without requiring
+/// shell command wrappers.
+///
+/// # Example: Custom Dockerfile
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// app_name = "offload-sandbox"
+/// image_type = { dockerfile = ".devcontainer/Dockerfile" }
+/// working_dir = "/workspace"
+/// timeout_secs = 600
+/// ```
+///
+/// # Example: Preset Image
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// app_name = "test-runner"
+/// image_type = { preset = "rust" }
+/// timeout_secs = 3600
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModalProviderConfig {
+    /// Modal app name for the sandbox.
+    ///
+    /// This name identifies the Modal application and appears in the Modal
+    /// dashboard. Should be descriptive and unique within your workspace.
+    ///
+    /// # Example
+    /// ```toml
+    /// app_name = "offload-sandbox"
+    /// ```
+    pub app_name: String,
+
+    /// Image configuration for the sandbox.
+    ///
+    /// Either a path to a Dockerfile or a Modal preset name.
+    pub image_type: ModalImageType,
+
+    /// Working directory inside the sandbox.
+    ///
+    /// Test commands will execute from this directory.
+    pub working_dir: Option<PathBuf>,
+
+    /// Timeout for sandbox operations in seconds.
+    ///
+    /// Applies to both sandbox creation and test execution.
+    ///
+    /// Default: 3600 (1 hour)
+    #[serde(default = "default_remote_timeout")]
+    pub timeout_secs: u64,
 }
 
 /// Configuration for custom remote execution provider.
@@ -256,21 +356,6 @@ pub struct DefaultProviderConfig {
     /// Default: 3600 (1 hour)
     #[serde(default = "default_remote_timeout")]
     pub timeout_secs: u64,
-
-    /// Relative path to a Dockerfile for building the sandbox image.
-    ///
-    /// When specified, the provider's create command can use this path
-    /// to build a custom Docker image. The path is relative to the
-    /// project root directory.
-    ///
-    /// # Example
-    ///
-    /// ```toml
-    /// [provider]
-    /// create_command = "uv run @modal_sandbox.py create default --dockerfile {dockerfile_path}"
-    /// ```
-    #[serde(default)]
-    pub dockerfile_path: Option<String>,
 }
 
 fn default_remote_timeout() -> u64 {
@@ -509,4 +594,91 @@ pub struct SandboxResources {
     ///
     /// Commands exceeding this limit are terminated.
     pub timeout_secs: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_modal_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+
+            [provider]
+            type = "modal"
+            app_name = "offload-sandbox"
+            image_type = { dockerfile = ".devcontainer/Dockerfile" }
+            timeout_secs = 600
+
+            [groups.test]
+            type = "pytest"
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+
+        assert!(
+            matches!(&config.provider, ProviderConfig::Modal(_)),
+            "Expected Modal provider"
+        );
+
+        if let ProviderConfig::Modal(modal_config) = &config.provider {
+            assert_eq!(modal_config.app_name, "offload-sandbox");
+            assert_eq!(modal_config.timeout_secs, 600);
+            assert!(modal_config.working_dir.is_none());
+
+            assert!(
+                matches!(&modal_config.image_type, ModalImageType::Dockerfile { .. }),
+                "Expected Dockerfile image type"
+            );
+
+            if let ModalImageType::Dockerfile { dockerfile } = &modal_config.image_type {
+                assert_eq!(dockerfile, ".devcontainer/Dockerfile");
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_modal_provider_with_preset() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+
+            [provider]
+            type = "modal"
+            app_name = "test-runner"
+            image_type = { preset = "rust" }
+            working_dir = "/workspace"
+
+            [groups.test]
+            type = "cargo"
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+
+        assert!(
+            matches!(&config.provider, ProviderConfig::Modal(_)),
+            "Expected Modal provider"
+        );
+
+        if let ProviderConfig::Modal(modal_config) = &config.provider {
+            assert_eq!(modal_config.app_name, "test-runner");
+            assert_eq!(modal_config.timeout_secs, 3600); // default value
+            assert_eq!(modal_config.working_dir, Some(PathBuf::from("/workspace")));
+
+            assert!(
+                matches!(&modal_config.image_type, ModalImageType::Preset { .. }),
+                "Expected Preset image type"
+            );
+
+            if let ModalImageType::Preset { preset } = &modal_config.image_type {
+                assert_eq!(preset, "rust");
+            }
+        }
+
+        Ok(())
+    }
 }

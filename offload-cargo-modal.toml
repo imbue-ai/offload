@@ -7,11 +7,9 @@ retry_count = 1
 stream_output = true
 
 [provider]
-type = "default"
-dockerfile_path = ".devcontainer/Dockerfile"
-create_command = "uv run @modal_sandbox.py create dockerfile {dockerfile_path}"
-exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
-destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
+type = "modal"
+app_name = "offload-cargo-sandbox"
+image_type = { dockerfile = ".devcontainer/Dockerfile" }
 timeout_secs = 600
 
 [groups.all]

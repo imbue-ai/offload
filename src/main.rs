@@ -15,7 +15,7 @@ use offload::framework::{
     pytest::PytestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
-use offload::provider::{default::DefaultProvider, local::LocalProvider};
+use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
 use offload::report::ConsoleReporter;
 
 #[derive(Parser)]
@@ -208,7 +208,11 @@ async fn run_tests(
 
     // Phase 2: Run ALL tests at once with a single orchestrator
     // Get framework config from first group (all groups have same type)
-    let first_group_config = config.groups.values().next().unwrap();
+    let first_group_config = config
+        .groups
+        .values()
+        .next()
+        .ok_or_else(|| anyhow!("No groups configured"))?;
 
     match (&config.provider, &first_group_config.framework) {
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
@@ -266,6 +270,45 @@ async fn run_tests(
                 &config,
                 &all_tests,
                 DefaultProvider::from_config(p_cfg.clone()),
+                DefaultFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                PytestFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                CargoFramework::new(f_cfg.clone()),
+                verbose,
+            )
+            .await?;
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
+            let working_dir = config.offload.working_dir.clone();
+            let provider = ModalProvider::from_config(p_cfg.clone(), working_dir)
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
                 DefaultFramework::new(f_cfg.clone()),
                 verbose,
             )
@@ -365,6 +408,7 @@ fn validate_config(config_path: &Path) -> Result<()> {
 
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
+                ProviderConfig::Modal(_) => "modal",
                 ProviderConfig::Default(_) => "default",
             };
             println!("  Provider: {}", provider_name);

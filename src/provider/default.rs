@@ -33,29 +33,6 @@
 //! ```json
 //! {"exit_code": 0, "stdout": "output", "stderr": "errors"}
 //! ```
-//!
-//! # Example: Modal Integration
-//!
-//! ```toml
-//! [provider]
-//! type = "default"
-//! create_command = "python -c 'import uuid; print(uuid.uuid4())'"
-//! exec_command = "modal run --sandbox-id {sandbox_id} -- {command}"
-//! destroy_command = "modal sandbox delete {sandbox_id}"
-//! ```
-//!
-//! # Example: Custom Kubernetes Executor
-//!
-//! ```toml
-//! [provider]
-//! type = "default"
-//! working_dir = "/path/to/scripts"
-//! create_command = "./k8s-create-pod.sh"
-//! exec_command = "./k8s-exec.sh {sandbox_id} {command}"
-//! destroy_command = "./k8s-delete-pod.sh {sandbox_id}"
-//! timeout_secs = 3600
-//! ```
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -103,24 +80,6 @@ impl DefaultProvider {
     /// # Arguments
     ///
     /// * `config` - Remote provider configuration with command templates
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::provider::default::DefaultProvider;
-    /// use offload::config::DefaultProviderConfig;
-    ///
-    /// let config = DefaultProviderConfig {
-    ///     create_command: "uuidgen".to_string(),
-    ///     exec_command: "echo 'Running on {sandbox_id}'; {command}".to_string(),
-    ///     destroy_command: "echo 'Cleaned up {sandbox_id}'".to_string(),
-    ///     working_dir: None,
-    ///     timeout_secs: 3600,
-    ///     dockerfile_path: None,
-    /// };
-    ///
-    /// let provider = DefaultProvider::from_config(config);
-    /// ```
     pub fn from_config(config: DefaultProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
@@ -143,14 +102,13 @@ impl SandboxProvider for DefaultProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         info!("Creating connector sandbox: {}", config.id);
 
-        // Expand placeholders in create command
-        let create_cmd = self.config.create_command.replace(
-            "{dockerfile_path}",
-            self.config.dockerfile_path.as_deref().unwrap_or(""),
-        );
-
         // Run the create command to get a sandbox_id
-        let result = self.connector.run(&create_cmd).await?;
+        let result = self.connector.run(&self.config.create_command).await?;
+
+        // We need to forward stderr to info because it contains build status.
+        for line in result.stderr.lines() {
+            info!("{}", line);
+        }
 
         if result.exit_code != 0 {
             return Err(ProviderError::ExecFailed(format!(

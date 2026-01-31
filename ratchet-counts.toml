@@ -17,7 +17,7 @@
 
 [no-bare-print]
 "." = 0
-"scripts" = 27
+"scripts" = 58
 
 [no-base-exception]
 "." = 0
@@ -30,9 +30,6 @@
 "." = 0
 
 [no-click-echo]
-"." = 0
-
-[no-dataclasses-import]
 "." = 0
 
 [no-eval-usage]
@@ -53,10 +50,11 @@
 
 [no-global-keyword]
 "." = 0
-"scripts" = 3
+"scripts" = 6
 
 [no-if-elif-without-else]
 "." = 0
+"scripts" = 3
 
 [no-import-datetime]
 "." = 0
@@ -102,11 +100,11 @@
 
 [no-todo-comments]
 "." = 0
-"src" = 15
+"src" = 14
 
 [no-trailing-comments]
 "." = 0
-"scripts" = 3
+"scripts" = 6
 
 [no-typing-builtin-imports]
 "." = 0
@@ -116,10 +114,6 @@
 
 [no-unwrap]
 "." = 0
-"src" = 15
-"src/framework" = 11
-"src/provider" = 2
-"src/report" = 1
 
 [no-while-true]
 "." = 0
@@ -127,3 +121,5 @@
 [no-yaml-usage]
 "." = 0
 
+[rust-no-todo-comments]
+"src" = 14

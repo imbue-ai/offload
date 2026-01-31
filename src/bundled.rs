@@ -211,32 +211,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_expand_command_no_refs() {
+    fn test_expand_command_no_refs() -> Result<(), Box<dyn std::error::Error>> {
         let cmd = "echo hello world";
-        let expanded = expand_command(cmd).unwrap();
+        let expanded = expand_command(cmd)?;
         assert_eq!(expanded, cmd);
+        Ok(())
     }
 
     #[test]
-    fn test_expand_command_with_ref() {
+    fn test_expand_command_with_ref() -> Result<(), Box<dyn std::error::Error>> {
         let cmd = "uv run @modal_sandbox.py create default";
-        let expanded = expand_command(cmd).unwrap();
+        let expanded = expand_command(cmd)?;
 
         assert!(!expanded.contains('@'));
         assert!(expanded.contains("modal_sandbox.py"));
         assert!(expanded.contains("offload/scripts"));
+        Ok(())
     }
 
     #[test]
-    fn test_expand_command_multiple_refs() {
+    fn test_expand_command_multiple_refs() -> Result<(), Box<dyn std::error::Error>> {
         let cmd = "uv run @modal_sandbox.py @modal_sandbox.py";
-        let expanded = expand_command(cmd).unwrap();
+        let expanded = expand_command(cmd)?;
 
         // Both refs should be expanded
         assert!(!expanded.contains('@'));
         // Should contain the path twice
         let count = expanded.matches("modal_sandbox.py").count();
         assert_eq!(count, 2);
+        Ok(())
     }
 
     #[test]
@@ -254,8 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn test_script_pattern_regex() {
-        let pattern = get_script_pattern().unwrap();
+    fn test_script_pattern_regex() -> Result<(), Box<dyn std::error::Error>> {
+        let pattern = get_script_pattern()?;
 
         // Should match
         assert!(pattern.is_match("@script.py"));
@@ -268,5 +271,6 @@ mod tests {
 
         // Note: email@domain.com does match the pattern, but this is acceptable
         // because we validate against SCRIPTS_DIR in expand_command()
+        Ok(())
     }
 }
