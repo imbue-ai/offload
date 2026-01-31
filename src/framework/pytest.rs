@@ -158,11 +158,6 @@ impl TestFramework for PytestFramework {
             .arg("--tb=short")
             .arg("--junitxml=/tmp/junit.xml");
 
-        // Add marker filter if specified
-        if let Some(markers) = &self.config.markers {
-            cmd = cmd.arg("-m").arg(markers);
-        }
-
         // Add test IDs
         for test in tests {
             cmd = cmd.arg(test.id());
