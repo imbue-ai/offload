@@ -26,3 +26,10 @@ def test_multiplication():
 def test_division():
     time.sleep(2)
     assert 10 / 2 == 5
+
+
+@pytest.mark.slow
+def test_quick_maffs():
+    time.sleep(5)
+    assert 2 + 2 == 4 - 1 == 3
+    # Quick Maths
