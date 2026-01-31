@@ -11,9 +11,11 @@
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 """
 
+import io
 import json
 import os
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -22,36 +24,49 @@ import modal
 
 
 def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
-    """Recursively copy a local directory to the sandbox."""
-    for root, dirs, files in os.walk(local_dir):
-        # Skip hidden dirs and common non-essential dirs
-        dirs[:] = [
-            d
-            for d in dirs
-            if not d.startswith(".")
-            and d not in ("__pycache__", "node_modules", "target", ".venv", "venv")
-        ]
+    """Recursively copy a local directory to the sandbox using tar."""
+    print(f"Creating tar archive from {local_dir}...", file=sys.stderr)
 
-        for fname in files:
-            if fname.startswith(".") or fname.endswith(".pyc"):
-                continue
-            local_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(local_path, local_dir)
-            remote_path = os.path.join(remote_dir, rel_path)
+    # Create tar archive in memory
+    tar_buffer = io.BytesIO()
 
-            # Create parent directory
-            remote_parent = os.path.dirname(remote_path)
-            if remote_parent and remote_parent != remote_dir:
-                try:
-                    sandbox.mkdir(remote_parent, parents=True)
-                except modal.exception.FilesystemExecutionError:
-                    pass
+    with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+        for root, dirs, files in os.walk(local_dir):
+            # Filter directories in-place
+            dirs[:] = [
+                d
+                for d in dirs
+                if not d.startswith(".")
+                and d not in ("__pycache__", "node_modules", "target", ".venv", "venv")
+            ]
 
-            # Copy file
-            with open(local_path, "rb") as f:
-                content = f.read()
-            with sandbox.open(remote_path, "wb") as f:
-                f.write(content)
+            for fname in files:
+                if fname.startswith(".") or fname.endswith(".pyc"):
+                    continue
+                local_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(local_path, local_dir)
+                tar.add(local_path, arcname=rel_path)
+
+    tar_buffer.seek(0)
+    tar_data = tar_buffer.getvalue()
+
+    print(f"Transferring tar archive ({len(tar_data)} bytes) to sandbox...", file=sys.stderr)
+
+    # Create remote directory and transfer tar
+    sandbox.mkdir(remote_dir, parents=True)
+    tar_remote_path = f"{remote_dir}/.transfer.tar"
+    with sandbox.open(tar_remote_path, "wb") as f:
+        f.write(tar_data)
+
+    print(f"Extracting tar archive in {remote_dir}...", file=sys.stderr)
+
+    # Extract on sandbox
+    sandbox.exec("tar", "-xf", tar_remote_path, "-C", remote_dir).wait()
+
+    # Clean up tar file
+    sandbox.exec("rm", "-f", tar_remote_path).wait()
+
+    print("Tar-based transfer complete", file=sys.stderr)
 
 
 @click.group()

@@ -31,5 +31,6 @@ def test_division():
 @pytest.mark.slow
 def test_quick_maffs():
     time.sleep(5)
-    assert 2 + 2 == 4 - 1 == 3
+    assert 2 + 2 == 4
+    assert 4 - 1 == 3
     # Quick Maths
