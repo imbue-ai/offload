@@ -1,4 +1,4 @@
-//! Remote execution provider using lifecycle-based shell commands.
+//! Default execution provider using lifecycle-based shell commands.
 //!
 //! This provider enables integration with any execution environment by
 //! defining shell commands for sandbox lifecycle management. It's designed
@@ -100,7 +100,7 @@ impl SandboxProvider for DefaultProvider {
     type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
-        info!("Creating connector sandbox: {}", config.id);
+        info!("Creating default sandbox: {}", config.id);
 
         // Run the create command to get a sandbox_id
         let result = self.connector.run(&self.config.create_command).await?;
@@ -124,7 +124,7 @@ impl SandboxProvider for DefaultProvider {
             ));
         }
 
-        info!("Created remote sandbox: {}", remote_id);
+        info!("Created default sandbox with ID: {}", remote_id);
 
         let info = DefaultSandboxInfo {
             remote_id: remote_id.clone(),
@@ -229,7 +229,7 @@ impl Sandbox for DefaultSandbox {
 
     async fn upload(&self, _local: &Path, _remote: &Path) -> ProviderResult<()> {
         warn!(
-            "upload() not supported by DefaultSandbox - files should be included in connector image"
+            "upload() not supported by DefaultSandbox - files should be included in execution environment"
         );
         Ok(())
     }

@@ -346,6 +346,10 @@ where
         );
 
         // Run tests in parallel
+        // Track which tests have been reported (for progress bar with parallel retries)
+        let reported_tests: Mutex<std::collections::HashSet<String>> =
+            Mutex::new(std::collections::HashSet::new());
+
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
             for (batch_idx, batch) in batches.into_iter().enumerate() {
@@ -353,6 +357,7 @@ where
                 let framework = &self.framework;
                 let reporter = &self.reporter;
                 let config = &self.config;
+                let reported_tests = &reported_tests;
 
                 scope.spawn(async move {
                     // Take sandbox from pool or create new one
@@ -426,6 +431,18 @@ where
                         }
                     }
 
+                    // Report test completions (only first instance of each test for progress bar)
+                    for test in &batch {
+                        let test_id = test.id_owned();
+                        let already_reported = {
+                            let mut reported = reported_tests.lock().await;
+                            !reported.insert(test_id.clone())
+                        };
+                        if !already_reported && let Some(result) = test.record().final_result() {
+                            reporter.on_test_complete(&result).await;
+                        }
+                    }
+
                     // Return sandbox to pool for reuse (don't terminate)
                     let sandbox = runner.into_sandbox();
                     sandbox_pool.lock().await.add(sandbox);
@@ -445,17 +462,25 @@ where
         let flaky_count = tests
             .iter()
             .filter(|t| !t.skipped)
-            .filter(|t| t.is_flaky_from_results())
+            .filter(|t| t.is_flaky())
             .count();
 
-        // Calculate statistics
-        let passed = all_results
+        // Calculate statistics from TestRecords (not aggregated results)
+        // passed = number of TestRecords where at least one attempt passed
+        let passed = tests
             .iter()
-            .filter(|r| r.outcome == TestOutcome::Passed)
+            .filter(|t| !t.skipped)
+            .filter(|t| t.passed())
             .count();
-        let failed = all_results
+        // failed = number of TestRecords where final outcome is failed/error (no passing attempts)
+        let failed = tests
             .iter()
-            .filter(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
+            .filter(|t| !t.skipped)
+            .filter(|t| {
+                t.final_result()
+                    .map(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
+                    .unwrap_or(false)
+            })
             .count();
         let runtime_skipped = all_results
             .iter()

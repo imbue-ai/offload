@@ -251,7 +251,9 @@ impl TestRecord {
             .unwrap_or_default()
     }
 
-    /// Returns true if test passed at least once and failed at least once.
+    /// Returns whether this test is flaky based on recorded results.
+    ///
+    /// A test is flaky if it has both passes and failures across attempts.
     pub fn is_flaky(&self) -> bool {
         if let Ok(results) = self.results.lock() {
             let has_pass = results.iter().any(|r| r.outcome == TestOutcome::Passed);
@@ -264,12 +266,14 @@ impl TestRecord {
         }
     }
 
-    /// Returns true if the most recent attempt passed.
+    /// Returns whether this test passed.
+    ///
+    /// With parallel retries, returns true if ANY attempt passed.
     pub fn passed(&self) -> bool {
         self.results
             .lock()
             .ok()
-            .and_then(|guard| guard.last().map(|r| r.outcome == TestOutcome::Passed))
+            .map(|guard| guard.iter().any(|r| r.outcome == TestOutcome::Passed))
             .unwrap_or(false)
     }
 
@@ -310,20 +314,6 @@ impl TestRecord {
         }
 
         Some(result)
-    }
-
-    /// Returns whether this test is flaky based on recorded results.
-    ///
-    /// A test is flaky if it has both passes and failures across attempts.
-    pub fn is_flaky_from_results(&self) -> bool {
-        let Ok(results) = self.results.lock() else {
-            return false;
-        };
-        let any_passed = results.iter().any(|r| r.outcome == TestOutcome::Passed);
-        let any_failed = results
-            .iter()
-            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
-        any_passed && any_failed
     }
 }
 

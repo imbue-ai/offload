@@ -48,7 +48,7 @@ use tracing::{debug, info};
 use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
 
-/// JSON result format from remote sandboxes.
+/// JSON result format from default provider sandboxes.
 #[derive(serde::Deserialize)]
 struct JsonExecResult {
     exit_code: i32,
@@ -192,8 +192,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        // Try to parse JSON result from stdout (connector protocol)
-        // This handles remote sandboxes that return JSON with exit_code, stdout, stderr
+        // Try to parse JSON result from stdout (default provider protocol)
+        // This handles default sandboxes that return JSON with exit_code, stdout, stderr
         if let Some(json_line) = stdout
             .lines()
             .rev()
@@ -249,7 +249,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
-        // Execute the command with streaming (always use streaming for connector support)
+        // Execute the command with streaming (always use streaming for default provider support)
         let exec_result = self.exec_with_streaming(&cmd, "batch").await?;
 
         let duration = start.elapsed();
