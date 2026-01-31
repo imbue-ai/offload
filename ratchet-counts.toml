@@ -32,10 +32,6 @@
 [no-click-echo]
 "." = 0
 
-[no-dataclasses-import]
-"." = 0
-"scripts" = 1
-
 [no-eval-usage]
 "." = 0
 
@@ -127,4 +123,3 @@
 
 [rust-no-todo-comments]
 "src" = 14
-
