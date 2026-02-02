@@ -246,30 +246,39 @@ async fn run_tests(
             .await?;
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone())
+                .await
+                .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
-                DefaultProvider::from_config(p_cfg.clone()),
+                provider,
                 PytestFramework::new(f_cfg.clone()),
                 verbose,
             )
             .await?;
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone())
+                .await
+                .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
-                DefaultProvider::from_config(p_cfg.clone()),
+                provider,
                 CargoFramework::new(f_cfg.clone()),
                 verbose,
             )
             .await?;
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(f_cfg)) => {
+            let provider = DefaultProvider::from_config(p_cfg.clone())
+                .await
+                .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
-                DefaultProvider::from_config(p_cfg.clone()),
+                provider,
                 DefaultFramework::new(f_cfg.clone()),
                 verbose,
             )

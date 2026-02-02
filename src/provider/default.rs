@@ -58,10 +58,18 @@ use crate::connector::{Connector, ShellConnector};
 ///
 /// The `create_command` is run and must print a unique sandbox ID to stdout.
 /// This ID is then used in subsequent exec and destroy commands.
+///
+/// # Image Preparation
+///
+/// If `prepare_command` is configured, it runs once during provider creation
+/// via `from_config` and returns an image ID. This image ID is then substituted
+/// into `create_command` via the `{image_id}` placeholder.
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
     sandboxes: Mutex<HashMap<String, DefaultSandboxInfo>>,
+    /// Cached image ID from prepare command (set during from_config).
+    image_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -77,21 +85,62 @@ impl DefaultProvider {
     /// The configuration specifies the shell commands used for sandbox
     /// lifecycle management: create, exec, and destroy.
     ///
+    /// If `prepare_command` is configured, it runs during this method and
+    /// the resulting image ID is stored for use in subsequent `create_sandbox` calls.
+    ///
     /// # Arguments
     ///
     /// * `config` - Remote provider configuration with command templates
-    pub fn from_config(config: DefaultProviderConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError::ExecFailed` if the prepare command fails.
+    pub async fn from_config(config: DefaultProviderConfig) -> ProviderResult<Self> {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
             connector = connector.with_working_dir(dir.clone());
         }
 
-        Self {
-            connector: Arc::new(connector),
+        let connector = Arc::new(connector);
+
+        // Run prepare command if configured
+        let image_id = if let Some(prepare_cmd) = &config.prepare_command {
+            info!("Running prepare command...");
+
+            let result = connector.run(prepare_cmd).await?;
+
+            // Forward stderr to info because it may contain build status
+            for line in result.stderr.lines() {
+                info!("{}", line);
+            }
+
+            if result.exit_code != 0 {
+                return Err(ProviderError::ExecFailed(format!(
+                    "Prepare command failed: {}",
+                    result.stderr
+                )));
+            }
+
+            let image_id = result.stdout.trim().to_string();
+            if image_id.is_empty() {
+                return Err(ProviderError::ExecFailed(
+                    "Prepare command returned empty image_id".to_string(),
+                ));
+            }
+
+            info!("Prepare command returned image_id: {}", image_id);
+            Some(image_id)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            connector,
             config,
             sandboxes: Mutex::new(HashMap::new()),
-        }
+            image_id,
+        })
     }
 }
 
@@ -102,8 +151,14 @@ impl SandboxProvider for DefaultProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         info!("Creating default sandbox: {}", config.id);
 
+        // Build the create command, substituting {image_id} if available
+        let create_command = match self.image_id.as_ref() {
+            Some(id) => self.config.create_command.replace("{image_id}", id),
+            None => self.config.create_command.clone(),
+        };
+
         // Run the create command to get a sandbox_id
-        let result = self.connector.run(&self.config.create_command).await?;
+        let result = self.connector.run(&create_command).await?;
 
         // We need to forward stderr to info because it contains build status.
         for line in result.stderr.lines() {

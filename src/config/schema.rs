@@ -282,7 +282,8 @@ pub struct ModalProviderConfig {
 ///
 /// # Command Protocol
 ///
-/// - **create_command**: Prints a unique sandbox ID to stdout
+/// - **prepare_command** (optional): Runs once on first sandbox creation, prints image ID to stdout
+/// - **create_command**: Prints a unique sandbox ID to stdout (can use `{image_id}` placeholder)
 /// - **exec_command**: Uses `{sandbox_id}` and `{command}` placeholders
 /// - **destroy_command**: Uses `{sandbox_id}` placeholder
 ///
@@ -312,12 +313,43 @@ pub struct ModalProviderConfig {
 /// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
 /// destroy_command = "./destroy_worker.sh {sandbox_id}"
 /// ```
+///
+/// # Example: With Prepare Command
+///
+/// ```toml
+/// [provider]
+/// type = "default"
+/// prepare_command = "./build_image.sh"
+/// create_command = "./create_worker.sh {image_id}"
+/// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
+/// destroy_command = "./destroy_worker.sh {sandbox_id}"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultProviderConfig {
+    /// Optional command to prepare an image before sandbox creation.
+    ///
+    /// If provided, this command runs once on first sandbox creation and
+    /// must print an image ID to stdout. The image ID is then available
+    /// as `{image_id}` placeholder in `create_command`.
+    ///
+    /// This is useful for building container images or preparing
+    /// execution environments that can be reused across multiple sandboxes.
+    ///
+    /// # Example
+    /// ```sh
+    /// # Build and return image ID
+    /// docker build -q -t myimage .
+    /// ```
+    #[serde(default)]
+    pub prepare_command: Option<String>,
+
     /// Command to create a new sandbox instance.
     ///
     /// Must print a unique sandbox ID to stdout. This ID will be passed
     /// to exec and destroy commands via the `{sandbox_id}` placeholder.
+    ///
+    /// If `prepare_command` is specified, `{image_id}` will be substituted
+    /// with the image ID returned by the prepare command.
     ///
     /// # Example
     /// ```sh

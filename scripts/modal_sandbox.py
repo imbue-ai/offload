@@ -519,6 +519,30 @@ def build():
     pass
 
 
+@cli.command("prepare")
+@click.argument("sandbox_type", default="default")
+def prepare(sandbox_type: str):
+    """Prepare a Modal image (build only, no sandbox creation).
+
+    SANDBOX_TYPE: Type of image to build (default, rust, dockerfile, etc.)
+
+    Prints the image_id to stdout for use with create-with-image.
+    """
+    if sandbox_type == "default":
+        print("Building default image...", file=sys.stderr)
+        app = modal.App.lookup("offload-sandbox", create_if_missing=True)
+        image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+        image.build(app)
+        # Create temp sandbox to materialize image_id, then terminate
+        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+        temp_sandbox.terminate()
+        print(image.object_id)
+    else:
+        # For other types, delegate to existing build commands
+        print(f"Error: prepare for '{sandbox_type}' not yet implemented", file=sys.stderr)
+        sys.exit(1)
+
+
 @build.command("default")
 def build_default():
     """Build default pytest image, print image_id."""
