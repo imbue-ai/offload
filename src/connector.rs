@@ -80,7 +80,7 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::info;
 
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
@@ -304,10 +304,11 @@ impl Default for ShellConnector {
 impl Connector for ShellConnector {
     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
         // Expand @filename.ext references to full paths
-        let expanded_command = bundled::expand_command(command)
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
+        let expanded_command = bundled::expand_command(command).map_err(|e| {
+            ProviderError::ExecFailed(format!("Offload error when expanding command: {}", e))
+        })?;
 
-        debug!("Running: {}", expanded_command);
+        info!("Running: {}", expanded_command);
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", &expanded_command]);
@@ -338,7 +339,7 @@ impl Connector for ShellConnector {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
-        debug!("Streaming: {}", expanded_command);
+        info!("Streaming: {}", expanded_command);
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", &expanded_command]);

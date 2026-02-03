@@ -18,6 +18,13 @@ use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
 use offload::report::ConsoleReporter;
 
+/// A directory copy directive: local path -> sandbox path
+#[derive(Debug, Clone)]
+pub struct CopyDir {
+    pub local: PathBuf,
+    pub remote: PathBuf,
+}
+
 #[derive(Parser)]
 #[command(name = "offload")]
 #[command(about = "Flexible parallel test runner", long_about = None)]
@@ -46,6 +53,10 @@ enum Commands {
         /// Only discover tests, don't run them
         #[arg(long)]
         collect_only: bool,
+
+        /// Directories to copy to sandbox (format: /local/path:/sandbox/path)
+        #[arg(long, value_name = "LOCAL:REMOTE")]
+        copy_dir: Vec<String>,
     },
 
     /// Discover tests without running them
@@ -90,7 +101,8 @@ async fn main() -> Result<()> {
         Commands::Run {
             parallel,
             collect_only,
-        } => run_tests(&cli.config, parallel, collect_only, cli.verbose).await,
+            copy_dir,
+        } => run_tests(&cli.config, parallel, collect_only, copy_dir, cli.verbose).await,
         Commands::Collect { format } => collect_tests(&cli.config, &format).await,
         Commands::Validate => validate_config(&cli.config),
         Commands::Init {
@@ -120,6 +132,7 @@ async fn run_tests(
     config_path: &Path,
     parallel_override: Option<usize>,
     collect_only: bool,
+    copy_dir_args: Vec<String>,
     verbose: bool,
 ) -> Result<()> {
     // Load configuration
@@ -130,6 +143,24 @@ async fn run_tests(
     if let Some(parallel) = parallel_override {
         config.offload.max_parallel = parallel;
     }
+
+    // Parse copy_dir arguments
+    let copy_dirs: Vec<CopyDir> = copy_dir_args
+        .iter()
+        .map(|arg| {
+            let parts: Vec<&str> = arg.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Err(anyhow!(
+                    "Invalid copy-dir format: '{}'. Expected format: /local/path:/sandbox/path",
+                    arg
+                ));
+            }
+            Ok(CopyDir {
+                local: PathBuf::from(parts[0]),
+                remote: PathBuf::from(parts[1]),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     info!("Loaded configuration from {}", config_path.display());
 
@@ -221,6 +252,7 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 PytestFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -231,6 +263,7 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 CargoFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -241,6 +274,7 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 DefaultFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -254,6 +288,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 PytestFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -267,6 +302,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 CargoFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -280,6 +316,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 DefaultFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -293,6 +330,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 PytestFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -306,6 +344,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 CargoFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -319,6 +358,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 DefaultFramework::new(f_cfg.clone()),
+                &copy_dirs,
                 verbose,
             )
             .await?;
@@ -355,6 +395,7 @@ async fn run_all_tests<P, D>(
     tests: &[TestRecord],
     provider: P,
     framework: D,
+    copy_dirs: &[CopyDir],
     verbose: bool,
 ) -> Result<()>
 where
@@ -363,7 +404,20 @@ where
 {
     let sandbox_pool = Mutex::new(SandboxPool::new());
     let reporter = ConsoleReporter::new(verbose);
-    let orchestrator = Orchestrator::new(config.clone(), provider, framework, reporter);
+
+    // Convert CopyDir to tuples
+    let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+        .iter()
+        .map(|cd| (cd.local.clone(), cd.remote.clone()))
+        .collect();
+
+    let orchestrator = Orchestrator::new(
+        config.clone(),
+        provider,
+        framework,
+        reporter,
+        &copy_dir_tuples,
+    );
 
     orchestrator.run_with_tests(tests, &sandbox_pool).await?;
     sandbox_pool.lock().await.terminate_all().await;

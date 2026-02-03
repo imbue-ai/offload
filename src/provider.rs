@@ -597,6 +597,7 @@ fn shell_escape(s: &str) -> String {
 ///         working_dir: Some("/app".to_string()),
 ///         env: vec![("DEBUG".to_string(), "1".to_string())],
 ///         resources: SandboxResources::default(),
+///         copy_dirs: vec![],
 ///     };
 ///
 ///     let sandbox = provider.create_sandbox(&config).await?;

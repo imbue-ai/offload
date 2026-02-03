@@ -48,6 +48,7 @@
 //!         working_dir: None,
 //!         env: vec![],
 //!         resources: SandboxResources::default(),
+//!         copy_dirs: vec![],
 //!     };
 //!
 //!     let sandbox = provider.create_sandbox(&config).await?;

@@ -10,14 +10,14 @@
 
 [no-bare-except]
 "." = 0
-"scripts" = 3
+"scripts" = 2
 
 [no-bare-generic-types]
 "." = 0
 
 [no-bare-print]
 "." = 0
-"scripts" = 62
+"scripts" = 4
 
 [no-base-exception]
 "." = 0
@@ -96,7 +96,7 @@
 
 [no-time-sleep]
 "." = 0
-"examples/tests" = 4
+"examples/tests" = 5
 
 [no-todo-comments]
 "." = 0
@@ -123,3 +123,4 @@
 
 [rust-no-todo-comments]
 "src" = 14
+

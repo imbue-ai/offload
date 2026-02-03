@@ -617,6 +617,11 @@ pub struct SandboxConfig {
 
     /// Resource limits for this sandbox.
     pub resources: SandboxResources,
+
+    /// Directories to copy to the sandbox.
+    ///
+    /// Each tuple is (local_path, remote_path).
+    pub copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 /// Resource limits for a sandbox instance.

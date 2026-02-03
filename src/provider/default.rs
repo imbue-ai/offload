@@ -122,7 +122,15 @@ impl DefaultProvider {
                 )));
             }
 
-            let image_id = result.stdout.trim().to_string();
+            // Image id is the last line of stdout
+            let image_id = result
+                .stdout
+                .lines()
+                .last()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
             if image_id.is_empty() {
                 return Err(ProviderError::ExecFailed(
                     "Prepare command returned empty image_id".to_string(),
@@ -152,10 +160,25 @@ impl SandboxProvider for DefaultProvider {
         info!("Creating default sandbox: {}", config.id);
 
         // Build the create command, substituting {image_id} if available
-        let create_command = match self.image_id.as_ref() {
+        let mut create_command = match self.image_id.as_ref() {
             Some(id) => self.config.create_command.replace("{image_id}", id),
             None => self.config.create_command.clone(),
         };
+
+        for (local, remote) in &config.copy_dirs {
+            info!(
+                "  Adding --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            );
+            create_command.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
+
+        info!(create_command);
 
         // Run the create command to get a sandbox_id
         let result = self.connector.run(&create_command).await?;

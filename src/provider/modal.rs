@@ -301,6 +301,7 @@ impl ModalProvider {
     /// # Arguments
     ///
     /// * `image_id` - The Modal image ID to use
+    /// * `copy_dirs` - Directories to copy into the sandbox (local_path, remote_path)
     ///
     /// # Returns
     ///
@@ -309,8 +310,20 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_create(&self, image_id: &str) -> ProviderResult<String> {
-        let command = format!("uv run @modal_sandbox.py create {}", image_id);
+    async fn call_python_create(
+        &self,
+        image_id: &str,
+        copy_dirs: &[(PathBuf, PathBuf)],
+    ) -> ProviderResult<String> {
+        let mut command = format!("uv run @modal_sandbox.py create {}", image_id);
+
+        for (local, remote) in copy_dirs {
+            command.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
 
         debug!("Creating Modal sandbox: {}", command);
 
@@ -351,7 +364,9 @@ impl SandboxProvider for ModalProvider {
 
         let image_id = self.get_or_build_image().await?;
 
-        let remote_id = self.call_python_create(&image_id).await?;
+        let remote_id = self
+            .call_python_create(&image_id, &config.copy_dirs)
+            .await?;
 
         let info = ModalSandboxInfo {
             remote_id: remote_id.clone(),
