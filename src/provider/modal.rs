@@ -96,14 +96,6 @@ impl ModalProvider {
         }
     }
 
-    /// Gets the sandbox type identifier for Python script.
-    fn get_sandbox_type(&self) -> String {
-        match &self.config.image_type {
-            ModalImageType::Dockerfile { .. } => "dockerfile".to_string(),
-            ModalImageType::Preset { preset } => preset.clone(),
-        }
-    }
-
     /// Checks if a cached image entry exists and is valid.
     ///
     /// For Dockerfile images, validates the hash. For preset images, just checks existence.
@@ -309,7 +301,6 @@ impl ModalProvider {
     /// # Arguments
     ///
     /// * `image_id` - The Modal image ID to use
-    /// * `sandbox_type` - The sandbox type identifier
     ///
     /// # Returns
     ///
@@ -318,15 +309,8 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_create_with_image(
-        &self,
-        image_id: &str,
-        sandbox_type: &str,
-    ) -> ProviderResult<String> {
-        let command = format!(
-            "uv run @modal_sandbox.py create-with-image {} {}",
-            image_id, sandbox_type
-        );
+    async fn call_python_create(&self, image_id: &str) -> ProviderResult<String> {
+        let command = format!("uv run @modal_sandbox.py create {}", image_id);
 
         debug!("Creating Modal sandbox: {}", command);
 
@@ -367,10 +351,7 @@ impl SandboxProvider for ModalProvider {
 
         let image_id = self.get_or_build_image().await?;
 
-        let sandbox_type = self.get_sandbox_type();
-        let remote_id = self
-            .call_python_create_with_image(&image_id, &sandbox_type)
-            .await?;
+        let remote_id = self.call_python_create(&image_id).await?;
 
         let info = ModalSandboxInfo {
             remote_id: remote_id.clone(),

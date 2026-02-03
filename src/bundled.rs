@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_expand_command_with_ref() -> Result<(), Box<dyn std::error::Error>> {
-        let cmd = "uv run @modal_sandbox.py create default";
+        let cmd = "uv run @modal_sandbox.py create {image_id}";
         let expanded = expand_command(cmd)?;
 
         assert!(!expanded.contains('@'));
