@@ -93,28 +93,32 @@ def prepare(dockerfile_path: str | None):
     """
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
-        # Build default image
-        logger.info("Building default image...")
+        # Build default image with cwd baked in
+        logger.info("Building default image with cwd baked in...")
         app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-        image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+        image = (
+            modal.Image.debian_slim(python_version="3.11")
+            .pip_install("pytest")
+            .add_local_dir(".", "/app", copy=True)
+        )
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
         temp_sandbox.terminate()
         sys.stdout.write("%s\n" % image.object_id)
     else:
-        # Build from Dockerfile
+        # Build from Dockerfile with cwd baked in
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
             sys.exit(1)
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            cwd = os.getcwd()
-            logger.info("Current working directory: %s", cwd)
-            logger.info("Adding local dir '.' (%s) to /app", cwd)
-            image = modal.Image.from_dockerfile(dockerfile_path).add_local_dir(".", "/app")
-            logger.info("Building image from %s...", dockerfile_path)
+            logger.info("Building image from %s with cwd baked in...", dockerfile_path)
+            image = (
+                modal.Image.from_dockerfile(dockerfile_path)
+                .add_local_dir(".", "/app", copy=True)
+            )
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
             temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
@@ -137,28 +141,16 @@ def destroy(sandbox_id: str):
 @click.argument("command")
 def exec_command(sandbox_id: str, command: str):
     """Execute a command on an existing Modal sandbox."""
-    logger.info("exec_command called with sandbox_id=%s", sandbox_id)
-    logger.info("exec_command: command=%s", command)
-
     sandbox = modal.Sandbox.from_id(sandbox_id)
-    logger.info("exec_command: sandbox retrieved")
 
     # Execute command
-    logger.info("exec_command: executing 'bash -c %s'", command)
     process = sandbox.exec("bash", "-c", command)
 
     # Collect output
-    logger.info("exec_command: reading stdout...")
     stdout = process.stdout.read()
-    logger.info("exec_command: reading stderr...")
     stderr = process.stderr.read()
-    logger.info("exec_command: waiting for process...")
     process.wait()
     exit_code = process.returncode
-    logger.info("exec_command: exit_code=%d", exit_code)
-    logger.info("exec_command: stdout length=%d, stderr length=%d", len(stdout), len(stderr))
-    if stderr:
-        logger.info("exec_command: stderr preview: %s", stderr[:500] if len(stderr) > 500 else stderr)
 
     # Output JSON result
     result = {
