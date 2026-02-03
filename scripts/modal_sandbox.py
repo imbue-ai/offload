@@ -980,14 +980,14 @@ def run(command: str):
     sys.exit(result["exit_code"])
 
 
-@cli.command("create-with-image")
+@cli.command("create-from-image")
 @click.argument("image_id")
-@click.argument("sandbox_type")
-def create_with_image(image_id: str, sandbox_type: str):
+@click.argument("sandbox_type", default="default", required=False)
+def create_from_image(image_id: str, sandbox_type: str = "default"):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
-    SANDBOX_TYPE is the type of sandbox (default, rust, dockerfile, etc.).
+    SANDBOX_TYPE is the type of sandbox (default, rust, dockerfile, etc.). Defaults to 'default'.
     """
     t0 = time.time()
 
