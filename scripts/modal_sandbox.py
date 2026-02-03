@@ -93,25 +93,32 @@ def prepare(dockerfile_path: str | None):
     """
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
-        # Build default image
-        logger.info("Building default image...")
+        # Build default image with cwd baked in
+        logger.info("Building default image with cwd baked in...")
         app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-        image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+        image = (
+            modal.Image.debian_slim(python_version="3.11")
+            .pip_install("pytest")
+            .add_local_dir(".", "/app", copy=True)
+        )
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
         temp_sandbox.terminate()
         sys.stdout.write("%s\n" % image.object_id)
     else:
-        # Build from Dockerfile
+        # Build from Dockerfile with cwd baked in
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
             sys.exit(1)
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            image = modal.Image.from_dockerfile(dockerfile_path)
-            logger.info("Building image from %s...", dockerfile_path)
+            logger.info("Building image from %s with cwd baked in...", dockerfile_path)
+            image = (
+                modal.Image.from_dockerfile(dockerfile_path)
+                .add_local_dir(".", "/app", copy=True)
+            )
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
             temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
