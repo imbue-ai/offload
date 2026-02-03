@@ -110,7 +110,10 @@ def prepare(dockerfile_path: str | None):
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            image = modal.Image.from_dockerfile(dockerfile_path)
+            cwd = os.getcwd()
+            logger.info("Current working directory: %s", cwd)
+            logger.info("Adding local dir '.' (%s) to /app", cwd)
+            image = modal.Image.from_dockerfile(dockerfile_path).add_local_dir(".", "/app")
             logger.info("Building image from %s...", dockerfile_path)
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
