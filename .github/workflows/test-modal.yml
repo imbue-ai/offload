@@ -36,4 +36,4 @@ jobs:
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: ./target/release/offload -c offload-cargo-modal.toml run
+        run: ./target/release/offload -c offload-cargo-modal.toml run --copy-dir=.:/app

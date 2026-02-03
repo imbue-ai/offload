@@ -134,16 +134,28 @@ def destroy(sandbox_id: str):
 @click.argument("command")
 def exec_command(sandbox_id: str, command: str):
     """Execute a command on an existing Modal sandbox."""
+    logger.info("exec_command called with sandbox_id=%s", sandbox_id)
+    logger.info("exec_command: command=%s", command)
+
     sandbox = modal.Sandbox.from_id(sandbox_id)
+    logger.info("exec_command: sandbox retrieved")
 
     # Execute command
+    logger.info("exec_command: executing 'bash -c %s'", command)
     process = sandbox.exec("bash", "-c", command)
 
     # Collect output
+    logger.info("exec_command: reading stdout...")
     stdout = process.stdout.read()
+    logger.info("exec_command: reading stderr...")
     stderr = process.stderr.read()
+    logger.info("exec_command: waiting for process...")
     process.wait()
     exit_code = process.returncode
+    logger.info("exec_command: exit_code=%d", exit_code)
+    logger.info("exec_command: stdout length=%d, stderr length=%d", len(stdout), len(stderr))
+    if stderr:
+        logger.info("exec_command: stderr preview: %s", stderr[:500] if len(stderr) > 500 else stderr)
 
     # Output JSON result
     result = {
