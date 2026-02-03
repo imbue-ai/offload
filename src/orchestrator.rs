@@ -249,6 +249,7 @@ pub struct Orchestrator<P, D, R> {
     provider: P,
     framework: D,
     reporter: R,
+    copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl<P, D, R> Orchestrator<P, D, R>
@@ -265,12 +266,20 @@ where
     /// * `provider` - Sandbox provider for creating execution environments
     /// * `framework` - Test framework for running tests
     /// * `reporter` - Reporter for outputting results
-    pub fn new(config: Config, provider: P, framework: D, reporter: R) -> Self {
+    /// * `copy_dirs` - Directories to copy to sandboxes (local_path, remote_path)
+    pub fn new(
+        config: Config,
+        provider: P,
+        framework: D,
+        reporter: R,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> Self {
         Self {
             config,
             provider,
             framework,
             reporter,
+            copy_dirs: copy_dirs.to_vec(),
         }
     }
 
@@ -377,6 +386,7 @@ where
                                 resources: SandboxResources {
                                     timeout_secs: Some(config.offload.test_timeout_secs),
                                 },
+                                copy_dirs: self.copy_dirs.clone(),
                             };
                             match provider.create_sandbox(&sandbox_config).await {
                                 Ok(s) => s,

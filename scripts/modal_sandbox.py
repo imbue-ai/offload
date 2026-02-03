@@ -30,7 +30,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     # Create tar archive in memory
     tar_buffer = io.BytesIO()
 
-    with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
         for root, dirs, files in os.walk(local_dir):
             # Filter directories in-place
             dirs[:] = [
@@ -50,7 +50,10 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     tar_buffer.seek(0)
     tar_data = tar_buffer.getvalue()
 
-    print(f"Transferring tar archive ({len(tar_data)} bytes) to sandbox...", file=sys.stderr)
+    print(
+        f"Transferring tar archive ({len(tar_data)} bytes) to sandbox...",
+        file=sys.stderr,
+    )
 
     # Create remote directory and transfer tar
     sandbox.mkdir(remote_dir, parents=True)
@@ -278,77 +281,77 @@ def create_sculptor(gi_path: str | None):
             "curl",
         )
         .pip_install(
-        # ===== sculptor dependencies =====
-        "alembic>=1.16.1",
-        "anthropic>=0.38.0",
-        "beautifulsoup4>=4.12.2",
-        "coolname>=2.2.0",
-        "dockerfile-parse>=2.0.1",
-        "email-validator",
-        "fastapi",
-        "filelock>=3.8.0",
-        "humanfriendly>=10.0",
-        "json5>=0.9.0",
-        "loguru",
-        "modal>=1.0.3",
-        "psutil>=5.9.0",
-        "psycopg[binary]",
-        "pydantic-settings",
-        "pyjwt[crypto]",
-        "requests>=2.28.0",
-        "sentry-sdk",
-        "splinter>=0.19.0",
-        "sqlalchemy",
-        "tomlkit>=0.13.0",
-        "typeid-python",
-        "typer",
-        "uvicorn>=0.34.3",
-        "watchdog>=6.0.0",
-        "websockets>=15.0.1",
-        # ===== imbue_core dependencies =====
-        "anyio",
-        "attrs",
-        "boto3>=1.38.27",
-        "cachetools",
-        "cattrs",
-        "diskcache>=5.6.3",
-        "grpclib>=0.4.7",
-        "httpx",
-        "inline-snapshot",
-        "pathspec",
-        "posthog==5.4.0",
-        "prometheus-client>=0.20.0",
-        "pydantic>=2.11.4",
-        "pygit2>=1.18.0",
-        "pylint==3.2.6",
-        "pygments>=2.0.0",
-        "pyhumps",
-        "python-gitlab>=4.5.0",
-        "tblib==2.0.0",
-        "tenacity>=8.2.2",
-        "toml",
-        "traceback-with-variables>=2.2.0",
-        "yasoo",
-        "anthropic~=0.54",
-        "tokenizers",
-        "openai>=1.79.0",
-        "tiktoken",
-        "together",
-        "groq>=0.18.0",
-        "google-genai>=1.26.0",
-        # ===== test dependencies =====
-        "pytest",
-        "pytest-asyncio",
-        "pytest-mock",
-        "pytest-timeout",
-        "syrupy",
-        "moto[s3]",
-        "boto3-stubs",
-        "starlette-context",
-        "python-dateutil",
-        "orjson",
-        "packaging",
-        "pytest-xdist>=3.8.0",
+            # ===== sculptor dependencies =====
+            "alembic>=1.16.1",
+            "anthropic>=0.38.0",
+            "beautifulsoup4>=4.12.2",
+            "coolname>=2.2.0",
+            "dockerfile-parse>=2.0.1",
+            "email-validator",
+            "fastapi",
+            "filelock>=3.8.0",
+            "humanfriendly>=10.0",
+            "json5>=0.9.0",
+            "loguru",
+            "modal>=1.0.3",
+            "psutil>=5.9.0",
+            "psycopg[binary]",
+            "pydantic-settings",
+            "pyjwt[crypto]",
+            "requests>=2.28.0",
+            "sentry-sdk",
+            "splinter>=0.19.0",
+            "sqlalchemy",
+            "tomlkit>=0.13.0",
+            "typeid-python",
+            "typer",
+            "uvicorn>=0.34.3",
+            "watchdog>=6.0.0",
+            "websockets>=15.0.1",
+            # ===== imbue_core dependencies =====
+            "anyio",
+            "attrs",
+            "boto3>=1.38.27",
+            "cachetools",
+            "cattrs",
+            "diskcache>=5.6.3",
+            "grpclib>=0.4.7",
+            "httpx",
+            "inline-snapshot",
+            "pathspec",
+            "posthog==5.4.0",
+            "prometheus-client>=0.20.0",
+            "pydantic>=2.11.4",
+            "pygit2>=1.18.0",
+            "pylint==3.2.6",
+            "pygments>=2.0.0",
+            "pyhumps",
+            "python-gitlab>=4.5.0",
+            "tblib==2.0.0",
+            "tenacity>=8.2.2",
+            "toml",
+            "traceback-with-variables>=2.2.0",
+            "yasoo",
+            "anthropic~=0.54",
+            "tokenizers",
+            "openai>=1.79.0",
+            "tiktoken",
+            "together",
+            "groq>=0.18.0",
+            "google-genai>=1.26.0",
+            # ===== test dependencies =====
+            "pytest",
+            "pytest-asyncio",
+            "pytest-mock",
+            "pytest-timeout",
+            "syrupy",
+            "moto[s3]",
+            "boto3-stubs",
+            "starlette-context",
+            "python-dateutil",
+            "orjson",
+            "packaging",
+            "pytest-xdist>=3.8.0",
         )
         # Bake source files into image (including conftest.py for fixtures)
         .add_local_dir(
@@ -407,46 +410,46 @@ def create_mngr():
             "git config --global init.defaultBranch main",
         )
         .pip_install(
-        # ===== imbue-common dependencies =====
-        "click>=8.0",
-        "cowsay-python>=1.0.2",
-        "deal>=4.24",
-        "httpx>=0.27",
-        "inline-snapshot>=0.13",
-        "loguru>=0.7",
-        "pydantic>=2.0",
-        "tenacity>=8.0",
-        # ===== mngr dependencies =====
-        "cel-python>=0.1.5",
-        "click-option-group>=0.5.6",
-        "coolname>=2.2.0,<3.0.0",  # Pin to 2.x for compatibility
-        "cryptography>=42.0",
-        "dockerfile-parse>=2.0.0",
-        "modal>=0.67",
-        "psutil>=5.9",
-        "pyinfra>=3.0",
-        "pluggy>=1.5.0",
-        "tabulate>=0.9.0",
-        "tomlkit>=0.12.0",
-        "urwid>=2.2.0",
-        # ===== concurrency_group dependencies =====
-        "anyio>=4.4",
-        # ===== test dependencies =====
-        "pytest>=7.0",
-        "pytest-asyncio",
-        "pytest-mock",
-        "pytest-timeout>=2.3.0",
-        "pytest-cov>=7.0.0",
-        "pytest-xdist>=3.8.0",
-        "coverage>=7.0",
-        # ===== dev tools for ratchet tests =====
-        "ruff>=0.12.0",
-        "ty>=0.0.8",
-        "uv",
-        # ===== Additional deps for type checking apps/ =====
-        "fastapi",
-        "uvicorn",
-        "flask",
+            # ===== imbue-common dependencies =====
+            "click>=8.0",
+            "cowsay-python>=1.0.2",
+            "deal>=4.24",
+            "httpx>=0.27",
+            "inline-snapshot>=0.13",
+            "loguru>=0.7",
+            "pydantic>=2.0",
+            "tenacity>=8.0",
+            # ===== mngr dependencies =====
+            "cel-python>=0.1.5",
+            "click-option-group>=0.5.6",
+            "coolname>=2.2.0,<3.0.0",  # Pin to 2.x for compatibility
+            "cryptography>=42.0",
+            "dockerfile-parse>=2.0.0",
+            "modal>=0.67",
+            "psutil>=5.9",
+            "pyinfra>=3.0",
+            "pluggy>=1.5.0",
+            "tabulate>=0.9.0",
+            "tomlkit>=0.12.0",
+            "urwid>=2.2.0",
+            # ===== concurrency_group dependencies =====
+            "anyio>=4.4",
+            # ===== test dependencies =====
+            "pytest>=7.0",
+            "pytest-asyncio",
+            "pytest-mock",
+            "pytest-timeout>=2.3.0",
+            "pytest-cov>=7.0.0",
+            "pytest-xdist>=3.8.0",
+            "coverage>=7.0",
+            # ===== dev tools for ratchet tests =====
+            "ruff>=0.12.0",
+            "ty>=0.0.8",
+            "uv",
+            # ===== Additional deps for type checking apps/ =====
+            "fastapi",
+            "uvicorn",
+            "flask",
         )
         # Set PYTHONPATH and other env vars
         .env(
@@ -538,7 +541,7 @@ def prepare(dockerfile_path: str | None):
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
         temp_sandbox.terminate()
-        print(image.object_id)
+        sys.stdout.write(f"{image.object_id}\n")
     else:
         # Build from Dockerfile
         if not os.path.isfile(dockerfile_path):
@@ -634,7 +637,9 @@ def build_preset(preset_name: str):
 
 def _build_computronium():
     """Build computronium image."""
-    gi_path = os.environ.get("GI_PATH", "/Users/jacobkirmayer/imbue/generally_intelligent")
+    gi_path = os.environ.get(
+        "GI_PATH", "/Users/jacobkirmayer/imbue/generally_intelligent"
+    )
     print("Building computronium image...", file=sys.stderr)
     app = modal.App.lookup("offload-computronium", create_if_missing=True)
 
@@ -995,7 +1000,15 @@ def run(command: str):
 @cli.command("create")
 @click.argument("image_id")
 @click.argument("sandbox_type", default="default", required=False)
-def create_from_image(image_id: str, sandbox_type: str = "default"):
+@click.option(
+    "--copy-dir",
+    "copy_dirs",
+    multiple=True,
+    help="Copy local dir to sandbox (format: local_path:remote_path)",
+)
+def create_from_image(
+    image_id: str, sandbox_type: str = "default", copy_dirs: tuple[str, ...] = ()
+):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
@@ -1014,39 +1027,66 @@ def create_from_image(image_id: str, sandbox_type: str = "default"):
     }
 
     app_name = app_name_map.get(sandbox_type, "offload-sandbox")
-    print(f"[{time.time()-t0:.2f}s] Looking up app {app_name}...", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] Looking up app {app_name}...", file=sys.stderr)
     app = modal.App.lookup(app_name, create_if_missing=True)
-    print(f"[{time.time()-t0:.2f}s] App lookup complete", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] App lookup complete", file=sys.stderr)
 
     # Load image from ID
-    print(f"[{time.time()-t0:.2f}s] Loading image {image_id}...", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] Loading image {image_id}...", file=sys.stderr)
     image = modal.Image.from_id(image_id)
-    print(f"[{time.time()-t0:.2f}s] Image loaded", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] Image loaded", file=sys.stderr)
 
-    print(f"[{time.time()-t0:.2f}s] Creating sandbox...", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] Creating sandbox...", file=sys.stderr)
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
     )
-    print(f"[{time.time()-t0:.2f}s] Sandbox created", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s] Sandbox created", file=sys.stderr)
 
     # Copy files based on sandbox type
     cwd = os.getcwd()
     if sandbox_type == "default":
-        print(f"[{time.time()-t0:.2f}s] Copying files for default sandbox...", file=sys.stderr)
+        print(
+            f"[{time.time() - t0:.2f}s] Copying files for default sandbox...",
+            file=sys.stderr,
+        )
         sandbox.mkdir("/app/examples/tests", parents=True)
         copy_dir_to_sandbox(
             sandbox, os.path.join(cwd, "examples/tests"), "/app/examples/tests"
         )
-        print(f"[{time.time()-t0:.2f}s] File copy complete", file=sys.stderr)
+        print(f"[{time.time() - t0:.2f}s] File copy complete", file=sys.stderr)
     elif sandbox_type in ("rust", "dockerfile"):
-        print(f"[{time.time()-t0:.2f}s] Copying files for {sandbox_type} sandbox...", file=sys.stderr)
+        print(
+            f"[{time.time() - t0:.2f}s] Copying files for {sandbox_type} sandbox...",
+            file=sys.stderr,
+        )
         copy_dir_to_sandbox(sandbox, cwd, "/app")
-        print(f"[{time.time()-t0:.2f}s] File copy complete", file=sys.stderr)
+        print(f"[{time.time() - t0:.2f}s] File copy complete", file=sys.stderr)
 
-    print(f"[{time.time()-t0:.2f}s] Sandbox ready: {sandbox.object_id}", file=sys.stderr)
+    # Copy user-specified directories
+    for copy_spec in copy_dirs:
+        if ":" not in copy_spec:
+            sys.stderr.write(
+                f"Warning: Invalid copy-dir format '{copy_spec}', expected 'local:remote'\n"
+            )
+            continue
+        local_path, remote_path = copy_spec.split(":", 1)
+        if not os.path.isdir(local_path):
+            sys.stderr.write(
+                f"Warning: Local directory '{local_path}' not found, skipping\n"
+            )
+            continue
+        sys.stderr.write(
+            f"[{time.time() - t0:.2f}s] Copying {local_path} to {remote_path}...\n"
+        )
+        copy_dir_to_sandbox(sandbox, local_path, remote_path)
+        sys.stderr.write(f"[{time.time() - t0:.2f}s] Copy complete\n")
+
+    print(
+        f"[{time.time() - t0:.2f}s] Sandbox ready: {sandbox.object_id}", file=sys.stderr
+    )
     print(sandbox.object_id)
 
 
