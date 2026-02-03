@@ -532,6 +532,7 @@ def prepare(dockerfile_path: str | None):
 
     Prints the image_id to stdout for use with 'create'.
     """
+    # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
         # Build default image
         print("Building default image...", file=sys.stderr)
@@ -548,13 +549,15 @@ def prepare(dockerfile_path: str | None):
             print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Building image from {dockerfile_path}...", file=sys.stderr)
-        app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-        image = modal.Image.from_dockerfile(dockerfile_path)
-        image.build(app)
-        # Create temp sandbox to materialize image_id, then terminate
-        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-        temp_sandbox.terminate()
+        with modal.enable_output():
+            app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
+            image = modal.Image.from_dockerfile(dockerfile_path)
+            print(f"Building image from {dockerfile_path}...", file=sys.stderr)
+            image.build(app)
+            # Create temp sandbox to materialize image_id, then terminate
+            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+            temp_sandbox.terminate()
+
         print(image.object_id)
 
 
@@ -1016,6 +1019,12 @@ def create_from_image(
     """
     t0 = time.time()
 
+    # Log received arguments
+    print(f"[{time.time() - t0:.2f}s] create_from_image called with:", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s]   image_id: {image_id}", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s]   sandbox_type: {sandbox_type}", file=sys.stderr)
+    print(f"[{time.time() - t0:.2f}s]   copy_dirs: {copy_dirs}", file=sys.stderr)
+
     # Map sandbox types to appropriate app names and setup logic
     app_name_map = {
         "default": "offload-sandbox",
@@ -1066,7 +1075,14 @@ def create_from_image(
         print(f"[{time.time() - t0:.2f}s] File copy complete", file=sys.stderr)
 
     # Copy user-specified directories
-    for copy_spec in copy_dirs:
+    print(
+        f"[{time.time() - t0:.2f}s] Processing {len(copy_dirs)} user-specified copy-dir(s)",
+        file=sys.stderr,
+    )
+    for i, copy_spec in enumerate(copy_dirs):
+        print(
+            f"[{time.time() - t0:.2f}s] copy_dirs[{i}]: '{copy_spec}'", file=sys.stderr
+        )
         if ":" not in copy_spec:
             sys.stderr.write(
                 f"Warning: Invalid copy-dir format '{copy_spec}', expected 'local:remote'\n"
