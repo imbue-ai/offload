@@ -304,8 +304,9 @@ impl Default for ShellConnector {
 impl Connector for ShellConnector {
     async fn run(&self, command: &str) -> ProviderResult<ExecResult> {
         // Expand @filename.ext references to full paths
-        let expanded_command = bundled::expand_command(command)
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
+        let expanded_command = bundled::expand_command(command).map_err(|e| {
+            ProviderError::ExecFailed(format!("Offload error when expanding command: {}", e))
+        })?;
 
         debug!("Running: {}", expanded_command);
 

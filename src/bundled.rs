@@ -28,11 +28,11 @@ pub type BundledResult<T> = Result<T, BundledError>;
 #[derive(Debug, thiserror::Error)]
 pub enum BundledError {
     /// Failed to create cache directory.
-    #[error("Failed to create cache directory: {0}")]
+    #[error("Offload failed to create cache directory: {0}")]
     CacheCreationFailed(std::io::Error),
 
     /// Failed to extract a bundled script.
-    #[error("Failed to extract script '{name}': {source}")]
+    #[error("Failed to extract script '{name}' for Offload: {source}")]
     ExtractionFailed {
         name: String,
         #[source]
@@ -40,11 +40,11 @@ pub enum BundledError {
     },
 
     /// Regex pattern compilation failed.
-    #[error("Failed to compile regex pattern: {0}")]
+    #[error("Failed to compile regex pattern in Offload: {0}")]
     RegexCompilationFailed(regex::Error),
 
     /// Referenced script is not bundled.
-    #[error("Script not found in bundled scripts: {0}")]
+    #[error("Script not found in bundled scripts in Offload: {0}")]
     ScriptNotFound(String),
 }
 
@@ -150,7 +150,9 @@ fn ensure_scripts_extracted() -> BundledResult<PathBuf> {
 /// Returns the compiled regex for script patterns.
 fn get_script_pattern() -> BundledResult<&'static Regex> {
     let result = SCRIPT_PATTERN.get_or_init(|| {
-        Regex::new(r"@([\w\-]+\.\w+)").map_err(BundledError::RegexCompilationFailed)
+        // (?:^|\s) - match start of string or whitespace (non-capturing)
+        // @([\w\-]+\.\w+) - match @filename.ext, capturing filename.ext
+        Regex::new(r"(?:^|\s)@([\w\-]+\.\w+)").map_err(BundledError::RegexCompilationFailed)
     });
 
     match result {
@@ -199,8 +201,10 @@ pub fn expand_command(command: &str) -> BundledResult<String> {
             return Err(BundledError::ScriptNotFound(script_name.to_string()));
         }
 
-        let full_match = &cap[0]; // e.g., "@modal_sandbox.py"
-        result = result.replace(full_match, &script_path.display().to_string());
+        // Replace only the @script.ext part, not the preceding whitespace
+        // cap[0] includes the whitespace prefix, so we replace @script_name directly
+        let at_script = format!("@{}", script_name);
+        result = result.replace(&at_script, &script_path.display().to_string());
     }
 
     Ok(result)
@@ -264,10 +268,13 @@ mod tests {
         assert!(pattern.is_match("@script.py"));
         assert!(pattern.is_match("@modal_sandbox.py"));
         assert!(pattern.is_match("@my-script.sh"));
+        assert!(pattern.is_match("run @my-script.sh")); // ws before
 
         // Should not match
         assert!(!pattern.is_match("script.py"));
         assert!(!pattern.is_match("@script")); // no extension
+        assert!(!pattern.is_match("email@domain.com")); // no whitespace before @
+        assert!(!pattern.is_match("/path/to/@tty1.service")); // @ in middle of path
 
         // Note: email@domain.com does match the pattern, but this is acceptable
         // because we validate against SCRIPTS_DIR in expand_command()
