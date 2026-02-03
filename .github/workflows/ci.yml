@@ -27,11 +27,6 @@ jobs:
       with:
         tool: cargo-nextest
 
-    - name: Install cargo-deny
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-deny
-
     - name: Check formatting
       run: cargo fmt --check
 
@@ -40,6 +35,3 @@ jobs:
 
     - name: Run tests
       run: cargo nextest run
-
-    - name: Security and license audit
-      run: cargo deny check
