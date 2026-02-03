@@ -520,15 +520,17 @@ def build():
 
 
 @cli.command("prepare")
-@click.argument("sandbox_type", default="default")
-def prepare(sandbox_type: str):
+@click.argument("dockerfile_path", required=False, default=None)
+def prepare(dockerfile_path: str | None):
     """Prepare a Modal image (build only, no sandbox creation).
 
-    SANDBOX_TYPE: Type of image to build (default, rust, dockerfile, etc.)
+    DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
+    that Dockerfile. If omitted, builds the default pytest image.
 
-    Prints the image_id to stdout for use with create-with-image.
+    Prints the image_id to stdout for use with 'create'.
     """
-    if sandbox_type == "default":
+    if dockerfile_path is None:
+        # Build default image
         print("Building default image...", file=sys.stderr)
         app = modal.App.lookup("offload-sandbox", create_if_missing=True)
         image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
@@ -538,9 +540,19 @@ def prepare(sandbox_type: str):
         temp_sandbox.terminate()
         print(image.object_id)
     else:
-        # For other types, delegate to existing build commands
-        print(f"Error: prepare for '{sandbox_type}' not yet implemented", file=sys.stderr)
-        sys.exit(1)
+        # Build from Dockerfile
+        if not os.path.isfile(dockerfile_path):
+            print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Building image from {dockerfile_path}...", file=sys.stderr)
+        app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
+        image = modal.Image.from_dockerfile(dockerfile_path)
+        image.build(app)
+        # Create temp sandbox to materialize image_id, then terminate
+        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+        temp_sandbox.terminate()
+        print(image.object_id)
 
 
 @build.command("default")
