@@ -245,7 +245,7 @@ async fn run_tests(
         .next()
         .ok_or_else(|| anyhow!("No groups configured"))?;
 
-    match (&config.provider, &first_group_config.framework) {
+    let exit_code = match (&config.provider, &first_group_config.framework) {
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
             run_all_tests(
                 &config,
@@ -255,7 +255,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
             run_all_tests(
@@ -266,7 +266,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(f_cfg)) => {
             run_all_tests(
@@ -277,7 +277,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone())
@@ -291,7 +291,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone())
@@ -305,7 +305,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(f_cfg)) => {
             let provider = DefaultProvider::from_config(p_cfg.clone())
@@ -319,7 +319,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
             let working_dir = config.offload.working_dir.clone();
@@ -333,7 +333,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
             let working_dir = config.offload.working_dir.clone();
@@ -347,7 +347,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
             let working_dir = config.offload.working_dir.clone();
@@ -361,9 +361,9 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
             )
-            .await?;
+            .await?
         }
-    }
+    };
 
     // Phase 3: Report results per group
     info!("Results by group:");
@@ -386,10 +386,15 @@ async fn run_tests(
         );
     }
 
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+
     Ok(())
 }
 
 /// Run all tests with a single orchestrator call.
+/// Returns the exit code (0 = success, 1 = failures/not run, 2 = flaky only).
 async fn run_all_tests<P, D>(
     config: &config::Config,
     tests: &[TestRecord],
@@ -397,7 +402,7 @@ async fn run_all_tests<P, D>(
     framework: D,
     copy_dirs: &[CopyDir],
     verbose: bool,
-) -> Result<()>
+) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
     D: TestFramework,
@@ -419,10 +424,10 @@ where
         &copy_dir_tuples,
     );
 
-    orchestrator.run_with_tests(tests, &sandbox_pool).await?;
+    let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
     sandbox_pool.lock().await.terminate_all().await;
 
-    Ok(())
+    Ok(result.exit_code())
 }
 
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
