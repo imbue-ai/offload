@@ -7,9 +7,11 @@ retry_count = 1
 stream_output = true
 
 [provider]
-type = "modal"
-app_name = "offload-cargo-sandbox"
-image_type = { dockerfile = ".devcontainer/Dockerfile" }
+type = "default"
+prepare_command = "uv run @modal_sandbox.py prepare .devcontainer/Dockerfile"
+create_command = "uv run @modal_sandbox.py create {image_id} dockerfile"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 timeout_secs = 600
 
 [groups.all]
@@ -17,5 +19,3 @@ type = "cargo"
 
 [report]
 output_dir = "test-results"
-junit = true
-junit_file = "junit.xml"
