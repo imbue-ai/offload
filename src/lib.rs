@@ -78,7 +78,7 @@
 //!     let tests = framework.discover(&[]).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
