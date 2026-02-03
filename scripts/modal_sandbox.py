@@ -14,6 +14,7 @@ Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 import io
 import json
 import os
+import logging
 import sys
 import tarfile
 import time
@@ -22,10 +23,16 @@ from pathlib import Path
 import click
 import modal
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stderr)
+handler.setFormatter(logging.Formatter("%(message)s"))
+logger.addHandler(handler)
+
 
 def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     """Recursively copy a local directory to the sandbox using tar."""
-    print(f"Creating tar archive from {local_dir}...", file=sys.stderr)
+    logger.info("Creating tar archive from %s...", local_dir)
 
     # Create tar archive in memory
     tar_buffer = io.BytesIO()
@@ -50,10 +57,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     tar_buffer.seek(0)
     tar_data = tar_buffer.getvalue()
 
-    print(
-        f"Transferring tar archive ({len(tar_data)} bytes) to sandbox...",
-        file=sys.stderr,
-    )
+    logger.info("Transferring tar archive (%d bytes) to sandbox...", len(tar_data))
 
     # Create remote directory and transfer tar
     sandbox.mkdir(remote_dir, parents=True)
@@ -61,7 +65,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     with sandbox.open(tar_remote_path, "wb") as f:
         f.write(tar_data)
 
-    print(f"Extracting tar archive in {remote_dir}...", file=sys.stderr)
+    logger.info("Extracting tar archive in %s...", remote_dir)
 
     # Extract on sandbox
     sandbox.exec("tar", "-xf", tar_remote_path, "-C", remote_dir).wait()
@@ -69,7 +73,7 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     # Clean up tar file
     sandbox.exec("rm", "-f", tar_remote_path).wait()
 
-    print("Tar-based transfer complete", file=sys.stderr)
+    logger.info("Tar-based transfer complete")
 
 
 @click.group()
@@ -89,7 +93,7 @@ def create_default():
     """Create a basic pytest sandbox with examples/tests copied."""
     app = modal.App.lookup("offload-sandbox", create_if_missing=True)
 
-    print("Building image...", file=sys.stderr)
+    logger.info("Building image...")
     image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
     image.build(app)
 
@@ -107,7 +111,7 @@ def create_default():
         sandbox, os.path.join(cwd, "examples/tests"), "/app/examples/tests"
     )
 
-    print(sandbox.object_id)
+    sys.stdout.write("%s\n" % sandbox.object_id)
 
 
 @create_legacy.command("rust")
@@ -115,7 +119,7 @@ def create_rust():
     """Create a Rust sandbox with cargo toolchain."""
     app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
 
-    print("Building image...", file=sys.stderr)
+    logger.info("Building image...")
     image = (
         modal.Image.debian_slim()
         .apt_install("curl", "build-essential")
@@ -142,7 +146,7 @@ def create_rust():
     cwd = os.getcwd()
     copy_dir_to_sandbox(sandbox, cwd, "/app")
 
-    print(sandbox.object_id)
+    sys.stdout.write("%s\n" % sandbox.object_id)
 
 
 @create_legacy.command("dockerfile")
@@ -155,12 +159,12 @@ def create_dockerfile(dockerfile_path: str):
     """
     # Validate dockerfile exists
     if not os.path.isfile(dockerfile_path):
-        print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
+        logger.error("Error: Dockerfile not found: %s", dockerfile_path)
         sys.exit(1)
 
     app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
 
-    print("Building image from Dockerfile...", file=sys.stderr)
+    logger.info("Building image from Dockerfile...")
     image = modal.Image.from_dockerfile(dockerfile_path)
     image.build(app)
 
@@ -175,7 +179,7 @@ def create_dockerfile(dockerfile_path: str):
     cwd = os.getcwd()
     copy_dir_to_sandbox(sandbox, cwd, "/app")
 
-    print(sandbox.object_id)
+    sys.stdout.write("%s\n" % sandbox.object_id)
 
 
 @create_legacy.command("computronium")
@@ -187,10 +191,10 @@ def create_dockerfile(dockerfile_path: str):
 )
 def create_computronium(gi_path: str):
     """Create a computronium test sandbox."""
-    print("Creating Modal app...", file=sys.stderr)
+    logger.info("Creating Modal app...")
     app = modal.App.lookup("offload-computronium", create_if_missing=True)
 
-    print("Building image...", file=sys.stderr)
+    logger.info("Building image...")
     image = (
         modal.Image.debian_slim(python_version="3.11")
         .run_commands("echo 'cache-bust-v4'")
@@ -241,15 +245,15 @@ def create_computronium(gi_path: str):
     )
     image.build(app)
 
-    print("Creating sandbox...", file=sys.stderr)
+    logger.info("Creating sandbox...")
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
     )
-    print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
-    print(sandbox.object_id)
+    logger.info("Sandbox ready: %s", sandbox.object_id)
+    sys.stdout.write("%s\n" % sandbox.object_id)
 
 
 @create_legacy.command("sculptor")
@@ -267,11 +271,11 @@ def create_sculptor(gi_path: str | None):
     if gi_path is None:
         gi_path = str(Path(__file__).parent.parent.parent / "generally_intelligent")
 
-    print(f"Using GI_PATH: {gi_path}", file=sys.stderr)
-    print("Creating Modal app...", file=sys.stderr)
+    logger.info("Using GI_PATH: %s", gi_path)
+    logger.info("Creating Modal app...")
     app = modal.App.lookup("offload-sculptor", create_if_missing=True)
 
-    print("Building image with dependencies...", file=sys.stderr)
+    logger.info("Building image with dependencies...")
     image = (
         modal.Image.debian_slim(python_version="3.11")
         .run_commands("echo 'cache-bust-v18'")
@@ -371,7 +375,7 @@ def create_sculptor(gi_path: str | None):
     )
     image.build(app)
 
-    print("Creating sandbox...", file=sys.stderr)
+    logger.info("Creating sandbox...")
     try:
         sandbox = modal.Sandbox.create(
             app=app,
@@ -379,10 +383,10 @@ def create_sculptor(gi_path: str | None):
             workdir="/app",
             timeout=3600,
         )
-        print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
-        print(sandbox.object_id)
+        logger.info("Sandbox ready: %s", sandbox.object_id)
+        sys.stdout.write("%s\n" % sandbox.object_id)
     except modal.exception.Error as e:
-        print(f"Error creating sandbox: {e}", file=sys.stderr)
+        logger.error("Error creating sandbox: %s", e)
         raise
 
 
@@ -392,10 +396,10 @@ def create_mngr():
     modal.enable_output()
 
     mngr_path = os.getcwd()
-    print(f"Using MNGR_PATH: {mngr_path}", file=sys.stderr)
+    logger.info("Using MNGR_PATH: %s", mngr_path)
     app = modal.App.lookup("offload-mngr", create_if_missing=True)
 
-    print("Building image with dependencies...", file=sys.stderr)
+    logger.info("Building image with dependencies...")
     image = (
         modal.Image.debian_slim(python_version="3.11")
         .apt_install(
@@ -501,7 +505,7 @@ def create_mngr():
     )
     image.build(app)
 
-    print("Creating sandbox...", file=sys.stderr)
+    logger.info("Creating sandbox...")
     try:
         sandbox = modal.Sandbox.create(
             app=app,
@@ -509,10 +513,10 @@ def create_mngr():
             workdir="/app",
             timeout=3600,
         )
-        print(f"Sandbox ready: {sandbox.object_id}", file=sys.stderr)
-        print(sandbox.object_id)
+        logger.info("Sandbox ready: %s", sandbox.object_id)
+        sys.stdout.write("%s\n" % sandbox.object_id)
     except modal.exception.Error as e:
-        print(f"Error creating sandbox: {e}", file=sys.stderr)
+        logger.error("Error creating sandbox: %s", e)
         raise
 
 
@@ -532,48 +536,51 @@ def prepare(dockerfile_path: str | None):
 
     Prints the image_id to stdout for use with 'create'.
     """
+    # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
         # Build default image
-        print("Building default image...", file=sys.stderr)
+        logger.info("Building default image...")
         app = modal.App.lookup("offload-sandbox", create_if_missing=True)
         image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
         temp_sandbox.terminate()
-        sys.stdout.write(f"{image.object_id}\n")
+        sys.stdout.write("%s\n" % image.object_id)
     else:
         # Build from Dockerfile
         if not os.path.isfile(dockerfile_path):
-            print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
+            logger.error("Error: Dockerfile not found: %s", dockerfile_path)
             sys.exit(1)
 
-        print(f"Building image from {dockerfile_path}...", file=sys.stderr)
-        app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-        image = modal.Image.from_dockerfile(dockerfile_path)
-        image.build(app)
-        # Create temp sandbox to materialize image_id, then terminate
-        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-        temp_sandbox.terminate()
-        print(image.object_id)
+        with modal.enable_output():
+            app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
+            image = modal.Image.from_dockerfile(dockerfile_path)
+            logger.info("Building image from %s...", dockerfile_path)
+            image.build(app)
+            # Create temp sandbox to materialize image_id, then terminate
+            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+            temp_sandbox.terminate()
+
+        sys.stdout.write("%s\n" % image.object_id)
 
 
 @build.command("default")
 def build_default():
     """Build default pytest image, print image_id."""
-    print("Building default image...", file=sys.stderr)
+    logger.info("Building default image...")
     app = modal.App.lookup("offload-sandbox", create_if_missing=True)
     image = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 @build.command("rust")
 def build_rust():
     """Build Rust toolchain image, print image_id."""
-    print("Building rust image...", file=sys.stderr)
+    logger.info("Building rust image...")
     app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
     image = (
         modal.Image.debian_slim()
@@ -591,7 +598,7 @@ def build_rust():
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 @build.command("dockerfile")
@@ -605,16 +612,16 @@ def build_dockerfile(dockerfile_path: str):
 
     # Validate dockerfile exists
     if not os.path.isfile(dockerfile_path):
-        print(f"Error: Dockerfile not found: {dockerfile_path}", file=sys.stderr)
+        logger.error("Error: Dockerfile not found: %s", dockerfile_path)
         sys.exit(1)
 
-    print(f"Building dockerfile image from {dockerfile_path}...", file=sys.stderr)
+    logger.info("Building dockerfile image from %s...", dockerfile_path)
     app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
     image = modal.Image.from_dockerfile(dockerfile_path)
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 @build.command("preset")
@@ -631,7 +638,7 @@ def build_preset(preset_name: str):
     elif preset_name == "mngr":
         _build_mngr()
     else:
-        print(f"Error: Unknown preset: {preset_name}", file=sys.stderr)
+        logger.error("Error: Unknown preset: %s", preset_name)
         sys.exit(1)
 
 
@@ -640,7 +647,7 @@ def _build_computronium():
     gi_path = os.environ.get(
         "GI_PATH", "/Users/jacobkirmayer/imbue/generally_intelligent"
     )
-    print("Building computronium image...", file=sys.stderr)
+    logger.info("Building computronium image...")
     app = modal.App.lookup("offload-computronium", create_if_missing=True)
 
     image = (
@@ -694,7 +701,7 @@ def _build_computronium():
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 def _build_sculptor():
@@ -704,8 +711,8 @@ def _build_sculptor():
     if gi_path is None:
         gi_path = str(Path(__file__).parent.parent.parent / "generally_intelligent")
 
-    print(f"Using GI_PATH: {gi_path}", file=sys.stderr)
-    print("Building sculptor image...", file=sys.stderr)
+    logger.info("Using GI_PATH: %s", gi_path)
+    logger.info("Building sculptor image...")
     app = modal.App.lookup("offload-sculptor", create_if_missing=True)
 
     image = (
@@ -808,15 +815,15 @@ def _build_sculptor():
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 def _build_mngr():
     """Build mngr image."""
     modal.enable_output()
     mngr_path = os.getcwd()
-    print(f"Using MNGR_PATH: {mngr_path}", file=sys.stderr)
-    print("Building mngr image...", file=sys.stderr)
+    logger.info("Using MNGR_PATH: %s", mngr_path)
+    logger.info("Building mngr image...")
     app = modal.App.lookup("offload-mngr", create_if_missing=True)
 
     image = (
@@ -925,7 +932,7 @@ def _build_mngr():
     image.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
     temp_sandbox.terminate()
-    print(image.object_id)
+    sys.stdout.write("%s\n" % image.object_id)
 
 
 @cli.command()
@@ -934,7 +941,7 @@ def destroy(sandbox_id: str):
     """Terminate a Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
     sandbox.terminate()
-    print(f"Terminated sandbox {sandbox_id}")
+    logger.info("Terminated sandbox %s", sandbox_id)
 
 
 @cli.command("exec")
@@ -1016,6 +1023,12 @@ def create_from_image(
     """
     t0 = time.time()
 
+    # Log received arguments
+    logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
+    logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
+    logger.debug("[%.2fs]   sandbox_type: %s", time.time() - t0, sandbox_type)
+    logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
+
     # Map sandbox types to appropriate app names and setup logic
     app_name_map = {
         "default": "offload-sandbox",
@@ -1027,67 +1040,65 @@ def create_from_image(
     }
 
     app_name = app_name_map.get(sandbox_type, "offload-sandbox")
-    print(f"[{time.time() - t0:.2f}s] Looking up app {app_name}...", file=sys.stderr)
+    logger.debug("[%.2fs] Looking up app %s...", time.time() - t0, app_name)
     app = modal.App.lookup(app_name, create_if_missing=True)
-    print(f"[{time.time() - t0:.2f}s] App lookup complete", file=sys.stderr)
+    logger.debug("[%.2fs] App lookup complete", time.time() - t0)
 
     # Load image from ID
-    print(f"[{time.time() - t0:.2f}s] Loading image {image_id}...", file=sys.stderr)
+    logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
     image = modal.Image.from_id(image_id)
-    print(f"[{time.time() - t0:.2f}s] Image loaded", file=sys.stderr)
+    logger.debug("[%.2fs] Image loaded", time.time() - t0)
 
-    print(f"[{time.time() - t0:.2f}s] Creating sandbox...", file=sys.stderr)
+    logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
     )
-    print(f"[{time.time() - t0:.2f}s] Sandbox created", file=sys.stderr)
+    logger.debug("[%.2fs] Sandbox created", time.time() - t0)
 
     # Copy files based on sandbox type
     cwd = os.getcwd()
     if sandbox_type == "default":
-        print(
-            f"[{time.time() - t0:.2f}s] Copying files for default sandbox...",
-            file=sys.stderr,
-        )
+        logger.debug("[%.2fs] Copying files for default sandbox...", time.time() - t0)
         sandbox.mkdir("/app/examples/tests", parents=True)
         copy_dir_to_sandbox(
             sandbox, os.path.join(cwd, "examples/tests"), "/app/examples/tests"
         )
-        print(f"[{time.time() - t0:.2f}s] File copy complete", file=sys.stderr)
+        logger.debug("[%.2fs] File copy complete", time.time() - t0)
     elif sandbox_type in ("rust", "dockerfile"):
-        print(
-            f"[{time.time() - t0:.2f}s] Copying files for {sandbox_type} sandbox...",
-            file=sys.stderr,
+        logger.debug(
+            "[%.2fs] Copying files for %s sandbox...", time.time() - t0, sandbox_type
         )
         copy_dir_to_sandbox(sandbox, cwd, "/app")
-        print(f"[{time.time() - t0:.2f}s] File copy complete", file=sys.stderr)
+        logger.debug("[%.2fs] File copy complete", time.time() - t0)
 
     # Copy user-specified directories
-    for copy_spec in copy_dirs:
+    logger.debug(
+        "[%.2fs] Processing %d user-specified copy-dir(s)",
+        time.time() - t0,
+        len(copy_dirs),
+    )
+    for i, copy_spec in enumerate(copy_dirs):
+        logger.debug("[%.2fs] copy_dirs[%d]: '%s'", time.time() - t0, i, copy_spec)
         if ":" not in copy_spec:
-            sys.stderr.write(
-                f"Warning: Invalid copy-dir format '{copy_spec}', expected 'local:remote'\n"
+            logger.warning(
+                "Invalid copy-dir format '%s', expected 'local:remote'", copy_spec
             )
             continue
         local_path, remote_path = copy_spec.split(":", 1)
         if not os.path.isdir(local_path):
-            sys.stderr.write(
-                f"Warning: Local directory '{local_path}' not found, skipping\n"
-            )
+            logger.warning("Local directory '%s' not found, skipping", local_path)
             continue
-        sys.stderr.write(
-            f"[{time.time() - t0:.2f}s] Copying {local_path} to {remote_path}...\n"
+        logger.debug(
+            "[%.2fs] Copying %s to %s...", time.time() - t0, local_path, remote_path
         )
         copy_dir_to_sandbox(sandbox, local_path, remote_path)
-        sys.stderr.write(f"[{time.time() - t0:.2f}s] Copy complete\n")
+        logger.debug("[%.2fs] Copy complete", time.time() - t0)
 
-    print(
-        f"[{time.time() - t0:.2f}s] Sandbox ready: {sandbox.object_id}", file=sys.stderr
-    )
-    print(sandbox.object_id)
+    logger.info("[%.2fs] Sandbox ready: %s", time.time() - t0, sandbox.object_id)
+    sys.stdout.write("%s\n" % sandbox.object_id)
 
 
 if __name__ == "__main__":
