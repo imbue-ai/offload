@@ -122,7 +122,15 @@ impl DefaultProvider {
                 )));
             }
 
-            let image_id = result.stdout.trim().to_string();
+            // Image id is the last line of stdout
+            let image_id = result
+                .stdout
+                .lines()
+                .last()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
             if image_id.is_empty() {
                 return Err(ProviderError::ExecFailed(
                     "Prepare command returned empty image_id".to_string(),
@@ -169,6 +177,8 @@ impl SandboxProvider for DefaultProvider {
                 remote.display()
             ));
         }
+
+        info!(create_command);
 
         // Run the create command to get a sandbox_id
         let result = self.connector.run(&create_command).await?;
