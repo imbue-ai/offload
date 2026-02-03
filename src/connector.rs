@@ -80,7 +80,7 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};

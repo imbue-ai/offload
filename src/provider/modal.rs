@@ -318,11 +318,6 @@ impl ModalProvider {
         let mut command = format!("uv run @modal_sandbox.py create {}", image_id);
 
         for (local, remote) in copy_dirs {
-            info!(
-                "  Adding --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            );
             command.push_str(&format!(
                 " --copy-dir={}:{}",
                 local.display(),

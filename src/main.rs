@@ -164,18 +164,6 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Log copy_dir arguments
-    if !copy_dirs.is_empty() {
-        info!("Copy directories specified: {}", copy_dirs.len());
-        for cd in &copy_dirs {
-            info!(
-                "  --copy-dir: {} -> {}",
-                cd.local.display(),
-                cd.remote.display()
-            );
-        }
-    }
-
     // Validate all groups use the same framework type
     let mut framework_types = config
         .groups
