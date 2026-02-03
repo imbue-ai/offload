@@ -191,27 +191,22 @@ def run(command: str):
 
 @cli.command("create")
 @click.argument("image_id")
-@click.argument("sandbox_type", default="default", required=False)
 @click.option(
     "--copy-dir",
     "copy_dirs",
     multiple=True,
     help="Copy local dir to sandbox (format: local_path:remote_path)",
 )
-def create_from_image(
-    image_id: str, sandbox_type: str = "default", copy_dirs: tuple[str, ...] = ()
-):
+def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
-    SANDBOX_TYPE is the type of sandbox (default, rust, dockerfile, etc.). Defaults to 'default'.
     """
     t0 = time.time()
 
     # Log received arguments
     logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
     logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
-    logger.debug("[%.2fs]   sandbox_type: %s", time.time() - t0, sandbox_type)
     logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
 
     app_name = "offload-sandbox"
@@ -233,19 +228,6 @@ def create_from_image(
 
     # Copy files based on sandbox type
     cwd = os.getcwd()
-    if sandbox_type == "default":
-        logger.debug("[%.2fs] Copying files for default sandbox...", time.time() - t0)
-        sandbox.mkdir("/app/examples/tests", parents=True)
-        copy_dir_to_sandbox(
-            sandbox, os.path.join(cwd, "examples/tests"), "/app/examples/tests"
-        )
-        logger.debug("[%.2fs] File copy complete", time.time() - t0)
-    elif sandbox_type in ("rust", "dockerfile"):
-        logger.debug(
-            "[%.2fs] Copying files for %s sandbox...", time.time() - t0, sandbox_type
-        )
-        copy_dir_to_sandbox(sandbox, cwd, "/app")
-        logger.debug("[%.2fs] File copy complete", time.time() - t0)
 
     # Copy user-specified directories
     logger.debug(
@@ -254,7 +236,7 @@ def create_from_image(
         len(copy_dirs),
     )
     for i, copy_spec in enumerate(copy_dirs):
-        logger.debug("[%.2fs] copy_dirs[%d]: '%s'", time.time() - t0, i, copy_spec)
+        logger.info("[%.2fs] copy_dirs[%d]: '%s'", time.time() - t0, i, copy_spec)
         if ":" not in copy_spec:
             logger.warning(
                 "Invalid copy-dir format '%s', expected 'local:remote'", copy_spec
@@ -264,11 +246,11 @@ def create_from_image(
         if not os.path.isdir(local_path):
             logger.warning("Local directory '%s' not found, skipping", local_path)
             continue
-        logger.debug(
+        logger.info(
             "[%.2fs] Copying %s to %s...", time.time() - t0, local_path, remote_path
         )
         copy_dir_to_sandbox(sandbox, local_path, remote_path)
-        logger.debug("[%.2fs] Copy complete", time.time() - t0)
+        logger.info("[%.2fs] Copy complete", time.time() - t0)
 
     logger.info("[%.2fs] Sandbox ready: %s", time.time() - t0, sandbox.object_id)
     sys.stdout.write("%s\n" % sandbox.object_id)
