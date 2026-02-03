@@ -76,12 +76,12 @@ def cli():
 
 
 @cli.group()
-def create():
-    """Create a Modal sandbox."""
+def create_legacy():
+    """Create a Modal sandbox (legacy - use prepare + create instead)."""
     pass
 
 
-@create.command("default")
+@create_legacy.command("default")
 def create_default():
     """Create a basic pytest sandbox with examples/tests copied."""
     app = modal.App.lookup("offload-sandbox", create_if_missing=True)
@@ -107,7 +107,7 @@ def create_default():
     print(sandbox.object_id)
 
 
-@create.command("rust")
+@create_legacy.command("rust")
 def create_rust():
     """Create a Rust sandbox with cargo toolchain."""
     app = modal.App.lookup("offload-rust-sandbox", create_if_missing=True)
@@ -142,7 +142,7 @@ def create_rust():
     print(sandbox.object_id)
 
 
-@create.command("dockerfile")
+@create_legacy.command("dockerfile")
 @click.argument("dockerfile_path")
 def create_dockerfile(dockerfile_path: str):
     """Create a sandbox from a Dockerfile.
@@ -175,7 +175,7 @@ def create_dockerfile(dockerfile_path: str):
     print(sandbox.object_id)
 
 
-@create.command("computronium")
+@create_legacy.command("computronium")
 @click.option(
     "--gi-path",
     envvar="GI_PATH",
@@ -249,7 +249,7 @@ def create_computronium(gi_path: str):
     print(sandbox.object_id)
 
 
-@create.command("sculptor")
+@create_legacy.command("sculptor")
 @click.option(
     "--gi-path",
     envvar="GI_PATH",
@@ -383,7 +383,7 @@ def create_sculptor(gi_path: str | None):
         raise
 
 
-@create.command("mngr")
+@create_legacy.command("mngr")
 def create_mngr():
     """Create a mngr test sandbox."""
     modal.enable_output()
@@ -980,7 +980,7 @@ def run(command: str):
     sys.exit(result["exit_code"])
 
 
-@cli.command("create-from-image")
+@cli.command("create")
 @click.argument("image_id")
 @click.argument("sandbox_type", default="default", required=False)
 def create_from_image(image_id: str, sandbox_type: str = "default"):

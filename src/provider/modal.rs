@@ -310,7 +310,7 @@ impl ModalProvider {
     ///
     /// Returns errors if the Python script fails or returns invalid output
     async fn call_python_create(&self, image_id: &str) -> ProviderResult<String> {
-        let command = format!("uv run @modal_sandbox.py create-from-image {}", image_id);
+        let command = format!("uv run @modal_sandbox.py create {}", image_id);
 
         debug!("Creating Modal sandbox: {}", command);
 

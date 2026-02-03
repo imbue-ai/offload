@@ -9,7 +9,7 @@ retry_count = 4
 [provider]
 type = "default"
 prepare_command = "uv run @modal_sandbox.py prepare"
-create_command = "uv run @modal_sandbox.py create-from-image {image_id}"
+create_command = "uv run @modal_sandbox.py create {image_id}"
 exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
 destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 timeout_secs = 600
