@@ -239,6 +239,7 @@ pub struct ModalProviderConfig {
 /// - **create_command**: Prints a unique sandbox ID to stdout (can use `{image_id}` placeholder)
 /// - **exec_command**: Uses `{sandbox_id}` and `{command}` placeholders
 /// - **destroy_command**: Uses `{sandbox_id}` placeholder
+/// - **download_command** (optional): Uses `{sandbox_id}` and `{paths}` placeholders for file download
 ///
 /// The exec command can optionally return JSON for structured results:
 /// ```json
@@ -253,6 +254,7 @@ pub struct ModalProviderConfig {
 /// create_command = "modal sandbox create --image python:3.11"
 /// exec_command = "modal sandbox exec {sandbox_id} -- sh -c {command}"
 /// destroy_command = "modal sandbox delete {sandbox_id}"
+/// download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"
 /// timeout_secs = 3600
 /// ```
 ///
@@ -330,6 +332,24 @@ pub struct DefaultProviderConfig {
     ///
     /// Called after tests complete to release resources.
     pub destroy_command: String,
+
+    /// Optional command to download files from a sandbox.
+    ///
+    /// Available placeholders:
+    /// - `{sandbox_id}`: The ID returned by create_command
+    /// - `{paths}`: Space-separated list of path specifications in "remote:local" format
+    ///
+    /// Each path specification downloads the remote path to the local path.
+    /// Both files and directories are supported.
+    ///
+    /// # Example
+    /// ```sh
+    /// # Download multiple paths
+    /// uv run @modal_sandbox.py download {sandbox_id} {paths}
+    /// # Expands to: uv run @modal_sandbox.py download sb-abc123 "/app/out:./out" "/app/logs:./logs"
+    /// ```
+    #[serde(default)]
+    pub download_command: Option<String>,
 
     /// Local working directory for running the lifecycle commands.
     ///

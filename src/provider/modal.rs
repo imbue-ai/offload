@@ -420,6 +420,31 @@ impl ModalSandbox {
     fn build_destroy_command(&self) -> String {
         format!("uv run @modal_sandbox.py destroy {}", self.remote_id)
     }
+
+    /// Build the download command for downloading files from the sandbox.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Vector of (remote_path, local_path) tuples
+    fn build_download_command(&self, paths: &[(String, String)]) -> String {
+        // Build paths string: "remote1:local1" "remote2:local2" ...
+        let paths_str = paths
+            .iter()
+            .map(|(remote, local)| {
+                format!(
+                    "{}:{}",
+                    shell_words::quote(remote),
+                    shell_words::quote(local)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        format!(
+            "uv run @modal_sandbox.py download {} {}",
+            self.remote_id, paths_str
+        )
+    }
 }
 
 #[async_trait]
@@ -439,8 +464,33 @@ impl Sandbox for ModalSandbox {
         Ok(())
     }
 
-    async fn download(&self, _remote: &Path, _local: &Path) -> ProviderResult<()> {
-        warn!("download() not supported by ModalSandbox");
+    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
+        let remote_str = remote.to_string_lossy().to_string();
+        let local_str = local.to_string_lossy().to_string();
+
+        let shell_cmd = self.build_download_command(&[(remote_str.clone(), local_str.clone())]);
+        debug!(
+            "Downloading from Modal {}: {} -> {}",
+            self.remote_id, remote_str, local_str
+        );
+
+        let result = self.connector.run(&shell_cmd).await?;
+
+        // Forward stderr (contains download progress)
+        if !result.stderr.is_empty() {
+            for line in result.stderr.lines() {
+                info!("{}", line);
+            }
+        }
+
+        if result.exit_code != 0 {
+            return Err(ProviderError::DownloadFailed(format!(
+                "Download command failed: {}",
+                result.stderr
+            )));
+        }
+
+        info!("Downloaded {} -> {}", remote_str, local_str);
         Ok(())
     }
 
