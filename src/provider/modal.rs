@@ -7,7 +7,6 @@
 //! # Cache Keys
 //!
 //! - Dockerfile: `dockerfile:{path}` with hash validation
-//! - Preset: `preset:{name}` (e.g., `preset:default`, `preset:rust`)
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use super::{
     SandboxStatus,
 };
 use crate::cache::{ImageCache, ImageCacheEntry, compute_file_hash};
-use crate::config::{ModalImageType, ModalProviderConfig, SandboxConfig};
+use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
 /// Provider for Modal cloud sandboxes with image caching.
@@ -90,15 +89,12 @@ impl ModalProvider {
 
     /// Gets the cache key for the current image configuration.
     fn get_cache_key(&self) -> String {
-        match &self.config.image_type {
-            ModalImageType::Dockerfile { dockerfile } => format!("dockerfile:{}", dockerfile),
-            ModalImageType::Preset { preset } => format!("preset:{}", preset),
-        }
+        format!("dockerfile:{}", self.config.dockerfile)
     }
 
     /// Checks if a cached image entry exists and is valid.
     ///
-    /// For Dockerfile images, validates the hash. For preset images, just checks existence.
+    /// Validates the Dockerfile hash to ensure the cached image is still current.
     ///
     /// # Arguments
     ///
@@ -117,28 +113,20 @@ impl ModalProvider {
         cache: &ImageCache,
         cache_key: &str,
     ) -> ProviderResult<Option<ImageCacheEntry>> {
-        match &self.config.image_type {
-            ModalImageType::Dockerfile { dockerfile } => {
-                // Compute current hash
-                let dockerfile_path = self.cache_dir.join(dockerfile);
-                let current_hash = compute_file_hash(&dockerfile_path).map_err(|e| {
-                    ProviderError::CreateFailed(format!("Failed to compute Dockerfile hash: {}", e))
-                })?;
+        // Compute current hash
+        let dockerfile_path = self.cache_dir.join(&self.config.dockerfile);
+        let current_hash = compute_file_hash(&dockerfile_path).map_err(|e| {
+            ProviderError::CreateFailed(format!("Failed to compute Dockerfile hash: {}", e))
+        })?;
 
-                info!(
-                    "Dockerfile hash for {}: {}",
-                    dockerfile_path.display(),
-                    current_hash
-                );
+        info!(
+            "Dockerfile hash for {}: {}",
+            dockerfile_path.display(),
+            current_hash
+        );
 
-                // Check cache with hash validation
-                Ok(cache.get_for_dockerfile(cache_key, &current_hash).cloned())
-            }
-            ModalImageType::Preset { .. } => {
-                // For presets, just check if we have an entry
-                Ok(cache.get(cache_key).cloned())
-            }
-        }
+        // Check cache with hash validation
+        Ok(cache.get_for_dockerfile(cache_key, &current_hash).cloned())
     }
 
     /// Updates the image cache with a newly built image.
@@ -156,24 +144,18 @@ impl ModalProvider {
     async fn update_cache(&self, cache_key: &str, image_id: &str) -> ProviderResult<()> {
         let mut cache = self.cache.lock().await;
 
-        let dockerfile_hash = match &self.config.image_type {
-            ModalImageType::Dockerfile { dockerfile } => {
-                let dockerfile_path = self.cache_dir.join(dockerfile);
-                Some(compute_file_hash(&dockerfile_path).map_err(|e| {
-                    ProviderError::CreateFailed(format!("Failed to compute Dockerfile hash: {}", e))
-                })?)
-            }
-            ModalImageType::Preset { .. } => None,
+        let dockerfile_hash = {
+            let dockerfile_path = self.cache_dir.join(&self.config.dockerfile);
+            Some(compute_file_hash(&dockerfile_path).map_err(|e| {
+                ProviderError::CreateFailed(format!("Failed to compute Dockerfile hash: {}", e))
+            })?)
         };
 
         let entry = ImageCacheEntry {
             image_id: image_id.to_string(),
             dockerfile_hash,
             created_at: chrono::Utc::now().to_rfc3339(),
-            image_type: match &self.config.image_type {
-                ModalImageType::Dockerfile { .. } => "dockerfile".to_string(),
-                ModalImageType::Preset { preset } => preset.clone(),
-            },
+            image_type: "dockerfile".to_string(),
         };
 
         cache.insert(cache_key.to_string(), entry);
@@ -232,7 +214,7 @@ impl ModalProvider {
         let image_id = build_cell
             .get_or_try_init(|| async {
                 info!("Cache miss for {}, building image...", cache_key);
-                let image_id = self.call_python_build(&self.config.image_type).await?;
+                let image_id = self.call_python_build(&self.config.dockerfile).await?;
 
                 // Update cache
                 self.update_cache(&cache_key, &image_id).await?;
@@ -248,7 +230,7 @@ impl ModalProvider {
     ///
     /// # Arguments
     ///
-    /// * `image_type` - The image type configuration
+    /// * `dockerfile` - The dockerfile on which the image is based
     ///
     /// # Returns
     ///
@@ -257,15 +239,8 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_build(&self, image_type: &ModalImageType) -> ProviderResult<String> {
-        let command = match image_type {
-            ModalImageType::Dockerfile { dockerfile } => {
-                format!("uv run @modal_sandbox.py build dockerfile {}", dockerfile)
-            }
-            ModalImageType::Preset { preset } => {
-                format!("uv run @modal_sandbox.py build preset {}", preset)
-            }
-        };
+    async fn call_python_build(&self, dockerfile: &str) -> ProviderResult<String> {
+        let command = format!("uv run @modal_sandbox.py prepare {}", dockerfile);
 
         debug!("Building Modal image: {}", command);
 
@@ -285,7 +260,14 @@ impl ModalProvider {
             )));
         }
 
-        let image_id = result.stdout.trim().to_string();
+        let image_id = result
+            .stdout
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
         if image_id.is_empty() {
             return Err(ProviderError::CreateFailed(
                 "Image build returned empty image_id".to_string(),
@@ -343,7 +325,14 @@ impl ModalProvider {
             )));
         }
 
-        let sandbox_id = result.stdout.trim().to_string();
+        let sandbox_id = result
+            .stdout
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
         if sandbox_id.is_empty() {
             return Err(ProviderError::CreateFailed(
                 "Sandbox creation returned empty sandbox_id".to_string(),

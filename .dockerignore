@@ -1,0 +1,50 @@
+# Rust build artifacts (can be gigabytes)
+/target/
+target/
+
+# Version control
+.git/
+.jj/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+\#*\#
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Test output
+/test-results/
+test-results/
+
+# Local caches
+.offload/
+.beads/
+
+# Claude Code agent files
+.claude/
+
+# Secrets (should never be uploaded)
+*.pem
+*_key
+id_rsa*
+id_ed25519*
+
+# Local config overrides
+offload.local.toml

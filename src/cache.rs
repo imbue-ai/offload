@@ -27,7 +27,7 @@ pub struct ImageCacheEntry {
     /// ISO 8601 timestamp when the entry was created
     pub created_at: String,
 
-    /// Type of image: "dockerfile" or "preset" (e.g., "default", "rust")
+    /// Type of image (e.g., "dockerfile")
     pub image_type: String,
 }
 
@@ -228,12 +228,12 @@ mod tests {
         // Create and save a cache
         let mut cache = ImageCache::default();
         cache.insert(
-            "default".to_string(),
+            "dockerfile:test".to_string(),
             ImageCacheEntry {
                 image_id: "im-abc123".to_string(),
-                dockerfile_hash: None,
+                dockerfile_hash: Some("abc123".to_string()),
                 created_at: "2024-01-01T00:00:00Z".to_string(),
-                image_type: "preset".to_string(),
+                image_type: "dockerfile".to_string(),
             },
         );
 
@@ -243,10 +243,12 @@ mod tests {
         let loaded_cache = ImageCache::load(temp_dir.path());
         assert_eq!(loaded_cache.entries.len(), 1);
 
-        let entry = loaded_cache.get("default").ok_or("Entry not found")?;
+        let entry = loaded_cache
+            .get("dockerfile:test")
+            .ok_or("Entry not found")?;
         assert_eq!(entry.image_id, "im-abc123");
-        assert_eq!(entry.image_type, "preset");
-        assert!(entry.dockerfile_hash.is_none());
+        assert_eq!(entry.image_type, "dockerfile");
+        assert_eq!(entry.dockerfile_hash, Some("abc123".to_string()));
         Ok(())
     }
 
@@ -254,16 +256,16 @@ mod tests {
     fn test_cache_get() {
         let mut cache = ImageCache::default();
         cache.insert(
-            "default".to_string(),
+            "dockerfile:test".to_string(),
             ImageCacheEntry {
                 image_id: "im-abc123".to_string(),
-                dockerfile_hash: None,
+                dockerfile_hash: Some("abc123".to_string()),
                 created_at: "2024-01-01T00:00:00Z".to_string(),
-                image_type: "preset".to_string(),
+                image_type: "dockerfile".to_string(),
             },
         );
 
-        assert!(cache.get("default").is_some());
+        assert!(cache.get("dockerfile:test").is_some());
         assert!(cache.get("nonexistent").is_none());
     }
 
@@ -363,28 +365,28 @@ mod tests {
         let mut cache = ImageCache::default();
 
         cache.insert(
-            "default".to_string(),
+            "dockerfile:test".to_string(),
             ImageCacheEntry {
                 image_id: "im-abc123".to_string(),
-                dockerfile_hash: None,
+                dockerfile_hash: Some("hash1".to_string()),
                 created_at: "2024-01-01T00:00:00Z".to_string(),
-                image_type: "preset".to_string(),
+                image_type: "dockerfile".to_string(),
             },
         );
 
         // Insert again with different ID
         cache.insert(
-            "default".to_string(),
+            "dockerfile:test".to_string(),
             ImageCacheEntry {
                 image_id: "im-xyz789".to_string(),
-                dockerfile_hash: None,
+                dockerfile_hash: Some("hash2".to_string()),
                 created_at: "2024-01-02T00:00:00Z".to_string(),
-                image_type: "preset".to_string(),
+                image_type: "dockerfile".to_string(),
             },
         );
 
         // Should have the new ID
-        let entry = cache.get("default").ok_or("Entry not found")?;
+        let entry = cache.get("dockerfile:test").ok_or("Entry not found")?;
         assert_eq!(entry.image_id, "im-xyz789");
         assert_eq!(cache.entries.len(), 1);
         Ok(())
