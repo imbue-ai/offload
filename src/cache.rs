@@ -243,7 +243,9 @@ mod tests {
         let loaded_cache = ImageCache::load(temp_dir.path());
         assert_eq!(loaded_cache.entries.len(), 1);
 
-        let entry = loaded_cache.get("dockerfile:test").ok_or("Entry not found")?;
+        let entry = loaded_cache
+            .get("dockerfile:test")
+            .ok_or("Entry not found")?;
         assert_eq!(entry.image_id, "im-abc123");
         assert_eq!(entry.image_type, "dockerfile");
         assert_eq!(entry.dockerfile_hash, Some("abc123".to_string()));
