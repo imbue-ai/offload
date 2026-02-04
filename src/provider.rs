@@ -514,7 +514,6 @@ pub trait Sandbox: Send {
     /// produced. Useful for long-running commands or real-time progress monitoring.
     ///
     /// # Arguments
-    ///
     /// * `cmd` - The command to execute
     ///
     /// # Returns
