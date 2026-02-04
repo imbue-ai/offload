@@ -167,12 +167,6 @@ impl SandboxProvider for LocalProvider {
 /// The sandbox provides a consistent working directory and environment
 /// for all commands.
 ///
-/// # File Transfer
-///
-/// Upload and download operations are implemented as local file copies
-/// relative to the working directory. This is useful for tests that
-/// produce output files.
-///
 /// # Termination
 ///
 /// Since processes are transient, termination is a no-op. The sandbox

@@ -439,11 +439,6 @@ impl Sandbox for ModalSandbox {
         Ok(())
     }
 
-    async fn download(&self, _remote: &Path, _local: &Path) -> ProviderResult<()> {
-        warn!("download() not supported by ModalSandbox");
-        Ok(())
-    }
-
     fn status(&self) -> SandboxStatus {
         SandboxStatus::Running
     }

@@ -56,6 +56,13 @@ struct JsonExecResult {
     stderr: String,
 }
 
+const COMMON_JUNIT_PATHS: [&str; 4] = [
+    "/tmp/junit.xml",
+    "junit.xml",
+    "test-results/junit.xml",
+    "target/surefire-reports/TEST-*.xml",
+];
+
 /// Callback function for streaming test output.
 ///
 /// Called for each line of output during streaming execution. The callback
@@ -314,30 +321,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Try to download JUnit results from the sandbox.
     async fn try_download_results(&mut self) -> Option<String> {
-        // Common JUnit output locations
-        let paths = [
-            "/tmp/junit.xml",
-            "junit.xml",
-            "test-results/junit.xml",
-            "target/surefire-reports/TEST-*.xml",
-        ];
-
-        for path in &paths {
-            let temp_file = tempfile::NamedTempFile::new().ok()?;
-            let temp_path = temp_file.path().to_path_buf();
-
-            if self
-                .sandbox
-                .download(std::path::Path::new(path), &temp_path)
-                .await
-                .is_ok()
-                && let Ok(content) = std::fs::read_to_string(&temp_path)
-                && !content.is_empty()
-            {
-                return Some(content);
-            }
-        }
-
+        // NOTE: Download of results has not been implemented currently.
         None
     }
 }

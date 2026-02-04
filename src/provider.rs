@@ -533,17 +533,6 @@ pub trait Sandbox: Send {
     /// * `remote` - Destination path inside the sandbox
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
-    /// Downloads a file or directory from the sandbox.
-    ///
-    /// Copies files from the sandbox's filesystem to the local filesystem.
-    /// For directory downloads, the entire tree is copied recursively.
-    ///
-    /// # Arguments
-    ///
-    /// * `remote` - Path inside the sandbox
-    /// * `local` - Destination path on the local filesystem
-    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()>;
-
     /// Returns the current lifecycle status of the sandbox.
     ///
     /// Use this to check if the sandbox is ready for commands.
