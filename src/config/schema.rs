@@ -127,7 +127,6 @@ pub enum ProviderConfig {
     /// Run tests using Modal cloud sandboxes.
     ///
     /// Provides first-class integration with Modal for ephemeral compute.
-    /// Supports both custom Dockerfiles and Modal's preset images.
     Modal(ModalProviderConfig),
 
     /// Run tests using custom shell commands.
@@ -180,42 +179,6 @@ pub struct LocalProviderConfig {
 fn default_shell() -> String {
     "/bin/sh".to_string()
 }
-
-/// Image type specification for Modal provider.
-///
-/// Determines whether to use a custom Dockerfile or a Modal preset image.
-/// The enum uses untagged deserialization - it checks for a "dockerfile" or
-/// "preset" field to determine the variant.
-///
-/// # Example: Dockerfile
-///
-/// ```toml
-/// [provider]
-/// type = "modal"
-/// image_type = { dockerfile = ".devcontainer/Dockerfile" }
-/// ```
-///
-/// # Example: Preset
-///
-/// ```toml
-/// [provider]
-/// type = "modal"
-/// image_type = { preset = "rust" }
-/// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum ModalImageType {
-    /// Build image from a Dockerfile.
-    ///
-    /// Path is relative to the project root.
-    Dockerfile { dockerfile: String },
-
-    /// Use a Modal preset image.
-    ///
-    /// Common presets: "default", "rust", "python", "node".
-    Preset { preset: String },
-}
-
 /// Configuration for the Modal cloud provider.
 ///
 /// Modal provides ephemeral cloud sandboxes with first-class Docker support.
@@ -228,19 +191,9 @@ pub enum ModalImageType {
 /// [provider]
 /// type = "modal"
 /// app_name = "offload-sandbox"
-/// image_type = { dockerfile = ".devcontainer/Dockerfile" }
+/// dockerfile = ".devcontainer/Dockerfile"
 /// working_dir = "/workspace"
 /// timeout_secs = 600
-/// ```
-///
-/// # Example: Preset Image
-///
-/// ```toml
-/// [provider]
-/// type = "modal"
-/// app_name = "test-runner"
-/// image_type = { preset = "rust" }
-/// timeout_secs = 3600
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModalProviderConfig {
@@ -257,8 +210,8 @@ pub struct ModalProviderConfig {
 
     /// Image configuration for the sandbox.
     ///
-    /// Either a path to a Dockerfile or a Modal preset name.
-    pub image_type: ModalImageType,
+    /// A path to the Dockerfile on which this image is based
+    pub dockerfile: String,
 
     /// Working directory inside the sandbox.
     ///
@@ -646,7 +599,7 @@ mod tests {
             [provider]
             type = "modal"
             app_name = "offload-sandbox"
-            image_type = { dockerfile = ".devcontainer/Dockerfile" }
+            dockerfile = ".devcontainer/Dockerfile"
             timeout_secs = 600
 
             [groups.test]
@@ -664,56 +617,7 @@ mod tests {
             assert_eq!(modal_config.app_name, "offload-sandbox");
             assert_eq!(modal_config.timeout_secs, 600);
             assert!(modal_config.working_dir.is_none());
-
-            assert!(
-                matches!(&modal_config.image_type, ModalImageType::Dockerfile { .. }),
-                "Expected Dockerfile image type"
-            );
-
-            if let ModalImageType::Dockerfile { dockerfile } = &modal_config.image_type {
-                assert_eq!(dockerfile, ".devcontainer/Dockerfile");
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_modal_provider_with_preset() -> Result<(), Box<dyn std::error::Error>> {
-        let toml = r#"
-            [offload]
-            max_parallel = 4
-
-            [provider]
-            type = "modal"
-            app_name = "test-runner"
-            image_type = { preset = "rust" }
-            working_dir = "/workspace"
-
-            [groups.test]
-            type = "cargo"
-        "#;
-
-        let config: Config = toml::from_str(toml)?;
-
-        assert!(
-            matches!(&config.provider, ProviderConfig::Modal(_)),
-            "Expected Modal provider"
-        );
-
-        if let ProviderConfig::Modal(modal_config) = &config.provider {
-            assert_eq!(modal_config.app_name, "test-runner");
-            assert_eq!(modal_config.timeout_secs, 3600); // default value
-            assert_eq!(modal_config.working_dir, Some(PathBuf::from("/workspace")));
-
-            assert!(
-                matches!(&modal_config.image_type, ModalImageType::Preset { .. }),
-                "Expected Preset image type"
-            );
-
-            if let ModalImageType::Preset { preset } = &modal_config.image_type {
-                assert_eq!(preset, "rust");
-            }
+            assert_eq!(&modal_config.dockerfile, ".devcontainer/Dockerfile");
         }
 
         Ok(())
