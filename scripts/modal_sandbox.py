@@ -154,9 +154,6 @@ def prepare(dockerfile_path: str | None, cached: bool):
             .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
         )
         image.build(app)
-        # Create temp sandbox to materialize image_id, then terminate
-        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-        temp_sandbox.terminate()
         image_id = image.object_id
     else:
         # Build from Dockerfile with cwd baked in
@@ -172,9 +169,6 @@ def prepare(dockerfile_path: str | None, cached: bool):
                 .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
             )
             image.build(app)
-            # Create temp sandbox to materialize image_id, then terminate
-            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-            temp_sandbox.terminate()
             image_id = image.object_id
 
     # Write to cache file
