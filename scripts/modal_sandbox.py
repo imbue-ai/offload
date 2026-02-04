@@ -82,6 +82,21 @@ def cli():
 
 
 CACHE_FILE = ".offload-image-cache"
+DOCKERIGNORE_FILE = ".dockerignore"
+
+
+def read_dockerignore_patterns() -> list[str]:
+    """Read patterns from .dockerignore file."""
+    if not os.path.isfile(DOCKERIGNORE_FILE):
+        return []
+    patterns = []
+    with open(DOCKERIGNORE_FILE) as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if line and not line.startswith("#"):
+                patterns.append(line)
+    return patterns
 
 
 def read_cached_image_id() -> str | None:
@@ -123,6 +138,11 @@ def prepare(dockerfile_path: str | None, cached: bool):
             sys.stdout.write("%s\n" % cached_id)
             return
 
+    # Read ignore patterns from .dockerignore
+    ignore_patterns = read_dockerignore_patterns()
+    if ignore_patterns:
+        logger.info("Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE)
+
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
         # Build default image with cwd baked in
@@ -131,7 +151,7 @@ def prepare(dockerfile_path: str | None, cached: bool):
         image = (
             modal.Image.debian_slim(python_version="3.11")
             .pip_install("pytest")
-            .add_local_dir(".", "/app", copy=True)
+            .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
         )
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
@@ -149,7 +169,7 @@ def prepare(dockerfile_path: str | None, cached: bool):
             logger.info("Building image from %s with cwd baked in...", dockerfile_path)
             image = (
                 modal.Image.from_dockerfile(dockerfile_path)
-                .add_local_dir(".", "/app", copy=True)
+                .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
             )
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
