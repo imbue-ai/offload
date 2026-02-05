@@ -61,7 +61,7 @@
 //!     fn id(&self) -> &str { todo!() }
 //!     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> { todo!() }
 //!     async fn upload(&self, local: &std::path::Path, remote: &std::path::Path) -> ProviderResult<()> { todo!() }
-//!     async fn download(&self, remote: &std::path::Path, local: &std::path::Path) -> ProviderResult<()> { todo!() }
+//!     async fn download(&self, paths: &[(&std::path::Path, &std::path::Path)]) -> ProviderResult<()> { todo!() }
 //!     fn status(&self) -> SandboxStatus { todo!() }
 //!     async fn terminate(&self) -> ProviderResult<()> { todo!() }
 //! }
@@ -514,7 +514,6 @@ pub trait Sandbox: Send {
     /// produced. Useful for long-running commands or real-time progress monitoring.
     ///
     /// # Arguments
-    ///
     /// * `cmd` - The command to execute
     ///
     /// # Returns
@@ -533,16 +532,17 @@ pub trait Sandbox: Send {
     /// * `remote` - Destination path inside the sandbox
     async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
-    /// Downloads a file or directory from the sandbox.
+    /// Downloads files or directories from the sandbox.
     ///
     /// Copies files from the sandbox's filesystem to the local filesystem.
     /// For directory downloads, the entire tree is copied recursively.
+    /// Multiple files can be downloaded in a single call for efficiency.
     ///
     /// # Arguments
     ///
-    /// * `remote` - Path inside the sandbox
-    /// * `local` - Destination path on the local filesystem
-    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()>;
+    /// * `paths` - Slice of (remote, local) path pairs where remote is the
+    ///   path inside the sandbox and local is the destination path
+    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
 
     /// Returns the current lifecycle status of the sandbox.
     ///

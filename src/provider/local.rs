@@ -264,23 +264,25 @@ impl Sandbox for LocalSandbox {
         Ok(())
     }
 
-    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
-        let src = self.working_dir.join(remote);
+    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+        for (remote, local) in paths {
+            let src = self.working_dir.join(remote);
 
-        if let Some(parent) = local.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
-        }
+            if let Some(parent) = local.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
+            }
 
-        if src.is_dir() {
-            copy_dir_all(&src, local)
-                .await
-                .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
-        } else {
-            tokio::fs::copy(&src, local)
-                .await
-                .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
+            if src.is_dir() {
+                copy_dir_all(&src, local)
+                    .await
+                    .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
+            } else {
+                tokio::fs::copy(&src, local)
+                    .await
+                    .map_err(|e| ProviderError::DownloadFailed(e.to_string()))?;
+            }
         }
 
         Ok(())

@@ -217,6 +217,7 @@ impl SandboxProvider for DefaultProvider {
             connector: self.connector.clone(),
             exec_command: self.config.exec_command.clone(),
             destroy_command: self.config.destroy_command.clone(),
+            download_command: self.config.download_command.clone(),
         })
     }
 
@@ -266,6 +267,8 @@ pub struct DefaultSandbox {
     exec_command: String,
     /// Command template for destruction
     destroy_command: String,
+    /// Optional command template for downloading files
+    download_command: Option<String>,
 }
 
 impl DefaultSandbox {
@@ -291,6 +294,31 @@ impl DefaultSandbox {
         self.destroy_command
             .replace("{sandbox_id}", &self.remote_id)
     }
+
+    /// Build the download command with substitutions.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Vector of (remote_path, local_path) tuples
+    fn build_download_command(&self, paths: &[(String, String)]) -> Option<String> {
+        self.download_command.as_ref().map(|cmd| {
+            // Build paths string: "remote1:local1" "remote2:local2" ...
+            let paths_str = paths
+                .iter()
+                .map(|(remote, local)| {
+                    format!(
+                        "{}:{}",
+                        shell_words::quote(remote),
+                        shell_words::quote(local)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            cmd.replace("{sandbox_id}", &self.remote_id)
+                .replace("{paths}", &paths_str)
+        })
+    }
 }
 
 #[async_trait]
@@ -312,9 +340,43 @@ impl Sandbox for DefaultSandbox {
         Ok(())
     }
 
-    async fn download(&self, _remote: &Path, _local: &Path) -> ProviderResult<()> {
-        warn!("download() not supported by DefaultSandbox");
-        Ok(())
+    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let path_pairs: Vec<(String, String)> = paths
+            .iter()
+            .map(|(remote, local)| {
+                (
+                    remote.to_string_lossy().to_string(),
+                    local.to_string_lossy().to_string(),
+                )
+            })
+            .collect();
+
+        if let Some(shell_cmd) = self.build_download_command(&path_pairs) {
+            debug!(
+                "Downloading from {}: {} path(s)",
+                self.remote_id,
+                paths.len()
+            );
+            let result = self.connector.run(&shell_cmd).await?;
+
+            if result.exit_code != 0 {
+                return Err(ProviderError::DownloadFailed(format!(
+                    "Download command failed: {}",
+                    result.stderr
+                )));
+            }
+
+            for (remote, local) in &path_pairs {
+                info!("Downloaded {} -> {}", remote, local);
+            }
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     fn status(&self) -> SandboxStatus {

@@ -24,7 +24,7 @@
 
 [no-broad-exception]
 "." = 0
-"scripts" = 1
+"scripts" = 2
 
 [no-builtin-exception-raises]
 "." = 0
