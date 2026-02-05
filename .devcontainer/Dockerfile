@@ -45,6 +45,21 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # Set working directory
 WORKDIR /workspace
 
+# Pre-compile Rust dependencies for faster builds
+# Copy only dependency manifests first to leverage Docker layer caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy source files to satisfy cargo
+RUN mkdir -p src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "" > src/lib.rs
+
+# Build dependencies (release and debug)
+RUN cargo build --release && cargo build
+
+# Remove dummy source files (real source will be mounted/copied later)
+RUN rm -rf src
+
 # Verify installations
 RUN echo "=== Verifying installations ===" && \
     cargo --version && \
