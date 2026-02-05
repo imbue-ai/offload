@@ -81,9 +81,48 @@ def cli():
     pass
 
 
+CACHE_FILE = ".offload-image-cache"
+DOCKERIGNORE_FILE = ".dockerignore"
+
+
+def read_dockerignore_patterns() -> list[str]:
+    """Read patterns from .dockerignore file."""
+    if not os.path.isfile(DOCKERIGNORE_FILE):
+        return []
+    patterns = []
+    with open(DOCKERIGNORE_FILE) as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if line and not line.startswith("#"):
+                patterns.append(line)
+    return patterns
+
+
+def read_cached_image_id() -> str | None:
+    """Read cached image_id from cache file if it exists."""
+    if not os.path.isfile(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE) as f:
+            image_id = f.read().strip()
+            if image_id.startswith("im-"):
+                return image_id
+    except Exception:
+        pass
+    return None
+
+
+def write_cached_image_id(image_id: str) -> None:
+    """Write image_id to cache file."""
+    with open(CACHE_FILE, "w") as f:
+        f.write(image_id + "\n")
+
+
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
-def prepare(dockerfile_path: str | None):
+@click.option("--cached", is_flag=True, help="Use cached image_id if available")
+def prepare(dockerfile_path: str | None, cached: bool):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
@@ -91,6 +130,19 @@ def prepare(dockerfile_path: str | None):
 
     Prints the image_id to stdout for use with 'create'.
     """
+    # Check cache first if --cached flag is set
+    if cached:
+        cached_id = read_cached_image_id()
+        if cached_id:
+            logger.info("Using cached image_id: %s", cached_id)
+            sys.stdout.write("%s\n" % cached_id)
+            return
+
+    # Read ignore patterns from .dockerignore
+    ignore_patterns = read_dockerignore_patterns()
+    if ignore_patterns:
+        logger.info("Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE)
+
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
         # Build default image with cwd baked in
@@ -99,13 +151,13 @@ def prepare(dockerfile_path: str | None):
         image = (
             modal.Image.debian_slim(python_version="3.11")
             .pip_install("pytest")
-            .add_local_dir(".", "/app", copy=True)
+            .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
         )
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
         temp_sandbox.terminate()
-        sys.stdout.write("%s\n" % image.object_id)
+        image_id = image.object_id
     else:
         # Build from Dockerfile with cwd baked in
         if not os.path.isfile(dockerfile_path):
@@ -117,14 +169,19 @@ def prepare(dockerfile_path: str | None):
             logger.info("Building image from %s with cwd baked in...", dockerfile_path)
             image = (
                 modal.Image.from_dockerfile(dockerfile_path)
-                .add_local_dir(".", "/app", copy=True)
+                .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
             )
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
             temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
             temp_sandbox.terminate()
+            image_id = image.object_id
 
-        sys.stdout.write("%s\n" % image.object_id)
+    # Write to cache file
+    write_cached_image_id(image_id)
+    logger.info("Cached image_id to %s", CACHE_FILE)
+
+    sys.stdout.write("%s\n" % image_id)
 
 
 @cli.command()
