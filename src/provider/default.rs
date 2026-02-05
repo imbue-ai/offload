@@ -375,7 +375,6 @@ impl Sandbox for DefaultSandbox {
             }
             Ok(())
         } else {
-            warn!("download() not supported by DefaultSandbox - no download_command configured");
             Ok(())
         }
     }
