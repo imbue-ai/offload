@@ -17,3 +17,6 @@ test:
 
 test-modal:
     cargo run -- -c offload-modal.toml run
+
+test-cargo-modal:
+    cargo run -- -c offload-cargo-modal.toml run
