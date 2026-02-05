@@ -74,6 +74,7 @@ pub mod pytest;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -171,6 +172,11 @@ pub struct TestRecord {
     /// Skipped during serialization as it contains runtime state.
     #[serde(skip)]
     results: Mutex<Vec<TestResult>>,
+
+    /// Whether this test has been counted as passed (for early stopping).
+    /// Used to avoid double-counting when multiple instances of the same test pass.
+    #[serde(skip)]
+    has_recorded_pass: AtomicBool,
 }
 
 impl TestRecord {
@@ -192,6 +198,7 @@ impl TestRecord {
             skipped: false,
             retry_count: 0,
             results: Mutex::new(Vec::new()),
+            has_recorded_pass: AtomicBool::new(false),
         }
     }
 
@@ -275,6 +282,16 @@ impl TestRecord {
             .ok()
             .map(|guard| guard.iter().any(|r| r.outcome == TestOutcome::Passed))
             .unwrap_or(false)
+    }
+
+    /// Atomically marks this test as having passed.
+    ///
+    /// Returns `true` if this was the first time marking the test as passed,
+    /// `false` if it was already marked. Used for early stopping to count
+    /// each test only once.
+    pub fn try_mark_passed(&self) -> bool {
+        // swap returns the previous value, so true means it was already set
+        !self.has_recorded_pass.swap(true, Ordering::SeqCst)
     }
 
     /// Returns the number of execution attempts.

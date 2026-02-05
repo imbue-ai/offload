@@ -43,7 +43,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::StreamExt;
-use tracing::{debug, info};
+use tokio::select;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
 use crate::provider::{OutputLine, Sandbox};
@@ -92,6 +94,7 @@ pub struct TestRunner<'a, S, D> {
     framework: &'a D,
     timeout: Duration,
     output_callback: Option<OutputCallback>,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -108,7 +111,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             framework,
             timeout,
             output_callback: None,
+            cancellation_token: None,
         }
+    }
+
+    /// Sets a cancellation token for early termination.
+    ///
+    /// When the token is cancelled, the runner will stop waiting for
+    /// test output and return early. Used for early stopping when
+    /// all tests have passed.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
     }
 
     /// Sets a callback for test output.
@@ -162,32 +176,69 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Execute command with streaming, collecting output and parsing JSON result.
     ///
     /// The `output_id` is passed to the output callback to identify the source.
+    /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
-    ) -> Result<crate::provider::ExecResult> {
+    ) -> Result<Option<crate::provider::ExecResult>> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
 
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
-        while let Some(line) = stream.next().await {
-            // Call the output callback if set
-            if let Some(ref callback) = self.output_callback {
-                callback(output_id, &line);
-            }
+        // If we have a cancellation token, use select! to race against it
+        if let Some(ref token) = self.cancellation_token {
+            loop {
+                select! {
+                    _ = token.cancelled() => {
+                        warn!("Test execution cancelled (all tests passed)");
+                        return Ok(None);
+                    }
+                    line = stream.next() => {
+                        match line {
+                            Some(line) => {
+                                // Call the output callback if set
+                                if let Some(ref callback) = self.output_callback {
+                                    callback(output_id, &line);
+                                }
 
-            // Collect output
-            match &line {
-                OutputLine::Stdout(s) => {
-                    stdout.push_str(s);
-                    stdout.push('\n');
+                                // Collect output
+                                match &line {
+                                    OutputLine::Stdout(s) => {
+                                        stdout.push_str(s);
+                                        stdout.push('\n');
+                                    }
+                                    OutputLine::Stderr(s) => {
+                                        stderr.push_str(s);
+                                        stderr.push('\n');
+                                    }
+                                }
+                            }
+                            None => break, // Stream ended
+                        }
+                    }
                 }
-                OutputLine::Stderr(s) => {
-                    stderr.push_str(s);
-                    stderr.push('\n');
+            }
+        } else {
+            // No cancellation token, process normally
+            while let Some(line) = stream.next().await {
+                // Call the output callback if set
+                if let Some(ref callback) = self.output_callback {
+                    callback(output_id, &line);
+                }
+
+                // Collect output
+                match &line {
+                    OutputLine::Stdout(s) => {
+                        stdout.push_str(s);
+                        stdout.push('\n');
+                    }
+                    OutputLine::Stderr(s) => {
+                        stderr.push_str(s);
+                        stderr.push('\n');
+                    }
                 }
             }
         }
@@ -200,12 +251,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             .find(|line| line.trim().starts_with('{'))
             && let Ok(parsed) = serde_json::from_str::<JsonExecResult>(json_line)
         {
-            return Ok(crate::provider::ExecResult {
+            return Ok(Some(crate::provider::ExecResult {
                 exit_code: parsed.exit_code,
                 stdout: parsed.stdout,
                 stderr: parsed.stderr,
                 duration: start.elapsed(),
-            });
+            }));
         }
 
         // Fall back to inferring exit code from output
@@ -217,12 +268,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 1
             };
 
-        Ok(crate::provider::ExecResult {
+        Ok(Some(crate::provider::ExecResult {
             exit_code,
             stdout,
             stderr,
             duration: start.elapsed(),
-        })
+        }))
     }
 
     /// Runs multiple tests in a batch and records results into TestRecords.
@@ -238,9 +289,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// # Returns
     ///
-    /// `Ok(())` on successful execution, or an error if execution failed.
+    /// `Ok(true)` on successful execution, `Ok(false)` if cancelled early,
+    /// or an error if execution failed.
     /// Use [`TestRecord::final_result`] to retrieve individual test results.
-    pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<()> {
+    pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<bool> {
         let start = std::time::Instant::now();
 
         info!("Running {} tests", tests.len());
@@ -250,7 +302,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command with streaming (always use streaming for default provider support)
-        let exec_result = self.exec_with_streaming(&cmd, "batch").await?;
+        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
+            Some(result) => result,
+            None => {
+                // Cancelled - return early without recording results
+                info!("Batch cancelled before completion");
+                return Ok(false);
+            }
+        };
 
         let duration = start.elapsed();
 
@@ -309,7 +368,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             test.record_result(result);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// Try to download JUnit results from the sandbox.

@@ -96,9 +96,11 @@ pub mod runner;
 pub mod scheduler;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig, SandboxResources};
@@ -354,6 +356,12 @@ where
             batches.len()
         );
 
+        // Early stopping: track how many unique tests have passed
+        let total_tests_to_run = tests.iter().filter(|t| !t.skipped).count();
+        let passed_count = Arc::new(AtomicUsize::new(0));
+        let all_passed = Arc::new(AtomicBool::new(false));
+        let cancellation_token = CancellationToken::new();
+
         // Run tests in parallel
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
@@ -362,8 +370,16 @@ where
                 let framework = &self.framework;
                 let reporter = &self.reporter;
                 let config = &self.config;
+                let passed_count = Arc::clone(&passed_count);
+                let all_passed = Arc::clone(&all_passed);
+                let cancellation_token = cancellation_token.clone();
 
                 scope.spawn(async move {
+                    // Early exit if all tests have already passed
+                    if all_passed.load(Ordering::SeqCst) {
+                        info!("Batch {} skipped - all tests have passed", batch_idx);
+                        return;
+                    }
                     // Take sandbox from pool or create new one
                     let sandbox = {
                         let existing = sandbox_pool.lock().await.take_one();
@@ -397,7 +413,8 @@ where
                         sandbox,
                         framework,
                         Duration::from_secs(config.offload.test_timeout_secs),
-                    );
+                    )
+                    .with_cancellation_token(cancellation_token.clone());
 
                     // Enable output callback if streaming is configured
                     if config.offload.stream_output {
@@ -415,8 +432,26 @@ where
 
                     // Run all tests in batch with a single command
                     match runner.run_tests(&batch).await {
-                        Ok(()) => {
+                        Ok(true) => {
                             // Results are stored in each TestRecord
+                            // Check for newly passed tests and update counter for early stopping
+                            for test in &batch {
+                                if test.record().passed() && test.record().try_mark_passed() {
+                                    let new_count = passed_count.fetch_add(1, Ordering::SeqCst) + 1;
+                                    if new_count >= total_tests_to_run {
+                                        info!(
+                                            "All {} tests have passed, signaling early stop",
+                                            total_tests_to_run
+                                        );
+                                        all_passed.store(true, Ordering::SeqCst);
+                                        cancellation_token.cancel();
+                                    }
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            // Batch was cancelled - no results to record
+                            info!("Batch {} was cancelled", batch_idx);
                         }
                         Err(e) => {
                             error!("Batch execution error: {}", e);
