@@ -346,7 +346,7 @@ where
 
         // Schedule tests into batches using random distribution
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
-        let batches = scheduler.schedule_random(&tests_to_run);
+        let batches = scheduler.schedule(&tests_to_run);
 
         info!(
             "Scheduled {} tests into {} batches",
@@ -355,10 +355,6 @@ where
         );
 
         // Run tests in parallel
-        // Track which tests have been reported (for progress bar with parallel retries)
-        let reported_tests: Mutex<std::collections::HashSet<String>> =
-            Mutex::new(std::collections::HashSet::new());
-
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
             for (batch_idx, batch) in batches.into_iter().enumerate() {
@@ -366,7 +362,6 @@ where
                 let framework = &self.framework;
                 let reporter = &self.reporter;
                 let config = &self.config;
-                let reported_tests = &reported_tests;
 
                 scope.spawn(async move {
                     // Take sandbox from pool or create new one
@@ -441,14 +436,9 @@ where
                         }
                     }
 
-                    // Report test completions (only first instance of each test for progress bar)
+                    // Report test completions for each instance
                     for test in &batch {
-                        let test_id = test.id_owned();
-                        let already_reported = {
-                            let mut reported = reported_tests.lock().await;
-                            !reported.insert(test_id.clone())
-                        };
-                        if !already_reported && let Some(result) = test.record().final_result() {
+                        if let Some(result) = test.record().final_result() {
                             reporter.on_test_complete(&result).await;
                         }
                     }
