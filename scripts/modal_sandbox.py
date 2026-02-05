@@ -181,7 +181,12 @@ def write_cached_image_id(image_id: str) -> None:
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
 @click.option("--cached", is_flag=True, help="Use cached image_id if available")
-def prepare(dockerfile_path: str | None, cached: bool):
+@click.option(
+    "--include-cwd",
+    is_flag=True,
+    help="Include current directory in the image build context",
+)
+def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
@@ -200,7 +205,9 @@ def prepare(dockerfile_path: str | None, cached: bool):
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
-        logger.info("Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE)
+        logger.debug(
+            "Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE
+        )
 
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
@@ -218,18 +225,20 @@ def prepare(dockerfile_path: str | None, cached: bool):
         temp_sandbox.terminate()
         image_id = image.object_id
     else:
-        # Build from Dockerfile with cwd baked in
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
             sys.exit(1)
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            logger.info("Building image from %s with cwd baked in...", dockerfile_path)
-            image = (
-                modal.Image.from_dockerfile(dockerfile_path)
-                .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
-            )
+            logger.info("Building image from %s", dockerfile_path)
+            image = modal.Image.from_dockerfile(dockerfile_path)
+            if include_cwd:
+                logger.info("Including current directory as /app")
+                image = image.add_local_dir(
+                    ".", "/app", copy=True, ignore=ignore_patterns
+                )
+
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate
             temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
