@@ -221,9 +221,19 @@ impl ConsoleReporter {
 #[async_trait]
 impl Reporter for ConsoleReporter {
     async fn on_discovery_complete(&self, tests: &[TestRecord]) {
-        println!("Discovered {} tests", tests.len());
+        // Calculate total test instances (including retries)
+        let total_instances: usize = tests
+            .iter()
+            .filter(|t| !t.skipped)
+            .map(|t| t.retry_count + 1)
+            .sum();
+        println!(
+            "Discovered {} tests ({} instances)",
+            tests.len(),
+            total_instances
+        );
 
-        let pb = indicatif::ProgressBar::new(tests.len() as u64);
+        let pb = indicatif::ProgressBar::new(total_instances as u64);
         if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
         ) {
