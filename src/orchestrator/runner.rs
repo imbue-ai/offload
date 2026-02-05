@@ -315,23 +315,41 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Try to download JUnit results from the sandbox.
     async fn try_download_results(&mut self) -> Option<String> {
         // Common JUnit output locations
-        let paths = [
+        let remote_paths = [
             "/tmp/junit.xml",
             "junit.xml",
             "test-results/junit.xml",
             "target/surefire-reports/TEST-*.xml",
         ];
 
-        for path in &paths {
-            let temp_file = tempfile::NamedTempFile::new().ok()?;
-            let temp_path = temp_file.path().to_path_buf();
+        // Create temp files for each potential download
+        let temp_files: Vec<_> = remote_paths
+            .iter()
+            .filter_map(|_| tempfile::NamedTempFile::new().ok())
+            .collect();
 
-            if self
-                .sandbox
-                .download(std::path::Path::new(path), &temp_path)
-                .await
-                .is_ok()
-                && let Ok(content) = std::fs::read_to_string(&temp_path)
+        if temp_files.len() != remote_paths.len() {
+            return None;
+        }
+
+        // Build (remote, local) path pairs
+        let path_pairs: Vec<(&std::path::Path, &std::path::Path)> = remote_paths
+            .iter()
+            .zip(temp_files.iter())
+            .map(|(remote, temp)| {
+                (
+                    std::path::Path::new(*remote),
+                    temp.path() as &std::path::Path,
+                )
+            })
+            .collect();
+
+        // Download all paths in a single command
+        let _ = self.sandbox.download(&path_pairs).await;
+
+        // Check which files were successfully downloaded
+        for temp_file in &temp_files {
+            if let Ok(content) = std::fs::read_to_string(temp_file.path())
                 && !content.is_empty()
             {
                 return Some(content);

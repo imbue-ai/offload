@@ -340,16 +340,26 @@ impl Sandbox for DefaultSandbox {
         Ok(())
     }
 
-    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
-        let remote_str = remote.to_string_lossy().to_string();
-        let local_str = local.to_string_lossy().to_string();
+    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
 
-        if let Some(shell_cmd) =
-            self.build_download_command(&[(remote_str.clone(), local_str.clone())])
-        {
+        let path_pairs: Vec<(String, String)> = paths
+            .iter()
+            .map(|(remote, local)| {
+                (
+                    remote.to_string_lossy().to_string(),
+                    local.to_string_lossy().to_string(),
+                )
+            })
+            .collect();
+
+        if let Some(shell_cmd) = self.build_download_command(&path_pairs) {
             debug!(
-                "Downloading from {}: {} -> {}",
-                self.remote_id, remote_str, local_str
+                "Downloading from {}: {} path(s)",
+                self.remote_id,
+                paths.len()
             );
             let result = self.connector.run(&shell_cmd).await?;
 
@@ -360,7 +370,9 @@ impl Sandbox for DefaultSandbox {
                 )));
             }
 
-            info!("Downloaded {} -> {}", remote_str, local_str);
+            for (remote, local) in &path_pairs {
+                info!("Downloaded {} -> {}", remote, local);
+            }
             Ok(())
         } else {
             warn!("download() not supported by DefaultSandbox - no download_command configured");

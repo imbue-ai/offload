@@ -464,14 +464,26 @@ impl Sandbox for ModalSandbox {
         Ok(())
     }
 
-    async fn download(&self, remote: &Path, local: &Path) -> ProviderResult<()> {
-        let remote_str = remote.to_string_lossy().to_string();
-        let local_str = local.to_string_lossy().to_string();
+    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
 
-        let shell_cmd = self.build_download_command(&[(remote_str.clone(), local_str.clone())]);
+        let path_pairs: Vec<(String, String)> = paths
+            .iter()
+            .map(|(remote, local)| {
+                (
+                    remote.to_string_lossy().to_string(),
+                    local.to_string_lossy().to_string(),
+                )
+            })
+            .collect();
+
+        let shell_cmd = self.build_download_command(&path_pairs);
         debug!(
-            "Downloading from Modal {}: {} -> {}",
-            self.remote_id, remote_str, local_str
+            "Downloading from Modal {}: {} path(s)",
+            self.remote_id,
+            paths.len()
         );
 
         let result = self.connector.run(&shell_cmd).await?;
@@ -490,7 +502,9 @@ impl Sandbox for ModalSandbox {
             )));
         }
 
-        info!("Downloaded {} -> {}", remote_str, local_str);
+        for (remote, local) in &path_pairs {
+            info!("Downloaded {} -> {}", remote, local);
+        }
         Ok(())
     }
 
