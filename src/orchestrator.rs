@@ -103,7 +103,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::config::{Config, SandboxConfig, SandboxResources};
+use crate::config::{Config, SandboxConfig};
 use crate::framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
 use crate::provider::{OutputLine, SandboxProvider};
 use crate::report::Reporter;
@@ -394,9 +394,6 @@ where
                                     .as_ref()
                                     .map(|p| p.to_string_lossy().to_string()),
                                 env: Vec::new(),
-                                resources: SandboxResources {
-                                    timeout_secs: Some(config.offload.test_timeout_secs),
-                                },
                                 copy_dirs: self.copy_dirs.clone(),
                             };
                             match provider.create_sandbox(&sandbox_config).await {

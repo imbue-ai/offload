@@ -36,7 +36,7 @@
 //! ```no_run
 //! use offload::provider::local::LocalProvider;
 //! use offload::provider::{SandboxProvider, Sandbox, Command, OutputLine};
-//! use offload::config::{LocalProviderConfig, SandboxConfig, SandboxResources};
+//! use offload::config::{LocalProviderConfig, SandboxConfig};
 //! use futures::StreamExt;
 //!
 //! #[tokio::main]
@@ -47,7 +47,6 @@
 //!         id: "test-1".to_string(),
 //!         working_dir: None,
 //!         env: vec![],
-//!         resources: SandboxResources::default(),
 //!         copy_dirs: vec![],
 //!     };
 //!

@@ -586,7 +586,7 @@ fn shell_escape(s: &str) -> String {
 /// use std::sync::Arc;
 /// use offload::provider::{SandboxProvider, Sandbox};
 /// use offload::provider::local::LocalProvider;
-/// use offload::config::{SandboxConfig, SandboxResources};
+/// use offload::config::SandboxConfig;
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -596,7 +596,6 @@ fn shell_escape(s: &str) -> String {
 ///         id: "test-sandbox-1".to_string(),
 ///         working_dir: Some("/app".to_string()),
 ///         env: vec![("DEBUG".to_string(), "1".to_string())],
-///         resources: SandboxResources::default(),
 ///         copy_dirs: vec![],
 ///     };
 ///

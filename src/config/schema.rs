@@ -602,22 +602,10 @@ pub struct SandboxConfig {
     /// Passed as key-value tuples.
     pub env: Vec<(String, String)>,
 
-    /// Resource limits for this sandbox.
-    pub resources: SandboxResources,
-
     /// Directories to copy to the sandbox.
     ///
     /// Each tuple is (local_path, remote_path).
     pub copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
-}
-
-/// Resource limits for a sandbox instance.
-#[derive(Debug, Clone, Default)]
-pub struct SandboxResources {
-    /// Execution timeout in seconds.
-    ///
-    /// Commands exceeding this limit are terminated.
-    pub timeout_secs: Option<u64>,
 }
 
 #[cfg(test)]
