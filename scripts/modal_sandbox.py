@@ -186,7 +186,13 @@ def write_cached_image_id(image_id: str) -> None:
     is_flag=True,
     help="Include current directory in the image build context",
 )
-def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool):
+@click.option(
+    "--copy-dir",
+    "copy_dirs",
+    multiple=True,
+    help="Copy local dir into image (format: local_path:remote_path)",
+)
+def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_dirs: tuple[str, ...]):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
@@ -219,6 +225,18 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool):
             .pip_install("pytest")
             .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
         )
+        # Add user-specified directories
+        for copy_spec in copy_dirs:
+            if ":" not in copy_spec:
+                logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
+                continue
+            local_path, remote_path = copy_spec.split(":", 1)
+            if not os.path.isdir(local_path):
+                logger.warning("Local directory '%s' not found, skipping", local_path)
+                continue
+            logger.info("Adding %s -> %s to image", local_path, remote_path)
+            image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
+
         image.build(app)
         # Create temp sandbox to materialize image_id, then terminate
         temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
@@ -238,6 +256,17 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool):
                 image = image.add_local_dir(
                     ".", "/app", copy=True, ignore=ignore_patterns
                 )
+            # Add user-specified directories
+            for copy_spec in copy_dirs:
+                if ":" not in copy_spec:
+                    logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
+                    continue
+                local_path, remote_path = copy_spec.split(":", 1)
+                if not os.path.isdir(local_path):
+                    logger.warning("Local directory '%s' not found, skipping", local_path)
+                    continue
+                logger.info("Adding %s -> %s to image", local_path, remote_path)
+                image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
 
             image.build(app)
             # Create temp sandbox to materialize image_id, then terminate

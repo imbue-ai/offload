@@ -176,6 +176,10 @@ impl ModalProvider {
     /// are created concurrently with a cache miss. It uses a `OnceCell` to coordinate
     /// the build across threads.
     ///
+    /// # Arguments
+    ///
+    /// * `copy_dirs` - Directories to copy into the image (local_path, remote_path)
+    ///
     /// # Returns
     ///
     /// The Modal image ID (e.g., "im-abc123")
@@ -186,11 +190,11 @@ impl ModalProvider {
     /// - Dockerfile hash cannot be computed
     /// - Python build command fails
     /// - Cache cannot be saved
-    async fn get_or_build_image(&self) -> ProviderResult<String> {
+    async fn get_or_build_image(&self, copy_dirs: &[(PathBuf, PathBuf)]) -> ProviderResult<String> {
         let cache_key = self.get_cache_key();
 
-        // Quick path: check cache first
-        {
+        // Quick path: check cache first (only if no copy_dirs, since they're not part of cache key)
+        if copy_dirs.is_empty() {
             let cache = self.cache.lock().await;
             if let Some(entry) = self.check_cache_entry(&cache, &cache_key)? {
                 info!(
@@ -201,7 +205,7 @@ impl ModalProvider {
             }
         }
 
-        // Cache miss - get or create a OnceCell for this build
+        // Cache miss or copy_dirs present - get or create a OnceCell for this build
         let build_cell = {
             let mut builds = self.image_builds.lock().await;
             builds
@@ -214,10 +218,14 @@ impl ModalProvider {
         let image_id = build_cell
             .get_or_try_init(|| async {
                 info!("Cache miss for {}, building image...", cache_key);
-                let image_id = self.call_python_build(&self.config.dockerfile).await?;
+                let image_id = self
+                    .call_python_build(&self.config.dockerfile, copy_dirs)
+                    .await?;
 
-                // Update cache
-                self.update_cache(&cache_key, &image_id).await?;
+                // Update cache (only if no copy_dirs)
+                if copy_dirs.is_empty() {
+                    self.update_cache(&cache_key, &image_id).await?;
+                }
 
                 Ok::<String, ProviderError>(image_id)
             })
@@ -231,6 +239,7 @@ impl ModalProvider {
     /// # Arguments
     ///
     /// * `dockerfile` - The dockerfile on which the image is based
+    /// * `copy_dirs` - Directories to copy into the image (local_path, remote_path)
     ///
     /// # Returns
     ///
@@ -239,8 +248,20 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_build(&self, dockerfile: &str) -> ProviderResult<String> {
-        let command = format!("uv run @modal_sandbox.py prepare {}", dockerfile);
+    async fn call_python_build(
+        &self,
+        dockerfile: &str,
+        copy_dirs: &[(PathBuf, PathBuf)],
+    ) -> ProviderResult<String> {
+        let mut command = format!("uv run @modal_sandbox.py prepare {}", dockerfile);
+
+        for (local, remote) in copy_dirs {
+            command.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
 
         debug!("Building Modal image: {}", command);
 
@@ -283,7 +304,6 @@ impl ModalProvider {
     /// # Arguments
     ///
     /// * `image_id` - The Modal image ID to use
-    /// * `copy_dirs` - Directories to copy into the sandbox (local_path, remote_path)
     ///
     /// # Returns
     ///
@@ -292,20 +312,8 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_create(
-        &self,
-        image_id: &str,
-        copy_dirs: &[(PathBuf, PathBuf)],
-    ) -> ProviderResult<String> {
-        let mut command = format!("uv run @modal_sandbox.py create {}", image_id);
-
-        for (local, remote) in copy_dirs {
-            command.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            ));
-        }
+    async fn call_python_create(&self, image_id: &str) -> ProviderResult<String> {
+        let command = format!("uv run @modal_sandbox.py create {}", image_id);
 
         debug!("Creating Modal sandbox: {}", command);
 
@@ -351,11 +359,9 @@ impl SandboxProvider for ModalProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ModalSandbox> {
         info!("Creating Modal sandbox: {}", config.id);
 
-        let image_id = self.get_or_build_image().await?;
+        let image_id = self.get_or_build_image(&config.copy_dirs).await?;
 
-        let remote_id = self
-            .call_python_create(&image_id, &config.copy_dirs)
-            .await?;
+        let remote_id = self.call_python_create(&image_id).await?;
 
         let info = ModalSandboxInfo {
             remote_id: remote_id.clone(),

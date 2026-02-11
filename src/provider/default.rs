@@ -108,7 +108,14 @@ impl DefaultProvider {
         let image_id = if let Some(prepare_cmd) = &config.prepare_command {
             info!("Running prepare command...");
 
-            let result = connector.run(prepare_cmd).await?;
+            // Build prepare command with copy_dirs
+            let mut full_prepare_cmd = prepare_cmd.clone();
+            for copy_spec in &config.copy_dirs {
+                info!("  Adding --copy-dir={}", copy_spec);
+                full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+            }
+
+            let result = connector.run(&full_prepare_cmd).await?;
 
             // Forward stderr to info because it may contain build status
             for line in result.stderr.lines() {
@@ -160,25 +167,12 @@ impl SandboxProvider for DefaultProvider {
         info!("Creating default sandbox: {}", config.id);
 
         // Build the create command, substituting {image_id} if available
-        let mut create_command = match self.image_id.as_ref() {
+        let create_command = match self.image_id.as_ref() {
             Some(id) => self.config.create_command.replace("{image_id}", id),
             None => self.config.create_command.clone(),
         };
 
-        for (local, remote) in &config.copy_dirs {
-            info!(
-                "  Adding --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            );
-            create_command.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            ));
-        }
-
-        info!(create_command);
+        info!("{}", create_command);
 
         // Run the create command to get a sandbox_id
         let result = self.connector.run(&create_command).await?;

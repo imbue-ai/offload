@@ -269,7 +269,7 @@ pub struct ModalProviderConfig {
 /// destroy_command = "./destroy_worker.sh {sandbox_id}"
 /// ```
 ///
-/// # Example: With Prepare Command
+/// # Example: With Prepare Command and Copy Dirs
 ///
 /// ```toml
 /// [provider]
@@ -278,6 +278,7 @@ pub struct ModalProviderConfig {
 /// create_command = "./create_worker.sh {image_id}"
 /// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
 /// destroy_command = "./destroy_worker.sh {sandbox_id}"
+/// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultProviderConfig {
@@ -361,6 +362,19 @@ pub struct DefaultProviderConfig {
     /// Default: 3600 (1 hour)
     #[serde(default = "default_remote_timeout")]
     pub timeout_secs: u64,
+
+    /// Directories to copy into the image during prepare.
+    ///
+    /// Each entry is a string in the format "local_path:remote_path".
+    /// These directories are baked into the image during the prepare step,
+    /// making sandbox creation faster.
+    ///
+    /// # Example
+    /// ```toml
+    /// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
+    /// ```
+    #[serde(default)]
+    pub copy_dirs: Vec<String>,
 }
 
 fn default_remote_timeout() -> u64 {
