@@ -11,17 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-nextest
-RUN cargo install cargo-nextest --locked
-
 # Ensure tool binaries are on PATH
 ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Set working directory
-WORKDIR /workspace
+# Set working directory (must match where source is copied later via add_local_dir)
+WORKDIR /app
 
 # Pre-compile Rust dependencies for faster builds
 # Copy only dependency manifests first to leverage Docker layer caching
@@ -32,8 +29,9 @@ RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs
 
-# Build dependencies (release and debug)
-RUN cargo build --release && cargo build
+# Build dependencies (debug only - release deps will be built on first release build)
+# Also build test dependencies with --tests to pre-compile dev-dependencies
+RUN cargo build && cargo test --no-run
 
 # Remove dummy source files (real source will be mounted/copied later)
 RUN rm -rf src

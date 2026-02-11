@@ -249,8 +249,8 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            logger.info("Building image from %s", dockerfile_path)
-            image = modal.Image.from_dockerfile(dockerfile_path)
+            logger.info("Building image from %s with context_dir=.", dockerfile_path)
+            image = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
             if include_cwd:
                 logger.info("Including current directory as /app")
                 image = image.add_local_dir(
