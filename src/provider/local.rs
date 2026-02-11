@@ -69,11 +69,9 @@ use std::process::Stdio;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::Mutex;
 
 use super::{
-    Command, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo,
-    SandboxProvider, SandboxStatus,
+    Command, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider,
 };
 use crate::config::{LocalProviderConfig, SandboxConfig};
 
@@ -86,10 +84,8 @@ use crate::config::{LocalProviderConfig, SandboxConfig};
 /// # Thread Safety
 ///
 /// The provider is thread-safe and can be shared across async tasks.
-/// Sandbox creation and listing are protected by internal locks.
 pub struct LocalProvider {
     config: LocalProviderConfig,
-    sandboxes: Mutex<Vec<SandboxInfo>>,
 }
 
 impl LocalProvider {
@@ -118,10 +114,7 @@ impl LocalProvider {
     /// let provider = LocalProvider::new(config);
     /// ```
     pub fn new(config: LocalProviderConfig) -> Self {
-        Self {
-            config,
-            sandboxes: Mutex::new(Vec::new()),
-        }
+        Self { config }
     }
 }
 
@@ -137,26 +130,12 @@ impl SandboxProvider for LocalProvider {
             .or_else(|| self.config.working_dir.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let sandbox = LocalSandbox {
+        Ok(LocalSandbox {
             id: config.id.clone(),
             working_dir,
             env: config.env.clone(),
             shell: self.config.shell.clone(),
-        };
-
-        // Track the sandbox
-        let info = SandboxInfo {
-            id: config.id.clone(),
-            status: SandboxStatus::Running,
-            created_at: chrono::Utc::now(),
-        };
-        self.sandboxes.lock().await.push(info);
-
-        Ok(sandbox)
-    }
-
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
-        Ok(self.sandboxes.lock().await.clone())
+        })
     }
 }
 
@@ -285,10 +264,6 @@ impl Sandbox for LocalSandbox {
         }
 
         Ok(())
-    }
-
-    fn status(&self) -> SandboxStatus {
-        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {

@@ -15,10 +15,9 @@
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                     SandboxProvider                          │
-//! │  (creates and manages sandboxes)                            │
+//! │  (creates sandboxes)                                        │
 //! │                                                              │
 //! │  create_sandbox() ──────────► Sandbox                       │
-//! │  list_sandboxes()              │                            │
 //! └────────────────────────────────┼────────────────────────────┘
 //!                                  │
 //!                                  ▼
@@ -26,11 +25,9 @@
 //! │                        Sandbox                               │
 //! │  (isolated execution environment)                           │
 //! │                                                              │
-//! │  exec(Command) ──────────► ExecResult                       │
 //! │  exec_stream(Command) ───► OutputStream                     │
 //! │  upload(local, remote)                                      │
 //! │  download(remote, local)                                    │
-//! │  status()                                                    │
 //! │  terminate()                                                 │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -62,7 +59,6 @@
 //!     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> { todo!() }
 //!     async fn upload(&self, local: &std::path::Path, remote: &std::path::Path) -> ProviderResult<()> { todo!() }
 //!     async fn download(&self, paths: &[(&std::path::Path, &std::path::Path)]) -> ProviderResult<()> { todo!() }
-//!     fn status(&self) -> SandboxStatus { todo!() }
 //!     async fn terminate(&self) -> ProviderResult<()> { todo!() }
 //! }
 //!
@@ -72,7 +68,6 @@
 //! impl SandboxProvider for MyCloudProvider {
 //!     type Sandbox = MyCloudSandbox;
 //!     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox> { todo!() }
-//!     async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> { todo!() }
 //! }
 //! ```
 //!
@@ -174,53 +169,6 @@ pub enum ProviderError {
     /// Provider-specific error not covered by other variants.
     #[error("Provider-specific error: {0}")]
     Other(#[from] anyhow::Error),
-}
-
-/// Metadata about a sandbox instance.
-///
-/// Returned by [`SandboxProvider::list_sandboxes`] to provide visibility
-/// into active sandboxes managed by the provider.
-#[derive(Debug, Clone)]
-pub struct SandboxInfo {
-    /// Unique identifier for this sandbox.
-    pub id: String,
-    /// Current lifecycle status.
-    pub status: SandboxStatus,
-    /// When the sandbox was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Lifecycle status of a sandbox.
-///
-/// ```text
-///   Creating ──► Running ──► Terminating ──► (removed)
-///      │            │
-///      └────► Failed ◄────┘
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxStatus {
-    /// Sandbox is being created and is not yet ready.
-    Creating,
-
-    /// Sandbox is running and ready to accept commands.
-    ///
-    /// This is the normal operational state.
-    Running,
-
-    /// Sandbox has stopped normally.
-    ///
-    /// No longer accepting commands but may still exist.
-    Stopped,
-
-    /// Sandbox encountered an error and is unusable.
-    ///
-    /// May require manual cleanup depending on the provider.
-    Failed,
-
-    /// Sandbox is in the process of being terminated.
-    ///
-    /// Resources are being released.
-    Terminating,
 }
 
 /// A command to execute in a sandbox.
@@ -544,11 +492,6 @@ pub trait Sandbox: Send {
     ///   path inside the sandbox and local is the destination path
     async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
 
-    /// Returns the current lifecycle status of the sandbox.
-    ///
-    /// Use this to check if the sandbox is ready for commands.
-    fn status(&self) -> SandboxStatus;
-
     /// Terminates the sandbox and releases resources.
     ///
     /// After calling this method, the sandbox should not be used.
@@ -602,10 +545,6 @@ fn shell_escape(s: &str) -> String {
 ///     let sandbox = provider.create_sandbox(&config).await?;
 ///     println!("Created sandbox: {}", sandbox.id());
 ///
-///     // List all sandboxes
-///     let sandboxes = provider.list_sandboxes().await?;
-///     println!("Active sandboxes: {}", sandboxes.len());
-///
 ///     Ok(())
 /// }
 /// ```
@@ -632,10 +571,4 @@ pub trait SandboxProvider: Send + Sync {
     /// - `ProviderError::SandboxExhausted` - Resource limit reached
     /// - `ProviderError::Connection` - Failed to connect to backend
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox>;
-
-    /// Lists all sandboxes currently managed by this provider.
-    ///
-    /// Returns metadata about active sandboxes including their IDs,
-    /// status, and creation time. Useful for monitoring and cleanup.
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>>;
 }

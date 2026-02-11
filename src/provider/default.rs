@@ -33,18 +33,13 @@
 //! ```json
 //! {"exit_code": 0, "stdout": "output", "stderr": "errors"}
 //! ```
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use super::{
-    Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo, SandboxProvider,
-    SandboxStatus,
-};
+use super::{Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider};
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
@@ -67,16 +62,8 @@ use crate::connector::{Connector, ShellConnector};
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
-    sandboxes: Mutex<HashMap<String, DefaultSandboxInfo>>,
     /// Cached image ID from prepare command (set during from_config).
     image_id: Option<String>,
-}
-
-#[allow(dead_code)]
-struct DefaultSandboxInfo {
-    remote_id: String,
-    status: SandboxStatus,
-    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl DefaultProvider {
@@ -170,7 +157,6 @@ impl DefaultProvider {
         Ok(Self {
             connector,
             config,
-            sandboxes: Mutex::new(HashMap::new()),
             image_id,
         })
     }
@@ -216,13 +202,6 @@ impl SandboxProvider for DefaultProvider {
 
         info!("Created default sandbox with ID: {}", remote_id);
 
-        let info = DefaultSandboxInfo {
-            remote_id: remote_id.clone(),
-            status: SandboxStatus::Running,
-            created_at: chrono::Utc::now(),
-        };
-        self.sandboxes.lock().await.insert(config.id.clone(), info);
-
         Ok(DefaultSandbox {
             id: config.id.clone(),
             remote_id,
@@ -231,18 +210,6 @@ impl SandboxProvider for DefaultProvider {
             destroy_command: self.config.destroy_command.clone(),
             download_command: self.config.download_command.clone(),
         })
-    }
-
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
-        let sandboxes = self.sandboxes.lock().await;
-        Ok(sandboxes
-            .iter()
-            .map(|(id, info)| SandboxInfo {
-                id: id.clone(),
-                status: info.status,
-                created_at: info.created_at,
-            })
-            .collect())
     }
 }
 
@@ -389,10 +356,6 @@ impl Sandbox for DefaultSandbox {
         } else {
             Ok(())
         }
-    }
-
-    fn status(&self) -> SandboxStatus {
-        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {

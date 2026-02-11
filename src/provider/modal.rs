@@ -15,10 +15,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
 
-use super::{
-    Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxInfo, SandboxProvider,
-    SandboxStatus,
-};
+use super::{Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider};
 use crate::cache::{ImageCache, ImageCacheEntry, compute_file_hash};
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
@@ -29,17 +26,9 @@ pub struct ModalProvider {
     connector: Arc<ShellConnector>,
     cache: Mutex<ImageCache>,
     cache_dir: PathBuf,
-    sandboxes: Mutex<HashMap<String, ModalSandboxInfo>>,
     /// Tracks in-progress image builds to avoid duplicate builds.
     /// Maps cache_key -> OnceCell that will hold the image_id once built.
     image_builds: Mutex<HashMap<String, Arc<OnceCell<String>>>>,
-}
-
-#[allow(dead_code)]
-struct ModalSandboxInfo {
-    remote_id: String,
-    status: SandboxStatus,
-    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ModalProvider {
@@ -82,7 +71,6 @@ impl ModalProvider {
             connector: Arc::new(connector),
             cache: Mutex::new(cache),
             cache_dir,
-            sandboxes: Mutex::new(HashMap::new()),
             image_builds: Mutex::new(HashMap::new()),
         })
     }
@@ -363,30 +351,11 @@ impl SandboxProvider for ModalProvider {
 
         let remote_id = self.call_python_create(&image_id).await?;
 
-        let info = ModalSandboxInfo {
-            remote_id: remote_id.clone(),
-            status: SandboxStatus::Running,
-            created_at: chrono::Utc::now(),
-        };
-        self.sandboxes.lock().await.insert(config.id.clone(), info);
-
         Ok(ModalSandbox {
             id: config.id.clone(),
             remote_id,
             connector: self.connector.clone(),
         })
-    }
-
-    async fn list_sandboxes(&self) -> ProviderResult<Vec<SandboxInfo>> {
-        let sandboxes = self.sandboxes.lock().await;
-        Ok(sandboxes
-            .iter()
-            .map(|(id, info)| SandboxInfo {
-                id: id.clone(),
-                status: info.status,
-                created_at: info.created_at,
-            })
-            .collect())
     }
 }
 
@@ -512,10 +481,6 @@ impl Sandbox for ModalSandbox {
             info!("Downloaded {} -> {}", remote, local);
         }
         Ok(())
-    }
-
-    fn status(&self) -> SandboxStatus {
-        SandboxStatus::Running
     }
 
     async fn terminate(&self) -> ProviderResult<()> {
