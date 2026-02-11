@@ -1,0 +1,23 @@
+# offload configuration for testing copy_dirs feature on Modal
+
+[offload]
+max_parallel = 2
+test_timeout_secs = 600
+retry_count = 1
+stream_output = true
+
+[provider]
+type = "default"
+prepare_command = "uv run @modal_sandbox.py prepare .devcontainer/Dockerfile"
+create_command = "uv run @modal_sandbox.py create {image_id}"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
+timeout_secs = 600
+# Test copy_dirs feature - copy current directory to /app
+copy_dirs = [".:/app"]
+
+[groups.all]
+type = "cargo"
+
+[report]
+output_dir = "test-results"
