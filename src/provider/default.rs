@@ -91,11 +91,16 @@ impl DefaultProvider {
     /// # Arguments
     ///
     /// * `config` - Remote provider configuration with command templates
+    /// * `copy_dirs` - Directories to copy into the image (local_path, remote_path).
+    ///   These are baked into the image during prepare, making sandbox creation faster.
     ///
     /// # Errors
     ///
     /// Returns `ProviderError::ExecFailed` if the prepare command fails.
-    pub async fn from_config(config: DefaultProviderConfig) -> ProviderResult<Self> {
+    pub async fn from_config(
+        config: DefaultProviderConfig,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> ProviderResult<Self> {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
@@ -108,11 +113,23 @@ impl DefaultProvider {
         let image_id = if let Some(prepare_cmd) = &config.prepare_command {
             info!("Running prepare command...");
 
-            // Build prepare command with copy_dirs
+            // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
             let mut full_prepare_cmd = prepare_cmd.clone();
             for copy_spec in &config.copy_dirs {
-                info!("  Adding --copy-dir={}", copy_spec);
+                info!("  Adding --copy-dir={} (from config)", copy_spec);
                 full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+            }
+            for (local, remote) in copy_dirs {
+                info!(
+                    "  Adding --copy-dir={}:{} (from CLI)",
+                    local.display(),
+                    remote.display()
+                );
+                full_prepare_cmd.push_str(&format!(
+                    " --copy-dir={}:{}",
+                    local.display(),
+                    remote.display()
+                ));
             }
 
             let result = connector.run(&full_prepare_cmd).await?;
@@ -167,6 +184,7 @@ impl SandboxProvider for DefaultProvider {
         info!("Creating default sandbox: {}", config.id);
 
         // Build the create command, substituting {image_id} if available
+        // Note: copy_dirs are already baked into the image during prepare
         let create_command = match self.image_id.as_ref() {
             Some(id) => self.config.create_command.replace("{image_id}", id),
             None => self.config.create_command.clone(),

@@ -280,7 +280,12 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone())
+            // Convert CopyDir to tuples for provider
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples)
                 .await
                 .context("Failed to create Default provider")?;
             run_all_tests(
@@ -294,7 +299,12 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone())
+            // Convert CopyDir to tuples for provider
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples)
                 .await
                 .context("Failed to create Default provider")?;
             run_all_tests(
@@ -308,7 +318,12 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            let provider = DefaultProvider::from_config(p_cfg.clone())
+            // Convert CopyDir to tuples for provider
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples)
                 .await
                 .context("Failed to create Default provider")?;
             run_all_tests(
