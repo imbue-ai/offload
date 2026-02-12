@@ -478,7 +478,7 @@ pub struct CargoFrameworkConfig {
 
     /// Include tests marked with `#[ignore]`.
     ///
-    /// Maps to `cargo test -- --ignored`.
+    /// Maps to `cargo nextest run --run-ignored only`.
     ///
     /// Default: false
     #[serde(default)]
