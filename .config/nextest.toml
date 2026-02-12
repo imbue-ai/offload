@@ -1,5 +1,12 @@
-[profile.default]
-global-timeout = "120s"
+# cargo-nextest configuration
+# https://nexte.st/docs/configuration/reference/
 
 [profile.default.junit]
 path = "/tmp/junit.xml"
+store-success-output = false
+store-failure-output = true
+
+[profile.ci.junit]
+path = "/tmp/junit.xml"
+store-success-output = false
+store-failure-output = true

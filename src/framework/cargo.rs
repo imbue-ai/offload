@@ -179,6 +179,7 @@ impl TestFramework for CargoFramework {
     }
 
     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
+        // JUnit output configured via .config/nextest.toml
         let mut cmd = Command::new("cargo")
             .arg("nextest")
             .arg("run")
