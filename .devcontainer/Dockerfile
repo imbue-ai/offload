@@ -27,6 +27,9 @@ WORKDIR /app
 # Copy only dependency manifests first to leverage Docker layer caching
 COPY Cargo.toml Cargo.lock ./
 
+# Copy nextest config for JUnit output
+COPY .config/nextest.toml .config/nextest.toml
+
 # Create dummy source files to satisfy cargo
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
