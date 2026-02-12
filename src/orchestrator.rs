@@ -96,7 +96,7 @@ pub mod runner;
 pub mod scheduler;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Mutex;
@@ -104,9 +104,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SandboxConfig};
-use crate::framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
+use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
 use crate::provider::{OutputLine, SandboxProvider};
-use crate::report::Reporter;
+use crate::report::{MasterJunitReport, Reporter};
 
 pub use pool::SandboxPool;
 pub use runner::{OutputCallback, TestRunner};
@@ -356,9 +356,11 @@ where
             batches.len()
         );
 
-        // Early stopping: track how many unique tests have passed
+        // Shared JUnit report for accumulating results and early stopping
         let total_tests_to_run = tests.iter().filter(|t| !t.skipped).count();
-        let passed_count = Arc::new(AtomicUsize::new(0));
+        let junit_report = Arc::new(std::sync::Mutex::new(MasterJunitReport::new(
+            total_tests_to_run,
+        )));
         let all_passed = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
@@ -370,7 +372,7 @@ where
                 let framework = &self.framework;
                 let reporter = &self.reporter;
                 let config = &self.config;
-                let passed_count = Arc::clone(&passed_count);
+                let junit_report = Arc::clone(&junit_report);
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
 
@@ -406,14 +408,13 @@ where
                         }
                     };
 
-                    let junit_parts_dir = config.report.output_dir.join("parts");
                     let mut runner = TestRunner::new(
                         sandbox,
                         framework,
                         Duration::from_secs(config.offload.test_timeout_secs),
                     )
                     .with_cancellation_token(cancellation_token.clone())
-                    .with_junit_output(junit_parts_dir, format!("batch-{}", batch_idx));
+                    .with_junit_report(Arc::clone(&junit_report));
 
                     // Enable output callback if streaming is configured
                     if config.offload.stream_output {
@@ -432,20 +433,17 @@ where
                     // Run all tests in batch with a single command
                     match runner.run_tests(&batch).await {
                         Ok(true) => {
-                            // Results are stored in each TestRecord
-                            // Check for newly passed tests and update counter for early stopping
-                            for test in &batch {
-                                if test.record().passed() && test.record().try_mark_passed() {
-                                    let new_count = passed_count.fetch_add(1, Ordering::SeqCst) + 1;
-                                    if new_count >= total_tests_to_run {
-                                        info!(
-                                            "All {} tests have passed, signaling early stop",
-                                            total_tests_to_run
-                                        );
-                                        all_passed.store(true, Ordering::SeqCst);
-                                        cancellation_token.cancel();
-                                    }
-                                }
+                            // Check shared report for early stopping
+                            if let Ok(report) = junit_report.lock()
+                                && report.all_passed()
+                                && !all_passed.load(Ordering::SeqCst)
+                            {
+                                info!(
+                                    "All {} tests have passed, signaling early stop",
+                                    total_tests_to_run
+                                );
+                                all_passed.store(true, Ordering::SeqCst);
+                                cancellation_token.cancel();
                             }
                         }
                         Ok(false) => {
@@ -454,20 +452,6 @@ where
                         }
                         Err(e) => {
                             error!("Batch execution error: {}", e);
-                            // Mark all tests in batch as errors
-                            for test in &batch {
-                                let failed_result = TestResult {
-                                    test_id: test.id_owned(),
-                                    outcome: TestOutcome::Error,
-                                    duration: Duration::ZERO,
-                                    stdout: String::new(),
-                                    stderr: e.to_string(),
-                                    error_message: Some(e.to_string()),
-                                    stack_trace: None,
-                                    group: None,
-                                };
-                                test.record_result(failed_result);
-                            }
                         }
                     }
 
@@ -486,53 +470,45 @@ where
         });
 
         // Aggregate results from TestRecords (handles parallel retries automatically)
-        // Each TestRecord may have multiple results; final_result() picks pass if any passed
-        let all_results: Vec<TestResult> = tests
-            .iter()
-            .filter(|t| !t.skipped)
-            .filter_map(|t| t.final_result())
-            .collect();
+        // Get results from the shared JUnit report
+        let (passed, failed, flaky_count) = if let Ok(report) = junit_report.lock() {
+            report.summary()
+        } else {
+            (0, 0, 0)
+        };
 
-        // Count flaky tests (passed but had failures)
-        let flaky_count = tests
-            .iter()
-            .filter(|t| !t.skipped)
-            .filter(|t| t.is_flaky())
-            .count();
+        // Write the JUnit report to file
+        if self.config.report.junit {
+            let output_path = self
+                .config
+                .report
+                .output_dir
+                .join(&self.config.report.junit_file);
+            if let Ok(report) = junit_report.lock()
+                && let Err(e) = report.write_to_file(&output_path)
+            {
+                warn!("Failed to write JUnit XML: {}", e);
+            }
+        }
 
-        // Calculate statistics from TestRecords (not aggregated results)
-        // passed = number of TestRecords where at least one attempt passed
-        let passed = tests
-            .iter()
-            .filter(|t| !t.skipped)
-            .filter(|t| t.passed())
-            .count();
-        // failed = number of TestRecords where final outcome is failed/error (no passing attempts)
-        let failed = tests
-            .iter()
-            .filter(|t| !t.skipped)
-            .filter(|t| {
-                t.final_result()
-                    .map(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error)
-                    .unwrap_or(false)
-            })
-            .count();
-        let runtime_skipped = all_results
-            .iter()
-            .filter(|r| r.outcome == TestOutcome::Skipped)
-            .count();
-        let unique_tests = tests.iter().filter(|t| !t.skipped).count();
-        let not_run = unique_tests.saturating_sub(all_results.len());
+        // Total tests from discovery, results from JUnit XML
+        let total_discovered = tests.iter().filter(|t| !t.skipped).count();
+        let tests_with_results = if let Ok(report) = junit_report.lock() {
+            report.total_count()
+        } else {
+            0
+        };
+        let not_run = total_discovered.saturating_sub(tests_with_results);
 
         let run_result = RunResult {
-            total_tests: tests.len(),
-            passed,
+            total_tests: total_discovered,
+            passed: passed + flaky_count, // Flaky tests count as passed
             failed,
-            skipped: skipped_count + runtime_skipped,
+            skipped: skipped_count,
             flaky: flaky_count,
             not_run,
             duration: start.elapsed(),
-            results: all_results,
+            results: Vec::new(), // Results are in JUnit XML now
         };
 
         self.reporter.on_run_complete(&run_result).await;

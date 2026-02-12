@@ -16,7 +16,7 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
-use offload::report::{ConsoleReporter, cleanup_parts, merge_junit_files};
+use offload::report::ConsoleReporter;
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -383,27 +383,6 @@ async fn run_tests(
         }
     };
 
-    // Phase 3: Report results per group
-    info!("Results by group:");
-    for boundary in &boundaries {
-        let group_tests = &all_tests[boundary.start..boundary.start + boundary.count];
-        let passed = group_tests.iter().filter(|t| t.passed()).count();
-        let failed = group_tests
-            .iter()
-            .filter(|t| {
-                t.final_result().is_some_and(|r| {
-                    r.outcome == offload::framework::TestOutcome::Failed
-                        || r.outcome == offload::framework::TestOutcome::Error
-                })
-            })
-            .count();
-        let flaky = group_tests.iter().filter(|t| t.is_flaky()).count();
-        info!(
-            "  {}: {} passed, {} failed, {} flaky",
-            boundary.name, passed, failed, flaky
-        );
-    }
-
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -444,19 +423,6 @@ where
 
     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
     sandbox_pool.lock().await.terminate_all().await;
-
-    // Merge JUnit XML files from parts directory
-    let parts_dir = config.report.output_dir.join("parts");
-    let junit_path = config.report.output_dir.join(&config.report.junit_file);
-
-    if parts_dir.exists() {
-        if let Err(e) = merge_junit_files(&parts_dir, &junit_path) {
-            tracing::error!("Failed to merge JUnit XML files: {}", e);
-        }
-        if let Err(e) = cleanup_parts(&parts_dir) {
-            tracing::warn!("Failed to clean up JUnit parts: {}", e);
-        }
-    }
 
     Ok(result.exit_code())
 }

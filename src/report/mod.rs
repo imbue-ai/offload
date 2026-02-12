@@ -33,7 +33,9 @@
 
 pub mod junit;
 
-pub use junit::{cleanup_parts, merge_junit_files};
+pub use junit::{
+    MasterJunitReport, SharedJunitReport, TestStatus, cleanup_parts, merge_junit_files,
+};
 
 use async_trait::async_trait;
 

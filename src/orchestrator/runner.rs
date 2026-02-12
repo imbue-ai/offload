@@ -47,8 +47,9 @@ use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
+use crate::framework::{TestFramework, TestInstance};
 use crate::provider::{OutputLine, Sandbox};
+use crate::report::SharedJunitReport;
 
 /// JSON result format from default provider sandboxes.
 #[derive(serde::Deserialize)]
@@ -95,10 +96,8 @@ pub struct TestRunner<'a, S, D> {
     timeout: Duration,
     output_callback: Option<OutputCallback>,
     cancellation_token: Option<CancellationToken>,
-    /// Directory to save downloaded JUnit XML files for later merging.
-    junit_parts_dir: Option<std::path::PathBuf>,
-    /// Unique ID for this runner's JUnit output file.
-    junit_part_id: Option<String>,
+    /// Shared JUnit report for accumulating results across batches.
+    junit_report: Option<SharedJunitReport>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -116,20 +115,17 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             timeout,
             output_callback: None,
             cancellation_token: None,
-            junit_parts_dir: None,
-            junit_part_id: None,
+            junit_report: None,
         }
     }
 
-    /// Sets the directory where JUnit XML files should be saved for merging.
+    /// Sets the shared JUnit report for accumulating results.
     ///
     /// # Arguments
     ///
-    /// * `dir` - Directory path for JUnit XML parts
-    /// * `part_id` - Unique identifier for this runner's output file
-    pub fn with_junit_output(mut self, dir: std::path::PathBuf, part_id: String) -> Self {
-        self.junit_parts_dir = Some(dir);
-        self.junit_part_id = Some(part_id);
+    /// * `report` - Shared report for accumulating JUnit results across batches
+    pub fn with_junit_report(mut self, report: SharedJunitReport) -> Self {
+        self.junit_report = Some(report);
         self
     }
 
@@ -294,12 +290,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         }))
     }
 
-    /// Runs multiple tests in a batch and records results into TestRecords.
+    /// Runs multiple tests in a batch.
     ///
-    /// Generates a single command for all tests, executes it, and parses
-    /// the combined results. More efficient than running tests individually
-    /// but provides less isolation. Results are automatically recorded into
-    /// each test's associated [`TestRecord`].
+    /// Generates a single command for all tests, executes it, downloads
+    /// the JUnit XML results, and adds them to the shared report.
     ///
     /// # Arguments
     ///
@@ -309,7 +303,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// `Ok(true)` on successful execution, `Ok(false)` if cancelled early,
     /// or an error if execution failed.
-    /// Use [`TestRecord::final_result`] to retrieve individual test results.
     pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<bool> {
         let start = std::time::Instant::now();
 
@@ -336,51 +329,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             exec_result.exit_code, duration
         );
 
-        // Try to download and parse JUnit results
-        let result_content = self.try_download_results().await;
-
-        // Parse results
-        let parsed_results = self
-            .framework
-            .parse_results(&exec_result, result_content.as_deref())?;
-
-        // Estimate per-test duration from wall-clock time
-        let estimated_duration = duration / tests.len() as u32;
-
-        // Record results into each TestRecord
-        for test in tests {
-            let mut result = parsed_results
-                .iter()
-                .find(|r| r.test_id == test.id())
-                .cloned()
-                .unwrap_or_else(|| {
-                    // No JUnit result for this test - mark as error
-                    warn!("No JUnit result found for test: {}", test.id());
-                    TestResult {
-                        test_id: test.id_owned(),
-                        outcome: TestOutcome::Error,
-                        duration: estimated_duration,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        error_message: Some("No JUnit result found for this test".to_string()),
-                        stack_trace: None,
-                        group: None,
-                    }
-                });
-
-            // If parsed result has zero duration, use estimated wall-clock duration
-            if result.duration.is_zero() {
-                result.duration = estimated_duration;
-            }
-
-            test.record_result(result);
+        // Download JUnit XML and add to shared report
+        if let Some(xml_content) = self.try_download_results().await
+            && let Some(report) = &self.junit_report
+            && let Ok(mut report) = report.lock()
+        {
+            report.add_junit_xml(&xml_content);
         }
 
         Ok(true)
     }
 
     /// Try to download JUnit results from the sandbox.
-    /// If junit_parts_dir is set, also saves a copy there.
     async fn try_download_results(&mut self) -> Option<String> {
         // Download from /tmp/junit.xml (standard location)
         let remote_path = std::path::Path::new("/tmp/junit.xml");
@@ -392,20 +352,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let content = std::fs::read_to_string(temp_file.path()).ok()?;
         if content.is_empty() {
             return None;
-        }
-
-        // Save to parts directory if configured
-        if let (Some(dir), Some(part_id)) = (&self.junit_parts_dir, &self.junit_part_id) {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                warn!("Failed to create JUnit parts dir: {}", e);
-            } else {
-                let part_path = dir.join(format!("{}.xml", part_id));
-                if let Err(e) = std::fs::write(&part_path, &content) {
-                    warn!("Failed to save JUnit part file: {}", e);
-                } else {
-                    info!("Saved JUnit XML to {}", part_path.display());
-                }
-            }
         }
 
         Some(content)
