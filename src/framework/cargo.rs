@@ -202,44 +202,32 @@ impl TestFramework for CargoFramework {
     }
 
     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
-        let mut cmd = Command::new("cargo").arg("test");
-
-        // Add package if specified
-        if let Some(package) = &self.config.package {
-            cmd = cmd.arg("-p").arg(package);
-        }
-
-        // Add features if specified
-        if !self.config.features.is_empty() {
-            cmd = cmd.arg("--features").arg(self.config.features.join(","));
-        }
-
-        // Add binary if specified
-        if let Some(bin) = &self.config.bin {
-            cmd = cmd.arg("--bin").arg(bin);
-        }
-
-        // Include ignored tests if requested
-        if self.config.include_ignored {
-            cmd = cmd.arg("--ignored");
-        }
-
-        // Check if this is a doc test run
         let is_doctest = tests.len() == 1 && tests[0].id() == "__doctest__";
 
-        if is_doctest {
-            // Run all doc tests with --doc
-            cmd = cmd.arg("--doc");
-        } else {
-            cmd = cmd.arg("--").arg("--exact");
-
-            // Add test names
-            for test in tests {
-                cmd = cmd.arg(test.id());
-            }
+        // Build cargo args string
+        let mut args = String::from("test");
+        if let Some(p) = &self.config.package {
+            args.push_str(&format!(" -p {}", shell_words::quote(p)));
+        }
+        if !self.config.features.is_empty() {
+            args.push_str(&format!(" --features {}", self.config.features.join(",")));
+        }
+        if let Some(b) = &self.config.bin {
+            args.push_str(&format!(" --bin {}", shell_words::quote(b)));
+        }
+        if self.config.include_ignored {
+            args.push_str(" --ignored");
         }
 
-        cmd
+        if is_doctest {
+            args.push_str(" --doc");
+            Command::new("sh").arg("-c").arg(format!("cargo {}", args))
+        } else {
+            Command::new("sh").arg("-c").arg(format!(
+                "cargo {} -- --exact $(cat /tmp/offload.tests)",
+                args
+            ))
+        }
     }
 
     fn parse_results(

@@ -385,10 +385,17 @@ impl ModalSandbox {
         // Escape the entire command so it can be passed as a single argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
 
-        format!(
+        let mut exec_cmd = format!(
             "uv run @modal_sandbox.py exec {} {}",
             self.remote_id, escaped_cmd
-        )
+        );
+
+        // Add test file lines option if present
+        if let Some((start, end)) = cmd.test_file_lines {
+            exec_cmd.push_str(&format!(" --test-lines={}-{}", start, end));
+        }
+
+        exec_cmd
     }
 
     /// Builds the destroy command for terminating the sandbox.

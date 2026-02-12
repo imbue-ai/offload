@@ -301,6 +301,16 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
 
+        // Set line range from tests for offload.tests file
+        let lines: Vec<usize> = tests
+            .iter()
+            .map(|t| t.offload_test_line())
+            .filter(|&n| n > 0)
+            .collect();
+        if let (Some(&min), Some(&max)) = (lines.iter().min(), lines.iter().max()) {
+            cmd = cmd.test_file_lines(min, max);
+        }
+
         // Execute the command with streaming (always use streaming for default provider support)
         let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
             Some(result) => result,

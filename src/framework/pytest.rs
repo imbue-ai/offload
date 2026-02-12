@@ -144,26 +144,14 @@ impl TestFramework for PytestFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
-        let mut cmd = Command::new(&self.config.python);
-
-        for arg in &self.config.extra_args {
-            cmd = cmd.arg(arg);
-        }
-
-        cmd = cmd
-            .arg("-m")
-            .arg("pytest")
-            .arg("-v")
-            .arg("--tb=short")
-            .arg("--junitxml=/tmp/junit.xml");
-
-        // Add test IDs
-        for test in tests {
-            cmd = cmd.arg(test.id());
-        }
-
-        cmd
+    fn produce_test_execution_command(&self, _tests: &[TestInstance]) -> Command {
+        let extra = self.config.extra_args.join(" ");
+        let cmd = format!(
+            "{} {} -m pytest -v --tb=short --junitxml=/tmp/junit.xml $(cat /tmp/offload.tests)",
+            shell_words::quote(&self.config.python),
+            extra
+        );
+        Command::new("sh").arg("-c").arg(cmd)
     }
 
     fn parse_results(

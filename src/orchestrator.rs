@@ -333,6 +333,18 @@ where
 
         self.reporter.on_discovery_complete(tests).await;
 
+        // Write all test IDs to offload.tests and track line numbers
+        let test_ids: Vec<&str> = tests.iter().map(|t| t.id.as_str()).collect();
+        if let Err(e) = std::fs::write("offload.tests", test_ids.join("\n")) {
+            warn!("Failed to write offload.tests: {}", e);
+        } else {
+            // Set line numbers on each TestRecord (1-indexed)
+            for (i, test) in tests.iter().enumerate() {
+                test.set_offload_test_line(i + 1);
+            }
+            info!("Wrote {} test IDs to offload.tests", test_ids.len());
+        }
+
         // Filter out skipped tests and create Test handles
         // For tests with retry_count > 0, create multiple instances to run in parallel
         let tests_to_run: Vec<TestInstance<'_>> = tests

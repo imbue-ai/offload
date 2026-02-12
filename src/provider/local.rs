@@ -169,6 +169,22 @@ impl Sandbox for LocalSandbox {
     }
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
+        // Write test file if line range is specified
+        if let Some((start, end)) = cmd.test_file_lines {
+            let content = tokio::fs::read_to_string("offload.tests")
+                .await
+                .map_err(|e| {
+                    ProviderError::ExecFailed(format!("Failed to read offload.tests: {}", e))
+                })?;
+            let lines: Vec<&str> = content.lines().collect();
+            let selected = lines.get(start - 1..end).unwrap_or(&[]).join("\n");
+            let path = self.working_dir.join("tmp/offload.tests");
+            tokio::fs::create_dir_all(path.parent().unwrap()).await.ok();
+            tokio::fs::write(&path, &selected).await.map_err(|e| {
+                ProviderError::ExecFailed(format!("Failed to write test file: {}", e))
+            })?;
+        }
+
         let shell_cmd = cmd.to_shell_string();
 
         let mut process = tokio::process::Command::new(&self.shell);

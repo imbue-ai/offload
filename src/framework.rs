@@ -177,6 +177,11 @@ pub struct TestRecord {
     /// Used to avoid double-counting when multiple instances of the same test pass.
     #[serde(skip)]
     has_recorded_pass: AtomicBool,
+
+    /// Line number in the offload.tests file (1-indexed).
+    /// Set by the orchestrator after writing the test file.
+    #[serde(skip)]
+    offload_test_line: std::sync::atomic::AtomicUsize,
 }
 
 impl TestRecord {
@@ -199,6 +204,7 @@ impl TestRecord {
             retry_count: 0,
             results: Mutex::new(Vec::new()),
             has_recorded_pass: AtomicBool::new(false),
+            offload_test_line: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -292,6 +298,18 @@ impl TestRecord {
     pub fn try_mark_passed(&self) -> bool {
         // swap returns the previous value, so true means it was already set
         !self.has_recorded_pass.swap(true, Ordering::SeqCst)
+    }
+
+    /// Sets the line number in offload.tests (1-indexed).
+    pub fn set_offload_test_line(&self, line: usize) {
+        self.offload_test_line
+            .store(line, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Gets the line number in offload.tests (1-indexed, 0 if not set).
+    pub fn offload_test_line(&self) -> usize {
+        self.offload_test_line
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Returns the number of execution attempts.
@@ -504,6 +522,11 @@ impl<'a> TestInstance<'a> {
     /// The result is stored in the associated `TestRecord`.
     pub fn record_result(&self, result: TestResult) {
         self.record.record_result(result);
+    }
+
+    /// Returns the line number in offload.tests (1-indexed, 0 if not set).
+    pub fn offload_test_line(&self) -> usize {
+        self.record.offload_test_line()
     }
 }
 

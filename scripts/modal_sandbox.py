@@ -337,9 +337,30 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @cli.command("exec")
 @click.argument("sandbox_id")
 @click.argument("command")
-def exec_command(sandbox_id: str, command: str):
+@click.option(
+    "--test-lines",
+    default=None,
+    help="Line range to read from offload.tests (format: start-end, 1-indexed inclusive)",
+)
+def exec_command(sandbox_id: str, command: str, test_lines: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
+
+    # Read test lines from local offload.tests and write to sandbox
+    if test_lines:
+        start, end = map(int, test_lines.split("-"))
+        with open("offload.tests") as f:
+            lines = f.readlines()
+        # 1-indexed, inclusive
+        selected = lines[start - 1 : end]
+        with sandbox.open("/tmp/offload.tests", "w") as f:
+            f.writelines(selected)
+        logger.info(
+            "Wrote %d test lines (%d-%d) to /tmp/offload.tests",
+            len(selected),
+            start,
+            end,
+        )
 
     # Execute command
     process = sandbox.exec("bash", "-c", command)

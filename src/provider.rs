@@ -214,6 +214,9 @@ pub struct Command {
     ///
     /// If the command runs longer, it will be terminated.
     pub timeout_secs: Option<u64>,
+
+    /// Line range in offload.tests (1-indexed, inclusive) to write to sandbox.
+    pub test_file_lines: Option<(usize, usize)>,
 }
 
 impl Command {
@@ -232,6 +235,7 @@ impl Command {
             working_dir: None,
             env: Vec::new(),
             timeout_secs: None,
+            test_file_lines: None,
         }
     }
 
@@ -308,6 +312,12 @@ impl Command {
     /// ```
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
+        self
+    }
+
+    /// Sets the line range (1-indexed, inclusive) in offload.tests for this batch.
+    pub fn test_file_lines(mut self, start: usize, end: usize) -> Self {
+        self.test_file_lines = Some((start, end));
         self
     }
 
