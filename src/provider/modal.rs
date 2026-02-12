@@ -253,14 +253,8 @@ impl ModalProvider {
 
         debug!("Building Modal image: {}", command);
 
+        // Note: stderr is streamed in real-time by the connector
         let result = self.connector.run(&command).await?;
-
-        // Forward stderr (contains build progress)
-        if !result.stderr.is_empty() {
-            for line in result.stderr.lines() {
-                info!("{}", line);
-            }
-        }
 
         if result.exit_code != 0 {
             return Err(ProviderError::CreateFailed(format!(

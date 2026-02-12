@@ -121,10 +121,7 @@ impl DefaultProvider {
 
             let result = connector.run(&full_prepare_cmd).await?;
 
-            // Forward stderr to info because it may contain build status
-            for line in result.stderr.lines() {
-                info!("{}", line);
-            }
+            // Note: stderr is now streamed in real-time by the connector
 
             if result.exit_code != 0 {
                 return Err(ProviderError::ExecFailed(format!(
@@ -179,12 +176,8 @@ impl SandboxProvider for DefaultProvider {
         info!("{}", create_command);
 
         // Run the create command to get a sandbox_id
+        // Note: stderr is streamed in real-time by the connector
         let result = self.connector.run(&create_command).await?;
-
-        // We need to forward stderr to info because it contains build status.
-        for line in result.stderr.lines() {
-            info!("{}", line);
-        }
 
         if result.exit_code != 0 {
             return Err(ProviderError::ExecFailed(format!(

@@ -319,18 +319,62 @@ impl Connector for ShellConnector {
             cmd.current_dir(dir);
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_secs),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| ProviderError::Timeout("Command timed out".to_string()))?
-        .map_err(|e| ProviderError::ExecFailed(format!("Failed to run command: {}", e)))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
+
+        // Take ownership of stdout/stderr handles
+        let stdout_handle = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr_handle = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        // Read stdout and stderr concurrently
+        let stdout_reader = BufReader::new(stdout_handle);
+        let stderr_reader = BufReader::new(stderr_handle);
+
+        let stdout_task = tokio::spawn(async move {
+            let mut lines = stdout_reader.lines();
+            let mut output = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                output.push(line);
+            }
+            output.join("\n")
+        });
+
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = stderr_reader.lines();
+            let mut output = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                // Stream stderr in real-time
+                info!("{}", line);
+                output.push(line);
+            }
+            output.join("\n")
+        });
+
+        // Wait for process and output collection with timeout
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), async {
+                let status = child.wait().await?;
+                let stdout = stdout_task.await.unwrap_or_default();
+                let stderr = stderr_task.await.unwrap_or_default();
+                Ok::<_, std::io::Error>((status, stdout, stderr))
+            })
+            .await
+            .map_err(|_| ProviderError::Timeout("Command timed out".to_string()))?
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to run command: {}", e)))?;
+
+        let (status, stdout, stderr) = result;
 
         Ok(ExecResult {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: status.code().unwrap_or(-1),
+            stdout,
+            stderr,
         })
     }
 
