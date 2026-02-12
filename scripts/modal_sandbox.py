@@ -218,30 +218,31 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
     # NOTE(Danver): App name here should be injectable from the Config.
     if dockerfile_path is None:
         # Build default image with cwd baked in
-        logger.info("Building default image with cwd baked in...")
-        app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-        image = (
-            modal.Image.debian_slim(python_version="3.11")
-            .pip_install("pytest")
-            .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
-        )
-        # Add user-specified directories
-        for copy_spec in copy_dirs:
-            if ":" not in copy_spec:
-                logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
-                continue
-            local_path, remote_path = copy_spec.split(":", 1)
-            if not os.path.isdir(local_path):
-                logger.warning("Local directory '%s' not found, skipping", local_path)
-                continue
-            logger.info("Adding %s -> %s to image", local_path, remote_path)
-            image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
+        with modal.enable_output():
+            logger.info("Building default image with cwd baked in...")
+            app = modal.App.lookup("offload-sandbox", create_if_missing=True)
+            image = (
+                modal.Image.debian_slim(python_version="3.11")
+                .pip_install("pytest")
+                .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
+            )
+            # Add user-specified directories
+            for copy_spec in copy_dirs:
+                if ":" not in copy_spec:
+                    logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
+                    continue
+                local_path, remote_path = copy_spec.split(":", 1)
+                if not os.path.isdir(local_path):
+                    logger.warning("Local directory '%s' not found, skipping", local_path)
+                    continue
+                logger.info("Adding %s -> %s to image", local_path, remote_path)
+                image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
 
-        image.build(app)
-        # Create temp sandbox to materialize image_id, then terminate
-        temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-        temp_sandbox.terminate()
-        image_id = image.object_id
+            image.build(app)
+            # Create temp sandbox to materialize image_id, then terminate
+            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+            temp_sandbox.terminate()
+            image_id = image.object_id
     else:
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
