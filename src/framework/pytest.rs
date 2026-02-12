@@ -241,6 +241,7 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
             stderr: String::new(),
             error_message,
             stack_trace: None,
+            group: None,
         });
     }
 
@@ -277,6 +278,7 @@ fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestR
             stderr: String::new(),
             error_message: None,
             stack_trace: None,
+            group: None,
         });
     }
 

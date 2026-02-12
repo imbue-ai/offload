@@ -281,6 +281,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
             stderr: String::new(),
             error_message: None,
             stack_trace: None,
+            group: None,
         });
     }
 
@@ -313,6 +314,7 @@ fn parse_cargo_test_output(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<T
                         None
                     },
                     stack_trace: None,
+                    group: None,
                 });
             }
         }

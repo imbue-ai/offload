@@ -168,6 +168,9 @@ pub struct TestRecord {
     /// Set per-test to allow group-specific retry counts.
     pub retry_count: usize,
 
+    /// Group name this test belongs to (for JUnit testsuite grouping).
+    pub group: Option<String>,
+
     /// Results from each execution attempt.
     /// Skipped during serialization as it contains runtime state.
     #[serde(skip)]
@@ -197,6 +200,7 @@ impl TestRecord {
             flaky: false,
             skipped: false,
             retry_count: 0,
+            group: None,
             results: Mutex::new(Vec::new()),
             has_recorded_pass: AtomicBool::new(false),
         }
@@ -235,6 +239,12 @@ impl TestRecord {
     /// Marks this test as skipped.
     pub fn set_skipped(mut self) -> Self {
         self.skipped = true;
+        self
+    }
+
+    /// Sets the group name for this test (for JUnit testsuite grouping).
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
         self
     }
 
@@ -329,6 +339,9 @@ impl TestRecord {
         if any_passed && any_failed {
             result.error_message = Some("Flaky - passed on parallel retry".to_string());
         }
+
+        // Copy group from record to result
+        result.group = self.group.clone();
 
         Some(result)
     }
@@ -543,6 +556,9 @@ pub struct TestResult {
     ///
     /// Provides detailed debugging information for failures.
     pub stack_trace: Option<String>,
+
+    /// Group name this test belongs to (for JUnit testsuite grouping).
+    pub group: Option<String>,
 }
 
 impl TestResult {
@@ -556,6 +572,7 @@ impl TestResult {
             stderr: String::new(),
             error_message: None,
             stack_trace: None,
+            group: None,
         }
     }
 
@@ -586,6 +603,12 @@ impl TestResult {
     /// Sets the stack trace.
     pub fn with_stack_trace(mut self, trace: impl Into<String>) -> Self {
         self.stack_trace = Some(trace.into());
+        self
+    }
+
+    /// Sets the group name for this result.
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
         self
     }
 }

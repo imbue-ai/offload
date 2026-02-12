@@ -406,12 +406,14 @@ where
                         }
                     };
 
+                    let junit_parts_dir = config.report.output_dir.join("parts");
                     let mut runner = TestRunner::new(
                         sandbox,
                         framework,
                         Duration::from_secs(config.offload.test_timeout_secs),
                     )
-                    .with_cancellation_token(cancellation_token.clone());
+                    .with_cancellation_token(cancellation_token.clone())
+                    .with_junit_output(junit_parts_dir, format!("batch-{}", batch_idx));
 
                     // Enable output callback if streaming is configured
                     if config.offload.stream_output {
@@ -462,6 +464,7 @@ where
                                     stderr: e.to_string(),
                                     error_message: Some(e.to_string()),
                                     stack_trace: None,
+                                    group: None,
                                 };
                                 test.record_result(failed_result);
                             }

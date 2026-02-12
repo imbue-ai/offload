@@ -16,7 +16,7 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
-use offload::report::ConsoleReporter;
+use offload::report::{ConsoleReporter, cleanup_parts, merge_junit_files};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -199,16 +199,19 @@ async fn run_tests(
         let count = tests.len();
         info!("Group '{}': discovered {} tests", group_name, count);
 
-        // Set retry count for each test (group-specific or global fallback)
+        // Set retry count and group name for each test
         let retry_count = group_config
             .retry_count
             .unwrap_or(config.offload.retry_count);
-        let tests_with_retry: Vec<TestRecord> = tests
+        let tests_with_config: Vec<TestRecord> = tests
             .into_iter()
-            .map(|t| t.with_retry_count(retry_count))
+            .map(|t| {
+                t.with_retry_count(retry_count)
+                    .with_group(group_name.clone())
+            })
             .collect();
 
-        all_tests.extend(tests_with_retry);
+        all_tests.extend(tests_with_config);
         boundaries.push(GroupBoundary {
             name: group_name.clone(),
             start,
@@ -441,6 +444,19 @@ where
 
     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
     sandbox_pool.lock().await.terminate_all().await;
+
+    // Merge JUnit XML files from parts directory
+    let parts_dir = config.report.output_dir.join("parts");
+    let junit_path = config.report.output_dir.join(&config.report.junit_file);
+
+    if parts_dir.exists() {
+        if let Err(e) = merge_junit_files(&parts_dir, &junit_path) {
+            tracing::error!("Failed to merge JUnit XML files: {}", e);
+        }
+        if let Err(e) = cleanup_parts(&parts_dir) {
+            tracing::warn!("Failed to clean up JUnit parts: {}", e);
+        }
+    }
 
     Ok(result.exit_code())
 }

@@ -548,19 +548,23 @@ pub struct DefaultFrameworkConfig {
 
 /// Configuration for test result reporting.
 ///
-/// Controls where test results are written.
+/// Controls where test results are written and output format.
 ///
 /// # Defaults
 ///
 /// | Field | Default |
 /// |-------|---------|
 /// | `output_dir` | `"test-results"` |
+/// | `junit` | `true` |
+/// | `junit_file` | `"junit.xml"` |
 ///
 /// # Example
 ///
 /// ```toml
 /// [report]
 /// output_dir = "build/test-results"
+/// junit = true
+/// junit_file = "junit.xml"
 /// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ReportConfig {
@@ -571,10 +575,35 @@ pub struct ReportConfig {
     /// Default: `"test-results"`
     #[serde(default = "default_report_dir")]
     pub output_dir: PathBuf,
+
+    /// Enable JUnit XML output generation.
+    ///
+    /// When enabled, a JUnit XML file is written to `output_dir/junit_file`
+    /// after tests complete. This is the primary result artifact for CI systems.
+    ///
+    /// Default: `true`
+    #[serde(default = "default_junit")]
+    pub junit: bool,
+
+    /// Filename for JUnit XML output.
+    ///
+    /// Written to `output_dir/junit_file` when `junit` is enabled.
+    ///
+    /// Default: `"junit.xml"`
+    #[serde(default = "default_junit_file")]
+    pub junit_file: String,
 }
 
 fn default_report_dir() -> PathBuf {
     PathBuf::from("test-results")
+}
+
+fn default_junit() -> bool {
+    true
+}
+
+fn default_junit_file() -> String {
+    "junit.xml".to_string()
 }
 
 /// Runtime configuration passed to sandbox creation.

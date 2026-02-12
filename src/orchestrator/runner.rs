@@ -95,6 +95,10 @@ pub struct TestRunner<'a, S, D> {
     timeout: Duration,
     output_callback: Option<OutputCallback>,
     cancellation_token: Option<CancellationToken>,
+    /// Directory to save downloaded JUnit XML files for later merging.
+    junit_parts_dir: Option<std::path::PathBuf>,
+    /// Unique ID for this runner's JUnit output file.
+    junit_part_id: Option<String>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -112,7 +116,21 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             timeout,
             output_callback: None,
             cancellation_token: None,
+            junit_parts_dir: None,
+            junit_part_id: None,
         }
+    }
+
+    /// Sets the directory where JUnit XML files should be saved for merging.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory path for JUnit XML parts
+    /// * `part_id` - Unique identifier for this runner's output file
+    pub fn with_junit_output(mut self, dir: std::path::PathBuf, part_id: String) -> Self {
+        self.junit_parts_dir = Some(dir);
+        self.junit_part_id = Some(part_id);
+        self
     }
 
     /// Sets a cancellation token for early termination.
@@ -336,27 +354,17 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 .find(|r| r.test_id == test.id())
                 .cloned()
                 .unwrap_or_else(|| {
-                    // If no parsed result for this test, infer from exit code
-                    let overall_outcome = if exec_result.success() {
-                        TestOutcome::Passed
-                    } else {
-                        TestOutcome::Failed
-                    };
+                    // No JUnit result for this test - mark as error
+                    warn!("No JUnit result found for test: {}", test.id());
                     TestResult {
                         test_id: test.id_owned(),
-                        outcome: overall_outcome,
+                        outcome: TestOutcome::Error,
                         duration: estimated_duration,
                         stdout: String::new(),
                         stderr: String::new(),
-                        error_message: if !exec_result.success() {
-                            Some(format!(
-                                "Batch failed with exit code: {}",
-                                exec_result.exit_code
-                            ))
-                        } else {
-                            None
-                        },
+                        error_message: Some("No JUnit result found for this test".to_string()),
                         stack_trace: None,
+                        group: None,
                     }
                 });
 
@@ -372,49 +380,34 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     }
 
     /// Try to download JUnit results from the sandbox.
+    /// If junit_parts_dir is set, also saves a copy there.
     async fn try_download_results(&mut self) -> Option<String> {
-        // Common JUnit output locations
-        let remote_paths = [
-            "/tmp/junit.xml",
-            "junit.xml",
-            "test-results/junit.xml",
-            "target/surefire-reports/TEST-*.xml",
-        ];
+        // Download from /tmp/junit.xml (standard location)
+        let remote_path = std::path::Path::new("/tmp/junit.xml");
+        let temp_file = tempfile::NamedTempFile::new().ok()?;
 
-        // Create temp files for each potential download
-        let temp_files: Vec<_> = remote_paths
-            .iter()
-            .filter_map(|_| tempfile::NamedTempFile::new().ok())
-            .collect();
+        let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
+        let _ = self.sandbox.download(&path_pairs).await;
 
-        if temp_files.len() != remote_paths.len() {
+        let content = std::fs::read_to_string(temp_file.path()).ok()?;
+        if content.is_empty() {
             return None;
         }
 
-        // Build (remote, local) path pairs
-        let path_pairs: Vec<(&std::path::Path, &std::path::Path)> = remote_paths
-            .iter()
-            .zip(temp_files.iter())
-            .map(|(remote, temp)| {
-                (
-                    std::path::Path::new(*remote),
-                    temp.path() as &std::path::Path,
-                )
-            })
-            .collect();
-
-        // Download all paths in a single command
-        let _ = self.sandbox.download(&path_pairs).await;
-
-        // Check which files were successfully downloaded
-        for temp_file in &temp_files {
-            if let Ok(content) = std::fs::read_to_string(temp_file.path())
-                && !content.is_empty()
-            {
-                return Some(content);
+        // Save to parts directory if configured
+        if let (Some(dir), Some(part_id)) = (&self.junit_parts_dir, &self.junit_part_id) {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                warn!("Failed to create JUnit parts dir: {}", e);
+            } else {
+                let part_path = dir.join(format!("{}.xml", part_id));
+                if let Err(e) = std::fs::write(&part_path, &content) {
+                    warn!("Failed to save JUnit part file: {}", e);
+                } else {
+                    info!("Saved JUnit XML to {}", part_path.display());
+                }
             }
         }
 
-        None
+        Some(content)
     }
 }

@@ -31,6 +31,10 @@
 //!     .with_reporter(ConsoleReporter::new(true));
 //! ```
 
+pub mod junit;
+
+pub use junit::{cleanup_parts, merge_junit_files};
+
 use async_trait::async_trait;
 
 use crate::framework::{TestRecord, TestResult};
