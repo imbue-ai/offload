@@ -341,6 +341,8 @@ impl Connector for ShellConnector {
             let mut lines = stdout_reader.lines();
             let mut output = Vec::new();
             while let Ok(Some(line)) = lines.next_line().await {
+                // Stream stdout in real-time
+                info!("{}", line);
                 output.push(line);
             }
             output.join("\n")
