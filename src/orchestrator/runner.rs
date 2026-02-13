@@ -363,8 +363,15 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
         match self.sandbox.download(&path_pairs).await {
-            Ok(_) => tracing::info!("Download of /tmp/junit.xml succeeded for {}", self.sandbox.id()),
-            Err(e) => tracing::warn!("Download of /tmp/junit.xml failed for {}: {}", self.sandbox.id(), e),
+            Ok(_) => tracing::info!(
+                "Download of /tmp/junit.xml succeeded for {}",
+                self.sandbox.id()
+            ),
+            Err(e) => tracing::warn!(
+                "Download of /tmp/junit.xml failed for {}: {}",
+                self.sandbox.id(),
+                e
+            ),
         }
 
         let content = std::fs::read_to_string(temp_file.path()).ok()?;
@@ -373,7 +380,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             return None;
         }
 
-        tracing::info!("Downloaded junit.xml has {} bytes for {}", content.len(), self.sandbox.id());
+        tracing::info!(
+            "Downloaded junit.xml has {} bytes for {}",
+            content.len(),
+            self.sandbox.id()
+        );
         Some(content)
     }
 }

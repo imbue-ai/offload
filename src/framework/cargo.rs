@@ -130,7 +130,7 @@ impl TestFramework for CargoFramework {
         let mut cmd_args = vec![
             "nextest".to_string(),
             "list".to_string(),
-            "--color=never".to_string(),  // Prevent ANSI codes in test names
+            "--color=never".to_string(), // Prevent ANSI codes in test names
         ];
 
         if let Some(package) = &self.config.package {
