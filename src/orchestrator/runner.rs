@@ -47,8 +47,9 @@ use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::framework::{TestFramework, TestInstance, TestOutcome, TestResult};
+use crate::framework::{TestFramework, TestInstance};
 use crate::provider::{OutputLine, Sandbox};
+use crate::report::SharedJunitReport;
 
 /// JSON result format from default provider sandboxes.
 #[derive(serde::Deserialize)]
@@ -95,6 +96,8 @@ pub struct TestRunner<'a, S, D> {
     timeout: Duration,
     output_callback: Option<OutputCallback>,
     cancellation_token: Option<CancellationToken>,
+    /// Shared JUnit report for accumulating results across batches.
+    junit_report: Option<SharedJunitReport>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -112,7 +115,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             timeout,
             output_callback: None,
             cancellation_token: None,
+            junit_report: None,
         }
+    }
+
+    /// Sets the shared JUnit report for accumulating results.
+    ///
+    /// # Arguments
+    ///
+    /// * `report` - Shared report for accumulating JUnit results across batches
+    pub fn with_junit_report(mut self, report: SharedJunitReport) -> Self {
+        self.junit_report = Some(report);
+        self
     }
 
     /// Sets a cancellation token for early termination.
@@ -276,12 +290,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         }))
     }
 
-    /// Runs multiple tests in a batch and records results into TestRecords.
+    /// Runs multiple tests in a batch.
     ///
-    /// Generates a single command for all tests, executes it, and parses
-    /// the combined results. More efficient than running tests individually
-    /// but provides less isolation. Results are automatically recorded into
-    /// each test's associated [`TestRecord`].
+    /// Generates a single command for all tests, executes it, downloads
+    /// the JUnit XML results, and adds them to the shared report.
     ///
     /// # Arguments
     ///
@@ -291,7 +303,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///
     /// `Ok(true)` on successful execution, `Ok(false)` if cancelled early,
     /// or an error if execution failed.
-    /// Use [`TestRecord::final_result`] to retrieve individual test results.
     pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<bool> {
         let start = std::time::Instant::now();
 
@@ -318,54 +329,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             exec_result.exit_code, duration
         );
 
-        // Try to download and parse JUnit results
-        let result_content = self.try_download_results().await;
-
-        // Parse results
-        let parsed_results = self
-            .framework
-            .parse_results(&exec_result, result_content.as_deref())?;
-
-        // Estimate per-test duration from wall-clock time
-        let estimated_duration = duration / tests.len() as u32;
-
-        // Record results into each TestRecord
-        for test in tests {
-            let mut result = parsed_results
-                .iter()
-                .find(|r| r.test_id == test.id())
-                .cloned()
-                .unwrap_or_else(|| {
-                    // If no parsed result for this test, infer from exit code
-                    let overall_outcome = if exec_result.success() {
-                        TestOutcome::Passed
-                    } else {
-                        TestOutcome::Failed
-                    };
-                    TestResult {
-                        test_id: test.id_owned(),
-                        outcome: overall_outcome,
-                        duration: estimated_duration,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        error_message: if !exec_result.success() {
-                            Some(format!(
-                                "Batch failed with exit code: {}",
-                                exec_result.exit_code
-                            ))
-                        } else {
-                            None
-                        },
-                        stack_trace: None,
-                    }
-                });
-
-            // If parsed result has zero duration, use estimated wall-clock duration
-            if result.duration.is_zero() {
-                result.duration = estimated_duration;
-            }
-
-            test.record_result(result);
+        // Download JUnit XML and add to shared report
+        if let Some(xml_content) = self.try_download_results().await
+            && let Some(report) = &self.junit_report
+            && let Ok(mut report) = report.lock()
+        {
+            report.add_junit_xml(&xml_content);
         }
 
         Ok(true)
@@ -373,48 +342,49 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Try to download JUnit results from the sandbox.
     async fn try_download_results(&mut self) -> Option<String> {
-        // Common JUnit output locations
-        let remote_paths = [
-            "/tmp/junit.xml",
-            "junit.xml",
-            "test-results/junit.xml",
-            "target/surefire-reports/TEST-*.xml",
-        ];
+        // Debug: List /tmp contents before download
+        let list_cmd = crate::provider::Command::new("ls").arg("-la").arg("/tmp/");
+        if let Ok(mut stream) = self.sandbox.exec_stream(&list_cmd).await {
+            use futures::StreamExt;
+            let mut tmp_contents = Vec::new();
+            while let Some(line) = stream.next().await {
+                tmp_contents.push(format!("{:?}", line));
+            }
+            tracing::info!(
+                "Sandbox {} /tmp/ contents: {}",
+                self.sandbox.id(),
+                tmp_contents.join(" | ")
+            );
+        }
 
-        // Create temp files for each potential download
-        let temp_files: Vec<_> = remote_paths
-            .iter()
-            .filter_map(|_| tempfile::NamedTempFile::new().ok())
-            .collect();
+        // Download from /tmp/junit.xml (standard location)
+        let remote_path = std::path::Path::new("/tmp/junit.xml");
+        let temp_file = tempfile::NamedTempFile::new().ok()?;
 
-        if temp_files.len() != remote_paths.len() {
+        let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
+        match self.sandbox.download(&path_pairs).await {
+            Ok(_) => tracing::info!(
+                "Download of /tmp/junit.xml succeeded for {}",
+                self.sandbox.id()
+            ),
+            Err(e) => tracing::warn!(
+                "Download of /tmp/junit.xml failed for {}: {}",
+                self.sandbox.id(),
+                e
+            ),
+        }
+
+        let content = std::fs::read_to_string(temp_file.path()).ok()?;
+        if content.is_empty() {
+            tracing::warn!("Downloaded junit.xml is empty for {}", self.sandbox.id());
             return None;
         }
 
-        // Build (remote, local) path pairs
-        let path_pairs: Vec<(&std::path::Path, &std::path::Path)> = remote_paths
-            .iter()
-            .zip(temp_files.iter())
-            .map(|(remote, temp)| {
-                (
-                    std::path::Path::new(*remote),
-                    temp.path() as &std::path::Path,
-                )
-            })
-            .collect();
-
-        // Download all paths in a single command
-        let _ = self.sandbox.download(&path_pairs).await;
-
-        // Check which files were successfully downloaded
-        for temp_file in &temp_files {
-            if let Ok(content) = std::fs::read_to_string(temp_file.path())
-                && !content.is_empty()
-            {
-                return Some(content);
-            }
-        }
-
-        None
+        tracing::info!(
+            "Downloaded junit.xml has {} bytes for {}",
+            content.len(),
+            self.sandbox.id()
+        );
+        Some(content)
     }
 }

@@ -31,6 +31,12 @@
 //!     .with_reporter(ConsoleReporter::new(true));
 //! ```
 
+pub mod junit;
+
+pub use junit::{
+    MasterJunitReport, SharedJunitReport, TestStatus, cleanup_parts, merge_junit_files,
+};
+
 use async_trait::async_trait;
 
 use crate::framework::{TestRecord, TestResult};
@@ -301,9 +307,14 @@ impl Reporter for ConsoleReporter {
             println!();
             println!(
                 "{}",
-                console::style("Tests could not be executed (sandbox creation failed).")
+                console::style("No test results were collected.")
                     .red()
                     .bold()
+            );
+            println!(
+                "{}",
+                console::style("Ensure tests generate JUnit XML at /tmp/junit.xml and download_command is configured.")
+                    .dim()
             );
         } else {
             println!();

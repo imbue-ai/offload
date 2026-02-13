@@ -188,7 +188,7 @@ impl TestFramework for PytestFramework {
 }
 
 /// Parse JUnit XML content to extract test results.
-fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
+pub fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
     // Basic JUnit XML parsing
     // In production, we'd use quick-xml for proper parsing
     let mut results = Vec::new();
@@ -211,7 +211,13 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         let classname = &cap[2];
         let time: f64 = cap[3].parse().unwrap_or(0.0);
 
-        let test_id = format!("{}::{}", classname.replace('.', "/"), name);
+        // If name already contains ::, it's a full test path (nextest format)
+        // Otherwise combine classname with name (pytest format)
+        let test_id = if name.contains("::") {
+            name.to_string()
+        } else {
+            format!("{}::{}", classname.replace('.', "/"), name)
+        };
 
         // Find the content between this testcase and the next (or </testcase>)
         // Group 0 always exists when a match succeeds
@@ -241,6 +247,7 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
             stderr: String::new(),
             error_message,
             stack_trace: None,
+            group: None,
         });
     }
 
@@ -277,6 +284,7 @@ fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestR
             stderr: String::new(),
             error_message: None,
             stack_trace: None,
+            group: None,
         });
     }
 

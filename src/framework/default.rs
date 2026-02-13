@@ -275,6 +275,7 @@ impl TestFramework for DefaultFramework {
                 stderr: output.stderr.clone(),
                 error_message: None,
                 stack_trace: None,
+                group: None,
             }])
         } else {
             Ok(vec![TestResult {
@@ -285,6 +286,7 @@ impl TestFramework for DefaultFramework {
                 stderr: output.stderr.clone(),
                 error_message: Some(format!("Exit code: {}", output.exit_code)),
                 stack_trace: None,
+                group: None,
             }])
         }
     }
@@ -337,6 +339,7 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
             stderr: String::new(),
             error_message,
             stack_trace: None,
+            group: None,
         });
     }
 

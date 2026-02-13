@@ -17,12 +17,18 @@ ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# Install cargo-nextest (pinned version for consistency with CI)
+RUN cargo install --locked cargo-nextest --version 0.9.85
+
 # Set working directory (must match where source is copied later via add_local_dir)
 WORKDIR /app
 
 # Pre-compile Rust dependencies for faster builds
 # Copy only dependency manifests first to leverage Docker layer caching
 COPY Cargo.toml Cargo.lock ./
+
+# Copy nextest config for JUnit output
+COPY .config/nextest.toml .config/nextest.toml
 
 # Create dummy source files to satisfy cargo
 RUN mkdir -p src && \

@@ -9,7 +9,7 @@ stream_output = true
 [provider]
 type = "modal"
 app_name = "offload-sandbox"
-dockerfile = ".devcontainer/Dockerfile"
+dockerfile = "examples/Dockerfile"
 timeout_secs = 600
 
 [groups.unit]

@@ -199,16 +199,19 @@ async fn run_tests(
         let count = tests.len();
         info!("Group '{}': discovered {} tests", group_name, count);
 
-        // Set retry count for each test (group-specific or global fallback)
+        // Set retry count and group name for each test
         let retry_count = group_config
             .retry_count
             .unwrap_or(config.offload.retry_count);
-        let tests_with_retry: Vec<TestRecord> = tests
+        let tests_with_config: Vec<TestRecord> = tests
             .into_iter()
-            .map(|t| t.with_retry_count(retry_count))
+            .map(|t| {
+                t.with_retry_count(retry_count)
+                    .with_group(group_name.clone())
+            })
             .collect();
 
-        all_tests.extend(tests_with_retry);
+        all_tests.extend(tests_with_config);
         boundaries.push(GroupBoundary {
             name: group_name.clone(),
             start,
@@ -379,27 +382,6 @@ async fn run_tests(
             .await?
         }
     };
-
-    // Phase 3: Report results per group
-    info!("Results by group:");
-    for boundary in &boundaries {
-        let group_tests = &all_tests[boundary.start..boundary.start + boundary.count];
-        let passed = group_tests.iter().filter(|t| t.passed()).count();
-        let failed = group_tests
-            .iter()
-            .filter(|t| {
-                t.final_result().is_some_and(|r| {
-                    r.outcome == offload::framework::TestOutcome::Failed
-                        || r.outcome == offload::framework::TestOutcome::Error
-                })
-            })
-            .count();
-        let flaky = group_tests.iter().filter(|t| t.is_flaky()).count();
-        info!(
-            "  {}: {} passed, {} failed, {} flaky",
-            boundary.name, passed, failed, flaky
-        );
-    }
 
     if exit_code != 0 {
         std::process::exit(exit_code);
