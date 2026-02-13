@@ -420,7 +420,16 @@ impl Connector for ShellConnector {
 
         let combined = futures::stream::select(stdout_stream, stderr_stream);
 
-        Ok(Box::pin(combined))
+        // After stdout/stderr close, wait for child and yield exit code
+        let exit_stream = futures::stream::once(async move {
+            let exit_code = match child.wait().await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -1,
+            };
+            OutputLine::ExitCode(exit_code)
+        });
+
+        Ok(Box::pin(combined.chain(exit_stream)))
     }
 }
 
@@ -453,5 +462,61 @@ mod tests {
         assert_eq!(records[0].name, "test_addition");
         assert_eq!(records[0].file, Some(PathBuf::from("tests/test_math.py")));
         assert_eq!(records[1].name, "test_method");
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_yields_exit_code_success() {
+        let connector = ShellConnector::new();
+        let mut stream = connector.run_stream("echo hello").await.unwrap();
+
+        let mut exit_code = None;
+        while let Some(line) = stream.next().await {
+            if let OutputLine::ExitCode(code) = line {
+                exit_code = Some(code);
+            }
+        }
+
+        assert_eq!(exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_yields_exit_code_failure() {
+        let connector = ShellConnector::new();
+        let mut stream = connector.run_stream("exit 42").await.unwrap();
+
+        let mut exit_code = None;
+        while let Some(line) = stream.next().await {
+            if let OutputLine::ExitCode(code) = line {
+                exit_code = Some(code);
+            }
+        }
+
+        assert_eq!(exit_code, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_exit_code_comes_last() {
+        let connector = ShellConnector::new();
+        let mut stream = connector
+            .run_stream("echo line1; echo line2")
+            .await
+            .unwrap();
+
+        let mut lines = Vec::new();
+        while let Some(line) = stream.next().await {
+            lines.push(line);
+        }
+
+        // Exit code should be the last item
+        assert!(lines.len() >= 3); // at least 2 stdout lines + exit code
+        assert!(matches!(lines.last(), Some(OutputLine::ExitCode(0))));
+
+        // All other items should be stdout/stderr
+        for line in &lines[..lines.len() - 1] {
+            assert!(matches!(
+                line,
+                OutputLine::Stdout(_) | OutputLine::Stderr(_)
+            ));
+        }
     }
 }
