@@ -45,10 +45,10 @@
 //!
 //! ### Reporting ([`report`])
 //!
-//! Reporters receive events during test execution:
+//! Utilities for test result reporting:
 //!
-//! - [`report::ConsoleReporter`] - Terminal output with progress bar
-//! - [`report::MultiReporter`] - Combine multiple reporters
+//! - [`report::print_summary`] - Print test results to console
+//! - [`report::MasterJunitReport`] - JUnit XML report generation
 //!
 //! ## Quick Start
 //!
@@ -58,7 +58,6 @@
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
-//! use offload::report::ConsoleReporter;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -71,14 +70,11 @@
 //!     // Create framework (finds pytest tests)
 //!     let framework = PytestFramework::new(Default::default());
 //!
-//!     // Create reporter
-//!     let reporter = ConsoleReporter::new(true);
-//!
 //!     // Discover tests using the framework
 //!     let tests = framework.discover(&[]).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
@@ -117,4 +113,4 @@ pub use config::{Config, load_config};
 pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
 pub use orchestrator::{Orchestrator, RunResult, SandboxPool};
 pub use provider::{Sandbox, SandboxProvider};
-pub use report::Reporter;
+pub use report::print_summary;

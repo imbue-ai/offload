@@ -34,9 +34,6 @@
 //!       │ parse_results() ◄─────── ExecResult
 //!       ▼
 //!  Vec<TestResult> ──► TestRecord.record_result()
-//!                                          │
-//!                                          ▼
-//!                                      Reporter
 //! ```
 //!
 //! # Execution Flow
@@ -46,7 +43,7 @@
 //! 3. **Scheduling**: Distribute test instances into batches across sandboxes
 //! 4. **Execution**: Run test batches in parallel sandboxes
 //! 5. **Aggregation**: Combine results (any pass = pass, detect flaky tests)
-//! 6. **Reporting**: Notify reporters with final results
+//! 6. **Reporting**: Print summary and generate JUnit XML
 //!
 //! # Key Components
 //!
@@ -63,7 +60,6 @@
 //! use offload::config::load_config;
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
-//! use offload::report::ConsoleReporter;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -71,13 +67,12 @@
 //!
 //!     let provider = LocalProvider::new(Default::default());
 //!     let framework = PytestFramework::new(Default::default());
-//!     let reporter = ConsoleReporter::new(true);
 //!
 //!     // Discover tests using the framework
 //!     let tests = framework.discover(&[]).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
@@ -101,12 +96,12 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::config::{Config, SandboxConfig};
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
 use crate::provider::{OutputLine, SandboxProvider};
-use crate::report::{MasterJunitReport, Reporter};
+use crate::report::{MasterJunitReport, print_summary};
 
 pub use pool::SandboxPool;
 pub use runner::{OutputCallback, TestRunner};
@@ -205,7 +200,6 @@ impl RunResult {
 /// The orchestrator is the top-level component that ties together:
 /// - A [`SandboxProvider`] for execution environments
 /// - A [`TestFramework`] for finding tests
-/// - A [`Reporter`] for output
 ///
 /// It manages the full lifecycle of a test run: discovery, scheduling,
 /// parallel execution, retries, and result aggregation.
@@ -214,7 +208,6 @@ impl RunResult {
 ///
 /// - `P`: The sandbox provider type
 /// - `D`: The test framework type
-/// - `R`: The reporter type
 ///
 /// # Example
 ///
@@ -224,7 +217,6 @@ impl RunResult {
 /// use offload::config::load_config;
 /// use offload::provider::local::LocalProvider;
 /// use offload::framework::{TestFramework, pytest::PytestFramework};
-/// use offload::report::ConsoleReporter;
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -233,32 +225,30 @@ impl RunResult {
 ///     // Set up components
 ///     let provider = LocalProvider::new(Default::default());
 ///     let framework = PytestFramework::new(Default::default());
-///     let reporter = ConsoleReporter::new(true);
 ///
 ///     // Discover tests using the framework
 ///     let tests = framework.discover(&[]).await?;
 ///
 ///     // Create orchestrator and run tests
-///     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
+///     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
 ///     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
 /// }
 /// ```
-pub struct Orchestrator<P, D, R> {
+pub struct Orchestrator<P, D> {
     config: Config,
     provider: P,
     framework: D,
-    reporter: R,
     copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    verbose: bool,
 }
 
-impl<P, D, R> Orchestrator<P, D, R>
+impl<P, D> Orchestrator<P, D>
 where
     P: SandboxProvider,
     D: TestFramework,
-    R: Reporter,
 {
     /// Creates a new orchestrator with the given components.
     ///
@@ -267,21 +257,21 @@ where
     /// * `config` - Configuration loaded from TOML
     /// * `provider` - Sandbox provider for creating execution environments
     /// * `framework` - Test framework for running tests
-    /// * `reporter` - Reporter for outputting results
     /// * `copy_dirs` - Directories to copy to sandboxes (local_path, remote_path)
+    /// * `verbose` - Whether to show verbose output (streaming test output)
     pub fn new(
         config: Config,
         provider: P,
         framework: D,
-        reporter: R,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        verbose: bool,
     ) -> Self {
         Self {
             config,
             provider,
             framework,
-            reporter,
             copy_dirs: copy_dirs.to_vec(),
+            verbose,
         }
     }
 
@@ -331,7 +321,19 @@ where
             });
         }
 
-        self.reporter.on_discovery_complete(tests).await;
+        // Set up progress bar
+        let total_instances: usize = tests
+            .iter()
+            .filter(|t| !t.skipped)
+            .map(|t| t.retry_count + 1)
+            .sum();
+        let progress = indicatif::ProgressBar::new(total_instances as u64);
+        if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        ) {
+            progress.set_style(style.progress_chars("#>-"));
+        }
+        progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
         // Filter out skipped tests and create Test handles
         // For tests with retry_count > 0, create multiple instances to run in parallel
@@ -350,7 +352,7 @@ where
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
-        info!(
+        debug!(
             "Scheduled {} tests into {} batches",
             tests_to_run.len(),
             batches.len()
@@ -370,8 +372,9 @@ where
             for (batch_idx, batch) in batches.into_iter().enumerate() {
                 let provider = &self.provider;
                 let framework = &self.framework;
-                let reporter = &self.reporter;
                 let config = &self.config;
+                let progress = &progress;
+                let verbose = self.verbose;
                 let junit_report = Arc::clone(&junit_report);
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
@@ -379,7 +382,7 @@ where
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
-                        info!("Batch {} skipped - all tests have passed", batch_idx);
+                        debug!("Batch {} skipped - all tests have passed", batch_idx);
                         return;
                     }
                     // Take sandbox from pool or create new one
@@ -416,8 +419,8 @@ where
                     .with_cancellation_token(cancellation_token.clone())
                     .with_junit_report(Arc::clone(&junit_report));
 
-                    // Enable output callback if streaming is configured
-                    if config.offload.stream_output {
+                    // Enable output callback only in verbose mode
+                    if config.offload.stream_output && self.verbose {
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
@@ -425,9 +428,11 @@ where
                         runner = runner.with_output_callback(callback);
                     }
 
-                    // Report all tests as starting
-                    for test in &batch {
-                        reporter.on_test_start(test.record()).await;
+                    // Log test starts in verbose mode
+                    if verbose {
+                        for test in &batch {
+                            println!("Running: {}", test.id());
+                        }
                     }
 
                     // Run all tests in batch with a single command
@@ -438,7 +443,7 @@ where
                                 && report.all_passed()
                                 && !all_passed.load(Ordering::SeqCst)
                             {
-                                info!(
+                                debug!(
                                     "All {} tests have passed, signaling early stop",
                                     total_tests_to_run
                                 );
@@ -448,19 +453,15 @@ where
                         }
                         Ok(false) => {
                             // Batch was cancelled - no results to record
-                            info!("Batch {} was cancelled", batch_idx);
+                            debug!("Batch {} was cancelled", batch_idx);
                         }
                         Err(e) => {
                             error!("Batch execution error: {}", e);
                         }
                     }
 
-                    // Report test completions for each instance
-                    for test in &batch {
-                        if let Some(result) = test.record().final_result() {
-                            reporter.on_test_complete(&result).await;
-                        }
-                    }
+                    // Update progress for completed batch
+                    progress.inc(batch.len() as u64);
 
                     // Return sandbox to pool for reuse (don't terminate)
                     let sandbox = runner.into_sandbox();
@@ -511,7 +512,8 @@ where
             results: Vec::new(), // Results are in JUnit XML now
         };
 
-        self.reporter.on_run_complete(&run_result).await;
+        progress.finish_and_clear();
+        print_summary(&run_result);
 
         Ok(run_result)
     }

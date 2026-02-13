@@ -16,7 +16,6 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
-use offload::report::ConsoleReporter;
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -87,9 +86,9 @@ async fn main() -> Result<()> {
 
     // Set up logging
     let log_level = if cli.verbose {
-        Level::DEBUG
-    } else {
         Level::INFO
+    } else {
+        Level::WARN
     };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(log_level)
@@ -183,7 +182,7 @@ async fn run_tests(
     }
 
     // Phase 1: Discover tests for all groups into a single Vec
-    info!("Discovering tests for all groups...");
+    eprint!("Discovering tests... ");
     let mut all_tests: Vec<TestRecord> = Vec::new();
     let mut boundaries: Vec<GroupBoundary> = Vec::new();
 
@@ -219,11 +218,7 @@ async fn run_tests(
         });
     }
 
-    info!(
-        "Total: {} tests across {} groups",
-        all_tests.len(),
-        boundaries.len()
-    );
+    eprintln!("found {} tests", all_tests.len());
 
     if collect_only {
         for boundary in &boundaries {
@@ -405,7 +400,6 @@ where
     D: TestFramework,
 {
     let sandbox_pool = Mutex::new(SandboxPool::new());
-    let reporter = ConsoleReporter::new(verbose);
 
     // Convert CopyDir to tuples
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
@@ -417,8 +411,8 @@ where
         config.clone(),
         provider,
         framework,
-        reporter,
         &copy_dir_tuples,
+        verbose,
     );
 
     let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;

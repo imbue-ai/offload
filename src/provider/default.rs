@@ -37,7 +37,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider};
 use crate::config::{DefaultProviderConfig, SandboxConfig};
@@ -98,20 +98,14 @@ impl DefaultProvider {
 
         // Run prepare command if configured
         let image_id = if let Some(prepare_cmd) = &config.prepare_command {
-            info!("Running prepare command...");
+            eprintln!("Preparing environment...");
 
             // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
             let mut full_prepare_cmd = prepare_cmd.clone();
             for copy_spec in &config.copy_dirs {
-                info!("  Adding --copy-dir={} (from config)", copy_spec);
                 full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
             }
             for (local, remote) in copy_dirs {
-                info!(
-                    "  Adding --copy-dir={}:{} (from CLI)",
-                    local.display(),
-                    remote.display()
-                );
                 full_prepare_cmd.push_str(&format!(
                     " --copy-dir={}:{}",
                     local.display(),
@@ -119,25 +113,27 @@ impl DefaultProvider {
                 ));
             }
 
-            let result = connector.run(&full_prepare_cmd).await?;
+            // Stream output in real-time
+            use crate::provider::OutputLine;
+            use futures::StreamExt;
 
-            // Note: stderr is now streamed in real-time by the connector
+            let mut stream = connector.run_stream(&full_prepare_cmd).await?;
+            let mut last_stdout_line = String::new();
 
-            if result.exit_code != 0 {
-                return Err(ProviderError::ExecFailed(format!(
-                    "Prepare command failed: {}",
-                    result.stderr
-                )));
+            while let Some(line) = stream.next().await {
+                match line {
+                    OutputLine::Stdout(s) => {
+                        eprintln!("  {}", s);
+                        last_stdout_line = s;
+                    }
+                    OutputLine::Stderr(s) => {
+                        eprintln!("  {}", s);
+                    }
+                }
             }
 
             // Image id is the last line of stdout
-            let image_id = result
-                .stdout
-                .lines()
-                .last()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let image_id = last_stdout_line.trim().to_string();
 
             if image_id.is_empty() {
                 return Err(ProviderError::ExecFailed(
@@ -145,7 +141,6 @@ impl DefaultProvider {
                 ));
             }
 
-            info!("Prepare command returned image_id: {}", image_id);
             Some(image_id)
         } else {
             None
@@ -164,7 +159,7 @@ impl SandboxProvider for DefaultProvider {
     type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
-        info!("Creating default sandbox: {}", config.id);
+        debug!("Creating default sandbox: {}", config.id);
 
         // Build the create command, substituting {image_id} if available
         // Note: copy_dirs are already baked into the image during prepare
@@ -173,7 +168,7 @@ impl SandboxProvider for DefaultProvider {
             None => self.config.create_command.clone(),
         };
 
-        info!("{}", create_command);
+        debug!("{}", create_command);
 
         // Run the create command to get a sandbox_id
         // Note: stderr is streamed in real-time by the connector
@@ -193,7 +188,7 @@ impl SandboxProvider for DefaultProvider {
             ));
         }
 
-        info!("Created default sandbox with ID: {}", remote_id);
+        debug!("Created default sandbox with ID: {}", remote_id);
 
         Ok(DefaultSandbox {
             id: config.id.clone(),
@@ -343,7 +338,7 @@ impl Sandbox for DefaultSandbox {
             }
 
             for (remote, local) in &path_pairs {
-                info!("Downloaded {} -> {}", remote, local);
+                debug!("Downloaded {} -> {}", remote, local);
             }
             Ok(())
         } else {
@@ -353,7 +348,7 @@ impl Sandbox for DefaultSandbox {
 
     async fn terminate(&self) -> ProviderResult<()> {
         let shell_cmd = self.build_destroy_command();
-        info!(
+        debug!(
             "Terminating sandbox {} (remote: {})",
             self.id, self.remote_id
         );
