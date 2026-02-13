@@ -342,18 +342,38 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Try to download JUnit results from the sandbox.
     async fn try_download_results(&mut self) -> Option<String> {
+        // Debug: List /tmp contents before download
+        let list_cmd = crate::provider::Command::new("ls").arg("-la").arg("/tmp/");
+        if let Ok(mut stream) = self.sandbox.exec_stream(&list_cmd).await {
+            use futures::StreamExt;
+            let mut tmp_contents = Vec::new();
+            while let Some(line) = stream.next().await {
+                tmp_contents.push(format!("{:?}", line));
+            }
+            tracing::info!(
+                "Sandbox {} /tmp/ contents: {}",
+                self.sandbox.id(),
+                tmp_contents.join(" | ")
+            );
+        }
+
         // Download from /tmp/junit.xml (standard location)
         let remote_path = std::path::Path::new("/tmp/junit.xml");
         let temp_file = tempfile::NamedTempFile::new().ok()?;
 
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
-        let _ = self.sandbox.download(&path_pairs).await;
+        match self.sandbox.download(&path_pairs).await {
+            Ok(_) => tracing::info!("Download of /tmp/junit.xml succeeded for {}", self.sandbox.id()),
+            Err(e) => tracing::warn!("Download of /tmp/junit.xml failed for {}: {}", self.sandbox.id(), e),
+        }
 
         let content = std::fs::read_to_string(temp_file.path()).ok()?;
         if content.is_empty() {
+            tracing::warn!("Downloaded junit.xml is empty for {}", self.sandbox.id());
             return None;
         }
 
+        tracing::info!("Downloaded junit.xml has {} bytes for {}", content.len(), self.sandbox.id());
         Some(content)
     }
 }
