@@ -17,8 +17,8 @@ ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install cargo-nextest
-RUN cargo install --locked cargo-nextest
+# Install cargo-nextest (pinned version for consistency with CI)
+RUN cargo install --locked cargo-nextest --version 0.9.85
 
 # Set working directory (must match where source is copied later via add_local_dir)
 WORKDIR /app
