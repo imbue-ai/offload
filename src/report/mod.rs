@@ -9,7 +9,7 @@
 //!
 //! 1. [`on_discovery_complete`](Reporter::on_discovery_complete) - After tests are found
 //! 2. [`on_test_start`](Reporter::on_test_start) - Before each test runs
-//! 3. [`on_test_complete`](Reporter::on_test_complete) - After each test finishes
+//! 3. [`inc_progress`](Reporter::inc_progress) - When tests complete
 //! 4. [`on_run_complete`](Reporter::on_run_complete) - After all tests finish
 //!
 //! # Built-in Reporters
@@ -39,7 +39,7 @@ pub use junit::{
 
 use async_trait::async_trait;
 
-use crate::framework::{TestRecord, TestResult};
+use crate::framework::TestRecord;
 use crate::orchestrator::RunResult;
 
 /// Trait for receiving test execution events.
@@ -56,7 +56,7 @@ use crate::orchestrator::RunResult;
 ///
 /// Events are delivered in this order:
 /// 1. `on_discovery_complete` (once)
-/// 2. `on_test_start` / `on_test_complete` (per test, possibly concurrent)
+/// 2. `on_test_start` / `inc_progress` (per batch, possibly concurrent)
 /// 3. `on_run_complete` (once)
 #[async_trait]
 pub trait Reporter: Send + Sync {
@@ -71,10 +71,8 @@ pub trait Reporter: Send + Sync {
     /// May be called concurrently for parallel tests.
     async fn on_test_start(&self, test: &TestRecord);
 
-    /// Called when a test completes with its result.
-    ///
-    /// May be called concurrently for parallel tests.
-    async fn on_test_complete(&self, result: &TestResult);
+    /// Increment the progress bar.
+    async fn inc_progress(&self, count: usize);
 
     /// Called when all tests have completed.
     ///
@@ -100,7 +98,7 @@ pub struct NullReporter;
 impl Reporter for NullReporter {
     async fn on_discovery_complete(&self, _tests: &[TestRecord]) {}
     async fn on_test_start(&self, _test: &TestRecord) {}
-    async fn on_test_complete(&self, _result: &TestResult) {}
+    async fn inc_progress(&self, _count: usize) {}
     async fn on_run_complete(&self, _result: &RunResult) {}
 }
 
@@ -169,9 +167,9 @@ impl Reporter for MultiReporter {
         }
     }
 
-    async fn on_test_complete(&self, result: &TestResult) {
+    async fn inc_progress(&self, count: usize) {
         for reporter in &self.reporters {
-            reporter.on_test_complete(result).await;
+            reporter.inc_progress(count).await;
         }
     }
 
@@ -227,17 +225,12 @@ impl ConsoleReporter {
 #[async_trait]
 impl Reporter for ConsoleReporter {
     async fn on_discovery_complete(&self, tests: &[TestRecord]) {
-        // Calculate total test instances (including retries)
+        // Count total instances (including retries)
         let total_instances: usize = tests
             .iter()
             .filter(|t| !t.skipped)
             .map(|t| t.retry_count + 1)
             .sum();
-        println!(
-            "Discovered {} tests ({} instances)",
-            tests.len(),
-            total_instances
-        );
 
         let pb = indicatif::ProgressBar::new(total_instances as u64);
         if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
@@ -245,6 +238,7 @@ impl Reporter for ConsoleReporter {
         ) {
             pb.set_style(style.progress_chars("#>-"));
         }
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         if let Ok(mut guard) = self.progress.lock() {
             *guard = Some(pb);
@@ -257,22 +251,11 @@ impl Reporter for ConsoleReporter {
         }
     }
 
-    async fn on_test_complete(&self, result: &TestResult) {
+    async fn inc_progress(&self, count: usize) {
         if let Ok(guard) = self.progress.lock()
             && let Some(pb) = guard.as_ref()
         {
-            pb.inc(1);
-
-            let status = match result.outcome {
-                crate::framework::TestOutcome::Passed => console::style("PASS").green(),
-                crate::framework::TestOutcome::Failed => console::style("FAIL").red(),
-                crate::framework::TestOutcome::Skipped => console::style("SKIP").yellow(),
-                crate::framework::TestOutcome::Error => console::style("ERR ").red().bold(),
-            };
-
-            if self.verbose || result.outcome != crate::framework::TestOutcome::Passed {
-                pb.println(format!("{} {}", status, result.test_id));
-            }
+            pb.inc(count as u64);
         }
     }
 

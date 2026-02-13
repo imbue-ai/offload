@@ -61,7 +61,7 @@ impl ModalProvider {
             })?,
         };
 
-        info!("Loading Modal image cache from: {}", cache_dir.display());
+        debug!("Loading Modal image cache from: {}", cache_dir.display());
         let cache = ImageCache::load(&cache_dir);
 
         let connector = ShellConnector::new().with_timeout(config.timeout_secs);
@@ -107,7 +107,7 @@ impl ModalProvider {
             ProviderError::CreateFailed(format!("Failed to compute Dockerfile hash: {}", e))
         })?;
 
-        info!(
+        debug!(
             "Dockerfile hash for {}: {}",
             dockerfile_path.display(),
             current_hash
@@ -185,7 +185,7 @@ impl ModalProvider {
         if copy_dirs.is_empty() {
             let cache = self.cache.lock().await;
             if let Some(entry) = self.check_cache_entry(&cache, &cache_key)? {
-                info!(
+                debug!(
                     "Using cached Modal image for {}: {}",
                     cache_key, entry.image_id
                 );
@@ -205,7 +205,7 @@ impl ModalProvider {
         // Only one thread will actually build; others wait
         let image_id = build_cell
             .get_or_try_init(|| async {
-                info!("Cache miss for {}, building image...", cache_key);
+                debug!("Cache miss for {}, building image...", cache_key);
                 let image_id = self
                     .call_python_build(&self.config.dockerfile, copy_dirs)
                     .await?;
@@ -277,7 +277,7 @@ impl ModalProvider {
             ));
         }
 
-        info!("Built Modal image: {}", image_id);
+        debug!("Built Modal image: {}", image_id);
         Ok(image_id)
     }
 
@@ -304,7 +304,7 @@ impl ModalProvider {
         // Forward stderr (contains creation progress)
         if !result.stderr.is_empty() {
             for line in result.stderr.lines() {
-                info!("{}", line);
+                debug!("{}", line);
             }
         }
 
@@ -329,7 +329,7 @@ impl ModalProvider {
             ));
         }
 
-        info!("Created Modal sandbox: {}", sandbox_id);
+        debug!("Created Modal sandbox: {}", sandbox_id);
         Ok(sandbox_id)
     }
 }
@@ -339,7 +339,7 @@ impl SandboxProvider for ModalProvider {
     type Sandbox = ModalSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<ModalSandbox> {
-        info!("Creating Modal sandbox: {}", config.id);
+        debug!("Creating Modal sandbox: {}", config.id);
 
         let image_id = self.get_or_build_image(&config.copy_dirs).await?;
 
@@ -460,7 +460,7 @@ impl Sandbox for ModalSandbox {
         // Forward stderr (contains download progress)
         if !result.stderr.is_empty() {
             for line in result.stderr.lines() {
-                info!("{}", line);
+                debug!("{}", line);
             }
         }
 
@@ -472,14 +472,14 @@ impl Sandbox for ModalSandbox {
         }
 
         for (remote, local) in &path_pairs {
-            info!("Downloaded {} -> {}", remote, local);
+            debug!("Downloaded {} -> {}", remote, local);
         }
         Ok(())
     }
 
     async fn terminate(&self) -> ProviderResult<()> {
         let shell_cmd = self.build_destroy_command();
-        info!(
+        debug!(
             "Terminating Modal sandbox {} (remote: {})",
             self.id, self.remote_id
         );

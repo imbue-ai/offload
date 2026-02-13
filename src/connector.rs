@@ -80,7 +80,7 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::debug;
 
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
@@ -308,7 +308,7 @@ impl Connector for ShellConnector {
             ProviderError::ExecFailed(format!("Offload error when expanding command: {}", e))
         })?;
 
-        info!("Running: {}", expanded_command);
+        debug!("Running: {}", expanded_command);
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", &expanded_command]);
@@ -342,7 +342,7 @@ impl Connector for ShellConnector {
             let mut output = Vec::new();
             while let Ok(Some(line)) = lines.next_line().await {
                 // Stream stdout in real-time
-                info!("{}", line);
+                debug!("{}", line);
                 output.push(line);
             }
             output.join("\n")
@@ -353,7 +353,7 @@ impl Connector for ShellConnector {
             let mut output = Vec::new();
             while let Ok(Some(line)) = lines.next_line().await {
                 // Stream stderr in real-time
-                info!("{}", line);
+                debug!("{}", line);
                 output.push(line);
             }
             output.join("\n")
@@ -385,7 +385,7 @@ impl Connector for ShellConnector {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
-        info!("Streaming: {}", expanded_command);
+        debug!("Streaming: {}", expanded_command);
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", &expanded_command]);

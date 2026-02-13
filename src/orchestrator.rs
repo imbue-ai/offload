@@ -77,7 +77,7 @@
 //!     let tests = framework.discover(&[]).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
+//!     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[], false);
 //!     let sandbox_pool = Mutex::new(SandboxPool::new());
 //!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 //!
@@ -101,7 +101,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::config::{Config, SandboxConfig};
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
@@ -239,7 +239,7 @@ impl RunResult {
 ///     let tests = framework.discover(&[]).await?;
 ///
 ///     // Create orchestrator and run tests
-///     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[]);
+///     let orchestrator = Orchestrator::new(config, provider, framework, reporter, &[], false);
 ///     let sandbox_pool = Mutex::new(SandboxPool::new());
 ///     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
 ///
@@ -252,6 +252,7 @@ pub struct Orchestrator<P, D, R> {
     framework: D,
     reporter: R,
     copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    verbose: bool,
 }
 
 impl<P, D, R> Orchestrator<P, D, R>
@@ -269,12 +270,14 @@ where
     /// * `framework` - Test framework for running tests
     /// * `reporter` - Reporter for outputting results
     /// * `copy_dirs` - Directories to copy to sandboxes (local_path, remote_path)
+    /// * `verbose` - Whether to show verbose output (streaming test output)
     pub fn new(
         config: Config,
         provider: P,
         framework: D,
         reporter: R,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        verbose: bool,
     ) -> Self {
         Self {
             config,
@@ -282,6 +285,7 @@ where
             framework,
             reporter,
             copy_dirs: copy_dirs.to_vec(),
+            verbose,
         }
     }
 
@@ -350,7 +354,7 @@ where
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
-        info!(
+        debug!(
             "Scheduled {} tests into {} batches",
             tests_to_run.len(),
             batches.len()
@@ -379,7 +383,7 @@ where
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
-                        info!("Batch {} skipped - all tests have passed", batch_idx);
+                        debug!("Batch {} skipped - all tests have passed", batch_idx);
                         return;
                     }
                     // Take sandbox from pool or create new one
@@ -416,8 +420,8 @@ where
                     .with_cancellation_token(cancellation_token.clone())
                     .with_junit_report(Arc::clone(&junit_report));
 
-                    // Enable output callback if streaming is configured
-                    if config.offload.stream_output {
+                    // Enable output callback only in verbose mode
+                    if config.offload.stream_output && self.verbose {
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
@@ -438,7 +442,7 @@ where
                                 && report.all_passed()
                                 && !all_passed.load(Ordering::SeqCst)
                             {
-                                info!(
+                                debug!(
                                     "All {} tests have passed, signaling early stop",
                                     total_tests_to_run
                                 );
@@ -448,19 +452,15 @@ where
                         }
                         Ok(false) => {
                             // Batch was cancelled - no results to record
-                            info!("Batch {} was cancelled", batch_idx);
+                            debug!("Batch {} was cancelled", batch_idx);
                         }
                         Err(e) => {
                             error!("Batch execution error: {}", e);
                         }
                     }
 
-                    // Report test completions for each instance
-                    for test in &batch {
-                        if let Some(result) = test.record().final_result() {
-                            reporter.on_test_complete(&result).await;
-                        }
-                    }
+                    // Update progress for completed batch
+                    reporter.inc_progress(batch.len()).await;
 
                     // Return sandbox to pool for reuse (don't terminate)
                     let sandbox = runner.into_sandbox();

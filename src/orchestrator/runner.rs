@@ -45,7 +45,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use crate::framework::{TestFramework, TestInstance};
 use crate::provider::{OutputLine, Sandbox};
@@ -207,7 +207,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             loop {
                 select! {
                     _ = token.cancelled() => {
-                        warn!("Test execution cancelled (all tests passed)");
+                        debug!("Test execution cancelled (all tests passed)");
                         return Ok(None);
                     }
                     line = stream.next() => {
@@ -306,7 +306,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<bool> {
         let start = std::time::Instant::now();
 
-        info!("Running {} tests", tests.len());
+        debug!("Running {} tests", tests.len());
 
         // Generate the run command for all tests
         let mut cmd = self.framework.produce_test_execution_command(tests);
@@ -317,7 +317,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             Some(result) => result,
             None => {
                 // Cancelled - return early without recording results
-                info!("Batch cancelled before completion");
+                debug!("Batch cancelled before completion");
                 return Ok(false);
             }
         };
@@ -350,7 +350,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             while let Some(line) = stream.next().await {
                 tmp_contents.push(format!("{:?}", line));
             }
-            tracing::info!(
+            tracing::debug!(
                 "Sandbox {} /tmp/ contents: {}",
                 self.sandbox.id(),
                 tmp_contents.join(" | ")
@@ -363,7 +363,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
         match self.sandbox.download(&path_pairs).await {
-            Ok(_) => tracing::info!(
+            Ok(_) => tracing::debug!(
                 "Download of /tmp/junit.xml succeeded for {}",
                 self.sandbox.id()
             ),
@@ -380,7 +380,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             return None;
         }
 
-        tracing::info!(
+        tracing::debug!(
             "Downloaded junit.xml has {} bytes for {}",
             content.len(),
             self.sandbox.id()
