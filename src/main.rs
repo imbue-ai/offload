@@ -16,7 +16,6 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
-use offload::report::ConsoleReporter;
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -401,7 +400,6 @@ where
     D: TestFramework,
 {
     let sandbox_pool = Mutex::new(SandboxPool::new());
-    let reporter = ConsoleReporter::new(verbose);
 
     // Convert CopyDir to tuples
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
@@ -413,7 +411,6 @@ where
         config.clone(),
         provider,
         framework,
-        reporter,
         &copy_dir_tuples,
         verbose,
     );
