@@ -127,7 +127,11 @@ impl CargoFramework {
 #[async_trait]
 impl TestFramework for CargoFramework {
     async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
-        let mut cmd_args = vec!["nextest".to_string(), "list".to_string()];
+        let mut cmd_args = vec![
+            "nextest".to_string(),
+            "list".to_string(),
+            "--color=never".to_string(),  // Prevent ANSI codes in test names
+        ];
 
         if let Some(package) = &self.config.package {
             cmd_args.push("-p".to_string());
@@ -173,6 +177,8 @@ impl TestFramework for CargoFramework {
                 stdout,
                 stderr
             );
+        } else {
+            tracing::info!("Discovered {} tests", tests.len());
         }
 
         Ok(tests)
