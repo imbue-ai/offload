@@ -1,9 +1,23 @@
 [package]
 name = "offload"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Flexible parallel test runner with pluggable cloud providers"
-license = "MIT"
+license-file = "LICENSE"
+authors = ["Imbue AI"]
+repository = "https://github.com/imbue-ai/offload"
+homepage = "https://github.com/imbue-ai/offload"
+readme = "README.md"
+keywords = ["testing", "parallel", "runner", "sandbox", "ci"]
+categories = ["development-tools::testing"]
+
+include = [
+  "src/**/*.rs",
+  "scripts/*.py",
+  "LICENSE",
+  "README.md",
+  "Cargo.toml",
+]
 
 [[bin]]
 name = "offload"
