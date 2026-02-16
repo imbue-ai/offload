@@ -115,4 +115,4 @@ cargo run -- -c offload-modal.toml run
 
 ## License
 
-MIT
+All Rights Reserved. See [LICENSE](LICENSE) for details.
