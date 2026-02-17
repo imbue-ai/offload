@@ -225,6 +225,12 @@ pub struct ModalProviderConfig {
     /// Default: 3600 (1 hour)
     #[serde(default = "default_remote_timeout")]
     pub timeout_secs: u64,
+
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 /// Configuration for custom remote execution provider.
@@ -375,6 +381,12 @@ pub struct DefaultProviderConfig {
     /// ```
     #[serde(default)]
     pub copy_dirs: Vec<String>,
+
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 fn default_remote_timeout() -> u64 {
