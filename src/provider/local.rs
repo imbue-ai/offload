@@ -137,6 +137,14 @@ impl SandboxProvider for LocalProvider {
             shell: self.config.shell.clone(),
         })
     }
+
+    fn base_env(&self) -> Vec<(String, String)> {
+        self.config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
 }
 
 /// A sandbox that runs commands as local child processes.

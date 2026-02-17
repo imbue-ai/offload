@@ -411,7 +411,7 @@ where
             .working_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        env: Vec::new(),
+        env: provider.base_env(),
         copy_dirs: copy_dir_tuples.clone(),
     };
 

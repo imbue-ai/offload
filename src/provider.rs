@@ -574,4 +574,18 @@ pub trait SandboxProvider: Send + Sync {
     /// - `ProviderError::SandboxExhausted` - Resource limit reached
     /// - `ProviderError::Connection` - Failed to connect to backend
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<Self::Sandbox>;
+
+    /// Returns base environment variables from the provider configuration.
+    ///
+    /// These environment variables are applied to all sandboxes created by
+    /// this provider. They are typically set in the provider's config file
+    /// and merged with sandbox-specific environment variables.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an empty vector. Providers with environment configuration
+    /// should override this method.
+    fn base_env(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }

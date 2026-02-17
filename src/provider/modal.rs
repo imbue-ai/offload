@@ -351,6 +351,14 @@ impl SandboxProvider for ModalProvider {
             connector: self.connector.clone(),
         })
     }
+
+    fn base_env(&self) -> Vec<(String, String)> {
+        self.config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
 }
 
 /// A Modal cloud sandbox instance.

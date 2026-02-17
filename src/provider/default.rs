@@ -210,6 +210,14 @@ impl SandboxProvider for DefaultProvider {
             download_command: self.config.download_command.clone(),
         })
     }
+
+    fn base_env(&self) -> Vec<(String, String)> {
+        self.config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
 }
 
 /// A sandbox managed through shell command templates.
