@@ -180,11 +180,11 @@ def write_cached_image_id(image_id: str) -> None:
 
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
-@click.option("--cached", is_flag=True, help="Use cached image_id if available")
+@click.option("--cached", is_flag=True, help="Use cached BASE image if available")
 @click.option(
     "--include-cwd",
     is_flag=True,
-    help="Include current directory in the image build context",
+    help="Include current directory in the image (added after cache lookup)",
 )
 @click.option(
     "--copy-dir",
@@ -198,16 +198,12 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
     that Dockerfile. If omitted, builds the default pytest image.
 
+    The --cached flag caches only the BASE image (Dockerfile build). The --include-cwd
+    and --copy-dir options are applied AFTER cache lookup, ensuring fresh source code
+    is always used even when the base image is cached.
+
     Prints the image_id to stdout for use with 'create'.
     """
-    # Check cache first if --cached flag is set
-    if cached:
-        cached_id = read_cached_image_id()
-        if cached_id:
-            logger.info("Using cached image_id: %s", cached_id)
-            sys.stdout.write("%s\n" % cached_id)
-            return
-
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
@@ -215,34 +211,38 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
             "Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE
         )
 
-    # NOTE(Danver): App name here should be injectable from the Config.
-    if dockerfile_path is None:
-        # Build default image with cwd baked in
-        with modal.enable_output():
-            logger.info("Building default image with cwd baked in...")
-            app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-            image = (
-                modal.Image.debian_slim(python_version="3.11")
-                .pip_install("pytest")
-                .add_local_dir(".", "/app", copy=True, ignore=ignore_patterns)
-            )
-            # Add user-specified directories
-            for copy_spec in copy_dirs:
-                if ":" not in copy_spec:
-                    logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
-                    continue
-                local_path, remote_path = copy_spec.split(":", 1)
-                if not os.path.isdir(local_path):
-                    logger.warning("Local directory '%s' not found, skipping", local_path)
-                    continue
-                logger.info("Adding %s -> %s to image", local_path, remote_path)
-                image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
+    base_image = None
+    base_image_id = None
 
-            image.build(app)
-            # Create temp sandbox to materialize image_id, then terminate
-            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
-            temp_sandbox.terminate()
-            image_id = image.object_id
+    # Step 1: Get or build the BASE image (without cwd/copy-dirs)
+    if cached:
+        base_image_id = read_cached_image_id()
+        if base_image_id:
+            logger.info("Using cached base image_id: %s", base_image_id)
+
+    if dockerfile_path is None:
+        # Build default base image
+        with modal.enable_output():
+            app = modal.App.lookup("offload-sandbox", create_if_missing=True)
+
+            if base_image_id:
+                # Load cached base image
+                base_image = modal.Image.from_id(base_image_id)
+            else:
+                # Build fresh base image
+                logger.info("Building default base image...")
+                base_image = (
+                    modal.Image.debian_slim(python_version="3.11")
+                    .pip_install("pytest")
+                )
+                base_image.build(app)
+                # Materialize to get base image_id for caching
+                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox.terminate()
+                base_image_id = base_image.object_id
+                # Cache the base image
+                write_cached_image_id(base_image_id)
+                logger.info("Cached base image_id to %s", CACHE_FILE)
     else:
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
@@ -250,34 +250,53 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
 
         with modal.enable_output():
             app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
-            logger.info("Building image from %s with context_dir=.", dockerfile_path)
-            image = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
-            if include_cwd:
-                logger.info("Including current directory as /app")
-                image = image.add_local_dir(
-                    ".", "/app", copy=True, ignore=ignore_patterns
-                )
-            # Add user-specified directories
-            for copy_spec in copy_dirs:
-                if ":" not in copy_spec:
-                    logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
-                    continue
-                local_path, remote_path = copy_spec.split(":", 1)
-                if not os.path.isdir(local_path):
-                    logger.warning("Local directory '%s' not found, skipping", local_path)
-                    continue
-                logger.info("Adding %s -> %s to image", local_path, remote_path)
-                image = image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
 
-            image.build(app)
-            # Create temp sandbox to materialize image_id, then terminate
-            temp_sandbox = modal.Sandbox.create(app=app, image=image, timeout=10)
+            if base_image_id:
+                # Load cached base image
+                base_image = modal.Image.from_id(base_image_id)
+            else:
+                # Build fresh base image from Dockerfile
+                logger.info("Building base image from %s with context_dir=.", dockerfile_path)
+                base_image = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+                base_image.build(app)
+                # Materialize to get base image_id for caching
+                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox.terminate()
+                base_image_id = base_image.object_id
+                # Cache the base image
+                write_cached_image_id(base_image_id)
+                logger.info("Cached base image_id to %s", CACHE_FILE)
+
+    # Step 2: Add cwd and copy-dirs on top of the base image (always fresh)
+    final_image = base_image
+
+    with modal.enable_output():
+        if include_cwd:
+            logger.info("Adding current directory as /app...")
+            final_image = final_image.add_local_dir(
+                ".", "/app", copy=True, ignore=ignore_patterns
+            )
+
+        # Add user-specified directories
+        for copy_spec in copy_dirs:
+            if ":" not in copy_spec:
+                logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
+                continue
+            local_path, remote_path = copy_spec.split(":", 1)
+            if not os.path.isdir(local_path):
+                logger.warning("Local directory '%s' not found, skipping", local_path)
+                continue
+            logger.info("Adding %s -> %s to image", local_path, remote_path)
+            final_image = final_image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
+
+        # Build and materialize the final image if we added anything
+        if final_image is not base_image:
+            final_image.build(app)
+            temp_sandbox = modal.Sandbox.create(app=app, image=final_image, timeout=10)
             temp_sandbox.terminate()
-            image_id = image.object_id
-
-    # Write to cache file
-    write_cached_image_id(image_id)
-    logger.info("Cached image_id to %s", CACHE_FILE)
+            image_id = final_image.object_id
+        else:
+            image_id = base_image_id
 
     sys.stdout.write("%s\n" % image_id)
 
@@ -431,9 +450,6 @@ def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
         timeout=3600,
     )
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
-
-    # Copy files based on sandbox type
-    cwd = os.getcwd()
 
     # Copy user-specified directories
     logger.debug(
