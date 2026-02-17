@@ -228,6 +228,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                                         stderr.push_str(s);
                                         stderr.push('\n');
                                     }
+                                    OutputLine::ExitCode(_) => {}
                                 }
                             }
                             None => break, // Stream ended
@@ -253,6 +254,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         stderr.push_str(s);
                         stderr.push('\n');
                     }
+                    OutputLine::ExitCode(_) => {}
                 }
             }
         }

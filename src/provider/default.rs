@@ -119,6 +119,7 @@ impl DefaultProvider {
 
             let mut stream = connector.run_stream(&full_prepare_cmd).await?;
             let mut last_stdout_line = String::new();
+            let mut exit_code = 0;
 
             while let Some(line) = stream.next().await {
                 match line {
@@ -129,7 +130,17 @@ impl DefaultProvider {
                     OutputLine::Stderr(s) => {
                         eprintln!("  {}", s);
                     }
+                    OutputLine::ExitCode(code) => {
+                        exit_code = code;
+                    }
                 }
+            }
+
+            if exit_code != 0 {
+                return Err(ProviderError::ExecFailed(format!(
+                    "Prepare command failed with exit code {}",
+                    exit_code
+                )));
             }
 
             // Image id is the last line of stdout

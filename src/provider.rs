@@ -397,13 +397,16 @@ impl ExecResult {
 /// A single line of output from a streaming command.
 ///
 /// Used with [`Sandbox::exec_stream`] to process output in real-time.
-/// Each line is tagged with its source (stdout or stderr).
+/// Each line is tagged with its source (stdout or stderr), or indicates
+/// the final exit code of the command.
 #[derive(Debug, Clone)]
 pub enum OutputLine {
     /// A line from standard output.
     Stdout(String),
     /// A line from standard error.
     Stderr(String),
+    /// The exit code of the command (yielded last, after all output).
+    ExitCode(i32),
 }
 
 /// A stream of output lines from a command.

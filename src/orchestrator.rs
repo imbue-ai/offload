@@ -424,6 +424,7 @@ where
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+                            OutputLine::ExitCode(_) => {}
                         });
                         runner = runner.with_output_callback(callback);
                     }
