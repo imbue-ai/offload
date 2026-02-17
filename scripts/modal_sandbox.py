@@ -422,7 +422,13 @@ def run(command: str):
     multiple=True,
     help="Copy local dir to sandbox (format: local_path:remote_path)",
 )
-def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
+@click.option(
+    "--env",
+    "env_vars",
+    multiple=True,
+    help="Environment variable (format: KEY=VALUE)",
+)
+def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = (), env_vars: tuple[str, ...] = ()):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
@@ -433,6 +439,17 @@ def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
     logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
     logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
     logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
+    logger.debug("[%.2fs]   env_vars: %s", time.time() - t0, env_vars)
+
+    # Parse environment variables
+    env_dict = {}
+    for env_spec in env_vars:
+        if "=" not in env_spec:
+            logger.warning("Invalid env format '%s', expected 'KEY=VALUE'", env_spec)
+            continue
+        key, value = env_spec.split("=", 1)
+        env_dict[key] = value
+    logger.debug("[%.2fs] Parsed %d environment variable(s)", time.time() - t0, len(env_dict))
 
     app_name = "offload-sandbox"
     app = modal.App.lookup(app_name, create_if_missing=True)
@@ -442,12 +459,18 @@ def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
     image = modal.Image.from_id(image_id)
     logger.debug("[%.2fs] Image loaded", time.time() - t0)
 
+    # Create secrets from env dict if any
+    secrets = []
+    if env_dict:
+        secrets = [modal.Secret.from_dict(env_dict)]
+
     logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
+        secrets=secrets,
     )
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
 
