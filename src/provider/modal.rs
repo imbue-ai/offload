@@ -286,6 +286,7 @@ impl ModalProvider {
     /// # Arguments
     ///
     /// * `image_id` - The Modal image ID to use
+    /// * `env` - Environment variables to set in the sandbox
     ///
     /// # Returns
     ///
@@ -294,8 +295,21 @@ impl ModalProvider {
     /// # Errors
     ///
     /// Returns errors if the Python script fails or returns invalid output
-    async fn call_python_create(&self, image_id: &str) -> ProviderResult<String> {
-        let command = format!("uv run @modal_sandbox.py create {}", image_id);
+    async fn call_python_create(
+        &self,
+        image_id: &str,
+        env: &[(String, String)],
+    ) -> ProviderResult<String> {
+        let mut command = format!("uv run @modal_sandbox.py create {}", image_id);
+
+        // Add env arguments
+        for (key, value) in env {
+            command.push_str(&format!(
+                " --env={}={}",
+                shell_words::quote(key),
+                shell_words::quote(value)
+            ));
+        }
 
         debug!("Creating Modal sandbox: {}", command);
 
@@ -343,7 +357,7 @@ impl SandboxProvider for ModalProvider {
 
         let image_id = self.get_or_build_image(&config.copy_dirs).await?;
 
-        let remote_id = self.call_python_create(&image_id).await?;
+        let remote_id = self.call_python_create(&image_id, &config.env).await?;
 
         Ok(ModalSandbox {
             id: config.id.clone(),
