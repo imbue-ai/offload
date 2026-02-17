@@ -228,24 +228,18 @@ mod tests {
     #[test]
     fn test_expand_env_value_empty_var_name() {
         let result = expand_env_value("${}");
-        match result {
-            Err(err) => assert!(
-                err.contains("Empty variable name"),
-                "expected error about empty variable name, got: {err}"
-            ),
-            Ok(val) => panic!("expected error, got: {val}"),
-        }
+        assert!(
+            matches!(&result, Err(e) if e.contains("Empty variable name")),
+            "expected error about empty variable name, got: {result:?}"
+        );
     }
 
     #[test]
     fn test_expand_env_value_unclosed_brace() {
         let result = expand_env_value("${VAR");
-        match result {
-            Err(err) => assert!(
-                err.contains("Unclosed variable reference"),
-                "expected error about unclosed brace, got: {err}"
-            ),
-            Ok(val) => panic!("expected error, got: {val}"),
-        }
+        assert!(
+            matches!(&result, Err(e) if e.contains("Unclosed variable reference")),
+            "expected error about unclosed brace, got: {result:?}"
+        );
     }
 }
