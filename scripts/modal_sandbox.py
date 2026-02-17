@@ -236,13 +236,14 @@ def prepare(
             else:
                 # Build fresh base image
                 logger.info("Building default base image...")
-                base_image = (
-                    modal.Image.debian_slim(python_version="3.11")
-                    .pip_install("pytest")
+                base_image = modal.Image.debian_slim(python_version="3.11").pip_install(
+                    "pytest"
                 )
                 base_image.build(app)
                 # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox = modal.Sandbox.create(
+                    app=app, image=base_image, timeout=10
+                )
                 temp_sandbox.terminate()
                 base_image_id = base_image.object_id
                 # Cache the base image
@@ -261,11 +262,17 @@ def prepare(
                 base_image = modal.Image.from_id(base_image_id)
             else:
                 # Build fresh base image from Dockerfile
-                logger.info("Building base image from %s with context_dir=.", dockerfile_path)
-                base_image = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+                logger.info(
+                    "Building base image from %s with context_dir=.", dockerfile_path
+                )
+                base_image = modal.Image.from_dockerfile(
+                    dockerfile_path, context_dir="."
+                )
                 base_image.build(app)
                 # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox = modal.Sandbox.create(
+                    app=app, image=base_image, timeout=10
+                )
                 temp_sandbox.terminate()
                 base_image_id = base_image.object_id
                 # Cache the base image
@@ -292,9 +299,7 @@ def prepare(
                 continue
             local_path, remote_path = copy_spec.split(":", 1)
             if not os.path.isdir(local_path):
-                logger.warning(
-                    "Local directory '%s' not found, skipping", local_path
-                )
+                logger.warning("Local directory '%s' not found, skipping", local_path)
                 continue
             logger.info("Adding %s -> %s to image", local_path, remote_path)
             final_image = final_image.add_local_dir(
@@ -453,7 +458,7 @@ def create_from_image(
     logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
     logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
     logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
-    logger.debug("[%.2fs]   env_vars: %s", time.time() - t0, env_vars.keys())
+    logger.debug("[%.2fs]   env_vars, %d total", time.time() - t0, len(env_vars))
 
     # Parse environment variables
     env_dict = {}
