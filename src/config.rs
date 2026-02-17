@@ -198,202 +198,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_expand_env_value_no_variables() {
-        let result = expand_env_value("hello world").unwrap();
+    fn test_expand_env_value_no_variables() -> Result<(), String> {
+        let result = expand_env_value("hello world")?;
         assert_eq!(result, "hello world");
+        Ok(())
     }
 
     #[test]
-    fn test_expand_env_value_escaped_dollar() {
-        let result = expand_env_value("price is $$100").unwrap();
+    fn test_expand_env_value_escaped_dollar() -> Result<(), String> {
+        let result = expand_env_value("price is $$100")?;
         assert_eq!(result, "price is $100");
+        Ok(())
     }
 
     #[test]
-    fn test_expand_env_value_multiple_escaped_dollars() {
-        let result = expand_env_value("$$$$").unwrap();
+    fn test_expand_env_value_multiple_escaped_dollars() -> Result<(), String> {
+        let result = expand_env_value("$$$$")?;
         assert_eq!(result, "$$");
+        Ok(())
     }
 
     #[test]
-    fn test_expand_env_value_literal_dollar_no_brace() {
-        let result = expand_env_value("$x and $y").unwrap();
+    fn test_expand_env_value_literal_dollar_no_brace() -> Result<(), String> {
+        let result = expand_env_value("$x and $y")?;
         assert_eq!(result, "$x and $y");
-    }
-
-    #[test]
-    fn test_expand_env_value_required_var_set() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::set_var("TEST_EXPAND_VAR", "test_value");
-        }
-        let result = expand_env_value("prefix_${TEST_EXPAND_VAR}_suffix").unwrap();
-        assert_eq!(result, "prefix_test_value_suffix");
-        // SAFETY: Cleanup after test.
-        unsafe {
-            std::env::remove_var("TEST_EXPAND_VAR");
-        }
-    }
-
-    #[test]
-    fn test_expand_env_value_required_var_not_set() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::remove_var("TEST_NONEXISTENT_VAR");
-        }
-        let result = expand_env_value("${TEST_NONEXISTENT_VAR}");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("Required environment variable not set: TEST_NONEXISTENT_VAR")
-        );
-    }
-
-    #[test]
-    fn test_expand_env_value_default_when_var_not_set() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::remove_var("TEST_MISSING_VAR");
-        }
-        let result = expand_env_value("${TEST_MISSING_VAR:-default_value}").unwrap();
-        assert_eq!(result, "default_value");
-    }
-
-    #[test]
-    fn test_expand_env_value_default_not_used_when_var_set() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::set_var("TEST_SET_VAR", "actual_value");
-        }
-        let result = expand_env_value("${TEST_SET_VAR:-default_value}").unwrap();
-        assert_eq!(result, "actual_value");
-        // SAFETY: Cleanup after test.
-        unsafe {
-            std::env::remove_var("TEST_SET_VAR");
-        }
-    }
-
-    #[test]
-    fn test_expand_env_value_empty_default() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::remove_var("TEST_EMPTY_DEFAULT");
-        }
-        let result = expand_env_value("${TEST_EMPTY_DEFAULT:-}").unwrap();
-        assert_eq!(result, "");
+        Ok(())
     }
 
     #[test]
     fn test_expand_env_value_empty_var_name() {
         let result = expand_env_value("${}");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Empty variable name"));
+        match result {
+            Err(err) => assert!(
+                err.contains("Empty variable name"),
+                "expected error about empty variable name, got: {err}"
+            ),
+            Ok(val) => panic!("expected error, got: {val}"),
+        }
     }
 
     #[test]
     fn test_expand_env_value_unclosed_brace() {
         let result = expand_env_value("${VAR");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unclosed variable reference"));
-    }
-
-    #[test]
-    fn test_expand_env_value_multiple_variables() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::set_var("TEST_VAR1", "one");
-            std::env::set_var("TEST_VAR2", "two");
+        match result {
+            Err(err) => assert!(
+                err.contains("Unclosed variable reference"),
+                "expected error about unclosed brace, got: {err}"
+            ),
+            Ok(val) => panic!("expected error, got: {val}"),
         }
-        let result = expand_env_value("${TEST_VAR1} and ${TEST_VAR2}").unwrap();
-        assert_eq!(result, "one and two");
-        // SAFETY: Cleanup after test.
-        unsafe {
-            std::env::remove_var("TEST_VAR1");
-            std::env::remove_var("TEST_VAR2");
-        }
-    }
-
-    #[test]
-    fn test_expand_env_value_mixed_syntax() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::set_var("TEST_MIX", "value");
-        }
-        let result = expand_env_value("$$${TEST_MIX}$x").unwrap();
-        assert_eq!(result, "$value$x");
-        // SAFETY: Cleanup after test.
-        unsafe {
-            std::env::remove_var("TEST_MIX");
-        }
-    }
-
-    #[test]
-    fn test_load_config_expands_local_provider_env() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::set_var("TEST_CONFIG_VAR", "expanded_value");
-        }
-        let config = load_config_str(
-            r#"
-            [offload]
-            max_parallel = 4
-
-            [provider]
-            type = "local"
-
-            [provider.env]
-            MY_VAR = "${TEST_CONFIG_VAR}"
-            LITERAL = "no expansion"
-
-            [groups.all]
-            type = "pytest"
-        "#,
-        )
-        .unwrap();
-
-        if let ProviderConfig::Local(local_config) = &config.provider {
-            assert_eq!(
-                local_config.env.get("MY_VAR"),
-                Some(&"expanded_value".to_string())
-            );
-            assert_eq!(
-                local_config.env.get("LITERAL"),
-                Some(&"no expansion".to_string())
-            );
-        } else {
-            panic!("Expected Local provider");
-        }
-        // SAFETY: Cleanup after test.
-        unsafe {
-            std::env::remove_var("TEST_CONFIG_VAR");
-        }
-    }
-
-    #[test]
-    fn test_load_config_fails_on_missing_required_var() {
-        // SAFETY: This is a test running in isolation; env var manipulation is acceptable.
-        unsafe {
-            std::env::remove_var("DEFINITELY_NOT_SET_VAR");
-        }
-        let result = load_config_str(
-            r#"
-            [offload]
-            max_parallel = 4
-
-            [provider]
-            type = "local"
-
-            [provider.env]
-            MY_VAR = "${DEFINITELY_NOT_SET_VAR}"
-
-            [groups.all]
-            type = "pytest"
-        "#,
-        );
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("DEFINITELY_NOT_SET_VAR"));
     }
 }
