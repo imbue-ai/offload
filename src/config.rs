@@ -242,4 +242,66 @@ mod tests {
             "expected error about unclosed brace, got: {result:?}"
         );
     }
+
+    // Tests using predictable environment variables (HOME exists, _OFFLOAD_TEST_* do not)
+
+    #[test]
+    fn test_expand_env_value_var_set() -> Result<(), String> {
+        // HOME is always set in any Unix environment
+        let result = expand_env_value("${HOME}")?;
+        assert!(!result.is_empty(), "HOME should expand to non-empty value");
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_env_value_var_unset() {
+        // This variable is guaranteed not to exist
+        let result = expand_env_value("${_OFFLOAD_TEST_NONEXISTENT_VAR}");
+        assert!(result.is_err(), "Unset var should return error");
+    }
+
+    #[test]
+    fn test_expand_env_value_default_not_used_when_set() -> Result<(), String> {
+        // HOME is set, so fallback should not be used
+        let result = expand_env_value("${HOME:-fallback}")?;
+        assert_ne!(result, "fallback", "Should return HOME value, not fallback");
+        assert!(!result.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_env_value_default_used_when_unset() -> Result<(), String> {
+        // This variable does not exist, so default should be used
+        let result = expand_env_value("${_OFFLOAD_TEST_MISSING:-fallback}")?;
+        assert_eq!(result, "fallback");
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_env_value_just_escaped_dollar() -> Result<(), String> {
+        let result = expand_env_value("$$")?;
+        assert_eq!(result, "$");
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_env_value_mixed() -> Result<(), String> {
+        // Test expansion with prefix and suffix around HOME
+        let result = expand_env_value("prefix_${HOME}_suffix")?;
+        assert!(result.starts_with("prefix_"), "Should start with prefix_");
+        assert!(result.ends_with("_suffix"), "Should end with _suffix");
+        assert!(
+            result.len() > "prefix__suffix".len(),
+            "Should contain HOME value"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_env_value_empty_default() -> Result<(), String> {
+        // Empty default: ${VAR:-} returns empty string if unset
+        let result = expand_env_value("${_OFFLOAD_TEST_MISSING:-}")?;
+        assert_eq!(result, "");
+        Ok(())
+    }
 }
