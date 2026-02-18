@@ -22,16 +22,22 @@ jobs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
 
-    - name: Install cargo-nextest
+    - name: Install cargo-nextest and cargo-deny
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-nextest
+        tool: cargo-nextest,cargo-deny
 
     - name: Check formatting
       run: cargo fmt --check
 
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build
+      run: cargo build --all-targets
+
+    - name: Check dependencies
+      run: cargo deny check
 
     - name: Run tests
       run: cargo nextest run
