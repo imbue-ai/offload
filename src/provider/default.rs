@@ -208,6 +208,7 @@ impl SandboxProvider for DefaultProvider {
             exec_command: self.config.exec_command.clone(),
             destroy_command: self.config.destroy_command.clone(),
             download_command: self.config.download_command.clone(),
+            env: self.base_env(),
         })
     }
 
@@ -255,17 +256,34 @@ pub struct DefaultSandbox {
     destroy_command: String,
     /// Optional command template for downloading files
     download_command: Option<String>,
+    /// Environment variables to pass to commands
+    env: Vec<(String, String)>,
 }
 
 impl DefaultSandbox {
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
+        // Build env var prefix (KEY=value KEY2=value2 ...)
+        let env_prefix = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, shell_words::quote(v)))
+            .collect::<Vec<_>>()
+            .join(" ");
+
         // Build the inner command with properly escaped arguments
-        let inner_cmd = std::iter::once(cmd.program.as_str())
+        let program_and_args = std::iter::once(cmd.program.as_str())
             .chain(cmd.args.iter().map(|s| s.as_str()))
             .map(|a| shell_words::quote(a).into_owned())
             .collect::<Vec<_>>()
             .join(" ");
+
+        // Combine env vars and command
+        let inner_cmd = if env_prefix.is_empty() {
+            program_and_args
+        } else {
+            format!("{} {}", env_prefix, program_and_args)
+        };
 
         // Escape the entire command so it can be passed as a single shell argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
