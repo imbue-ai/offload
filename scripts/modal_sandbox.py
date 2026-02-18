@@ -29,6 +29,14 @@ handler = logging.StreamHandler(sys.stderr)
 handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(handler)
 
+# Timing logger for profiling sandbox creation - writes to offload-timing.log
+timing_logger = logging.getLogger("offload_timing")
+timing_logger.setLevel(logging.DEBUG)
+timing_logger.propagate = False
+timing_handler = logging.FileHandler("offload-timing.log", mode="a")
+timing_handler.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", datefmt="%H:%M:%S"))
+timing_logger.addHandler(timing_handler)
+
 
 def get_offload_elapsed() -> float:
     """Get elapsed time since offload started (from env var), or 0 if not set."""
@@ -47,7 +55,9 @@ def profile_log(msg: str, *args) -> None:
     """Log a message with elapsed time since offload started."""
     elapsed = get_offload_elapsed()
     formatted = msg % args if args else msg
-    logger.info("[%8.3fs] %s", elapsed, formatted)
+    log_line = "[%8.3fs] %s" % (elapsed, formatted)
+    logger.info(log_line)
+    timing_logger.info(log_line)
 
 
 def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
