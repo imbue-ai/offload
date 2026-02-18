@@ -53,8 +53,7 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use tokio::sync::Mutex;
-//! use offload::config::load_config;
+//! use offload::config::{load_config, SandboxConfig};
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
@@ -73,10 +72,19 @@
 //!     // Discover tests using the framework
 //!     let tests = framework.discover(&[]).await?;
 //!
+//!     // Pre-populate sandbox pool
+//!     let sandbox_config = SandboxConfig {
+//!         id: "sandbox".to_string(),
+//!         working_dir: None,
+//!         env: vec![],
+//!         copy_dirs: vec![],
+//!     };
+//!     let mut sandbox_pool = SandboxPool::new();
+//!     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
+//!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
-//!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
+//!     let orchestrator = Orchestrator::new(config, framework, false);
+//!     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 //!
 //!     std::process::exit(result.exit_code());
 //! }
