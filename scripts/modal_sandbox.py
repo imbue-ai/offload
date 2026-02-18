@@ -192,7 +192,12 @@ def write_cached_image_id(image_id: str) -> None:
     multiple=True,
     help="Copy local dir into image (format: local_path:remote_path)",
 )
-def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_dirs: tuple[str, ...]):
+def prepare(
+    dockerfile_path: str | None,
+    cached: bool,
+    include_cwd: bool,
+    copy_dirs: tuple[str, ...],
+):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
@@ -231,13 +236,14 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
             else:
                 # Build fresh base image
                 logger.info("Building default base image...")
-                base_image = (
-                    modal.Image.debian_slim(python_version="3.11")
-                    .pip_install("pytest")
+                base_image = modal.Image.debian_slim(python_version="3.11").pip_install(
+                    "pytest"
                 )
                 base_image.build(app)
                 # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox = modal.Sandbox.create(
+                    app=app, image=base_image, timeout=10
+                )
                 temp_sandbox.terminate()
                 base_image_id = base_image.object_id
                 # Cache the base image
@@ -256,11 +262,17 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
                 base_image = modal.Image.from_id(base_image_id)
             else:
                 # Build fresh base image from Dockerfile
-                logger.info("Building base image from %s with context_dir=.", dockerfile_path)
-                base_image = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+                logger.info(
+                    "Building base image from %s with context_dir=.", dockerfile_path
+                )
+                base_image = modal.Image.from_dockerfile(
+                    dockerfile_path, context_dir="."
+                )
                 base_image.build(app)
                 # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(app=app, image=base_image, timeout=10)
+                temp_sandbox = modal.Sandbox.create(
+                    app=app, image=base_image, timeout=10
+                )
                 temp_sandbox.terminate()
                 base_image_id = base_image.object_id
                 # Cache the base image
@@ -280,14 +292,19 @@ def prepare(dockerfile_path: str | None, cached: bool, include_cwd: bool, copy_d
         # Add user-specified directories
         for copy_spec in copy_dirs:
             if ":" not in copy_spec:
-                logger.warning("Invalid copy-dir format '%s', expected 'local:remote'", copy_spec)
+                logger.warning(
+                    "Invalid copy-dir format '%s', expected 'local:remote'",
+                    copy_spec,
+                )
                 continue
             local_path, remote_path = copy_spec.split(":", 1)
             if not os.path.isdir(local_path):
                 logger.warning("Local directory '%s' not found, skipping", local_path)
                 continue
             logger.info("Adding %s -> %s to image", local_path, remote_path)
-            final_image = final_image.add_local_dir(local_path, remote_path, copy=True, ignore=ignore_patterns)
+            final_image = final_image.add_local_dir(
+                local_path, remote_path, copy=True, ignore=ignore_patterns
+            )
 
         # Build and materialize the final image if we added anything
         if final_image is not base_image:
@@ -422,7 +439,15 @@ def run(command: str):
     multiple=True,
     help="Copy local dir to sandbox (format: local_path:remote_path)",
 )
-def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
+@click.option(
+    "--env",
+    "env_vars",
+    multiple=True,
+    help="Environment variable (format: KEY=VALUE)",
+)
+def create_from_image(
+    image_id: str, copy_dirs: tuple[str, ...] = (), env_vars: tuple[str, ...] = ()
+):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
@@ -433,6 +458,16 @@ def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
     logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
     logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
     logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
+    logger.debug("[%.2fs]   env_vars, %d total", time.time() - t0, len(env_vars))
+
+    # Parse environment variables
+    env_dict = {}
+    for env_spec in env_vars:
+        if "=" not in env_spec:
+            logger.warning("Invalid env format '%s', expected 'KEY=VALUE'", env_spec)
+            continue
+        key, value = env_spec.split("=", 1)
+        env_dict[key] = value
 
     app_name = "offload-sandbox"
     app = modal.App.lookup(app_name, create_if_missing=True)
@@ -442,12 +477,18 @@ def create_from_image(image_id: str, copy_dirs: tuple[str, ...] = ()):
     image = modal.Image.from_id(image_id)
     logger.debug("[%.2fs] Image loaded", time.time() - t0)
 
+    # Create secrets from env dict if any
+    secrets = []
+    if env_dict:
+        secrets = [modal.Secret.from_dict(env_dict)]
+
     logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         workdir="/app",
         timeout=3600,
+        secrets=secrets,
     )
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
 

@@ -1,5 +1,6 @@
 //! offload CLI - Flexible parallel test runner.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -54,6 +55,10 @@ enum Commands {
         /// Directories to copy to sandbox (format: /local/path:/sandbox/path)
         #[arg(long, value_name = "LOCAL:REMOTE")]
         copy_dir: Vec<String>,
+
+        /// Environment variables to set in sandboxes (format: KEY=VALUE)
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
     },
 
     /// Discover tests without running them
@@ -99,7 +104,18 @@ async fn main() -> Result<()> {
             parallel,
             collect_only,
             copy_dir,
-        } => run_tests(&cli.config, parallel, collect_only, copy_dir, cli.verbose).await,
+            env_vars,
+        } => {
+            run_tests(
+                &cli.config,
+                parallel,
+                collect_only,
+                copy_dir,
+                env_vars,
+                cli.verbose,
+            )
+            .await
+        }
         Commands::Collect { format } => collect_tests(&cli.config, &format).await,
         Commands::Validate => validate_config(&cli.config),
         Commands::Init {
@@ -130,6 +146,7 @@ async fn run_tests(
     parallel_override: Option<usize>,
     collect_only: bool,
     copy_dir_args: Vec<String>,
+    env_vars: Vec<String>,
     verbose: bool,
 ) -> Result<()> {
     // Load configuration
@@ -158,6 +175,29 @@ async fn run_tests(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // Parse CLI env vars and merge into provider config (CLI overrides config)
+    let cli_env: HashMap<String, String> = env_vars
+        .iter()
+        .filter_map(|s| {
+            let mut parts = s.splitn(2, '=');
+            match (parts.next(), parts.next()) {
+                (Some(k), Some(v)) if !k.is_empty() => Some((k.to_string(), v.to_string())),
+                _ => {
+                    tracing::warn!("Ignoring invalid --env value: '{}' (expected KEY=VALUE)", s);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    if !cli_env.is_empty() {
+        match &mut config.provider {
+            ProviderConfig::Local(cfg) => cfg.env.extend(cli_env),
+            ProviderConfig::Modal(cfg) => cfg.env.extend(cli_env),
+            ProviderConfig::Default(cfg) => cfg.env.extend(cli_env),
+        }
+    }
 
     info!("Loaded configuration from {}", config_path.display());
 
@@ -411,7 +451,7 @@ where
             .working_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        env: Vec::new(),
+        env: provider.base_env(),
         copy_dirs: copy_dir_tuples.clone(),
     };
 

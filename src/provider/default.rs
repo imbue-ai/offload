@@ -208,7 +208,16 @@ impl SandboxProvider for DefaultProvider {
             exec_command: self.config.exec_command.clone(),
             destroy_command: self.config.destroy_command.clone(),
             download_command: self.config.download_command.clone(),
+            env: self.base_env(),
         })
+    }
+
+    fn base_env(&self) -> Vec<(String, String)> {
+        self.config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
@@ -247,17 +256,34 @@ pub struct DefaultSandbox {
     destroy_command: String,
     /// Optional command template for downloading files
     download_command: Option<String>,
+    /// Environment variables to pass to commands
+    env: Vec<(String, String)>,
 }
 
 impl DefaultSandbox {
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
+        // Build env var prefix (KEY=value KEY2=value2 ...)
+        let env_prefix = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, shell_words::quote(v)))
+            .collect::<Vec<_>>()
+            .join(" ");
+
         // Build the inner command with properly escaped arguments
-        let inner_cmd = std::iter::once(cmd.program.as_str())
+        let program_and_args = std::iter::once(cmd.program.as_str())
             .chain(cmd.args.iter().map(|s| s.as_str()))
             .map(|a| shell_words::quote(a).into_owned())
             .collect::<Vec<_>>()
             .join(" ");
+
+        // Combine env vars and command
+        let inner_cmd = if env_prefix.is_empty() {
+            program_and_args
+        } else {
+            format!("{} {}", env_prefix, program_and_args)
+        };
 
         // Escape the entire command so it can be passed as a single shell argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
@@ -371,5 +397,228 @@ impl Sandbox for DefaultSandbox {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a DefaultSandbox with given env vars for testing.
+    fn sandbox_with_env(env: Vec<(String, String)>) -> DefaultSandbox {
+        DefaultSandbox {
+            id: "test-sandbox".to_string(),
+            remote_id: "remote-123".to_string(),
+            connector: Arc::new(ShellConnector::new()),
+            exec_command: "exec --sandbox {sandbox_id} --cmd {command}".to_string(),
+            destroy_command: "destroy {sandbox_id}".to_string(),
+            download_command: None,
+            env,
+        }
+    }
+
+    /// Creates a Command with the given program and args.
+    fn cmd(program: &str, args: &[&str]) -> Command {
+        Command {
+            program: program.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            working_dir: None,
+            env: Vec::new(),
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn test_build_exec_command_no_env_vars() {
+        let sandbox = sandbox_with_env(vec![]);
+        let command = cmd("pytest", &["test_foo.py", "-v"]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // The sandbox_id placeholder should be replaced with the remote_id
+        assert!(
+            result.contains("remote-123"),
+            "sandbox_id should be substituted: {result}"
+        );
+        assert!(
+            !result.contains("{sandbox_id}"),
+            "sandbox_id placeholder should be replaced: {result}"
+        );
+        // Program and args should be present (properly escaped)
+        assert!(
+            result.contains("pytest"),
+            "command should contain program: {result}"
+        );
+        assert!(
+            result.contains("test_foo.py"),
+            "command should contain first arg: {result}"
+        );
+        assert!(
+            result.contains("-v"),
+            "command should contain second arg: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_single_env_var() {
+        let sandbox = sandbox_with_env(vec![("FOO".to_string(), "bar".to_string())]);
+        let command = cmd("echo", &["hello"]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Should have FOO=bar prefix before the command
+        assert!(
+            result.contains("FOO=bar"),
+            "result should contain env var: {result}"
+        );
+        assert!(result.contains("echo"), "result should contain program");
+    }
+
+    #[test]
+    fn test_build_exec_command_multiple_env_vars() {
+        let sandbox = sandbox_with_env(vec![
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ]);
+        let command = cmd("myprogram", &[]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Both env vars should be present
+        assert!(
+            result.contains("FOO=bar"),
+            "result should contain first env var: {result}"
+        );
+        assert!(
+            result.contains("BAZ=qux"),
+            "result should contain second env var: {result}"
+        );
+        // They should be space-separated in the prefix
+        assert!(
+            result.contains("FOO=bar BAZ=qux") || result.contains("BAZ=qux FOO=bar"),
+            "env vars should be space-separated: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_env_var_with_spaces() {
+        let sandbox = sandbox_with_env(vec![("MESSAGE".to_string(), "hello world".to_string())]);
+        let command = cmd("echo", &[]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Value with spaces should be quoted. The inner command is then escaped again,
+        // so 'hello world' becomes '\''hello world'\'' in the final output
+        // We verify that MESSAGE= is present and the command template is filled
+        assert!(
+            result.contains("MESSAGE="),
+            "env var name should be present: {result}"
+        );
+        // The value "hello world" should appear somewhere in the result (possibly escaped)
+        assert!(
+            result.contains("hello world"),
+            "env var value should be present (possibly escaped): {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_env_var_with_quotes() {
+        let sandbox = sandbox_with_env(vec![("QUOTED".to_string(), "it's \"quoted\"".to_string())]);
+        let command = cmd("echo", &[]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Value should be properly shell-quoted to handle quotes
+        // shell_words::quote will use single quotes and escape internal single quotes
+        assert!(
+            result.contains("QUOTED="),
+            "result should contain env var name: {result}"
+        );
+        // The value should be escaped - shell_words uses single quotes for strings with special chars
+        // and doubles single quotes inside, so "it's" becomes "'it'\\''s \"quoted\"'"
+        // We just verify it's not the raw unescaped value
+        assert!(
+            !result.contains("QUOTED=it's"),
+            "value with quotes should not appear unescaped: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_env_var_empty_value() {
+        let sandbox = sandbox_with_env(vec![("EMPTY".to_string(), String::new())]);
+        let command = cmd("echo", &[]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Empty value should be properly quoted. The inner command is then escaped again.
+        // shell_words::quote("") returns "''" and when the whole command is quoted,
+        // the inner '' becomes '\'''\'' in the final output
+        assert!(
+            result.contains("EMPTY="),
+            "env var name should be present: {result}"
+        );
+        // The command template should be filled
+        assert!(
+            !result.contains("{command}"),
+            "command placeholder should be replaced: {result}"
+        );
+        // The result should contain the escaped empty quotes somewhere
+        // This verifies the empty value was handled (not omitted)
+        assert!(
+            result.contains("EMPTY='\\''"),
+            "empty value should be escaped in the final command: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_sandbox_id_substitution() {
+        let sandbox = sandbox_with_env(vec![]);
+        let command = cmd("test", &[]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // {sandbox_id} should be replaced with the remote_id
+        assert!(
+            result.contains("remote-123"),
+            "sandbox_id should be substituted: {result}"
+        );
+        assert!(
+            !result.contains("{sandbox_id}"),
+            "placeholder should be replaced: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_command_substitution() {
+        let sandbox = sandbox_with_env(vec![]);
+        let command = cmd("pytest", &["--verbose"]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // {command} should be replaced with the escaped inner command
+        assert!(
+            !result.contains("{command}"),
+            "command placeholder should be replaced: {result}"
+        );
+        // The actual command should be present (escaped)
+        assert!(
+            result.contains("pytest"),
+            "program should be in result: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_args_with_special_chars() {
+        let sandbox = sandbox_with_env(vec![]);
+        let command = cmd("echo", &["hello world", "foo'bar"]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Arguments with special characters should be properly escaped
+        // shell_words::quote will quote strings with spaces
+        assert!(
+            result.contains("'hello world'"),
+            "arg with space should be quoted: {result}"
+        );
     }
 }
