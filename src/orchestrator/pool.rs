@@ -3,7 +3,8 @@
 //! The [`SandboxPool`] holds sandboxes that can be reused between the initial
 //! test run and retry attempts, avoiding the overhead of creating new sandboxes.
 
-use crate::provider::Sandbox;
+use crate::config::SandboxConfig;
+use crate::provider::{ProviderError, Sandbox, SandboxProvider};
 
 /// A pool of reusable sandboxes.
 ///
@@ -41,6 +42,31 @@ impl<S: Sandbox> SandboxPool<S> {
         Self {
             sandboxes: Vec::with_capacity(capacity),
         }
+    }
+
+    /// Populates the pool by creating sandboxes concurrently using the given provider.
+    ///
+    /// Creates `count` sandboxes in parallel, failing fast if any creation fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered during sandbox creation.
+    pub async fn populate<P>(
+        &mut self,
+        count: usize,
+        provider: &P,
+        config: &SandboxConfig,
+    ) -> Result<(), ProviderError>
+    where
+        P: SandboxProvider<Sandbox = S>,
+    {
+        let futures: Vec<_> = (0..count)
+            .map(|_| provider.create_sandbox(config))
+            .collect();
+
+        let sandboxes = futures::future::try_join_all(futures).await?;
+        self.sandboxes.extend(sandboxes);
+        Ok(())
     }
 
     /// Adds a sandbox to the pool.

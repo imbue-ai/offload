@@ -55,9 +55,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use tokio::sync::Mutex;
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
-//! use offload::config::load_config;
+//! use offload::config::{load_config, SandboxConfig};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
 //!
@@ -71,10 +70,19 @@
 //!     // Discover tests using the framework
 //!     let tests = framework.discover(&[]).await?;
 //!
+//!     // Pre-populate sandbox pool
+//!     let sandbox_config = SandboxConfig {
+//!         id: "sandbox".to_string(),
+//!         working_dir: None,
+//!         env: vec![],
+//!         copy_dirs: vec![],
+//!     };
+//!     let mut sandbox_pool = SandboxPool::new();
+//!     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
+//!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
-//!     let sandbox_pool = Mutex::new(SandboxPool::new());
-//!     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
+//!     let orchestrator = Orchestrator::new(config, framework, false);
+//!     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 //!
 //!     if result.success() {
 //!         println!("All tests passed!");
@@ -98,9 +106,9 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use crate::config::{Config, SandboxConfig};
+use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
-use crate::provider::{OutputLine, SandboxProvider};
+use crate::provider::{OutputLine, Sandbox};
 use crate::report::{MasterJunitReport, print_summary};
 
 pub use pool::SandboxPool;
@@ -198,23 +206,22 @@ impl RunResult {
 /// The main orchestrator that coordinates test execution.
 ///
 /// The orchestrator is the top-level component that ties together:
-/// - A [`SandboxProvider`] for execution environments
-/// - A [`TestFramework`] for finding tests
+/// - A pre-populated [`SandboxPool`] of execution environments
+/// - A [`TestFramework`] for running tests
 ///
-/// It manages the full lifecycle of a test run: discovery, scheduling,
+/// It manages the full lifecycle of a test run: scheduling,
 /// parallel execution, retries, and result aggregation.
 ///
 /// # Type Parameters
 ///
-/// - `P`: The sandbox provider type
+/// - `S`: The sandbox type (implements [`Sandbox`](crate::provider::Sandbox))
 /// - `D`: The test framework type
 ///
 /// # Example
 ///
 /// ```no_run
-/// use tokio::sync::Mutex;
 /// use offload::orchestrator::{Orchestrator, SandboxPool};
-/// use offload::config::load_config;
+/// use offload::config::{load_config, SandboxConfig};
 /// use offload::provider::local::LocalProvider;
 /// use offload::framework::{TestFramework, pytest::PytestFramework};
 ///
@@ -229,25 +236,33 @@ impl RunResult {
 ///     // Discover tests using the framework
 ///     let tests = framework.discover(&[]).await?;
 ///
+///     // Pre-populate sandbox pool
+///     let sandbox_config = SandboxConfig {
+///         id: "sandbox".to_string(),
+///         working_dir: None,
+///         env: vec![],
+///         copy_dirs: vec![],
+///     };
+///     let mut sandbox_pool = SandboxPool::new();
+///     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
+///
 ///     // Create orchestrator and run tests
-///     let orchestrator = Orchestrator::new(config, provider, framework, &[], false);
-///     let sandbox_pool = Mutex::new(SandboxPool::new());
-///     let result = orchestrator.run_with_tests(&tests, &sandbox_pool).await?;
+///     let orchestrator = Orchestrator::new(config, framework, false);
+///     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
 /// }
 /// ```
-pub struct Orchestrator<P, D> {
+pub struct Orchestrator<S, D> {
     config: Config,
-    provider: P,
     framework: D,
-    copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     verbose: bool,
+    _sandbox: std::marker::PhantomData<S>,
 }
 
-impl<P, D> Orchestrator<P, D>
+impl<S, D> Orchestrator<S, D>
 where
-    P: SandboxProvider,
+    S: Sandbox,
     D: TestFramework,
 {
     /// Creates a new orchestrator with the given components.
@@ -255,23 +270,14 @@ where
     /// # Arguments
     ///
     /// * `config` - Configuration loaded from TOML
-    /// * `provider` - Sandbox provider for creating execution environments
     /// * `framework` - Test framework for running tests
-    /// * `copy_dirs` - Directories to copy to sandboxes (local_path, remote_path)
     /// * `verbose` - Whether to show verbose output (streaming test output)
-    pub fn new(
-        config: Config,
-        provider: P,
-        framework: D,
-        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        verbose: bool,
-    ) -> Self {
+    pub fn new(config: Config, framework: D, verbose: bool) -> Self {
         Self {
             config,
-            provider,
             framework,
-            copy_dirs: copy_dirs.to_vec(),
             verbose,
+            _sandbox: std::marker::PhantomData,
         }
     }
 
@@ -296,7 +302,7 @@ where
     pub async fn run_with_tests(
         &self,
         tests: &[TestRecord],
-        sandbox_pool: &Mutex<SandboxPool<P::Sandbox>>,
+        mut sandbox_pool: SandboxPool<S>,
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
@@ -352,10 +358,21 @@ where
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
-        debug!(
-            "Scheduled {} tests into {} batches",
-            tests_to_run.len(),
+        // Take sandboxes from pool - must match batch count
+        let sandboxes = sandbox_pool.take_all();
+        assert_eq!(
+            sandboxes.len(),
+            batches.len(),
+            "sandbox count ({}) must match batch count ({})",
+            sandboxes.len(),
             batches.len()
+        );
+
+        debug!(
+            "Scheduled {} tests into {} batches with {} sandboxes",
+            tests_to_run.len(),
+            batches.len(),
+            sandboxes.len()
         );
 
         // Shared JUnit report for accumulating results and early stopping
@@ -366,11 +383,13 @@ where
         let all_passed = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
+        // Collect sandboxes back after use for termination
+        let sandboxes_for_cleanup = Arc::new(Mutex::new(Vec::new()));
+
         // Run tests in parallel
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
-            for (batch_idx, batch) in batches.into_iter().enumerate() {
-                let provider = &self.provider;
+            for (batch_idx, (sandbox, batch)) in sandboxes.into_iter().zip(batches).enumerate() {
                 let framework = &self.framework;
                 let config = &self.config;
                 let progress = &progress;
@@ -378,38 +397,15 @@ where
                 let junit_report = Arc::clone(&junit_report);
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
+                let sandboxes_for_cleanup = Arc::clone(&sandboxes_for_cleanup);
 
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
                         debug!("Batch {} skipped - all tests have passed", batch_idx);
+                        sandboxes_for_cleanup.lock().await.push(sandbox);
                         return;
                     }
-                    // Take sandbox from pool or create new one
-                    let sandbox = {
-                        let existing = sandbox_pool.lock().await.take_one();
-                        if let Some(s) = existing {
-                            s
-                        } else {
-                            let sandbox_config = SandboxConfig {
-                                id: format!("offload-{}-{}", uuid::Uuid::new_v4(), batch_idx),
-                                working_dir: config
-                                    .offload
-                                    .working_dir
-                                    .as_ref()
-                                    .map(|p| p.to_string_lossy().to_string()),
-                                env: Vec::new(),
-                                copy_dirs: self.copy_dirs.clone(),
-                            };
-                            match provider.create_sandbox(&sandbox_config).await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!("Failed to create sandbox: {}", e);
-                                    return;
-                                }
-                            }
-                        }
-                    };
 
                     let mut runner = TestRunner::new(
                         sandbox,
@@ -420,7 +416,7 @@ where
                     .with_junit_report(Arc::clone(&junit_report));
 
                     // Enable output callback only in verbose mode
-                    if config.offload.stream_output && self.verbose {
+                    if config.offload.stream_output && verbose {
                         let callback: OutputCallback = Arc::new(|test_id, line| match line {
                             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
                             OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
@@ -464,9 +460,9 @@ where
                     // Update progress for completed batch
                     progress.inc(batch.len() as u64);
 
-                    // Return sandbox to pool for reuse (don't terminate)
+                    // Collect sandbox for cleanup
                     let sandbox = runner.into_sandbox();
-                    sandbox_pool.lock().await.add(sandbox);
+                    sandboxes_for_cleanup.lock().await.push(sandbox);
                 });
             }
         });
@@ -515,6 +511,15 @@ where
 
         progress.finish_and_clear();
         print_summary(&run_result);
+
+        // Terminate all sandboxes in parallel (after printing results)
+        let sandboxes: Vec<_> = sandboxes_for_cleanup.lock().await.drain(..).collect();
+        let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
+            if let Err(e) = sandbox.terminate().await {
+                warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
+            }
+        });
+        futures::future::join_all(terminate_futures).await;
 
         Ok(run_result)
     }

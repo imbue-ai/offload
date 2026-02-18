@@ -7,9 +7,7 @@ use clap::{Parser, Subcommand};
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
-use tokio::sync::Mutex;
-
-use offload::config::{self, FrameworkConfig, ProviderConfig};
+use offload::config::{self, FrameworkConfig, ProviderConfig, SandboxConfig};
 use offload::framework::{
     TestFramework, TestRecord, cargo::CargoFramework, default::DefaultFramework,
     pytest::PytestFramework,
@@ -399,24 +397,33 @@ where
     P: offload::provider::SandboxProvider,
     D: TestFramework,
 {
-    let sandbox_pool = Mutex::new(SandboxPool::new());
-
     // Convert CopyDir to tuples
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
         .iter()
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
         .collect();
 
-    let orchestrator = Orchestrator::new(
-        config.clone(),
-        provider,
-        framework,
-        &copy_dir_tuples,
-        verbose,
-    );
+    // Pre-populate sandbox pool
+    let sandbox_config = SandboxConfig {
+        id: format!("offload-{}", uuid::Uuid::new_v4()),
+        working_dir: config
+            .offload
+            .working_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        env: Vec::new(),
+        copy_dirs: copy_dir_tuples.clone(),
+    };
 
-    let result = orchestrator.run_with_tests(tests, &sandbox_pool).await?;
-    sandbox_pool.lock().await.terminate_all().await;
+    let mut sandbox_pool = SandboxPool::new();
+    sandbox_pool
+        .populate(config.offload.max_parallel, &provider, &sandbox_config)
+        .await
+        .context("Failed to create sandboxes")?;
+
+    let orchestrator = Orchestrator::new(config.clone(), framework, verbose);
+
+    let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
 
     Ok(result.exit_code())
 }
