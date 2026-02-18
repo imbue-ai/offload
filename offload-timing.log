@@ -1,0 +1,62 @@
+14:09:30.713 [   1.773s] modal: prepare called
+14:09:30.713 [   1.774s] modal: using cached base image_id: im-2XQCbGZpVy0yTsIAytT57Z
+14:09:31.012 [   2.073s] modal: building final image...
+14:09:38.845 [   9.906s] modal: prepare complete, image_id=im-iZrVLhmf1Gvhbe2oNBQVfm
+14:09:38.989 [  10.050s] [d3ede9bd] modal: create_from_image called
+14:09:38.989 [  10.050s] [d3ede9bd] modal:   image_id: im-iZrVLhmf1Gvhbe2oNBQVfm
+14:09:38.989 [  10.050s] [d3ede9bd] modal:   copy_dirs: ()
+14:09:38.989 [  10.050s] [83a4d765] modal: create_from_image called
+14:09:38.989 [  10.050s] [83a4d765] modal:   image_id: im-iZrVLhmf1Gvhbe2oNBQVfm
+14:09:38.989 [  10.050s] [83a4d765] modal:   copy_dirs: ()
+14:09:38.991 [  10.052s] [756c095f] modal: create_from_image called
+14:09:38.991 [  10.052s] [756c095f] modal:   image_id: im-iZrVLhmf1Gvhbe2oNBQVfm
+14:09:38.991 [  10.052s] [756c095f] modal:   copy_dirs: ()
+14:09:38.992 [  10.053s] [d0a654e5] modal: create_from_image called
+14:09:38.992 [  10.053s] [d0a654e5] modal:   image_id: im-iZrVLhmf1Gvhbe2oNBQVfm
+14:09:38.992 [  10.053s] [d0a654e5] modal:   copy_dirs: ()
+14:09:39.233 [  10.293s] [d0a654e5] modal: loading image im-iZrVLhmf1Gvhbe2oNBQVfm...
+14:09:39.233 [  10.293s] [83a4d765] modal: loading image im-iZrVLhmf1Gvhbe2oNBQVfm...
+14:09:39.233 [  10.294s] [d0a654e5] modal: image loaded
+14:09:39.233 [  10.294s] [83a4d765] modal: image loaded
+14:09:39.233 [  10.294s] [d0a654e5] modal: sending Sandbox.create request to Modal API...
+14:09:39.233 [  10.294s] [83a4d765] modal: sending Sandbox.create request to Modal API...
+14:09:39.235 [  10.296s] [d3ede9bd] modal: loading image im-iZrVLhmf1Gvhbe2oNBQVfm...
+14:09:39.235 [  10.296s] [756c095f] modal: loading image im-iZrVLhmf1Gvhbe2oNBQVfm...
+14:09:39.236 [  10.296s] [756c095f] modal: image loaded
+14:09:39.236 [  10.296s] [d3ede9bd] modal: image loaded
+14:09:39.236 [  10.296s] [756c095f] modal: sending Sandbox.create request to Modal API...
+14:09:39.236 [  10.296s] [d3ede9bd] modal: sending Sandbox.create request to Modal API...
+14:09:39.463 [  10.524s] [d3ede9bd] modal: Sandbox.create returned, sandbox_id=sb-VN80SUeCDh1XFelaJczm9F
+14:09:39.463 [  10.524s] [d3ede9bd] modal: sandbox ready: sb-VN80SUeCDh1XFelaJczm9F
+14:09:39.464 [  10.525s] [83a4d765] modal: Sandbox.create returned, sandbox_id=sb-vz1ljUmtdlV8xydVza9zpo
+14:09:39.464 [  10.525s] [83a4d765] modal: sandbox ready: sb-vz1ljUmtdlV8xydVza9zpo
+14:09:39.470 [  10.531s] [d0a654e5] modal: Sandbox.create returned, sandbox_id=sb-UsVYEEEHUim4Xks0QxDEZv
+14:09:39.470 [  10.531s] [d0a654e5] modal: sandbox ready: sb-UsVYEEEHUim4Xks0QxDEZv
+14:09:39.478 [  10.539s] [756c095f] modal: Sandbox.create returned, sandbox_id=sb-aseD1S7kxcLnTKPZqhBpnf
+14:09:39.478 [  10.539s] [756c095f] modal: sandbox ready: sb-aseD1S7kxcLnTKPZqhBpnf
+14:09:39.620 [  10.680s] modal: exec called on sb-UsVYEEEHUim4Xks0QxDEZv
+14:09:39.620 [  10.680s] modal: exec called on sb-vz1ljUmtdlV8xydVza9zpo
+14:09:39.622 [  10.683s] modal: exec called on sb-VN80SUeCDh1XFelaJczm9F
+14:09:39.623 [  10.684s] modal: exec called on sb-aseD1S7kxcLnTKPZqhBpnf
+14:09:39.860 [  10.921s] modal: executing command...
+14:09:39.860 [  10.921s] modal: executing command...
+14:09:39.860 [  10.921s] modal: executing command...
+14:09:39.860 [  10.921s] modal: executing command...
+14:09:48.851 [  19.912s] modal: exec complete, exit_code=0
+14:09:48.982 [  20.043s] modal: exec called on sb-aseD1S7kxcLnTKPZqhBpnf
+14:09:49.219 [  20.280s] modal: executing command...
+14:09:49.466 [  20.527s] modal: exec complete, exit_code=0
+14:09:49.588 [  20.649s] modal: exec called on sb-vz1ljUmtdlV8xydVza9zpo
+14:09:49.831 [  20.891s] modal: executing command...
+14:09:50.322 [  21.383s] modal: exec complete, exit_code=0
+14:09:50.996 [  22.057s] modal: exec complete, exit_code=0
+14:09:53.386 [  24.447s] modal: destroy called for sb-aseD1S7kxcLnTKPZqhBpnf
+14:09:53.386 [  24.447s] modal: destroy called for sb-vz1ljUmtdlV8xydVza9zpo
+14:09:53.386 [  24.447s] modal: destroy called for sb-UsVYEEEHUim4Xks0QxDEZv
+14:09:53.387 [  24.448s] modal: destroy called for sb-VN80SUeCDh1XFelaJczm9F
+14:09:53.719 [  24.780s] modal: sandbox sb-VN80SUeCDh1XFelaJczm9F terminated
+14:09:53.719 [  24.780s] modal: sandbox sb-UsVYEEEHUim4Xks0QxDEZv terminated
+14:09:53.719 [  24.780s] modal: sandbox sb-aseD1S7kxcLnTKPZqhBpnf terminated
+14:09:53.743 [  24.804s] modal: sandbox sb-vz1ljUmtdlV8xydVza9zpo terminated
+14:09:53.830 [  24.891s] modal: exec complete, exit_code=137
+14:09:53.874 [  24.934s] modal: exec complete, exit_code=137
