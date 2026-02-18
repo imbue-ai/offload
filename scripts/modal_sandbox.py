@@ -415,10 +415,10 @@ def exec_command(sandbox_id: str, command: str):
     profile_log("[%s] modal: exec called on %s", req_id, sandbox_id)
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    # Inject sandbox_id into junit suite name if pytest is generating junit xml
-    if "--junitxml" in command and "--junit-suite-name" not in command:
-        command = command.replace("--junitxml", f"--junit-suite-name={sandbox_id} --junitxml")
-        profile_log("[%s] modal: injected junit-suite-name=%s", req_id, sandbox_id)
+    # Inject sandbox_id as junit prefix if pytest is generating junit xml
+    if "--junitxml" in command and "-o junit_suite_name" not in command:
+        command = command.replace("--junitxml", f"-o junit_suite_name={sandbox_id} --junitxml")
+        profile_log("[%s] modal: injected junit_suite_name=%s", req_id, sandbox_id)
 
     # Execute command
     profile_log("[%s] modal: executing command...", req_id)
