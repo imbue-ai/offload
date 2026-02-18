@@ -108,6 +108,7 @@ use tracing::{debug, error, warn};
 
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
+use crate::profile_log;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::{MasterJunitReport, print_summary};
 
@@ -355,11 +356,20 @@ where
         let skipped_count = tests.len() - tests.iter().filter(|t| !t.skipped).count();
 
         // Schedule tests into batches using random distribution
+        profile_log!(
+            "orchestrator: scheduling {} tests into batches",
+            tests_to_run.len()
+        );
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
         // Take sandboxes from pool - must match batch count
         let sandboxes = sandbox_pool.take_all();
+        profile_log!(
+            "orchestrator: starting {} batches on {} sandboxes",
+            batches.len(),
+            sandboxes.len()
+        );
         assert_eq!(
             sandboxes.len(),
             batches.len(),
@@ -466,6 +476,7 @@ where
                 });
             }
         });
+        profile_log!("orchestrator: all batches complete");
 
         // Aggregate results from TestRecords (handles parallel retries automatically)
         // Get results from the shared JUnit report
@@ -511,8 +522,10 @@ where
 
         progress.finish_and_clear();
         print_summary(&run_result);
+        profile_log!("orchestrator: summary printed");
 
         // Terminate all sandboxes in parallel (after printing results)
+        profile_log!("orchestrator: terminating sandboxes");
         let sandboxes: Vec<_> = sandboxes_for_cleanup.lock().await.drain(..).collect();
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
             if let Err(e) = sandbox.terminate().await {
@@ -520,6 +533,7 @@ where
             }
         });
         futures::future::join_all(terminate_futures).await;
+        profile_log!("orchestrator: sandboxes terminated");
 
         Ok(run_result)
     }

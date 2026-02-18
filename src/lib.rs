@@ -111,6 +111,7 @@ pub mod config;
 pub mod connector;
 pub mod framework;
 pub mod orchestrator;
+pub mod profiling;
 pub mod provider;
 pub mod report;
 
