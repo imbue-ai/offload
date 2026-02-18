@@ -411,17 +411,19 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @click.argument("command")
 def exec_command(sandbox_id: str, command: str):
     """Execute a command on an existing Modal sandbox."""
-    req_id = str(uuid.uuid4())[:8]
-    profile_log("[%s] modal: exec called on %s", req_id, sandbox_id)
+    is_pytest = "pytest" in command.lower()
+    cmd_type = "pytest" if is_pytest else "other"
+    profile_log("[%s] modal: exec called (type=%s)", sandbox_id, cmd_type)
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
     # Inject sandbox_id as junit prefix if pytest is generating junit xml
-    if "--junitxml" in command and "-o junit_suite_name" not in command:
+    if is_pytest and "--junitxml" in command and "-o junit_suite_name" not in command:
         command = command.replace("--junitxml", f"-o junit_suite_name={sandbox_id} --junitxml")
-        profile_log("[%s] modal: injected junit_suite_name=%s", req_id, sandbox_id)
+        profile_log("[%s] modal: injected junit_suite_name=%s", sandbox_id, sandbox_id)
 
     # Execute command
-    profile_log("[%s] modal: executing command...", req_id)
+    cmd_display = command[:200] + "..." if len(command) > 200 else command
+    profile_log("[%s] modal: executing (%s): %s", sandbox_id, cmd_type, cmd_display)
     process = sandbox.exec("bash", "-c", command)
 
     # Collect output
@@ -429,7 +431,7 @@ def exec_command(sandbox_id: str, command: str):
     stderr = process.stderr.read()
     process.wait()
     exit_code = process.returncode
-    profile_log("[%s] modal: exec complete, exit_code=%d", req_id, exit_code)
+    profile_log("[%s] modal: exec complete, exit_code=%d", sandbox_id, exit_code)
 
     # Output JSON result
     result = {
