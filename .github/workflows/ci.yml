@@ -22,10 +22,10 @@ jobs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
 
-    - name: Install cargo-nextest and cargo-deny
+    - name: Install cargo tools
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-nextest,cargo-deny
+        tool: cargo-nextest,cargo-deny,ratchets@0.2.4
 
     - name: Check formatting
       run: cargo fmt --check
@@ -38,6 +38,9 @@ jobs:
 
     - name: Check dependencies
       run: cargo deny check
+
+    - name: Check code quality (ratchets)
+      run: ratchets check
 
     - name: Run tests
       run: cargo nextest run

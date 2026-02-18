@@ -20,6 +20,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install cargo-nextest (pinned version for consistency with CI)
 RUN cargo install --locked cargo-nextest --version 0.9.85
 
+# Install ratchets for code quality checks (pinned version)
+RUN cargo install --locked ratchets --version 0.2.4
+
 # Set working directory (must match where source is copied later via add_local_dir)
 WORKDIR /app
 
