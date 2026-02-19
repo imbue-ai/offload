@@ -569,20 +569,17 @@ timeout_secs = 3600"#
             r#"[groups.default]
 type = "pytest"
 paths = ["tests"]
-python = "python"
-retry_count = 3"#
+python = "python""#
         }
         "cargo" => {
             r#"[groups.default]
-type = "cargo"
-retry_count = 3"#
+type = "cargo""#
         }
         "default" => {
             r#"[groups.default]
 type = "default"
 discover_command = "echo test1 test2"
-run_command = "echo Running {tests}"
-retry_count = 3"#
+run_command = "echo Running {tests}""#
         }
         _ => {
             eprintln!(

@@ -55,7 +55,7 @@ type = "pytest"
 paths = ["tests"]
 python = "python3"
 markers = "not slow"  # Optional: filter by markers
-retry_count = 2       # Retries for failed tests in this group
+retry_count = 2       # Optional: retries for failed tests (default: 0)
 ```
 
 ### Cargo Test
@@ -66,7 +66,6 @@ type = "cargo"
 package = "my-crate"  # Optional: for workspaces
 features = ["feature1", "feature2"]
 include_ignored = false
-retry_count = 0       # No retries
 ```
 
 ### Generic (Custom)
@@ -76,7 +75,6 @@ retry_count = 0       # No retries
 type = "generic"
 discover_command = "find tests -name 'test_*.py' | xargs -I {} basename {}"
 run_command = "pytest {tests} -v"
-retry_count = 3
 ```
 
 The `{tests}` placeholder is replaced with discovered test names.

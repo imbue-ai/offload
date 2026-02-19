@@ -408,9 +408,9 @@ pub struct GroupConfig {
     /// Number of times to retry failed tests in this group.
     ///
     /// Failed tests are retried up to this many times. If a test passes
-    /// on retry, it's marked as "flaky". Set to 0 to disable retries.
+    /// on retry, it's marked as "flaky".
     ///
-    /// Default: 3
+    /// Default: 0 (no retries)
     #[serde(default = "default_retry_count")]
     pub retry_count: usize,
 }
@@ -611,7 +611,7 @@ fn default_junit_file() -> String {
 }
 
 fn default_retry_count() -> usize {
-    3
+    0
 }
 
 /// Runtime configuration passed to sandbox creation.
