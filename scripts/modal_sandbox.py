@@ -178,6 +178,13 @@ def write_cached_image_id(image_id: str) -> None:
         f.write(image_id + "\n")
 
 
+def clear_image_cache() -> None:
+    """Clear the cached image ID file."""
+    if os.path.isfile(CACHE_FILE):
+        os.remove(CACHE_FILE)
+        logger.info("Cleared cached image from %s", CACHE_FILE)
+
+
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
 @click.option("--cached", is_flag=True, help="Use cached BASE image if available")
@@ -216,76 +223,47 @@ def prepare(
             "Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE
         )
 
-    base_image = None
-    base_image_id = None
-
-    # Step 1: Get or build the BASE image (without cwd/copy-dirs)
-    if cached:
-        base_image_id = read_cached_image_id()
-        if base_image_id:
-            logger.info("Using cached base image_id: %s", base_image_id)
-
+    # Determine app name based on whether we have a Dockerfile
     if dockerfile_path is None:
-        # Build default base image
-        with modal.enable_output():
-            app = modal.App.lookup("offload-sandbox", create_if_missing=True)
-
-            if base_image_id:
-                # Load cached base image
-                base_image = modal.Image.from_id(base_image_id)
-            else:
-                # Build fresh base image
-                logger.info("Building default base image...")
-                base_image = modal.Image.debian_slim(python_version="3.11").pip_install(
-                    "pytest"
-                )
-                base_image.build(app)
-                # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(
-                    app=app, image=base_image, timeout=10
-                )
-                temp_sandbox.terminate()
-                base_image_id = base_image.object_id
-                # Cache the base image
-                write_cached_image_id(base_image_id)
-                logger.info("Cached base image_id to %s", CACHE_FILE)
+        app_name = "offload-sandbox"
     else:
         if not os.path.isfile(dockerfile_path):
             logger.error("Error: Dockerfile not found: %s", dockerfile_path)
             sys.exit(1)
+        app_name = "offload-dockerfile-sandbox"
 
-        with modal.enable_output():
-            app = modal.App.lookup("offload-dockerfile-sandbox", create_if_missing=True)
+    def build_fresh_base_image(app) -> tuple[modal.Image, str]:
+        """Build a fresh base image (no caching)."""
+        if dockerfile_path is None:
+            logger.info("Building default base image...")
+            base_img = modal.Image.debian_slim(python_version="3.11").pip_install(
+                "pytest"
+            )
+        else:
+            logger.info(
+                "Building base image from %s with context_dir=.", dockerfile_path
+            )
+            base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
 
-            if base_image_id:
-                # Load cached base image
-                base_image = modal.Image.from_id(base_image_id)
-            else:
-                # Build fresh base image from Dockerfile
-                logger.info(
-                    "Building base image from %s with context_dir=.", dockerfile_path
-                )
-                base_image = modal.Image.from_dockerfile(
-                    dockerfile_path, context_dir="."
-                )
-                base_image.build(app)
-                # Materialize to get base image_id for caching
-                temp_sandbox = modal.Sandbox.create(
-                    app=app, image=base_image, timeout=10
-                )
-                temp_sandbox.terminate()
-                base_image_id = base_image.object_id
-                # Cache the base image
-                write_cached_image_id(base_image_id)
-                logger.info("Cached base image_id to %s", CACHE_FILE)
+        base_img.build(app)
+        # Materialize to get base image_id for caching
+        temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
+        temp_sandbox.terminate()
+        base_img_id = base_img.object_id
+        # Cache the base image
+        write_cached_image_id(base_img_id)
+        logger.info("Cached base image_id to %s", CACHE_FILE)
+        return base_img, base_img_id
 
-    # Step 2: Add cwd and copy-dirs on top of the base image (always fresh)
-    final_image = base_image
+    def build_final_image(
+        app, base_img: modal.Image, base_img_id: str
+    ) -> str:
+        """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
+        final_img = base_img
 
-    with modal.enable_output():
         if include_cwd:
             logger.info("Adding current directory as /app...")
-            final_image = final_image.add_local_dir(
+            final_img = final_img.add_local_dir(
                 ".", "/app", copy=True, ignore=ignore_patterns
             )
 
@@ -302,18 +280,48 @@ def prepare(
                 logger.warning("Local directory '%s' not found, skipping", local_path)
                 continue
             logger.info("Adding %s -> %s to image", local_path, remote_path)
-            final_image = final_image.add_local_dir(
+            final_img = final_img.add_local_dir(
                 local_path, remote_path, copy=True, ignore=ignore_patterns
             )
 
         # Build and materialize the final image if we added anything
-        if final_image is not base_image:
-            final_image.build(app)
-            temp_sandbox = modal.Sandbox.create(app=app, image=final_image, timeout=10)
+        if final_img is not base_img:
+            final_img.build(app)
+            temp_sandbox = modal.Sandbox.create(app=app, image=final_img, timeout=10)
             temp_sandbox.terminate()
-            image_id = final_image.object_id
+            return final_img.object_id
         else:
-            image_id = base_image_id
+            return base_img_id
+
+    with modal.enable_output():
+        app = modal.App.lookup(app_name, create_if_missing=True)
+
+        base_image = None
+        base_image_id = None
+
+        # Step 1: Try to use cached base image if available
+        if cached:
+            cached_id = read_cached_image_id()
+            if cached_id:
+                logger.info("Found cached base image_id: %s", cached_id)
+                base_image = modal.Image.from_id(cached_id)
+                base_image_id = cached_id
+
+        # Step 2: Build fresh base image if no cache
+        if base_image is None:
+            base_image, base_image_id = build_fresh_base_image(app)
+
+        # Step 3: Build final image, catching cache invalidation errors
+        try:
+            image_id = build_final_image(app, base_image, base_image_id)
+        except Exception as e:
+            # Cached image no longer exists on Modal - rebuild from scratch
+            logger.warning(
+                "Failed to use cached image (%s), rebuilding from scratch...", e
+            )
+            clear_image_cache()
+            base_image, base_image_id = build_fresh_base_image(app)
+            image_id = build_final_image(app, base_image, base_image_id)
 
     sys.stdout.write("%s\n" % image_id)
 
@@ -472,9 +480,17 @@ def create_from_image(
     app_name = "offload-sandbox"
     app = modal.App.lookup(app_name, create_if_missing=True)
 
-    # Load image from ID
+    # Load image from ID and verify it exists
     logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
-    image = modal.Image.from_id(image_id)
+    try:
+        image = modal.Image.from_id(image_id)
+    except Exception as e:
+        logger.error("Failed to load image %s: %s", image_id, e)
+        logger.error(
+            "The image may have been garbage collected. "
+            "Try running 'prepare' again to rebuild the image."
+        )
+        sys.exit(1)
     logger.debug("[%.2fs] Image loaded", time.time() - t0)
 
     # Create secrets from env dict if any
@@ -483,13 +499,22 @@ def create_from_image(
         secrets = [modal.Secret.from_dict(env_dict)]
 
     logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
-    sandbox = modal.Sandbox.create(
-        app=app,
-        image=image,
-        workdir="/app",
-        timeout=3600,
-        secrets=secrets,
-    )
+    try:
+        sandbox = modal.Sandbox.create(
+            app=app,
+            image=image,
+            workdir="/app",
+            timeout=3600,
+            secrets=secrets,
+        )
+    except Exception as e:
+        logger.error("Failed to create sandbox with image %s: %s", image_id, e)
+        logger.error(
+            "The image may have been garbage collected. "
+            "Delete %s and run 'prepare' again to rebuild.",
+            CACHE_FILE,
+        )
+        sys.exit(1)
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
 
     # Copy user-specified directories
