@@ -291,9 +291,24 @@ impl DefaultSandbox {
         // Escape the entire command so it can be passed as a single shell argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
 
-        self.exec_command
+        // Build barrier flag if set
+        let barrier_flag = if cmd.barrier_count > 0 {
+            format!("--barrier={}", cmd.barrier_count)
+        } else {
+            String::new()
+        };
+
+        let result = self
+            .exec_command
             .replace("{sandbox_id}", &self.remote_id)
-            .replace("{command}", &escaped_cmd)
+            .replace("{command}", &escaped_cmd);
+
+        // Append barrier flag at the end (after all substitutions)
+        if cmd.barrier_count > 0 {
+            format!("{} {}", result, barrier_flag)
+        } else {
+            result
+        }
     }
 
     /// Build the destroy command with substitutions.
@@ -336,7 +351,11 @@ impl Sandbox for DefaultSandbox {
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
-        profile_log!("[{}] rust: invoking exec command", self.remote_id);
+        profile_log!(
+            "[{}] rust: invoking exec command (barrier_count={})",
+            self.remote_id,
+            cmd.barrier_count
+        );
         debug!("Streaming on {}: {}", self.remote_id, shell_cmd);
         self.connector.run_stream(&shell_cmd).await
     }
