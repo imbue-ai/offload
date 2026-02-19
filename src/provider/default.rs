@@ -42,6 +42,7 @@ use tracing::{debug, warn};
 use super::{Command, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider};
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
+use crate::profile_log;
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -170,6 +171,7 @@ impl SandboxProvider for DefaultProvider {
     type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
+        profile_log!("[creating] rust: invoking create command");
         debug!("Creating default sandbox: {}", config.id);
 
         // Build the create command, substituting {image_id} if available
@@ -199,6 +201,7 @@ impl SandboxProvider for DefaultProvider {
             ));
         }
 
+        profile_log!("[{}] rust: create command returned", remote_id);
         debug!("Created default sandbox with ID: {}", remote_id);
 
         Ok(DefaultSandbox {
@@ -333,6 +336,7 @@ impl Sandbox for DefaultSandbox {
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
+        profile_log!("[{}] rust: invoking exec command", self.remote_id);
         debug!("Streaming on {}: {}", self.remote_id, shell_cmd);
         self.connector.run_stream(&shell_cmd).await
     }

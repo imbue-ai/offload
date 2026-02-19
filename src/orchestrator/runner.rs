@@ -44,6 +44,7 @@ use std::time::Duration;
 use anyhow::Result;
 use futures::StreamExt;
 use tokio::select;
+use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -98,6 +99,8 @@ pub struct TestRunner<'a, S, D> {
     cancellation_token: Option<CancellationToken>,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: Option<SharedJunitReport>,
+    /// Optional barrier to synchronize exec calls across all runners.
+    exec_barrier: Option<Arc<Barrier>>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -116,6 +119,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             output_callback: None,
             cancellation_token: None,
             junit_report: None,
+            exec_barrier: None,
         }
     }
 
@@ -173,6 +177,16 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self
     }
 
+    /// Sets a barrier for synchronizing exec calls across runners.
+    ///
+    /// When set, the runner will wait on the barrier before executing
+    /// tests. This ensures all runners reach the exec point before any
+    /// proceeds, useful for profiling parallel execution latency.
+    pub fn with_exec_barrier(mut self, barrier: Arc<Barrier>) -> Self {
+        self.exec_barrier = Some(barrier);
+        self
+    }
+
     /// Returns a reference to the underlying sandbox.
     ///
     /// Useful for terminating the sandbox after tests complete.
@@ -190,17 +204,35 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Execute command with streaming, collecting output and parsing JSON result.
     ///
     /// The `output_id` is passed to the output callback to identify the source.
+    /// If `wait_barrier` is true and a barrier is configured, waits on it after
+    /// exec is fired but before reading results.
     /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
+        wait_barrier: bool,
     ) -> Result<Option<crate::provider::ExecResult>> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
 
         let mut stream = self.sandbox.exec_stream(cmd).await?;
+
+        // Wait on barrier after exec is fired but before reading results (test commands only)
+        if wait_barrier
+            && let Some(ref barrier) = self.exec_barrier
+        {
+            crate::profile_log!(
+                "[{}] runner: exec fired, waiting on barrier",
+                self.sandbox.id()
+            );
+            barrier.wait().await;
+            crate::profile_log!(
+                "[{}] runner: barrier released, awaiting results",
+                self.sandbox.id()
+            );
+        }
 
         // If we have a cancellation token, use select! to race against it
         if let Some(ref token) = self.cancellation_token {
@@ -315,7 +347,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         cmd = cmd.timeout(self.timeout.as_secs());
 
         // Execute the command with streaming (always use streaming for default provider support)
-        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
+        // Execute with barrier wait (only for test commands, not auxiliary commands)
+        let exec_result = match self.exec_with_streaming(&cmd, "batch", true).await? {
             Some(result) => result,
             None => {
                 // Cancelled - return early without recording results

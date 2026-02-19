@@ -19,6 +19,7 @@ use super::{Command, OutputStream, ProviderError, ProviderResult, Sandbox, Sandb
 use crate::cache::{ImageCache, ImageCacheEntry, compute_file_hash};
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
+use crate::profile_log;
 
 /// Provider for Modal cloud sandboxes with image caching.
 pub struct ModalProvider {
@@ -311,6 +312,7 @@ impl ModalProvider {
             ));
         }
 
+        profile_log!("[creating] rust: invoking modal_sandbox.py create");
         debug!("Creating Modal sandbox: {}", command);
 
         let result = self.connector.run(&command).await?;
@@ -343,6 +345,7 @@ impl ModalProvider {
             ));
         }
 
+        profile_log!("[{}] rust: modal_sandbox.py create returned", sandbox_id);
         debug!("Created Modal sandbox: {}", sandbox_id);
         Ok(sandbox_id)
     }
@@ -446,6 +449,7 @@ impl Sandbox for ModalSandbox {
 
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
+        profile_log!("[{}] rust: invoking modal_sandbox.py exec", self.remote_id);
         debug!("Streaming on Modal {}: {}", self.remote_id, shell_cmd);
         self.connector.run_stream(&shell_cmd).await
     }

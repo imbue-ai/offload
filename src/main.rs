@@ -14,6 +14,7 @@ use offload::framework::{
     pytest::PytestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
+use offload::profile_log;
 use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
 
 /// A directory copy directive: local path -> sandbox path
@@ -85,6 +86,11 @@ enum Commands {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // Initialize profiling first thing
+    offload::profiling::init();
+    offload::profiling::set_env_start_time();
+    profile_log!("offload started");
+
     let cli = Cli::parse();
 
     // Set up logging
@@ -149,9 +155,12 @@ async fn run_tests(
     env_vars: Vec<String>,
     verbose: bool,
 ) -> Result<()> {
+    profile_log!("run_tests: loading config");
+
     // Load configuration
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+    profile_log!("run_tests: config loaded");
 
     // Apply overrides
     if let Some(parallel) = parallel_override {
@@ -220,6 +229,7 @@ async fn run_tests(
     }
 
     // Phase 1: Discover tests for all groups into a single Vec
+    profile_log!("run_tests: starting test discovery");
     eprint!("Discovering tests... ");
     let mut all_tests: Vec<TestRecord> = Vec::new();
     let mut boundaries: Vec<GroupBoundary> = Vec::new();
@@ -257,6 +267,10 @@ async fn run_tests(
     }
 
     eprintln!("found {} tests", all_tests.len());
+    profile_log!(
+        "run_tests: discovery complete, found {} tests",
+        all_tests.len()
+    );
 
     if collect_only {
         for boundary in &boundaries {
@@ -444,6 +458,10 @@ where
         .collect();
 
     // Pre-populate sandbox pool
+    profile_log!(
+        "run_all_tests: creating {} sandboxes",
+        config.offload.max_parallel
+    );
     let sandbox_config = SandboxConfig {
         id: format!("offload-{}", uuid::Uuid::new_v4()),
         working_dir: config
@@ -460,10 +478,13 @@ where
         .populate(config.offload.max_parallel, &provider, &sandbox_config)
         .await
         .context("Failed to create sandboxes")?;
+    profile_log!("run_all_tests: sandboxes created");
 
     let orchestrator = Orchestrator::new(config.clone(), framework, verbose);
 
+    profile_log!("run_all_tests: starting test execution");
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
+    profile_log!("run_all_tests: test execution complete");
 
     Ok(result.exit_code())
 }

@@ -102,12 +102,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Barrier, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
+use crate::profile_log;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::{MasterJunitReport, print_summary};
 
@@ -355,11 +356,20 @@ where
         let skipped_count = tests.len() - tests.iter().filter(|t| !t.skipped).count();
 
         // Schedule tests into batches using random distribution
+        profile_log!(
+            "orchestrator: scheduling {} tests into batches",
+            tests_to_run.len()
+        );
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = scheduler.schedule(&tests_to_run);
 
         // Take sandboxes from pool - must match batch count
         let sandboxes = sandbox_pool.take_all();
+        profile_log!(
+            "orchestrator: starting {} batches on {} sandboxes",
+            batches.len(),
+            sandboxes.len()
+        );
         assert_eq!(
             sandboxes.len(),
             batches.len(),
@@ -386,6 +396,9 @@ where
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(Mutex::new(Vec::new()));
 
+        // Create barrier to synchronize exec calls across all runners
+        let exec_barrier = Arc::new(Barrier::new(batches.len()));
+
         // Run tests in parallel
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
@@ -398,11 +411,14 @@ where
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
                 let sandboxes_for_cleanup = Arc::clone(&sandboxes_for_cleanup);
+                let exec_barrier = Arc::clone(&exec_barrier);
 
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
                         debug!("Batch {} skipped - all tests have passed", batch_idx);
+                        // Still wait on barrier so other tasks don't deadlock
+                        exec_barrier.wait().await;
                         sandboxes_for_cleanup.lock().await.push(sandbox);
                         return;
                     }
@@ -413,7 +429,8 @@ where
                         Duration::from_secs(config.offload.test_timeout_secs),
                     )
                     .with_cancellation_token(cancellation_token.clone())
-                    .with_junit_report(Arc::clone(&junit_report));
+                    .with_junit_report(Arc::clone(&junit_report))
+                    .with_exec_barrier(exec_barrier);
 
                     // Enable output callback only in verbose mode
                     if config.offload.stream_output && verbose {
@@ -466,6 +483,7 @@ where
                 });
             }
         });
+        profile_log!("orchestrator: all batches complete");
 
         // Aggregate results from TestRecords (handles parallel retries automatically)
         // Get results from the shared JUnit report
@@ -511,8 +529,10 @@ where
 
         progress.finish_and_clear();
         print_summary(&run_result);
+        profile_log!("orchestrator: summary printed");
 
         // Terminate all sandboxes in parallel (after printing results)
+        profile_log!("orchestrator: terminating sandboxes");
         let sandboxes: Vec<_> = sandboxes_for_cleanup.lock().await.drain(..).collect();
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
             if let Err(e) = sandbox.terminate().await {
@@ -520,6 +540,7 @@ where
             }
         });
         futures::future::join_all(terminate_futures).await;
+        profile_log!("orchestrator: sandboxes terminated");
 
         Ok(run_result)
     }

@@ -29,6 +29,36 @@ handler = logging.StreamHandler(sys.stderr)
 handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(handler)
 
+# Timing logger for profiling sandbox creation - writes to offload-timing.log
+timing_logger = logging.getLogger("offload_timing")
+timing_logger.setLevel(logging.DEBUG)
+timing_logger.propagate = False
+timing_handler = logging.FileHandler("offload-timing.log", mode="a")
+timing_handler.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", datefmt="%H:%M:%S"))
+timing_logger.addHandler(timing_handler)
+
+
+def get_offload_elapsed() -> float:
+    """Get elapsed time since offload started (from env var), or 0 if not set."""
+    start_nanos = os.environ.get("OFFLOAD_START_TIME_NANOS")
+    if not start_nanos:
+        return 0.0
+    try:
+        start_ns = int(start_nanos)
+        now_ns = time.time_ns()
+        return (now_ns - start_ns) / 1e9
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def profile_log(msg: str, *args) -> None:
+    """Log a message with elapsed time since offload started."""
+    elapsed = get_offload_elapsed()
+    formatted = msg % args if args else msg
+    log_line = "[%8.3fs] %s" % (elapsed, formatted)
+    logger.info(log_line)
+    timing_logger.info(log_line)
+
 
 def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     """Recursively copy a local directory to the sandbox using tar."""
@@ -209,6 +239,8 @@ def prepare(
 
     Prints the image_id to stdout for use with 'create'.
     """
+    profile_log("modal: prepare called")
+
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
@@ -223,7 +255,7 @@ def prepare(
     if cached:
         base_image_id = read_cached_image_id()
         if base_image_id:
-            logger.info("Using cached base image_id: %s", base_image_id)
+            profile_log("modal: using cached base image_id: %s", base_image_id)
 
     if dockerfile_path is None:
         # Build default base image
@@ -308,6 +340,7 @@ def prepare(
 
         # Build and materialize the final image if we added anything
         if final_image is not base_image:
+            profile_log("modal: building final image...")
             final_image.build(app)
             temp_sandbox = modal.Sandbox.create(app=app, image=final_image, timeout=10)
             temp_sandbox.terminate()
@@ -315,6 +348,7 @@ def prepare(
         else:
             image_id = base_image_id
 
+    profile_log("modal: prepare complete, image_id=%s", image_id)
     sys.stdout.write("%s\n" % image_id)
 
 
@@ -322,9 +356,10 @@ def prepare(
 @click.argument("sandbox_id")
 def destroy(sandbox_id: str):
     """Terminate a Modal sandbox."""
+    profile_log("modal: destroy called for %s", sandbox_id)
     sandbox = modal.Sandbox.from_id(sandbox_id)
     sandbox.terminate()
-    logger.info("Terminated sandbox %s", sandbox_id)
+    profile_log("modal: sandbox %s terminated", sandbox_id)
 
 
 @cli.command("download")
@@ -376,9 +411,19 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @click.argument("command")
 def exec_command(sandbox_id: str, command: str):
     """Execute a command on an existing Modal sandbox."""
+    is_pytest = "pytest" in command.lower()
+    cmd_type = "pytest" if is_pytest else "other"
+    profile_log("[%s] modal: exec called (type=%s)", sandbox_id, cmd_type)
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
+    # Inject sandbox_id as junit prefix if pytest is generating junit xml
+    if is_pytest and "--junitxml" in command and "-o junit_suite_name" not in command:
+        command = command.replace("--junitxml", f"-o junit_suite_name={sandbox_id} --junitxml")
+        profile_log("[%s] modal: injected junit_suite_name=%s", sandbox_id, sandbox_id)
+
     # Execute command
+    cmd_display = command[:200] + "..." if len(command) > 200 else command
+    profile_log("[%s] modal: executing (%s): %s", sandbox_id, cmd_type, cmd_display)
     process = sandbox.exec("bash", "-c", command)
 
     # Collect output
@@ -386,6 +431,7 @@ def exec_command(sandbox_id: str, command: str):
     stderr = process.stderr.read()
     process.wait()
     exit_code = process.returncode
+    profile_log("[%s] modal: exec complete, exit_code=%d", sandbox_id, exit_code)
 
     # Output JSON result
     result = {
@@ -452,13 +498,10 @@ def create_from_image(
 
     IMAGE_ID is the Modal image ID to use.
     """
-    t0 = time.time()
-
-    # Log received arguments
-    logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
-    logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
-    logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
-    logger.debug("[%.2fs]   env_vars, %d total", time.time() - t0, len(env_vars))
+    profile_log("[creating] modal: create_from_image called")
+    profile_log("[creating] modal:   image_id: %s", image_id)
+    profile_log("[creating] modal:   copy_dirs: %s", copy_dirs)
+    profile_log("[creating] modal:   env_vars: %d total", len(env_vars))
 
     # Parse environment variables
     env_dict = {}
@@ -473,16 +516,16 @@ def create_from_image(
     app = modal.App.lookup(app_name, create_if_missing=True)
 
     # Load image from ID
-    logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
+    profile_log("[creating] modal: loading image %s...", image_id)
     image = modal.Image.from_id(image_id)
-    logger.debug("[%.2fs] Image loaded", time.time() - t0)
+    profile_log("[creating] modal: image loaded")
 
     # Create secrets from env dict if any
     secrets = []
     if env_dict:
         secrets = [modal.Secret.from_dict(env_dict)]
 
-    logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
+    profile_log("[creating] modal: invoking Sandbox.create API...")
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
@@ -490,16 +533,12 @@ def create_from_image(
         timeout=3600,
         secrets=secrets,
     )
-    logger.debug("[%.2fs] Sandbox created", time.time() - t0)
+    sandbox_id = sandbox.object_id
+    profile_log("[%s] modal: sandbox created", sandbox_id)
 
     # Copy user-specified directories
-    logger.debug(
-        "[%.2fs] Processing %d user-specified copy-dir(s)",
-        time.time() - t0,
-        len(copy_dirs),
-    )
     for i, copy_spec in enumerate(copy_dirs):
-        logger.info("[%.2fs] copy_dirs[%d]: '%s'", time.time() - t0, i, copy_spec)
+        profile_log("[%s] modal: copy_dirs[%d]: '%s'", sandbox_id, i, copy_spec)
         if ":" not in copy_spec:
             logger.warning(
                 "Invalid copy-dir format '%s', expected 'local:remote'", copy_spec
@@ -509,14 +548,12 @@ def create_from_image(
         if not os.path.isdir(local_path):
             logger.warning("Local directory '%s' not found, skipping", local_path)
             continue
-        logger.info(
-            "[%.2fs] Copying %s to %s...", time.time() - t0, local_path, remote_path
-        )
+        profile_log("[%s] modal: copying %s to %s...", sandbox_id, local_path, remote_path)
         copy_dir_to_sandbox(sandbox, local_path, remote_path)
-        logger.info("[%.2fs] Copy complete", time.time() - t0)
+        profile_log("[%s] modal: copy complete", sandbox_id)
 
-    logger.info("[%.2fs] Sandbox ready: %s", time.time() - t0, sandbox.object_id)
-    sys.stdout.write("%s\n" % sandbox.object_id)
+    profile_log("[%s] modal: sandbox ready", sandbox_id)
+    sys.stdout.write("%s\n" % sandbox_id)
 
 
 if __name__ == "__main__":
