@@ -185,6 +185,72 @@ def clear_image_cache() -> None:
         logger.info("Cleared cached image from %s", CACHE_FILE)
 
 
+def _build_fresh_base_image(
+    app, dockerfile_path: str | None
+) -> tuple[modal.Image, str]:
+    """Build a fresh base image (no caching)."""
+    if dockerfile_path is None:
+        logger.info("Building default base image...")
+        base_img = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
+    else:
+        logger.info("Building base image from %s with context_dir=.", dockerfile_path)
+        base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+
+    base_img.build(app)
+    # Materialize to get base image_id for caching
+    temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
+    temp_sandbox.terminate()
+    base_img_id = base_img.object_id
+    # Cache the base image
+    write_cached_image_id(base_img_id)
+    logger.info("Cached base image_id to %s", CACHE_FILE)
+    return base_img, base_img_id
+
+
+def _build_final_image(
+    app,
+    base_img: modal.Image,
+    base_img_id: str,
+    include_cwd: bool,
+    copy_dirs: tuple[str, ...],
+    ignore_patterns: list[str],
+) -> str:
+    """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
+    final_img = base_img
+
+    if include_cwd:
+        logger.info("Adding current directory as /app...")
+        final_img = final_img.add_local_dir(
+            ".", "/app", copy=True, ignore=ignore_patterns
+        )
+
+    # Add user-specified directories
+    for copy_spec in copy_dirs:
+        if ":" not in copy_spec:
+            logger.warning(
+                "Invalid copy-dir format '%s', expected 'local:remote'",
+                copy_spec,
+            )
+            continue
+        local_path, remote_path = copy_spec.split(":", 1)
+        if not os.path.isdir(local_path):
+            logger.warning("Local directory '%s' not found, skipping", local_path)
+            continue
+        logger.info("Adding %s -> %s to image", local_path, remote_path)
+        final_img = final_img.add_local_dir(
+            local_path, remote_path, copy=True, ignore=ignore_patterns
+        )
+
+    # Build and materialize the final image if we added anything
+    if final_img is not base_img:
+        final_img.build(app)
+        temp_sandbox = modal.Sandbox.create(app=app, image=final_img, timeout=10)
+        temp_sandbox.terminate()
+        return final_img.object_id
+    else:
+        return base_img_id
+
+
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
 @click.option("--cached", is_flag=True, help="Use cached BASE image if available")
@@ -232,67 +298,6 @@ def prepare(
             sys.exit(1)
         app_name = "offload-dockerfile-sandbox"
 
-    def build_fresh_base_image(app) -> tuple[modal.Image, str]:
-        """Build a fresh base image (no caching)."""
-        if dockerfile_path is None:
-            logger.info("Building default base image...")
-            base_img = modal.Image.debian_slim(python_version="3.11").pip_install(
-                "pytest"
-            )
-        else:
-            logger.info(
-                "Building base image from %s with context_dir=.", dockerfile_path
-            )
-            base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
-
-        base_img.build(app)
-        # Materialize to get base image_id for caching
-        temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
-        temp_sandbox.terminate()
-        base_img_id = base_img.object_id
-        # Cache the base image
-        write_cached_image_id(base_img_id)
-        logger.info("Cached base image_id to %s", CACHE_FILE)
-        return base_img, base_img_id
-
-    def build_final_image(
-        app, base_img: modal.Image, base_img_id: str
-    ) -> str:
-        """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
-        final_img = base_img
-
-        if include_cwd:
-            logger.info("Adding current directory as /app...")
-            final_img = final_img.add_local_dir(
-                ".", "/app", copy=True, ignore=ignore_patterns
-            )
-
-        # Add user-specified directories
-        for copy_spec in copy_dirs:
-            if ":" not in copy_spec:
-                logger.warning(
-                    "Invalid copy-dir format '%s', expected 'local:remote'",
-                    copy_spec,
-                )
-                continue
-            local_path, remote_path = copy_spec.split(":", 1)
-            if not os.path.isdir(local_path):
-                logger.warning("Local directory '%s' not found, skipping", local_path)
-                continue
-            logger.info("Adding %s -> %s to image", local_path, remote_path)
-            final_img = final_img.add_local_dir(
-                local_path, remote_path, copy=True, ignore=ignore_patterns
-            )
-
-        # Build and materialize the final image if we added anything
-        if final_img is not base_img:
-            final_img.build(app)
-            temp_sandbox = modal.Sandbox.create(app=app, image=final_img, timeout=10)
-            temp_sandbox.terminate()
-            return final_img.object_id
-        else:
-            return base_img_id
-
     with modal.enable_output():
         app = modal.App.lookup(app_name, create_if_missing=True)
 
@@ -309,19 +314,23 @@ def prepare(
 
         # Step 2: Build fresh base image if no cache
         if base_image is None:
-            base_image, base_image_id = build_fresh_base_image(app)
+            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
 
         # Step 3: Build final image, catching cache invalidation errors
         try:
-            image_id = build_final_image(app, base_image, base_image_id)
-        except Exception as e:
+            image_id = _build_final_image(
+                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns
+            )
+        except Exception as e:  # noqa: BLE001 - rebuild on any failure
             # Cached image no longer exists on Modal - rebuild from scratch
             logger.warning(
                 "Failed to use cached image (%s), rebuilding from scratch...", e
             )
             clear_image_cache()
-            base_image, base_image_id = build_fresh_base_image(app)
-            image_id = build_final_image(app, base_image, base_image_id)
+            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
+            image_id = _build_final_image(
+                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns
+            )
 
     sys.stdout.write("%s\n" % image_id)
 
@@ -484,7 +493,7 @@ def create_from_image(
     logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
     try:
         image = modal.Image.from_id(image_id)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error("Failed to load image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
@@ -507,7 +516,7 @@ def create_from_image(
             timeout=3600,
             secrets=secrets,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
