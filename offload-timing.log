@@ -97,3 +97,122 @@
 10:40:44.565 [  26.766s] modal: sandbox sb-qzOrCj5yVwcpYHfnk2QejV terminated
 [  26.821s] orchestrator: sandboxes terminated
 [  26.821s] run_all_tests: test execution complete
+[   0.000s] offload started
+[   0.001s] run_tests: loading config
+[   0.002s] run_tests: config loaded
+[   0.002s] run_tests: starting test discovery
+[   1.937s] run_tests: discovery complete, found 51 tests
+11:23:17.569 [   2.080s] modal: prepare called
+11:23:17.569 [   2.080s] modal: using cached base image_id: im-2XQCbGZpVy0yTsIAytT57Z
+11:23:17.867 [   2.378s] modal: building final image...
+11:23:26.449 [  10.960s] modal: prepare complete, image_id=im-85rp8JDj8xKacFa0WhXBmT
+[  11.017s] run_all_tests: creating 4 sandboxes
+[  11.017s] [creating] rust: invoking create command
+[  11.018s] [creating] rust: invoking create command
+[  11.018s] [creating] rust: invoking create command
+[  11.018s] [creating] rust: invoking create command
+11:23:26.600 [  11.111s] [creating] modal: create_from_image called
+11:23:26.600 [  11.111s] [creating] modal:   image_id: im-85rp8JDj8xKacFa0WhXBmT
+11:23:26.600 [  11.111s] [creating] modal:   copy_dirs: ()
+11:23:26.600 [  11.111s] [creating] modal:   env_vars: 0 total
+11:23:26.600 [  11.111s] [creating] modal: create_from_image called
+11:23:26.600 [  11.111s] [creating] modal: create_from_image called
+11:23:26.600 [  11.111s] [creating] modal:   image_id: im-85rp8JDj8xKacFa0WhXBmT
+11:23:26.600 [  11.111s] [creating] modal:   image_id: im-85rp8JDj8xKacFa0WhXBmT
+11:23:26.600 [  11.111s] [creating] modal:   copy_dirs: ()
+11:23:26.600 [  11.111s] [creating] modal:   copy_dirs: ()
+11:23:26.600 [  11.111s] [creating] modal:   env_vars: 0 total
+11:23:26.600 [  11.111s] [creating] modal:   env_vars: 0 total
+11:23:26.602 [  11.112s] [creating] modal: create_from_image called
+11:23:26.602 [  11.113s] [creating] modal:   image_id: im-85rp8JDj8xKacFa0WhXBmT
+11:23:26.602 [  11.113s] [creating] modal:   copy_dirs: ()
+11:23:26.602 [  11.113s] [creating] modal:   env_vars: 0 total
+11:23:26.837 [  11.348s] [creating] modal: loading image im-85rp8JDj8xKacFa0WhXBmT...
+11:23:26.837 [  11.348s] [creating] modal: loading image im-85rp8JDj8xKacFa0WhXBmT...
+11:23:26.838 [  11.349s] [creating] modal: image loaded
+11:23:26.838 [  11.349s] [creating] modal: image loaded
+11:23:26.838 [  11.349s] [creating] modal: invoking Sandbox.create API...
+11:23:26.838 [  11.349s] [creating] modal: invoking Sandbox.create API...
+11:23:26.839 [  11.350s] [creating] modal: loading image im-85rp8JDj8xKacFa0WhXBmT...
+11:23:26.840 [  11.351s] [creating] modal: image loaded
+11:23:26.840 [  11.351s] [creating] modal: invoking Sandbox.create API...
+11:23:26.847 [  11.358s] [creating] modal: loading image im-85rp8JDj8xKacFa0WhXBmT...
+11:23:26.847 [  11.358s] [creating] modal: image loaded
+11:23:26.847 [  11.358s] [creating] modal: invoking Sandbox.create API...
+11:23:27.073 [  11.584s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: sandbox created
+11:23:27.073 [  11.584s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: sandbox ready
+11:23:27.074 [  11.585s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: sandbox created
+11:23:27.074 [  11.585s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: sandbox ready
+11:23:27.079 [  11.590s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: sandbox created
+11:23:27.079 [  11.590s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: sandbox ready
+11:23:27.082 [  11.593s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: sandbox created
+11:23:27.082 [  11.593s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: sandbox ready
+[  11.642s] [sb-LahJ8bv9VHwK9QejrPW15l] rust: create command returned
+[  11.642s] [sb-TTj1egOmQBsnMeUMfl2Ugo] rust: create command returned
+[  11.643s] [sb-FEvbznRQMtnf4WgdwYb8QO] rust: create command returned
+[  11.644s] [sb-wLP9yNCHZpxf4lihKLELWt] rust: create command returned
+[  11.644s] run_all_tests: sandboxes created
+[  11.644s] run_all_tests: starting test execution
+[  11.644s] orchestrator: scheduling 102 tests into batches
+[  11.644s] orchestrator: starting 4 batches on 4 sandboxes
+[  11.645s] [sb-LahJ8bv9VHwK9QejrPW15l] rust: invoking exec command
+[  11.645s] [sb-TTj1egOmQBsnMeUMfl2Ugo] rust: invoking exec command
+[  11.645s] [sb-wLP9yNCHZpxf4lihKLELWt] rust: invoking exec command
+[  11.645s] [sb-FEvbznRQMtnf4WgdwYb8QO] rust: invoking exec command
+11:23:27.227 [  11.738s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: exec called (type=other, barrier=0)
+11:23:27.227 [  11.738s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: exec called (type=other, barrier=0)
+11:23:27.228 [  11.739s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: exec called (type=other, barrier=0)
+11:23:27.228 [  11.739s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: exec called (type=other, barrier=0)
+11:23:27.511 [  12.022s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: calling sandbox.exec()...
+11:23:27.511 [  12.022s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: calling sandbox.exec()...
+11:23:27.511 [  12.022s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: calling sandbox.exec()...
+11:23:27.511 [  12.022s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: calling sandbox.exec()...
+11:23:28.739 [  13.250s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: sandbox.exec() returned, command fired
+11:23:28.739 [  13.250s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: no barrier, reading output immediately
+11:23:28.755 [  13.266s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: sandbox.exec() returned, command fired
+11:23:28.755 [  13.266s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: no barrier, reading output immediately
+11:23:29.836 [  14.346s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: sandbox.exec() returned, command fired
+11:23:29.836 [  14.347s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: no barrier, reading output immediately
+11:23:36.823 [  21.333s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: sandbox.exec() returned, command fired
+11:23:36.823 [  21.334s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: no barrier, reading output immediately
+11:23:36.970 [  21.481s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: exec complete, exit_code=0
+[  21.536s] [sb-TTj1egOmQBsnMeUMfl2Ugo] rust: invoking exec command
+11:23:37.115 [  21.626s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: exec called (type=other, barrier=0)
+11:23:37.353 [  21.863s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: calling sandbox.exec()...
+11:23:37.810 [  22.321s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: sandbox.exec() returned, command fired
+11:23:37.810 [  22.321s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: no barrier, reading output immediately
+11:23:38.029 [  22.540s] [sb-TTj1egOmQBsnMeUMfl2Ugo] modal: exec complete, exit_code=0
+11:23:39.125 [  23.636s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: exec complete, exit_code=0
+[  23.680s] [sb-FEvbznRQMtnf4WgdwYb8QO] rust: invoking exec command
+11:23:39.252 [  23.763s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: exec called (type=other, barrier=0)
+11:23:39.483 [  23.994s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: calling sandbox.exec()...
+11:23:39.954 [  24.465s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: sandbox.exec() returned, command fired
+11:23:39.954 [  24.465s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: no barrier, reading output immediately
+11:23:40.193 [  24.704s] [sb-FEvbznRQMtnf4WgdwYb8QO] modal: exec complete, exit_code=0
+11:23:45.445 [  29.956s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: exec complete, exit_code=0
+[  30.008s] [sb-LahJ8bv9VHwK9QejrPW15l] rust: invoking exec command
+11:23:45.584 [  30.094s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: exec called (type=other, barrier=0)
+11:23:45.818 [  30.328s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: calling sandbox.exec()...
+11:23:46.414 [  30.925s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: exec complete, exit_code=0
+[  30.978s] [sb-wLP9yNCHZpxf4lihKLELWt] rust: invoking exec command
+11:23:46.498 [  31.009s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: sandbox.exec() returned, command fired
+11:23:46.498 [  31.009s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: no barrier, reading output immediately
+11:23:46.551 [  31.062s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: exec called (type=other, barrier=0)
+11:23:46.788 [  31.299s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: calling sandbox.exec()...
+11:23:46.936 [  31.447s] [sb-LahJ8bv9VHwK9QejrPW15l] modal: exec complete, exit_code=0
+11:23:47.889 [  32.399s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: sandbox.exec() returned, command fired
+11:23:47.889 [  32.400s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: no barrier, reading output immediately
+11:23:48.130 [  32.641s] [sb-wLP9yNCHZpxf4lihKLELWt] modal: exec complete, exit_code=0
+[  38.440s] orchestrator: all batches complete
+[  38.441s] orchestrator: summary printed
+[  38.441s] orchestrator: terminating sandboxes
+11:23:54.017 [  38.528s] modal: destroy called for sb-LahJ8bv9VHwK9QejrPW15l
+11:23:54.018 [  38.529s] modal: destroy called for sb-FEvbznRQMtnf4WgdwYb8QO
+11:23:54.020 [  38.531s] modal: destroy called for sb-wLP9yNCHZpxf4lihKLELWt
+11:23:54.020 [  38.531s] modal: destroy called for sb-TTj1egOmQBsnMeUMfl2Ugo
+11:23:54.361 [  38.872s] modal: sandbox sb-wLP9yNCHZpxf4lihKLELWt terminated
+11:23:54.361 [  38.872s] modal: sandbox sb-LahJ8bv9VHwK9QejrPW15l terminated
+11:23:54.361 [  38.872s] modal: sandbox sb-FEvbznRQMtnf4WgdwYb8QO terminated
+11:23:54.364 [  38.874s] modal: sandbox sb-TTj1egOmQBsnMeUMfl2Ugo terminated
+[  38.932s] orchestrator: sandboxes terminated
+[  38.932s] run_all_tests: test execution complete

@@ -325,6 +325,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         // Generate the run command for all tests
         let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs()).barrier(self.barrier_count);
+        crate::profile_log!(
+            "[{}] runner: command built with barrier_count={}",
+            self.sandbox.id(),
+            self.barrier_count
+        );
 
         // Execute the command with streaming (always use streaming for default provider support)
         let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
