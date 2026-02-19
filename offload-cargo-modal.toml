@@ -3,7 +3,6 @@
 [offload]
 max_parallel = 4
 test_timeout_secs = 600
-retry_count = 1
 stream_output = true
 
 [provider]
@@ -17,6 +16,7 @@ timeout_secs = 600
 
 [groups.all]
 type = "cargo"
+retry_count = 1
 
 [report]
 output_dir = "test-results"

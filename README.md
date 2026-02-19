@@ -38,7 +38,6 @@ Create a `offload.toml` file in your project root.
 [offload]
 max_parallel = 4          # Number of parallel sandboxes
 test_timeout_secs = 300   # Timeout per test
-retry_count = 2           # Retries for failed tests
 
 [report]
 output_dir = "test-results"
@@ -51,30 +50,33 @@ junit_file = "junit.xml"
 ### pytest
 
 ```toml
-[discovery]
+[groups.unit]
 type = "pytest"
 paths = ["tests"]
 python = "python3"
 markers = "not slow"  # Optional: filter by markers
+retry_count = 2       # Retries for failed tests in this group
 ```
 
 ### Cargo Test
 
 ```toml
-[discovery]
+[groups.rust]
 type = "cargo"
 package = "my-crate"  # Optional: for workspaces
 features = ["feature1", "feature2"]
 include_ignored = false
+retry_count = 0       # No retries
 ```
 
 ### Generic (Custom)
 
 ```toml
-[discovery]
+[groups.custom]
 type = "generic"
 discover_command = "find tests -name 'test_*.py' | xargs -I {} basename {}"
 run_command = "pytest {tests} -v"
+retry_count = 3
 ```
 
 The `{tests}` placeholder is replaced with discovered test names.

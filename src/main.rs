@@ -237,9 +237,7 @@ async fn run_tests(
         info!("Group '{}': discovered {} tests", group_name, count);
 
         // Set retry count and group name for each test
-        let retry_count = group_config
-            .retry_count
-            .unwrap_or(config.offload.retry_count);
+        let retry_count = group_config.retry_count;
         let tests_with_config: Vec<TestRecord> = tests
             .into_iter()
             .map(|t| {
@@ -510,7 +508,6 @@ fn validate_config(config_path: &Path) -> Result<()> {
             println!("Settings:");
             println!("  Max parallel: {}", config.offload.max_parallel);
             println!("  Test timeout: {}s", config.offload.test_timeout_secs);
-            println!("  Retry count: {}", config.offload.retry_count);
 
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
@@ -527,7 +524,10 @@ fn validate_config(config_path: &Path) -> Result<()> {
                     FrameworkConfig::Cargo(_) => "cargo",
                     FrameworkConfig::Default(_) => "default",
                 };
-                println!("Group: {}  Framework: {}", group_name, framework_name);
+                println!(
+                    "Group: {}  Framework: {}  Retry count: {}",
+                    group_name, framework_name, group_config.retry_count
+                );
             }
 
             Ok(())
@@ -569,17 +569,20 @@ timeout_secs = 3600"#
             r#"[groups.default]
 type = "pytest"
 paths = ["tests"]
-python = "python""#
+python = "python"
+retry_count = 3"#
         }
         "cargo" => {
             r#"[groups.default]
-type = "cargo""#
+type = "cargo"
+retry_count = 3"#
         }
         "default" => {
             r#"[groups.default]
 type = "default"
 discover_command = "echo test1 test2"
-run_command = "echo Running {tests}""#
+run_command = "echo Running {tests}"
+retry_count = 3"#
         }
         _ => {
             eprintln!(
@@ -596,7 +599,6 @@ run_command = "echo Running {tests}""#
 [offload]
 max_parallel = 10
 test_timeout_secs = 900
-retry_count = 3
 
 {}
 

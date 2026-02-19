@@ -3,7 +3,6 @@
 [offload]
 max_parallel = 4
 test_timeout_secs = 300
-retry_count = 1
 stream_output = true
 
 [provider]
@@ -19,6 +18,7 @@ type = "default"
 discover_command = "uv run --project sculptor pytest --collect-only -q sculptor/sculptor 2>/dev/null | grep '::' | sed 's|^sculptor/||'"
 # Run tests in the sandbox (source is baked into /app)
 run_command = "cd /app && PYTHONPATH=/app pytest -v --tb=short {tests}"
+retry_count = 1
 
 [report]
 output_dir = "test-results"

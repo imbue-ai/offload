@@ -68,13 +68,6 @@ pub struct OffloadConfig {
     #[serde(default = "default_test_timeout")]
     pub test_timeout_secs: u64,
 
-    /// Number of times to retry failed tests.
-    ///
-    /// Failed tests are retried up to this many times. If a test passes
-    /// on retry, it's marked as "flaky". Set to 0 to disable retries.
-    #[serde(default = "default_retry_count")]
-    pub retry_count: usize,
-
     /// Working directory for test execution.
     ///
     /// If specified, tests will run in this directory. Otherwise,
@@ -97,10 +90,6 @@ fn default_max_parallel() -> usize {
 
 fn default_test_timeout() -> u64 {
     900 // 15 minutes
-}
-
-fn default_retry_count() -> usize {
-    3
 }
 
 /// Provider configuration specifying where tests run.
@@ -418,9 +407,12 @@ pub struct GroupConfig {
 
     /// Number of times to retry failed tests in this group.
     ///
-    /// Overrides the global `retry_count` setting for tests in this group.
-    /// If not specified, uses the global setting from `[offload]`.
-    pub retry_count: Option<usize>,
+    /// Failed tests are retried up to this many times. If a test passes
+    /// on retry, it's marked as "flaky". Set to 0 to disable retries.
+    ///
+    /// Default: 3
+    #[serde(default = "default_retry_count")]
+    pub retry_count: usize,
 }
 
 /// Test framework configuration specifying how tests are found and run.
@@ -616,6 +608,10 @@ fn default_junit() -> bool {
 
 fn default_junit_file() -> String {
     "junit.xml".to_string()
+}
+
+fn default_retry_count() -> usize {
+    3
 }
 
 /// Runtime configuration passed to sandbox creation.
