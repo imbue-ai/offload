@@ -321,7 +321,7 @@ def prepare(
             image_id = _build_final_image(
                 app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns
             )
-        except Exception as e:  # noqa: BLE001 - rebuild on any failure
+        except Exception as e:
             # Cached image no longer exists on Modal - rebuild from scratch
             logger.warning(
                 "Failed to use cached image (%s), rebuilding from scratch...", e
@@ -493,7 +493,7 @@ def create_from_image(
     logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
     try:
         image = modal.Image.from_id(image_id)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("Failed to load image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
@@ -516,7 +516,7 @@ def create_from_image(
             timeout=3600,
             secrets=secrets,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
