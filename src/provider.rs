@@ -37,6 +37,7 @@
 //! | Provider | Module | Description |
 //! |----------|--------|-------------|
 //! | Local | [`local`] | Run tests as local child processes |
+//! | Modal | [`modal`] | Run tests in Modal cloud sandboxes |
 //! | Default | [`default`] | Run tests via custom shell commands |
 //!
 //! # Implementing a Custom Provider
