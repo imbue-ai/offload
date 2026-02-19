@@ -414,40 +414,58 @@ def wait_on_barrier(sandbox_id: str, barrier_count: int) -> None:
     import glob
     import select
 
+    profile_log("[%s] barrier: entering barrier (need %d)", sandbox_id, barrier_count)
+
     # Ensure barrier directory exists
     os.makedirs(BARRIER_DIR, exist_ok=True)
+    profile_log("[%s] barrier: directory ready: %s", sandbox_id, BARRIER_DIR)
 
     # Write our ready file
     ready_file = os.path.join(BARRIER_DIR, f"{sandbox_id}.ready")
     with open(ready_file, "w") as f:
         f.write(str(time.time()))
+    profile_log("[%s] barrier: wrote ready file: %s", sandbox_id, ready_file)
 
-    profile_log("[%s] modal: barrier - marked ready, waiting for %d total", sandbox_id, barrier_count)
+    # Check initial count
+    ready_files = glob.glob(os.path.join(BARRIER_DIR, "*.ready"))
+    profile_log("[%s] barrier: initial count %d/%d", sandbox_id, len(ready_files), barrier_count)
 
     # Try to use inotify for proper blocking (Linux only)
     try:
         import inotify.adapters
+        profile_log("[%s] barrier: using inotify for wait", sandbox_id)
         i = inotify.adapters.Inotify()
         i.add_watch(BARRIER_DIR)
 
+        iteration = 0
         while True:
             ready_files = glob.glob(os.path.join(BARRIER_DIR, "*.ready"))
             if len(ready_files) >= barrier_count:
+                profile_log("[%s] barrier: count reached %d/%d, releasing", sandbox_id, len(ready_files), barrier_count)
                 break
+            iteration += 1
+            if iteration % 10 == 0:  # Log every 10 iterations
+                profile_log("[%s] barrier: still waiting %d/%d (iter %d)", sandbox_id, len(ready_files), barrier_count, iteration)
             # Block on inotify events (yields CPU properly)
             for event in i.event_gen(yield_nones=False, timeout_s=1):
                 break  # Just need to wake up and recheck
 
     except ImportError:
         # Fallback: use select with a longer sleep to yield CPU
+        profile_log("[%s] barrier: using select fallback for wait", sandbox_id)
+        iteration = 0
         while True:
             ready_files = glob.glob(os.path.join(BARRIER_DIR, "*.ready"))
             if len(ready_files) >= barrier_count:
+                profile_log("[%s] barrier: count reached %d/%d, releasing", sandbox_id, len(ready_files), barrier_count)
                 break
+            iteration += 1
+            if iteration % 10 == 0:  # Log every 10 iterations (1 second)
+                profile_log("[%s] barrier: still waiting %d/%d (iter %d)", sandbox_id, len(ready_files), barrier_count, iteration)
             # select with timeout yields CPU properly
             select.select([], [], [], 0.1)  # 100ms timeout, yields CPU
 
-    profile_log("[%s] modal: barrier - all %d ready, proceeding", sandbox_id, barrier_count)
+    profile_log("[%s] barrier: PASSED - all %d processes synchronized", sandbox_id, barrier_count)
 
 
 @cli.command("exec")
@@ -458,7 +476,7 @@ def exec_command(sandbox_id: str, command: str, barrier: int):
     """Execute a command on an existing Modal sandbox."""
     is_pytest = "pytest" in command.lower()
     cmd_type = "pytest" if is_pytest else "other"
-    profile_log("[%s] modal: exec called (type=%s)", sandbox_id, cmd_type)
+    profile_log("[%s] modal: exec called (type=%s, barrier=%d)", sandbox_id, cmd_type, barrier)
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
     # Inject sandbox_id as junit prefix if pytest is generating junit xml
@@ -468,12 +486,17 @@ def exec_command(sandbox_id: str, command: str, barrier: int):
 
     # Execute command (fires off the process)
     cmd_display = command[:200] + "..." if len(command) > 200 else command
-    profile_log("[%s] modal: executing (%s): %s", sandbox_id, cmd_type, cmd_display)
+    profile_log("[%s] modal: calling sandbox.exec()...", sandbox_id)
     process = sandbox.exec("bash", "-c", command)
+    profile_log("[%s] modal: sandbox.exec() returned, command fired", sandbox_id)
 
     # Wait on barrier after exec is fired but before reading output
     if barrier > 0:
+        profile_log("[%s] modal: barrier enabled, entering barrier wait", sandbox_id)
         wait_on_barrier(sandbox_id, barrier)
+        profile_log("[%s] modal: barrier complete, now reading output", sandbox_id)
+    else:
+        profile_log("[%s] modal: no barrier, reading output immediately", sandbox_id)
 
     # Collect output
     stdout = process.stdout.read()
