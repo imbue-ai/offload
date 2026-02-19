@@ -4,7 +4,7 @@
 //! from TOML files or strings. The configuration schema defines all settings
 //! for providers, test frameworks, and reporting.
 //!
-//! # The Configuration File Format is described in the README.
+//! See the README.md for full configuration examples.
 
 pub mod schema;
 

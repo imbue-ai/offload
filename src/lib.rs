@@ -24,6 +24,7 @@
 //! implements the [`SandboxProvider`] trait:
 //!
 //! - [`provider::local::LocalProvider`] - Run tests as local processes
+//! - [`provider::modal::ModalProvider`] - Run tests in Modal cloud sandboxes
 //! - [`provider::default::DefaultProvider`] - Run tests using custom shell commands
 //!
 //! ### Framework ([`framework`])
