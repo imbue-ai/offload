@@ -102,7 +102,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Barrier, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
@@ -396,6 +396,9 @@ where
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(Mutex::new(Vec::new()));
 
+        // Create barrier to synchronize exec calls across all runners
+        let exec_barrier = Arc::new(Barrier::new(batches.len()));
+
         // Run tests in parallel
         // Execute batches concurrently using scoped spawns (no 'static required)
         tokio_scoped::scope(|scope| {
@@ -408,11 +411,14 @@ where
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
                 let sandboxes_for_cleanup = Arc::clone(&sandboxes_for_cleanup);
+                let exec_barrier = Arc::clone(&exec_barrier);
 
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
                         debug!("Batch {} skipped - all tests have passed", batch_idx);
+                        // Still wait on barrier so other tasks don't deadlock
+                        exec_barrier.wait().await;
                         sandboxes_for_cleanup.lock().await.push(sandbox);
                         return;
                     }
@@ -423,7 +429,8 @@ where
                         Duration::from_secs(config.offload.test_timeout_secs),
                     )
                     .with_cancellation_token(cancellation_token.clone())
-                    .with_junit_report(Arc::clone(&junit_report));
+                    .with_junit_report(Arc::clone(&junit_report))
+                    .with_exec_barrier(exec_barrier);
 
                     // Enable output callback only in verbose mode
                     if config.offload.stream_output && verbose {
