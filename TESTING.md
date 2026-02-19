@@ -16,9 +16,9 @@ Rationale:
 If tests exceed 120 seconds, that is a failure. The goal is to prevent agent workflows from getting stuck in infinite loops or pathological hangs.
 
 ## Repository configuration
-The repo should include `.config/nextest.toml` with a global timeout:
+The repo should include `.config/nextest.toml` with a slow-timeout that enforces the 120-second deadline:
 
-- `profile.default.global-timeout = "120s"`
+- `profile.default.slow-timeout = { period = "60s", terminate-after = 2 }`
 
 ## Standard commands
 Run these before declaring a task "done":

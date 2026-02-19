@@ -1,6 +1,10 @@
 # cargo-nextest configuration
 # https://nexte.st/docs/configuration/reference/
 
+[profile.default]
+# Hard timeout rule from TESTING.md: every full test run must complete within 120 seconds
+slow-timeout = { period = "60s", terminate-after = 2 }
+
 [profile.default.junit]
 path = "/tmp/junit.xml"
 store-success-output = false
