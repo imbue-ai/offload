@@ -406,10 +406,55 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
     logger.info("Download complete")
 
 
+BARRIER_DIR = "/tmp/offload-barrier"
+
+
+def wait_on_barrier(sandbox_id: str, barrier_count: int) -> None:
+    """File-based barrier using inotify to avoid busy waiting."""
+    import glob
+    import select
+
+    # Ensure barrier directory exists
+    os.makedirs(BARRIER_DIR, exist_ok=True)
+
+    # Write our ready file
+    ready_file = os.path.join(BARRIER_DIR, f"{sandbox_id}.ready")
+    with open(ready_file, "w") as f:
+        f.write(str(time.time()))
+
+    profile_log("[%s] modal: barrier - marked ready, waiting for %d total", sandbox_id, barrier_count)
+
+    # Try to use inotify for proper blocking (Linux only)
+    try:
+        import inotify.adapters
+        i = inotify.adapters.Inotify()
+        i.add_watch(BARRIER_DIR)
+
+        while True:
+            ready_files = glob.glob(os.path.join(BARRIER_DIR, "*.ready"))
+            if len(ready_files) >= barrier_count:
+                break
+            # Block on inotify events (yields CPU properly)
+            for event in i.event_gen(yield_nones=False, timeout_s=1):
+                break  # Just need to wake up and recheck
+
+    except ImportError:
+        # Fallback: use select with a longer sleep to yield CPU
+        while True:
+            ready_files = glob.glob(os.path.join(BARRIER_DIR, "*.ready"))
+            if len(ready_files) >= barrier_count:
+                break
+            # select with timeout yields CPU properly
+            select.select([], [], [], 0.1)  # 100ms timeout, yields CPU
+
+    profile_log("[%s] modal: barrier - all %d ready, proceeding", sandbox_id, barrier_count)
+
+
 @cli.command("exec")
 @click.argument("sandbox_id")
 @click.argument("command")
-def exec_command(sandbox_id: str, command: str):
+@click.option("--barrier", type=int, default=0, help="Barrier count (0 = no barrier)")
+def exec_command(sandbox_id: str, command: str, barrier: int):
     """Execute a command on an existing Modal sandbox."""
     is_pytest = "pytest" in command.lower()
     cmd_type = "pytest" if is_pytest else "other"
@@ -421,10 +466,14 @@ def exec_command(sandbox_id: str, command: str):
         command = command.replace("--junitxml", f"-o junit_suite_name={sandbox_id} --junitxml")
         profile_log("[%s] modal: injected junit_suite_name=%s", sandbox_id, sandbox_id)
 
-    # Execute command
+    # Execute command (fires off the process)
     cmd_display = command[:200] + "..." if len(command) > 200 else command
     profile_log("[%s] modal: executing (%s): %s", sandbox_id, cmd_type, cmd_display)
     process = sandbox.exec("bash", "-c", command)
+
+    # Wait on barrier after exec is fired but before reading output
+    if barrier > 0:
+        wait_on_barrier(sandbox_id, barrier)
 
     # Collect output
     stdout = process.stdout.read()

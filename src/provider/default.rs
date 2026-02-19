@@ -429,6 +429,7 @@ mod tests {
             working_dir: None,
             env: Vec::new(),
             timeout_secs: None,
+            barrier_count: 0,
         }
     }
 

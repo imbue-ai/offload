@@ -404,9 +404,16 @@ impl ModalSandbox {
         // Escape the entire command so it can be passed as a single argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
 
+        // Include barrier flag if set
+        let barrier_flag = if cmd.barrier_count > 0 {
+            format!(" --barrier={}", cmd.barrier_count)
+        } else {
+            String::new()
+        };
+
         format!(
-            "uv run @modal_sandbox.py exec {} {}",
-            self.remote_id, escaped_cmd
+            "uv run @modal_sandbox.py exec {} {}{}",
+            self.remote_id, escaped_cmd, barrier_flag
         )
     }
 

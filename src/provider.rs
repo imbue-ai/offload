@@ -214,6 +214,12 @@ pub struct Command {
     ///
     /// If the command runs longer, it will be terminated.
     pub timeout_secs: Option<u64>,
+
+    /// Barrier count for synchronizing parallel exec calls.
+    ///
+    /// If > 0, the exec will wait until this many processes have fired
+    /// before reading output. Used for profiling parallel execution.
+    pub barrier_count: usize,
 }
 
 impl Command {
@@ -232,6 +238,7 @@ impl Command {
             working_dir: None,
             env: Vec::new(),
             timeout_secs: None,
+            barrier_count: 0,
         }
     }
 
@@ -308,6 +315,15 @@ impl Command {
     /// ```
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
+        self
+    }
+
+    /// Sets the barrier count for synchronizing parallel exec calls.
+    ///
+    /// When > 0, exec will wait until this many processes have fired
+    /// before reading output. Used for profiling parallel execution.
+    pub fn barrier(mut self, count: usize) -> Self {
+        self.barrier_count = count;
         self
     }
 
