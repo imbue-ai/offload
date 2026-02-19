@@ -352,11 +352,11 @@ impl Sandbox for DefaultSandbox {
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
         profile_log!(
-            "[{}] rust: invoking exec command (barrier_count={})",
+            "[{}] rust: invoking exec command (barrier_count={}) cmd: {}",
             self.remote_id,
-            cmd.barrier_count
+            cmd.barrier_count,
+            &shell_cmd[..shell_cmd.len().min(200)]
         );
-        debug!("Streaming on {}: {}", self.remote_id, shell_cmd);
         self.connector.run_stream(&shell_cmd).await
     }
 
