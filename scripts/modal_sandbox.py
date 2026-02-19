@@ -9,8 +9,10 @@
 """Modal sandbox management for offload.
 
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
+Uses async Modal APIs for better CPU yielding during waits.
 """
 
+import asyncio
 import io
 import json
 import logging
@@ -30,53 +32,7 @@ handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(handler)
 
 
-def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
-    """Recursively copy a local directory to the sandbox using tar."""
-    logger.info("Creating tar archive from %s...", local_dir)
-
-    # Create tar archive in memory
-    tar_buffer = io.BytesIO()
-
-    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
-        for root, dirs, files in os.walk(local_dir):
-            # Filter directories in-place
-            dirs[:] = [
-                d
-                for d in dirs
-                if not d.startswith(".")
-                and d not in ("__pycache__", "node_modules", "target", ".venv", "venv")
-            ]
-
-            for fname in files:
-                if fname.startswith(".") or fname.endswith(".pyc"):
-                    continue
-                local_path = os.path.join(root, fname)
-                rel_path = os.path.relpath(local_path, local_dir)
-                tar.add(local_path, arcname=rel_path)
-
-    tar_buffer.seek(0)
-    tar_data = tar_buffer.getvalue()
-
-    logger.info("Transferring tar archive (%d bytes) to sandbox...", len(tar_data))
-
-    # Create remote directory and transfer tar
-    sandbox.mkdir(remote_dir, parents=True)
-    tar_remote_path = f"{remote_dir}/.transfer.tar"
-    with sandbox.open(tar_remote_path, "wb") as f:
-        f.write(tar_data)
-
-    logger.info("Extracting tar archive in %s...", remote_dir)
-
-    # Extract on sandbox
-    sandbox.exec("tar", "-xf", tar_remote_path, "-C", remote_dir).wait()
-
-    # Clean up tar file
-    sandbox.exec("rm", "-f", tar_remote_path).wait()
-
-    logger.info("Tar-based transfer complete")
-
-
-def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
+async def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
     """Copy a file or directory from the sandbox to local filesystem using tar."""
     logger.info("Downloading %s to %s...", remote_path, local_path)
 
@@ -91,10 +47,10 @@ def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
     remote_basename = os.path.basename(remote_path.rstrip("/"))
 
     logger.info("Creating tar archive on sandbox...")
-    process = sandbox.exec(
+    process = await sandbox.exec.aio(
         "tar", "-cf", tar_remote_path, "-C", remote_parent, remote_basename
     )
-    process.wait()
+    await process.wait.aio()
     if process.returncode != 0:
         stderr = process.stderr.read()
         raise click.ClickException(f"Failed to create tar archive on sandbox: {stderr}")
@@ -107,7 +63,8 @@ def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
     logger.info("Received tar archive (%d bytes)", len(tar_data))
 
     # Clean up tar file on sandbox
-    sandbox.exec("rm", "-f", tar_remote_path).wait()
+    process = await sandbox.exec.aio("rm", "-f", tar_remote_path)
+    await process.wait.aio()
 
     # Extract tar archive locally
     tar_buffer = io.BytesIO(tar_data)
@@ -322,9 +279,13 @@ def prepare(
 @click.argument("sandbox_id")
 def destroy(sandbox_id: str):
     """Terminate a Modal sandbox."""
-    sandbox = modal.Sandbox.from_id(sandbox_id)
-    sandbox.terminate()
-    logger.info("Terminated sandbox %s", sandbox_id)
+
+    async def terminate():
+        sandbox = modal.Sandbox.from_id(sandbox_id)
+        await sandbox.terminate.aio()
+        logger.info("Terminated sandbox %s", sandbox_id)
+
+    asyncio.run(terminate())
 
 
 @cli.command("download")
@@ -345,30 +306,35 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 
         modal_sandbox.py download sb-abc123 "/app/out:./out" "/app/logs:./logs"
     """
-    sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    for path_spec in paths:
-        if ":" not in path_spec:
-            logger.error(
-                "Invalid path format '%s', expected 'remote_path:local_path'", path_spec
-            )
-            sys.exit(1)
+    async def download_all():
+        sandbox = modal.Sandbox.from_id(sandbox_id)
 
-        remote_path, local_path = path_spec.split(":", 1)
-        if not remote_path:
-            logger.error("Empty remote path in '%s'", path_spec)
-            sys.exit(1)
-        if not local_path:
-            logger.error("Empty local path in '%s'", path_spec)
-            sys.exit(1)
+        for path_spec in paths:
+            if ":" not in path_spec:
+                logger.error(
+                    "Invalid path format '%s', expected 'remote_path:local_path'",
+                    path_spec,
+                )
+                sys.exit(1)
 
-        try:
-            copy_from_sandbox(sandbox, remote_path, local_path)
-        except Exception as e:
-            logger.error("Failed to download %s: %s", remote_path, e)
-            sys.exit(1)
+            remote_path, local_path = path_spec.split(":", 1)
+            if not remote_path:
+                logger.error("Empty remote path in '%s'", path_spec)
+                sys.exit(1)
+            if not local_path:
+                logger.error("Empty local path in '%s'", path_spec)
+                sys.exit(1)
 
-    logger.info("Download complete")
+            try:
+                await copy_from_sandbox(sandbox, remote_path, local_path)
+            except Exception as e:
+                logger.error("Failed to download %s: %s", remote_path, e)
+                sys.exit(1)
+
+        logger.info("Download complete")
+
+    asyncio.run(download_all())
 
 
 @cli.command("exec")
@@ -376,25 +342,29 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @click.argument("command")
 def exec_command(sandbox_id: str, command: str):
     """Execute a command on an existing Modal sandbox."""
-    sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    # Execute command
-    process = sandbox.exec("bash", "-c", command)
+    async def run_command():
+        sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    # Collect output
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
-    process.wait()
-    exit_code = process.returncode
+        # Execute command
+        process = await sandbox.exec.aio("bash", "-c", command)
 
-    # Output JSON result
-    result = {
-        "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-    print(json.dumps(result))
-    sys.exit(exit_code)
+        # Collect output
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
+        await process.wait.aio()
+        exit_code = process.returncode
+
+        # Output JSON result
+        result = {
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        print(json.dumps(result))
+        sys.exit(exit_code)
+
+    asyncio.run(run_command())
 
 
 # App and function for the 'run' subcommand
@@ -434,89 +404,61 @@ def run(command: str):
 @cli.command("create")
 @click.argument("image_id")
 @click.option(
-    "--copy-dir",
-    "copy_dirs",
-    multiple=True,
-    help="Copy local dir to sandbox (format: local_path:remote_path)",
-)
-@click.option(
     "--env",
     "env_vars",
     multiple=True,
     help="Environment variable (format: KEY=VALUE)",
 )
-def create_from_image(
-    image_id: str, copy_dirs: tuple[str, ...] = (), env_vars: tuple[str, ...] = ()
-):
+def create_from_image(image_id: str, env_vars: tuple[str, ...] = ()):
     """Create sandbox using existing image_id.
 
     IMAGE_ID is the Modal image ID to use.
     """
-    t0 = time.time()
 
-    # Log received arguments
-    logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
-    logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
-    logger.debug("[%.2fs]   copy_dirs: %s", time.time() - t0, copy_dirs)
-    logger.debug("[%.2fs]   env_vars, %d total", time.time() - t0, len(env_vars))
+    async def create_sandbox():
+        t0 = time.time()
 
-    # Parse environment variables
-    env_dict = {}
-    for env_spec in env_vars:
-        if "=" not in env_spec:
-            logger.warning("Invalid env format '%s', expected 'KEY=VALUE'", env_spec)
-            continue
-        key, value = env_spec.split("=", 1)
-        env_dict[key] = value
+        # Log received arguments
+        logger.debug("[%.2fs] create_from_image called with:", time.time() - t0)
+        logger.debug("[%.2fs]   image_id: %s", time.time() - t0, image_id)
+        logger.debug("[%.2fs]   env_vars, %d total", time.time() - t0, len(env_vars))
 
-    app_name = "offload-sandbox"
-    app = modal.App.lookup(app_name, create_if_missing=True)
+        # Parse environment variables
+        env_dict = {}
+        for env_spec in env_vars:
+            if "=" not in env_spec:
+                logger.warning("Invalid env format '%s', expected 'KEY=VALUE'", env_spec)
+                continue
+            key, value = env_spec.split("=", 1)
+            env_dict[key] = value
 
-    # Load image from ID
-    logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
-    image = modal.Image.from_id(image_id)
-    logger.debug("[%.2fs] Image loaded", time.time() - t0)
+        app_name = "offload-sandbox"
+        app = modal.App.lookup(app_name, create_if_missing=True)
 
-    # Create secrets from env dict if any
-    secrets = []
-    if env_dict:
-        secrets = [modal.Secret.from_dict(env_dict)]
+        # Load image from ID
+        logger.debug("[%.2fs] Loading image %s...", time.time() - t0, image_id)
+        image = modal.Image.from_id(image_id)
+        logger.debug("[%.2fs] Image loaded", time.time() - t0)
 
-    logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
-    sandbox = modal.Sandbox.create(
-        app=app,
-        image=image,
-        workdir="/app",
-        timeout=3600,
-        secrets=secrets,
-    )
-    logger.debug("[%.2fs] Sandbox created", time.time() - t0)
+        # Create secrets from env dict if any
+        secrets = []
+        if env_dict:
+            secrets = [modal.Secret.from_dict(env_dict)]
 
-    # Copy user-specified directories
-    logger.debug(
-        "[%.2fs] Processing %d user-specified copy-dir(s)",
-        time.time() - t0,
-        len(copy_dirs),
-    )
-    for i, copy_spec in enumerate(copy_dirs):
-        logger.info("[%.2fs] copy_dirs[%d]: '%s'", time.time() - t0, i, copy_spec)
-        if ":" not in copy_spec:
-            logger.warning(
-                "Invalid copy-dir format '%s', expected 'local:remote'", copy_spec
-            )
-            continue
-        local_path, remote_path = copy_spec.split(":", 1)
-        if not os.path.isdir(local_path):
-            logger.warning("Local directory '%s' not found, skipping", local_path)
-            continue
-        logger.info(
-            "[%.2fs] Copying %s to %s...", time.time() - t0, local_path, remote_path
+        logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
+        sandbox = await modal.Sandbox.create.aio(
+            app=app,
+            image=image,
+            workdir="/app",
+            timeout=3600,
+            secrets=secrets,
         )
-        copy_dir_to_sandbox(sandbox, local_path, remote_path)
-        logger.info("[%.2fs] Copy complete", time.time() - t0)
+        logger.debug("[%.2fs] Sandbox created", time.time() - t0)
 
-    logger.info("[%.2fs] Sandbox ready: %s", time.time() - t0, sandbox.object_id)
-    sys.stdout.write("%s\n" % sandbox.object_id)
+        logger.info("[%.2fs] Sandbox ready: %s", time.time() - t0, sandbox.object_id)
+        sys.stdout.write("%s\n" % sandbox.object_id)
+
+    asyncio.run(create_sandbox())
 
 
 if __name__ == "__main__":
