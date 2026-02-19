@@ -5,31 +5,36 @@
 
 [advisories]
 # Check for security vulnerabilities in dependencies
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
-notice = "warn"
-ignore = []
+# As of cargo-deny 0.16+, all advisories are denied by default
+# Use `ignore` to allow specific advisories if needed
+ignore = [
+    # number_prefix is unmaintained but it's a transitive dep via indicatif
+    # with no available upgrade path. Not a security issue.
+    "RUSTSEC-2025-0119",
+]
 
 [licenses]
 # Allow only approved permissive licenses
-unlicensed = "deny"
+# As of cargo-deny 0.16+, unlicensed crates are denied by default
 allow = [
     "MIT",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
+    "MPL-2.0",
     "Zlib",
     "Unlicense",
+    "Unicode-3.0",
+    "LicenseRef-Proprietary",
 ]
-deny = []
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
 confidence-threshold = 0.8
+
+# The workspace crate uses a proprietary license
+[[licenses.clarify]]
+crate = "offload"
+expression = "LicenseRef-Proprietary"
+license-files = [{ path = "LICENSE", hash = 0x12d82227 }]
 
 [bans]
 # Ban specific crates or versions
