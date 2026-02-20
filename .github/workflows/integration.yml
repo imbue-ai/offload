@@ -54,13 +54,12 @@ jobs:
     - name: Install mngr dependencies
       working-directory: mngr
       run: |
-        if [ -f "requirements.txt" ]; then
-          uv pip install --system -r requirements.txt
-        fi
-        if [ -f "pyproject.toml" ]; then
-          uv pip install --system -e .
-        fi
+        uv venv .venv --clear
+        uv sync --all-packages
+        uv tool install -e libs/mngr
 
     - name: Run integration test
       working-directory: mngr
-      run: just test-offload
+      run: |
+        source .venv/bin/activate
+        just test-offload
