@@ -94,13 +94,30 @@ impl MasterJunitReport {
     pub fn add_junit_xml(&mut self, xml_content: &str) {
         // Parse testsuite into structured form
         if let Some(testsuite) = parse_testsuite_xml(xml_content) {
+            let testcase_count = testsuite.testcases.len();
+            let before_count = self.test_outcomes.len();
+
             // Update test outcomes from testcases
             for testcase in &testsuite.testcases {
                 let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
                 self.update_test_outcome(test_id, failed);
             }
+
+            let after_count = self.test_outcomes.len();
+            let new_tests = after_count - before_count;
+            info!(
+                "Added testsuite '{}': {} testcases parsed, {} new unique tests (total: {})",
+                testsuite.name, testcase_count, new_tests, after_count
+            );
+
             self.testsuites.push(testsuite);
+        } else {
+            warn!(
+                "Failed to parse JUnit XML ({} bytes), content preview: {:?}",
+                xml_content.len(),
+                &xml_content[..xml_content.len().min(200)]
+            );
         }
     }
 
@@ -162,6 +179,25 @@ impl MasterJunitReport {
         let total_failures: i32 = self.testsuites.iter().map(|s| s.failures).sum();
         let total_errors: i32 = self.testsuites.iter().map(|s| s.errors).sum();
         let total_time: f64 = self.testsuites.iter().map(|s| s.time).sum();
+
+        // Count actual testcases parsed
+        let actual_testcases: usize = self.testsuites.iter().map(|s| s.testcases.len()).sum();
+        let unique_tests = self.test_outcomes.len();
+
+        info!(
+            "Writing JUnit XML: {} testsuites, {} declared tests, {} actual testcases, {} unique outcomes",
+            self.testsuites.len(),
+            total_tests,
+            actual_testcases,
+            unique_tests
+        );
+
+        if total_tests as usize != actual_testcases {
+            warn!(
+                "Mismatch: XML declares {} tests but {} testcases were parsed",
+                total_tests, actual_testcases
+            );
+        }
 
         let output = write_testsuites_xml(
             &self.testsuites,
@@ -487,6 +523,91 @@ pub fn merge_junit_files(parts_dir: &Path, output_path: &Path) -> std::io::Resul
     Ok(())
 }
 
+/// Loads test durations from an existing JUnit XML file.
+///
+/// Parses the XML and extracts the duration (`time` attribute) for each test case.
+/// If a test appears multiple times (e.g., from retries), the maximum duration is used.
+///
+/// The `format` parameter specifies how to convert JUnit's `classname` and `name`
+/// attributes into the framework's native test ID format. This is necessary because
+/// different test frameworks store test identity differently in JUnit XML.
+///
+/// # Arguments
+///
+/// * `junit_path` - Path to the JUnit XML file
+/// * `format` - The JUnit format to use for converting test IDs
+///
+/// # Returns
+///
+/// A HashMap where keys are test IDs and values are durations.
+/// Returns an empty map if the file doesn't exist or can't be parsed.
+pub fn load_test_durations(
+    junit_path: &Path,
+    format: super::JunitFormat,
+) -> HashMap<String, std::time::Duration> {
+    let mut durations = HashMap::new();
+
+    let content = match std::fs::read_to_string(junit_path) {
+        Ok(c) => c,
+        Err(e) => {
+            info!(
+                "Could not read JUnit XML for durations: {} ({})",
+                junit_path.display(),
+                e
+            );
+            return durations;
+        }
+    };
+
+    let mut reader = Reader::from_str(&content);
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.name().as_ref() == b"testcase" => {
+                let name = get_attr(&e, b"name");
+                let classname = get_attr(&e, b"classname");
+                let time = get_attr_f64(&e, b"time");
+
+                if let Some(test_name) = name {
+                    let classname_str = classname.as_deref().unwrap_or("");
+                    let test_id = format.to_test_id(classname_str, &test_name);
+                    let duration = std::time::Duration::from_secs_f64(time);
+                    // Use max duration if test appears multiple times (from retries)
+                    durations
+                        .entry(test_id)
+                        .and_modify(|existing: &mut std::time::Duration| {
+                            if duration > *existing {
+                                *existing = duration;
+                            }
+                        })
+                        .or_insert(duration);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    info!(
+        "Loaded {} test durations from {}",
+        durations.len(),
+        junit_path.display()
+    );
+
+    // Debug: show a sample of loaded test IDs to help diagnose mismatches
+    if !durations.is_empty() {
+        let sample_ids: Vec<&String> = durations.keys().take(3).collect();
+        tracing::debug!(
+            "Sample loaded test IDs (format={:?}): {:?}",
+            format,
+            sample_ids
+        );
+    }
+
+    durations
+}
+
 /// Removes the parts directory after merging.
 pub fn cleanup_parts(parts_dir: &Path) -> std::io::Result<()> {
     if parts_dir.exists() {
@@ -499,6 +620,7 @@ pub fn cleanup_parts(parts_dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::JunitFormat;
 
     #[test]
     fn test_parse_testcase_passed() {
@@ -566,5 +688,113 @@ mod tests {
         assert_eq!(suite.failures, 1);
         assert_eq!(suite.errors, 2);
         assert!((suite.time - 1.23).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_load_test_durations() {
+        use std::io::Write;
+
+        let xml = r#"<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="test">
+    <testcase name="test_fast" classname="foo" time="0.5" />
+    <testcase name="test_slow" classname="foo" time="10.0" />
+    <testcase name="test_medium" classname="foo" time="2.5" />
+  </testsuite>
+</testsuites>"#;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("junit.xml");
+        let mut file = std::fs::File::create(&path).expect("create file");
+        file.write_all(xml.as_bytes()).expect("write xml");
+
+        // Use default format (just returns name)
+        let durations = load_test_durations(&path, JunitFormat::Default);
+
+        assert_eq!(durations.len(), 3);
+        assert_eq!(
+            durations.get("test_fast"),
+            Some(&std::time::Duration::from_millis(500))
+        );
+        assert_eq!(
+            durations.get("test_slow"),
+            Some(&std::time::Duration::from_secs(10))
+        );
+        assert_eq!(
+            durations.get("test_medium"),
+            Some(&std::time::Duration::from_millis(2500))
+        );
+    }
+
+    #[test]
+    fn test_load_test_durations_uses_max_for_duplicates() {
+        use std::io::Write;
+
+        // Same test appears multiple times (from retries) - should use max duration
+        let xml = r#"<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="batch1">
+    <testcase name="test_flaky" classname="foo" time="1.0" />
+  </testsuite>
+  <testsuite name="batch2">
+    <testcase name="test_flaky" classname="foo" time="3.0" />
+  </testsuite>
+</testsuites>"#;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("junit.xml");
+        let mut file = std::fs::File::create(&path).expect("create file");
+        file.write_all(xml.as_bytes()).expect("write xml");
+
+        // Use default format (just returns name)
+        let durations = load_test_durations(&path, JunitFormat::Default);
+
+        assert_eq!(durations.len(), 1);
+        // Should use max duration (3.0s, not 1.0s)
+        assert_eq!(
+            durations.get("test_flaky"),
+            Some(&std::time::Duration::from_secs(3))
+        );
+    }
+
+    #[test]
+    fn test_load_test_durations_nonexistent_file() {
+        let durations = load_test_durations(
+            Path::new("/nonexistent/path/junit.xml"),
+            JunitFormat::Default,
+        );
+        assert!(durations.is_empty());
+    }
+
+    #[test]
+    fn test_load_test_durations_with_pytest_format() {
+        use std::io::Write;
+
+        // Test that the pytest format produces correct test IDs
+        let xml = r#"<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="test">
+    <testcase name="test_foo" classname="libs.mng.api.test_list" time="1.5" />
+    <testcase name="test_bar" classname="apps.changelings.cli.add_test" time="2.0" />
+  </testsuite>
+</testsuites>"#;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("junit.xml");
+        let mut file = std::fs::File::create(&path).expect("create file");
+        file.write_all(xml.as_bytes()).expect("write xml");
+
+        // Use pytest format
+        let durations = load_test_durations(&path, JunitFormat::Pytest);
+
+        assert_eq!(durations.len(), 2);
+        assert_eq!(
+            durations.get("libs/mng/api/test_list.py::test_foo"),
+            Some(&std::time::Duration::from_millis(1500))
+        );
+        assert_eq!(
+            durations.get("apps/changelings/cli/add_test.py::test_bar"),
+            Some(&std::time::Duration::from_secs(2))
+        );
     }
 }

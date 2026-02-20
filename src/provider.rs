@@ -428,6 +428,7 @@ pub enum OutputLine {
 ///         match line {
 ///             OutputLine::Stdout(s) => println!("[out] {}", s),
 ///             OutputLine::Stderr(s) => eprintln!("[err] {}", s),
+///             OutputLine::ExitCode(code) => println!("Exit: {}", code),
 ///         }
 ///     }
 /// }

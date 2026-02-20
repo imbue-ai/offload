@@ -25,6 +25,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::report::JunitFormat;
+
 /// Root configuration structure for offload.
 ///
 /// This struct represents the complete configuration loaded from a TOML file.
@@ -413,6 +415,30 @@ pub struct GroupConfig {
     /// Default: 0 (no retries)
     #[serde(default = "default_retry_count")]
     pub retry_count: usize,
+
+    /// Format for parsing test IDs from JUnit XML for LPT scheduling.
+    ///
+    /// Different test frameworks store test identity differently in JUnit XML.
+    /// This setting specifies how to convert JUnit `classname` and `name`
+    /// attributes back to the test ID format used during discovery.
+    ///
+    /// | Format | Conversion |
+    /// |--------|------------|
+    /// | `pytest` | `classname.replace('.', '/') + ".py::" + name` |
+    /// | `nextest` | `name` (already full path) |
+    /// | `default` | `name` |
+    ///
+    /// # Example
+    ///
+    /// ```toml
+    /// [groups.python]
+    /// type = "default"
+    /// junit_format = "pytest"
+    /// ```
+    ///
+    /// Default: `"default"`
+    #[serde(default)]
+    pub junit_format: JunitFormat,
 }
 
 /// Test framework configuration specifying how tests are found and run.

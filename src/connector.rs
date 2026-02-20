@@ -69,6 +69,7 @@
 //!     match line {
 //!         OutputLine::Stdout(s) => println!("{}", s),
 //!         OutputLine::Stderr(s) => eprintln!("{}", s),
+//!         OutputLine::ExitCode(code) => println!("Exit: {}", code),
 //!     }
 //! }
 //! # Ok(())

@@ -57,6 +57,7 @@
 //! use offload::orchestrator::{Orchestrator, SandboxPool};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
+//! use offload::report::JunitFormat;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -83,7 +84,7 @@
 //!     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, framework, false);
+//!     let orchestrator = Orchestrator::new(config, framework, false, JunitFormat::Pytest);
 //!     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 //!
 //!     std::process::exit(result.exit_code());

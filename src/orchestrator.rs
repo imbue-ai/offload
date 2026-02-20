@@ -59,6 +59,7 @@
 //! use offload::config::{load_config, SandboxConfig};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
+//! use offload::report::JunitFormat;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -81,7 +82,7 @@
 //!     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, framework, false);
+//!     let orchestrator = Orchestrator::new(config, framework, false, JunitFormat::Pytest);
 //!     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 //!
 //!     if result.success() {
@@ -109,7 +110,7 @@ use tracing::{debug, error, warn};
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
 use crate::provider::{OutputLine, Sandbox};
-use crate::report::{MasterJunitReport, print_summary};
+use crate::report::{MasterJunitReport, load_test_durations, print_summary};
 
 pub use pool::SandboxPool;
 pub use runner::{OutputCallback, TestRunner};
@@ -224,6 +225,7 @@ impl RunResult {
 /// use offload::config::{load_config, SandboxConfig};
 /// use offload::provider::local::LocalProvider;
 /// use offload::framework::{TestFramework, pytest::PytestFramework};
+/// use offload::report::JunitFormat;
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -247,7 +249,7 @@ impl RunResult {
 ///     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
 ///
 ///     // Create orchestrator and run tests
-///     let orchestrator = Orchestrator::new(config, framework, false);
+///     let orchestrator = Orchestrator::new(config, framework, false, JunitFormat::Pytest);
 ///     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
@@ -257,6 +259,7 @@ pub struct Orchestrator<S, D> {
     config: Config,
     framework: D,
     verbose: bool,
+    junit_format: crate::report::JunitFormat,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -272,11 +275,18 @@ where
     /// * `config` - Configuration loaded from TOML
     /// * `framework` - Test framework for running tests
     /// * `verbose` - Whether to show verbose output (streaming test output)
-    pub fn new(config: Config, framework: D, verbose: bool) -> Self {
+    /// * `junit_format` - Format for parsing test IDs from JUnit XML
+    pub fn new(
+        config: Config,
+        framework: D,
+        verbose: bool,
+        junit_format: crate::report::JunitFormat,
+    ) -> Self {
         Self {
             config,
             framework,
             verbose,
+            junit_format,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -306,12 +316,28 @@ where
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
-        // Clear output directory to avoid stale results
+        // Load test durations from previous junit.xml for LPT scheduling
+        let junit_path = self
+            .config
+            .report
+            .output_dir
+            .join(&self.config.report.junit_file);
+        let durations = load_test_durations(&junit_path, self.junit_format);
+
+        // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
         let output_dir = &self.config.report.output_dir;
-        if output_dir.exists() {
-            std::fs::remove_dir_all(output_dir).ok();
-        }
         std::fs::create_dir_all(output_dir).ok();
+
+        // Clear parts directory from previous run
+        let parts_dir = output_dir.join("junit-parts");
+        if parts_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&parts_dir) {
+                warn!("Failed to clear parts directory: {}", e);
+            } else {
+                debug!("Cleared parts directory: {:?}", parts_dir);
+            }
+        }
+        std::fs::create_dir_all(&parts_dir).ok();
 
         if tests.is_empty() {
             warn!("No tests to run");
@@ -354,9 +380,36 @@ where
 
         let skipped_count = tests.len() - tests.iter().filter(|t| !t.skipped).count();
 
-        // Schedule tests into batches using random distribution
+        // Schedule tests using LPT (Longest Processing Time First) if we have durations,
+        // otherwise fall back to round-robin with a warning and user confirmation.
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
-        let batches = scheduler.schedule(&tests_to_run);
+        let batches = if durations.is_empty() {
+            warn!(
+                "No historical test durations found at {}. Falling back to round-robin scheduling. \
+                 Run tests once to generate junit.xml for optimized LPT scheduling.",
+                junit_path.display()
+            );
+            eprintln!();
+            eprintln!("WARNING: No junit.xml found at {}", junit_path.display());
+            eprintln!(
+                "Using round-robin scheduling instead of LPT (suboptimal for parallel execution)."
+            );
+            eprintln!("Run tests once to generate junit.xml for optimized scheduling.");
+            eprintln!();
+            eprint!("Press Enter to continue with round-robin scheduling...");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+            let mut input = String::new();
+            let _ = std::io::stdin().read_line(&mut input);
+            scheduler.schedule(&tests_to_run)
+        } else {
+            debug!(
+                "Using LPT scheduling with {} historical durations from {}",
+                durations.len(),
+                junit_path.display()
+            );
+            // Default duration for unknown tests: 1 second (conservative estimate)
+            scheduler.schedule_lpt(&tests_to_run, &durations, std::time::Duration::from_secs(1))
+        };
 
         // Take sandboxes from pool - must match batch count
         let sandboxes = sandbox_pool.take_all();
@@ -407,13 +460,15 @@ where
                         return;
                     }
 
+                    let parts_dir = config.report.output_dir.join("junit-parts");
                     let mut runner = TestRunner::new(
                         sandbox,
                         framework,
                         Duration::from_secs(config.offload.test_timeout_secs),
                     )
                     .with_cancellation_token(cancellation_token.clone())
-                    .with_junit_report(Arc::clone(&junit_report));
+                    .with_junit_report(Arc::clone(&junit_report))
+                    .with_parts_dir(parts_dir);
 
                     // Enable output callback only in verbose mode
                     if config.offload.stream_output && verbose {

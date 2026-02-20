@@ -31,6 +31,9 @@
 //! assert_eq!(batches.len(), 4); // 4 batches for 4 sandboxes
 //! ```
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
@@ -171,6 +174,199 @@ impl Scheduler {
         batches
     }
 
+    /// Schedules tests using Longest Processing Time First (LPT) algorithm.
+    ///
+    /// Uses historical test durations to minimize total execution time (makespan).
+    /// Tests are sorted by duration descending and assigned to the worker with
+    /// the smallest current total workload.
+    ///
+    /// The returned batches are sorted by total duration descending, so the
+    /// heaviest batch is first. This ensures it gets scheduled first with Modal.
+    ///
+    /// # Arguments
+    ///
+    /// * `tests` - Tests to schedule
+    /// * `durations` - Historical test durations from previous runs.
+    ///   Tests not in the map use `default_duration`.
+    /// * `default_duration` - Duration to use for tests without historical data.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Sort tests by duration (descending)
+    /// 2. For each test, assign to the worker with smallest current load
+    /// 3. Sort batches by total duration (descending) so heaviest starts first
+    ///
+    /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use offload::orchestrator::Scheduler;
+    /// use offload::framework::TestRecord;
+    /// use std::collections::HashMap;
+    /// use std::time::Duration;
+    ///
+    /// let scheduler = Scheduler::new(2);
+    /// let records = vec![
+    ///     TestRecord::new("slow_test"),
+    ///     TestRecord::new("fast_test"),
+    ///     TestRecord::new("medium_test"),
+    /// ];
+    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+    ///
+    /// let mut durations = HashMap::new();
+    /// durations.insert("slow_test".to_string(), Duration::from_secs(10));
+    /// durations.insert("fast_test".to_string(), Duration::from_secs(1));
+    /// durations.insert("medium_test".to_string(), Duration::from_secs(5));
+    ///
+    /// let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+    /// // Batch 0 (heaviest): slow_test (10s)
+    /// // Batch 1: medium_test (5s), fast_test (1s) = 6s total
+    /// assert_eq!(batches.len(), 2);
+    /// ```
+    pub fn schedule_lpt<'a>(
+        &self,
+        tests: &[TestInstance<'a>],
+        durations: &HashMap<String, Duration>,
+        default_duration: Duration,
+    ) -> Vec<Vec<TestInstance<'a>>> {
+        println!("\n============================================================");
+        println!("LPT SCHEDULER START");
+        println!("============================================================");
+        println!(
+            "Input: {} tests, {} workers, {} known durations, default={:?}",
+            tests.len(),
+            self.max_parallel,
+            durations.len(),
+            default_duration
+        );
+
+        if tests.is_empty() {
+            println!("No tests to schedule, returning empty");
+            return Vec::new();
+        }
+
+        // Phase 1: Look up durations for each test
+        println!("\n--- PHASE 1: Duration Lookup ---");
+        let mut known_count = 0;
+        let mut default_count = 0;
+        let mut tests_with_duration: Vec<(TestInstance<'a>, Duration)> = tests
+            .iter()
+            .map(|t| {
+                let duration = durations.get(t.id()).copied().unwrap_or(default_duration);
+                let source = if durations.contains_key(t.id()) {
+                    known_count += 1;
+                    "junit.xml"
+                } else {
+                    default_count += 1;
+                    "DEFAULT"
+                };
+                println!("  {:?} <- {} [{}]", duration, t.id(), source);
+                (*t, duration)
+            })
+            .collect();
+
+        println!(
+            "Duration lookup complete: {} from junit.xml, {} using default",
+            known_count, default_count
+        );
+
+        // Phase 2: Sort by duration descending
+        println!("\n--- PHASE 2: Sort by Duration (descending) ---");
+        tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("Sorted order (longest first):");
+        for (i, (test, duration)) in tests_with_duration.iter().enumerate() {
+            println!("  {}: {:?} - {}", i + 1, duration, test.id());
+        }
+
+        // Phase 3: Initialize batches
+        let num_batches = self.max_parallel.min(tests.len());
+        println!("\n--- PHASE 3: Initialize {} Batches ---", num_batches);
+        let mut batches: Vec<Vec<TestInstance<'a>>> =
+            (0..num_batches).map(|_| Vec::new()).collect();
+        let mut batch_loads: Vec<Duration> = vec![Duration::ZERO; num_batches];
+
+        // Phase 4: LPT assignment
+        println!("\n--- PHASE 4: LPT Assignment ---");
+        for (test, duration) in tests_with_duration {
+            // Find the batch with minimum load
+            let min_idx = batch_loads
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, load)| *load)
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            let old_load = batch_loads[min_idx];
+            batches[min_idx].push(test);
+            batch_loads[min_idx] += duration;
+
+            println!(
+                "  Assign {} ({:?}) -> Batch {} (load: {:?} -> {:?})",
+                test.id(),
+                duration,
+                min_idx,
+                old_load,
+                batch_loads[min_idx]
+            );
+
+            // Show current batch loads
+            let loads_str: Vec<String> = batch_loads
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("B{}={:?}", i, l))
+                .collect();
+            println!("    Current loads: [{}]", loads_str.join(", "));
+        }
+
+        // Phase 5: Sort batches by load (heaviest first)
+        println!("\n--- PHASE 5: Sort Batches (heaviest first) ---");
+        println!("Before sort:");
+        for (i, load) in batch_loads.iter().enumerate() {
+            println!("  Batch {}: {:?} ({} tests)", i, load, batches[i].len());
+        }
+
+        let mut batches_with_loads: Vec<_> = batches.into_iter().zip(batch_loads).collect();
+        batches_with_loads.sort_by(|a, b| b.1.cmp(&a.1));
+
+        println!("After sort (heaviest first for Modal):");
+        for (i, (batch, load)) in batches_with_loads.iter().enumerate() {
+            println!("  Batch {}: {:?} ({} tests)", i, load, batch.len());
+            for test in batch {
+                println!("    - {}", test.id());
+            }
+        }
+
+        // Phase 6: Final summary
+        println!("\n--- PHASE 6: Final Summary ---");
+        let total_duration: Duration = batches_with_loads.iter().map(|(_, l)| *l).sum();
+        let max_duration = batches_with_loads
+            .first()
+            .map(|(_, l)| *l)
+            .unwrap_or(Duration::ZERO);
+        println!("Total work: {:?}", total_duration);
+        println!("Makespan (longest batch): {:?}", max_duration);
+        println!(
+            "Parallelism efficiency: {:.1}%",
+            if max_duration.as_secs_f64() > 0.0 {
+                (total_duration.as_secs_f64() / (max_duration.as_secs_f64() * num_batches as f64))
+                    * 100.0
+            } else {
+                100.0
+            }
+        );
+        println!("============================================================");
+        println!("LPT SCHEDULER END");
+        println!("============================================================\n");
+
+        // Extract just the batches, removing empty ones
+        batches_with_loads
+            .into_iter()
+            .map(|(batch, _)| batch)
+            .filter(|b| !b.is_empty())
+            .collect()
+    }
+
     /// Schedules tests with a maximum batch size.
     ///
     /// Creates batches of at most `max_batch_size` tests. This may create
@@ -261,6 +457,91 @@ mod tests {
         let scheduler = Scheduler::new(4);
         let batches: Vec<Vec<TestInstance>> = scheduler.schedule(&[]);
         assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn test_schedule_lpt_empty() {
+        let scheduler = Scheduler::new(4);
+        let durations = HashMap::new();
+        let batches: Vec<Vec<TestInstance>> =
+            scheduler.schedule_lpt(&[], &durations, Duration::from_secs(1));
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn test_schedule_lpt_balances_load() {
+        let scheduler = Scheduler::new(2);
+        let records = [
+            TestRecord::new("slow_test"),
+            TestRecord::new("medium_test"),
+            TestRecord::new("fast_test"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("slow_test".to_string(), Duration::from_secs(10));
+        durations.insert("medium_test".to_string(), Duration::from_secs(5));
+        durations.insert("fast_test".to_string(), Duration::from_secs(1));
+
+        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+
+        // With LPT:
+        // 1. Assign slow_test (10s) to worker 0 -> loads: [10, 0]
+        // 2. Assign medium_test (5s) to worker 1 -> loads: [10, 5]
+        // 3. Assign fast_test (1s) to worker 1 -> loads: [10, 6]
+        // Batches sorted by load: batch 0 (10s), batch 1 (6s)
+        assert_eq!(batches.len(), 2);
+        // Heaviest batch first
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches[0][0].id(), "slow_test");
+        // Second batch has medium and fast
+        assert_eq!(batches[1].len(), 2);
+    }
+
+    #[test]
+    fn test_schedule_lpt_heaviest_batch_first() {
+        let scheduler = Scheduler::new(3);
+        let records = [
+            TestRecord::new("test_a"),
+            TestRecord::new("test_b"),
+            TestRecord::new("test_c"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_secs(1));
+        durations.insert("test_b".to_string(), Duration::from_secs(5));
+        durations.insert("test_c".to_string(), Duration::from_secs(3));
+
+        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+
+        // Each test in its own batch (3 workers, 3 tests)
+        // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0][0].id(), "test_b"); // Heaviest first
+        assert_eq!(batches[1][0].id(), "test_c");
+        assert_eq!(batches[2][0].id(), "test_a");
+    }
+
+    #[test]
+    fn test_schedule_lpt_uses_default_for_unknown() {
+        let scheduler = Scheduler::new(2);
+        let records = [
+            TestRecord::new("known_slow"),
+            TestRecord::new("unknown_test"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("known_slow".to_string(), Duration::from_secs(10));
+        // unknown_test will use default of 1 second
+
+        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+
+        assert_eq!(batches.len(), 2);
+        // known_slow (10s) should be in heaviest batch
+        assert_eq!(batches[0][0].id(), "known_slow");
+        assert_eq!(batches[1][0].id(), "unknown_test");
     }
 
     #[test]

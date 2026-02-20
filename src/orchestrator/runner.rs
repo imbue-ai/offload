@@ -75,6 +75,7 @@ struct JsonExecResult {
 ///     match line {
 ///         OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
 ///         OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
+///         OutputLine::ExitCode(_) => {}
 ///     }
 /// });
 /// ```
@@ -98,6 +99,8 @@ pub struct TestRunner<'a, S, D> {
     cancellation_token: Option<CancellationToken>,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: Option<SharedJunitReport>,
+    /// Optional directory to save individual batch JUnit XMLs for debugging.
+    parts_dir: Option<std::path::PathBuf>,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -116,7 +119,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             output_callback: None,
             cancellation_token: None,
             junit_report: None,
+            parts_dir: None,
         }
+    }
+
+    /// Sets the directory for saving JUnit XMLs for debugging.
+    ///
+    /// When set, each sandbox's junit.xml is saved to `parts_dir/{sandbox_id}.xml`
+    /// before being added to the shared report. This allows inspection of
+    /// individual batch results.
+    pub fn with_parts_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.parts_dir = Some(dir);
+        self
     }
 
     /// Sets the shared JUnit report for accumulating results.
@@ -164,6 +178,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ///         match line {
     ///             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
     ///             OutputLine::Stderr(s) => eprintln!("[{}] ERR: {}", test_id, s),
+    ///             OutputLine::ExitCode(_) => {}
     ///         }
     ///     }));
     /// # }
@@ -332,11 +347,23 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         );
 
         // Download JUnit XML and add to shared report
-        if let Some(xml_content) = self.try_download_results().await
-            && let Some(report) = &self.junit_report
-            && let Ok(mut report) = report.lock()
-        {
-            report.add_junit_xml(&xml_content);
+        if let Some(xml_content) = self.try_download_results().await {
+            if let Some(report) = &self.junit_report {
+                match report.lock() {
+                    Ok(mut report) => {
+                        report.add_junit_xml(&xml_content);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to lock junit report for {}: {}",
+                            self.sandbox.id(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!("No junit report configured for {}", self.sandbox.id());
+            }
         }
 
         Ok(true)
@@ -387,6 +414,37 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             content.len(),
             self.sandbox.id()
         );
+
+        // Save to parts directory for debugging if configured
+        if let Some(ref parts_dir) = self.parts_dir {
+            if let Err(e) = std::fs::create_dir_all(parts_dir) {
+                tracing::warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
+            } else {
+                // Sanitize sandbox ID to be a valid filename
+                let safe_id = self
+                    .sandbox
+                    .id()
+                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                let part_file = parts_dir.join(format!("{}.xml", safe_id));
+                if let Err(e) = std::fs::write(&part_file, &content) {
+                    tracing::warn!("Failed to save part file {:?}: {}", part_file, e);
+                } else {
+                    tracing::info!(
+                        "Saved batch {} to {:?} ({} bytes)",
+                        self.sandbox.id(),
+                        part_file,
+                        content.len()
+                    );
+                }
+            }
+
+            // Log parts dir stats
+            if let Ok(entries) = std::fs::read_dir(parts_dir) {
+                let count = entries.filter(|e| e.is_ok()).count();
+                tracing::info!("Parts directory now has {} files", count);
+            }
+        }
+
         Some(content)
     }
 }

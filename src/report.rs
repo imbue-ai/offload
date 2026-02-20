@@ -4,10 +4,13 @@
 //! JUnit XML generation and console output formatting.
 
 pub mod junit;
+pub mod junit_adapter;
 
 pub use junit::{
-    MasterJunitReport, SharedJunitReport, TestStatus, cleanup_parts, merge_junit_files,
+    MasterJunitReport, SharedJunitReport, TestStatus, cleanup_parts, load_test_durations,
+    merge_junit_files,
 };
+pub use junit_adapter::JunitFormat;
 
 use crate::orchestrator::RunResult;
 
