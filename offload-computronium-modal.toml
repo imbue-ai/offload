@@ -3,7 +3,6 @@
 [offload]
 max_parallel = 2
 test_timeout_secs = 120
-retry_count = 0
 stream_output = true
 
 [provider]
@@ -20,6 +19,7 @@ paths = [
     "computronium/test_machine_spec.py"
 ]
 python = "python3"
+retry_count = 0
 
 [report]
 output_dir = "test-results"

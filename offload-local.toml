@@ -3,7 +3,6 @@
 [offload]
 max_parallel = 2
 test_timeout_secs = 60
-retry_count = 3
 stream_output = true
 
 [provider]
@@ -16,6 +15,7 @@ paths = ["examples/tests"]
 # markers = "not slow"
 python = "python3"
 extra_args = ["-s"]  # -s disables output capture so we see prints
+retry_count = 3
 
 # [groups.slow]
 # type = "pytest"

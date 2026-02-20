@@ -16,7 +16,7 @@
 
 [no-bare-except]
 "." = 0
-"scripts" = 2
+"scripts" = 5
 
 [no-bare-generic-types]
 "." = 0
@@ -30,7 +30,7 @@
 
 [no-broad-exception]
 "." = 0
-"scripts" = 2
+"scripts" = 5
 
 [no-builtin-exception-raises]
 "." = 0

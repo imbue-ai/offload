@@ -4,7 +4,6 @@
 [offload]
 max_parallel = 4
 test_timeout_secs = 300
-retry_count = 4
 
 [provider]
 type = "default"
@@ -19,12 +18,14 @@ type = "pytest"
 paths = ["examples/tests"]
 markers = "group_a"
 python = "python3"
+retry_count = 4
 
 [groups.group_b]
 type = "pytest"
 paths = ["examples/tests"]
 markers = "group_b"
 python = "python3"
+retry_count = 4
 
 [report]
 output_dir = "test-results"
