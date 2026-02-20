@@ -1,0 +1,65 @@
+name: Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Golden version of mngr to test against
+  # Update this SHA when mngr changes in a way that affects offload integration
+  MNGR_SHA: "f96fc0ea2115778c38e6685cd1d621a43b9ad9e1"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout offload
+      uses: actions/checkout@v4
+      with:
+        path: offload
+
+    - name: Checkout mngr (golden version)
+      uses: actions/checkout@v4
+      with:
+        repository: imbue-ai/mngr
+        ref: ${{ env.MNGR_SHA }}
+        token: ${{ secrets.MNGR_ACCESS_TOKEN }}
+        path: mngr
+
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just
+
+    - name: Install uv (Python package manager)
+      uses: astral-sh/setup-uv@v4
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: offload
+
+    - name: Install offload (current version)
+      working-directory: offload
+      run: just install
+
+    - name: Install mngr dependencies
+      working-directory: mngr
+      run: |
+        uv venv .venv --clear
+        uv sync --all-packages
+        uv tool install -e libs/mngr
+
+    - name: Run integration test
+      working-directory: mngr
+      run: |
+        source .venv/bin/activate
+        just test-offload
