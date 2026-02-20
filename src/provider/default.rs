@@ -621,4 +621,97 @@ mod tests {
             "arg with space should be quoted: {result}"
         );
     }
+
+    /// Integration test for Modal sandbox download functionality via DefaultProvider.
+    ///
+    /// This test requires Modal credentials (MODAL_TOKEN_ID and MODAL_TOKEN_SECRET).
+    /// Skips automatically if credentials are not present.
+    #[tokio::test]
+    async fn modal_download_junit_xml() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::config::{DefaultProviderConfig, SandboxConfig};
+        use crate::provider::SandboxProvider;
+        use futures::StreamExt;
+
+        // Skip if Modal credentials are not available
+        if std::env::var("MODAL_TOKEN_ID").is_err() || std::env::var("MODAL_TOKEN_SECRET").is_err()
+        {
+            eprintln!(
+                "Skipping modal_download_junit_xml: MODAL_TOKEN_ID or MODAL_TOKEN_SECRET not set"
+            );
+            return Ok(());
+        }
+
+        // Create a temp dir with a minimal Dockerfile
+        let temp_dir = tempfile::tempdir()?;
+        let dockerfile_path = temp_dir.path().join("Dockerfile.test");
+        std::fs::write(&dockerfile_path, "FROM python:3.11-slim\n")?;
+
+        // Configure DefaultProvider to use modal_sandbox.py
+        // Use @modal_sandbox.py notation which resolves to the bundled script
+        let config = DefaultProviderConfig {
+            prepare_command: Some("uv run @modal_sandbox.py prepare Dockerfile.test".to_string()),
+            create_command: "uv run @modal_sandbox.py create {image_id}".to_string(),
+            exec_command: "uv run @modal_sandbox.py exec {sandbox_id} {command}".to_string(),
+            destroy_command: "uv run @modal_sandbox.py destroy {sandbox_id}".to_string(),
+            download_command: Some(
+                "uv run @modal_sandbox.py download {sandbox_id} {paths}".to_string(),
+            ),
+            working_dir: Some(temp_dir.path().to_path_buf()),
+            timeout_secs: 300,
+            env: Default::default(),
+            copy_dirs: vec![],
+        };
+
+        let provider = DefaultProvider::from_config(config, &[]).await?;
+
+        // Create sandbox
+        let sandbox_config = SandboxConfig {
+            id: "test-download".to_string(),
+            working_dir: None,
+            env: vec![],
+            copy_dirs: vec![],
+        };
+
+        let sandbox = provider.create_sandbox(&sandbox_config).await?;
+
+        // Write test junit.xml content
+        let test_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="test_suite" tests="2" failures="0">
+    <testcase name="test_one" classname="tests.test_example" time="0.001"/>
+    <testcase name="test_two" classname="tests.test_example" time="0.002"/>
+  </testsuite>
+</testsuites>"#;
+
+        // Write the file to sandbox using exec
+        let write_cmd = Command::new("sh").arg("-c").arg(format!(
+            "cat > /tmp/junit.xml << 'EOF'\n{}\nEOF",
+            test_content
+        ));
+
+        let mut stream = sandbox.exec_stream(&write_cmd).await?;
+        while stream.next().await.is_some() {}
+
+        // Download the file
+        let download_dir = tempfile::tempdir()?;
+        let local_file = download_dir.path().join("downloaded.xml");
+        let remote_path = std::path::Path::new("/tmp/junit.xml");
+
+        sandbox
+            .download(&[(remote_path, local_file.as_path())])
+            .await?;
+
+        // Verify content
+        let downloaded = std::fs::read_to_string(&local_file)?;
+        assert_eq!(
+            test_content.trim(),
+            downloaded.trim(),
+            "Downloaded content should match"
+        );
+
+        // Cleanup
+        sandbox.terminate().await?;
+
+        Ok(())
+    }
 }
