@@ -77,59 +77,22 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
 
 
 def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
-    """Copy a file or directory from the sandbox to local filesystem using tar."""
+    """Copy a file from the sandbox to local filesystem."""
     logger.info("Downloading %s to %s...", remote_path, local_path)
 
-    # Use tar on the sandbox to create an archive of the remote path
-    # This handles both files and directories uniformly
-    tar_remote_path = "/tmp/.download_transfer.tar"
+    # Read file content directly from sandbox
+    with sandbox.open(remote_path, "rb") as f:
+        data = f.read()
 
-    # Create tar archive on sandbox
-    # Use -C to change to parent directory and archive just the basename
-    # This preserves the directory structure correctly
-    remote_parent = os.path.dirname(remote_path.rstrip("/")) or "/"
-    remote_basename = os.path.basename(remote_path.rstrip("/"))
-
-    logger.info("Creating tar archive on sandbox...")
-    process = sandbox.exec(
-        "tar", "-cf", tar_remote_path, "-C", remote_parent, remote_basename
-    )
-    process.wait()
-    if process.returncode != 0:
-        stderr = process.stderr.read()
-        raise click.ClickException(f"Failed to create tar archive on sandbox: {stderr}")
-
-    # Read the tar archive from sandbox
-    logger.info("Transferring tar archive from sandbox...")
-    with sandbox.open(tar_remote_path, "rb") as f:
-        tar_data = f.read()
-
-    logger.info("Received tar archive (%d bytes)", len(tar_data))
-
-    # Clean up tar file on sandbox
-    sandbox.exec("rm", "-f", tar_remote_path).wait()
-
-    # Extract tar archive locally
-    tar_buffer = io.BytesIO(tar_data)
+    logger.info("Received %d bytes", len(data))
 
     # Create parent directory if needed
     local_parent = os.path.dirname(local_path.rstrip("/")) or "."
     os.makedirs(local_parent, exist_ok=True)
 
-    logger.info("Extracting tar archive to %s...", local_parent)
-    with tarfile.open(fileobj=tar_buffer, mode="r") as tar:
-        tar.extractall(path=local_parent)
-
-    # If local_path differs from the extracted name, rename
-    extracted_path = os.path.join(local_parent, remote_basename)
-    if extracted_path != local_path and os.path.exists(extracted_path):
-        if os.path.exists(local_path):
-            # Remove existing target to allow rename
-            if os.path.isdir(local_path):
-                shutil.rmtree(local_path)
-            else:
-                os.remove(local_path)
-        os.rename(extracted_path, local_path)
+    # Write to local file
+    with open(local_path, "wb") as f:
+        f.write(data)
 
     logger.info("Download complete: %s -> %s", remote_path, local_path)
 
@@ -336,12 +299,11 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
     SANDBOX_ID is the Modal sandbox ID to download from.
 
     PATHS are one or more path specifications in the format "remote_path:local_path".
-    Each specification downloads the remote path to the local path.
-    Both files and directories are supported.
+    Each specification downloads the remote file to the local path.
 
     Examples:
 
-        modal_sandbox.py download sb-abc123 "/app/results:/tmp/results"
+        modal_sandbox.py download sb-abc123 "/tmp/junit.xml:./results/junit.xml"
 
         modal_sandbox.py download sb-abc123 "/app/out:./out" "/app/logs:./logs"
     """
