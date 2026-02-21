@@ -45,11 +45,18 @@ use anyhow::Result;
 use futures::StreamExt;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
+
+/// Count testcases in a JUnit XML string.
+fn count_testcases_in_xml(xml: &str) -> usize {
+    // Count both <testcase .../> (self-closing) and <testcase ...> (with content)
+    let self_closing = xml.matches("<testcase ").count();
+    self_closing
+}
 
 /// JSON result format from default provider sandboxes.
 #[derive(serde::Deserialize)]
@@ -322,47 +329,136 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// or an error if execution failed.
     pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<bool> {
         let start = std::time::Instant::now();
+        let expected_count = tests.len();
+        let sandbox_id = self.sandbox.id().to_string();
 
-        debug!("Running {} tests", tests.len());
+        info!(
+            "[BATCH START] Sandbox {} starting batch with {} tests",
+            sandbox_id, expected_count
+        );
+
+        // Log all test IDs in this batch
+        let test_ids: Vec<_> = tests.iter().map(|t| t.id()).collect();
+        debug!(
+            "[BATCH TESTS] Sandbox {} test IDs: {:?}",
+            sandbox_id, test_ids
+        );
+
+        // CHECK FOR DUPLICATES - this would cause pytest to only run the test once!
+        let mut seen = std::collections::HashSet::new();
+        let mut duplicates = Vec::new();
+        for id in &test_ids {
+            if !seen.insert(*id) {
+                duplicates.push(*id);
+            }
+        }
+        if !duplicates.is_empty() {
+            error!(
+                "[BATCH DUPLICATES] Sandbox {} has {} DUPLICATE test IDs! Duplicates: {:?}",
+                sandbox_id,
+                duplicates.len(),
+                duplicates
+            );
+            let unique_count = seen.len();
+            warn!(
+                "[BATCH DUPLICATES] {} total tests but only {} unique - pytest will only produce {} results!",
+                expected_count, unique_count, unique_count
+            );
+        }
 
         // Generate the run command for all tests
         let mut cmd = self.framework.produce_test_execution_command(tests);
         cmd = cmd.timeout(self.timeout.as_secs());
+
+        info!(
+            "[BATCH EXEC] Sandbox {} executing command for {} tests",
+            sandbox_id, expected_count
+        );
 
         // Execute the command with streaming (always use streaming for default provider support)
         let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
             Some(result) => result,
             None => {
                 // Cancelled - return early without recording results
-                debug!("Batch cancelled before completion");
+                warn!(
+                    "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
+                    sandbox_id, expected_count
+                );
                 return Ok(false);
             }
         };
 
         let duration = start.elapsed();
 
-        debug!(
-            "Tests completed with exit code {} in {:?}",
-            exec_result.exit_code, duration
+        info!(
+            "[BATCH COMPLETE] Sandbox {} finished execution: exit_code={}, duration={:?}",
+            sandbox_id, exec_result.exit_code, duration
         );
 
+        // Calculate unique test count (what pytest will actually produce)
+        let unique_test_ids: std::collections::HashSet<_> = test_ids.iter().collect();
+        let unique_count = unique_test_ids.len();
+
         // Download JUnit XML and add to shared report
-        if let Some(xml_content) = self.try_download_results().await {
-            if let Some(report) = &self.junit_report {
-                match report.lock() {
-                    Ok(mut report) => {
-                        report.add_junit_xml(&xml_content);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to lock junit report for {}: {}",
-                            self.sandbox.id(),
-                            e
-                        );
-                    }
+        match self.try_download_results(unique_count).await {
+            Some((xml_content, actual_count)) => {
+                info!(
+                    "[BATCH RESULTS] Sandbox {} downloaded junit.xml: total={}, unique={}, actual={}, bytes={}",
+                    sandbox_id, expected_count, unique_count, actual_count, xml_content.len()
+                );
+
+                // CRASH if we got fewer results than unique count (what pytest should produce)
+                if actual_count < unique_count {
+                    error!(
+                        "[BATCH MISMATCH] Sandbox {} has FEWER results than unique tests! unique={}, actual={}",
+                        sandbox_id, unique_count, actual_count
+                    );
+                    error!(
+                        "[BATCH MISMATCH] All test IDs ({}): {:?}",
+                        test_ids.len(),
+                        test_ids
+                    );
+                    error!(
+                        "[BATCH MISMATCH] XML content preview (first 2000 chars):\n{}",
+                        &xml_content[..xml_content.len().min(2000)]
+                    );
+                    panic!(
+                        "BATCH RESULT MISMATCH: Sandbox {} expected {} unique tests but got {} in junit.xml",
+                        sandbox_id, unique_count, actual_count
+                    );
                 }
-            } else {
-                tracing::warn!("No junit report configured for {}", self.sandbox.id());
+
+                if let Some(report) = &self.junit_report {
+                    match report.lock() {
+                        Ok(mut report) => {
+                            let before = report.total_count();
+                            report.add_junit_xml(&xml_content);
+                            let after = report.total_count();
+                            info!(
+                                "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
+                                sandbox_id, before, after, after - before
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "[BATCH ERROR] Failed to lock junit report for {}: {}",
+                                sandbox_id, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!("[BATCH WARN] No junit report configured for {}", sandbox_id);
+                }
+            }
+            None => {
+                error!(
+                    "[BATCH NO RESULTS] Sandbox {} failed to download junit.xml! {} tests lost!",
+                    sandbox_id, expected_count
+                );
+                panic!(
+                    "BATCH DOWNLOAD FAILED: Sandbox {} could not download junit.xml for {} tests",
+                    sandbox_id, expected_count
+                );
             }
         }
 
@@ -370,8 +466,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     }
 
     /// Try to download JUnit results from the sandbox.
-    async fn try_download_results(&mut self) -> Option<String> {
+    /// Returns (xml_content, testcase_count) if successful.
+    async fn try_download_results(&mut self, expected_count: usize) -> Option<(String, usize)> {
+        let sandbox_id = self.sandbox.id().to_string();
+
         // Debug: List /tmp contents before download
+        info!("[DOWNLOAD] Sandbox {} listing /tmp/ contents...", sandbox_id);
         let list_cmd = crate::provider::Command::new("ls").arg("-la").arg("/tmp/");
         if let Ok(mut stream) = self.sandbox.exec_stream(&list_cmd).await {
             use futures::StreamExt;
@@ -379,9 +479,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             while let Some(line) = stream.next().await {
                 tmp_contents.push(format!("{:?}", line));
             }
-            tracing::debug!(
-                "Sandbox {} /tmp/ contents: {}",
-                self.sandbox.id(),
+            info!(
+                "[DOWNLOAD] Sandbox {} /tmp/ contents: {}",
+                sandbox_id,
                 tmp_contents.join(" | ")
             );
         }
@@ -390,50 +490,72 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let remote_path = std::path::Path::new("/tmp/junit.xml");
         let temp_file = tempfile::NamedTempFile::new().ok()?;
 
+        info!(
+            "[DOWNLOAD] Sandbox {} downloading /tmp/junit.xml...",
+            sandbox_id
+        );
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
         match self.sandbox.download(&path_pairs).await {
-            Ok(_) => tracing::debug!(
-                "Download of /tmp/junit.xml succeeded for {}",
-                self.sandbox.id()
+            Ok(_) => info!(
+                "[DOWNLOAD] Sandbox {} download succeeded",
+                sandbox_id
             ),
-            Err(e) => tracing::warn!(
-                "Download of /tmp/junit.xml failed for {}: {}",
-                self.sandbox.id(),
-                e
-            ),
+            Err(e) => {
+                error!(
+                    "[DOWNLOAD FAILED] Sandbox {} download failed: {}",
+                    sandbox_id, e
+                );
+                return None;
+            }
         }
 
-        let content = std::fs::read_to_string(temp_file.path()).ok()?;
+        let content = match std::fs::read_to_string(temp_file.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    "[DOWNLOAD READ FAILED] Sandbox {} failed to read temp file: {}",
+                    sandbox_id, e
+                );
+                return None;
+            }
+        };
+
         if content.is_empty() {
-            tracing::warn!("Downloaded junit.xml is empty for {}", self.sandbox.id());
+            error!(
+                "[DOWNLOAD EMPTY] Sandbox {} downloaded empty junit.xml!",
+                sandbox_id
+            );
             return None;
         }
 
-        tracing::debug!(
-            "Downloaded junit.xml has {} bytes for {}",
+        // Count testcases in the XML
+        let actual_count = count_testcases_in_xml(&content);
+        info!(
+            "[DOWNLOAD] Sandbox {} junit.xml: {} bytes, {} testcases (expected {})",
+            sandbox_id,
             content.len(),
-            self.sandbox.id()
+            actual_count,
+            expected_count
         );
 
         // Save to parts directory for debugging if configured
         if let Some(ref parts_dir) = self.parts_dir {
             if let Err(e) = std::fs::create_dir_all(parts_dir) {
-                tracing::warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
+                warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
             } else {
                 // Sanitize sandbox ID to be a valid filename
-                let safe_id = self
-                    .sandbox
-                    .id()
+                let safe_id = sandbox_id
                     .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
                 let part_file = parts_dir.join(format!("{}.xml", safe_id));
                 if let Err(e) = std::fs::write(&part_file, &content) {
-                    tracing::warn!("Failed to save part file {:?}: {}", part_file, e);
+                    warn!("Failed to save part file {:?}: {}", part_file, e);
                 } else {
-                    tracing::info!(
-                        "Saved batch {} to {:?} ({} bytes)",
-                        self.sandbox.id(),
+                    info!(
+                        "[PARTS] Saved {} to {:?} ({} bytes, {} testcases)",
+                        sandbox_id,
                         part_file,
-                        content.len()
+                        content.len(),
+                        actual_count
                     );
                 }
             }
@@ -441,10 +563,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             // Log parts dir stats
             if let Ok(entries) = std::fs::read_dir(parts_dir) {
                 let count = entries.filter(|e| e.is_ok()).count();
-                tracing::info!("Parts directory now has {} files", count);
+                info!("[PARTS] Directory now has {} files", count);
             }
         }
 
-        Some(content)
+        Some((content, actual_count))
     }
 }

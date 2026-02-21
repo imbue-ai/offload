@@ -105,7 +105,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
@@ -421,11 +421,25 @@ where
             batches.len()
         );
 
-        debug!(
-            "Scheduled {} tests into {} batches with {} sandboxes",
+        // Log batch distribution
+        info!(
+            "[ORCHESTRATOR] Scheduled {} tests into {} batches with {} sandboxes",
             tests_to_run.len(),
             batches.len(),
             sandboxes.len()
+        );
+        for (i, batch) in batches.iter().enumerate() {
+            info!(
+                "[ORCHESTRATOR] Batch {}: {} tests",
+                i,
+                batch.len()
+            );
+        }
+        let total_in_batches: usize = batches.iter().map(|b| b.len()).sum();
+        info!(
+            "[ORCHESTRATOR] Total tests across all batches: {} (should equal {})",
+            total_in_batches,
+            tests_to_run.len()
         );
 
         // Shared JUnit report for accumulating results and early stopping
@@ -455,7 +469,13 @@ where
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
                     if all_passed.load(Ordering::SeqCst) {
-                        debug!("Batch {} skipped - all tests have passed", batch_idx);
+                        let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+                        info!(
+                            "EARLY STOP: Skipping batch {} ({} tests) - all tests already passed",
+                            batch_idx,
+                            batch.len()
+                        );
+                        debug!("Skipped tests: {:?}", test_ids);
                         sandboxes_for_cleanup.lock().await.push(sandbox);
                         return;
                     }
@@ -495,9 +515,10 @@ where
                                 && report.all_passed()
                                 && !all_passed.load(Ordering::SeqCst)
                             {
-                                debug!(
-                                    "All {} tests have passed, signaling early stop",
-                                    total_tests_to_run
+                                info!(
+                                    "EARLY STOP TRIGGERED: All {} tests have passed after batch {} completed. Cancelling remaining batches.",
+                                    total_tests_to_run,
+                                    batch_idx
                                 );
                                 all_passed.store(true, Ordering::SeqCst);
                                 cancellation_token.cancel();
@@ -524,11 +545,34 @@ where
 
         // Aggregate results from TestRecords (handles parallel retries automatically)
         // Get results from the shared JUnit report
-        let (passed, failed, flaky_count) = if let Ok(report) = junit_report.lock() {
-            report.summary()
+        info!("[ORCHESTRATOR] All batches completed, aggregating results...");
+        let (passed, failed, flaky_count, total_in_report) = if let Ok(report) = junit_report.lock() {
+            let summary = report.summary();
+            let total = report.total_count();
+            info!(
+                "[ORCHESTRATOR] Master report: {} total unique tests, {} passed, {} failed, {} flaky",
+                total, summary.0, summary.1, summary.2
+            );
+            (summary.0, summary.1, summary.2, total)
         } else {
-            (0, 0, 0)
+            (0, 0, 0, 0)
         };
+
+        // Check for missing tests
+        let expected_unique_tests = tests.iter().filter(|t| !t.skipped).count();
+        if total_in_report < expected_unique_tests {
+            error!(
+                "[ORCHESTRATOR MISMATCH] Expected {} unique tests but only {} in report! {} TESTS MISSING!",
+                expected_unique_tests,
+                total_in_report,
+                expected_unique_tests - total_in_report
+            );
+        } else {
+            info!(
+                "[ORCHESTRATOR] All {} expected tests accounted for in report",
+                expected_unique_tests
+            );
+        }
 
         // Write the JUnit report to file
         if self.config.report.junit {

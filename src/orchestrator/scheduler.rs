@@ -39,6 +39,30 @@ use rand::thread_rng;
 
 use crate::framework::TestInstance;
 
+/// Look up a test's duration with suffix matching.
+///
+/// First tries an exact match. If not found, looks for a key where the
+/// test_id ends with that key (handling path prefix mismatches like
+/// `libs/mng/imbue/...` vs `imbue/...`).
+fn lookup_duration_with_suffix_match(
+    durations: &HashMap<String, Duration>,
+    test_id: &str,
+) -> Option<Duration> {
+    // Try exact match first
+    if let Some(&duration) = durations.get(test_id) {
+        return Some(duration);
+    }
+
+    // Try suffix matching: find a key where test_id ends with "/" + key
+    for (key, &duration) in durations {
+        if test_id.ends_with(&format!("/{}", key)) {
+            return Some(duration);
+        }
+    }
+
+    None
+}
+
 /// Distributes tests across parallel sandboxes.
 ///
 /// The scheduler is responsible for creating batches of tests that can
@@ -246,21 +270,42 @@ impl Scheduler {
             return Vec::new();
         }
 
-        // Phase 1: Look up durations for each test
+        // Count instances per test ID to determine max retry count
+        let mut instance_counts: HashMap<&str, usize> = HashMap::new();
+        for test in tests {
+            *instance_counts.entry(test.id()).or_insert(0) += 1;
+        }
+        let max_instances = instance_counts.values().copied().max().unwrap_or(1);
+        let unique_tests = instance_counts.len();
+
+        println!(
+            "Unique tests: {}, max instances per test: {}",
+            unique_tests, max_instances
+        );
+
+        // Assert we have enough workers to avoid putting the same test in the same batch
+        assert!(
+            self.max_parallel >= max_instances,
+            "Not enough workers ({}) for retry count ({}). Each test instance must run in a separate sandbox.",
+            self.max_parallel,
+            max_instances
+        );
+
+        // Phase 1: Look up durations for each test (with suffix matching for path prefix mismatches)
         println!("\n--- PHASE 1: Duration Lookup ---");
         let mut known_count = 0;
         let mut default_count = 0;
         let mut tests_with_duration: Vec<(TestInstance<'a>, Duration)> = tests
             .iter()
             .map(|t| {
-                let duration = durations.get(t.id()).copied().unwrap_or(default_duration);
-                let source = if durations.contains_key(t.id()) {
-                    known_count += 1;
-                    "junit.xml"
-                } else {
-                    default_count += 1;
-                    "DEFAULT"
-                };
+                let (duration, source) =
+                    if let Some(d) = lookup_duration_with_suffix_match(durations, t.id()) {
+                        known_count += 1;
+                        (d, "junit.xml")
+                    } else {
+                        default_count += 1;
+                        (default_duration, "DEFAULT")
+                    };
                 println!("  {:?} <- {} [{}]", duration, t.id(), source);
                 (*t, duration)
             })
@@ -286,28 +331,43 @@ impl Scheduler {
             (0..num_batches).map(|_| Vec::new()).collect();
         let mut batch_loads: Vec<Duration> = vec![Duration::ZERO; num_batches];
 
-        // Phase 4: LPT assignment
-        println!("\n--- PHASE 4: LPT Assignment ---");
+        // Phase 4: LPT assignment (with duplicate prevention)
+        println!("\n--- PHASE 4: LPT Assignment (with duplicate prevention) ---");
+
+        // Track which test IDs are in each batch to prevent duplicates
+        let mut batch_test_ids: Vec<std::collections::HashSet<String>> =
+            (0..num_batches).map(|_| std::collections::HashSet::new()).collect();
+
         for (test, duration) in tests_with_duration {
-            // Find the batch with minimum load
-            let min_idx = batch_loads
+            let test_id = test.id();
+
+            // Find the batch with minimum load that doesn't already have this test
+            let mut candidates: Vec<(usize, Duration)> = batch_loads
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, load)| *load)
-                .map(|(idx, _)| idx)
-                .unwrap_or(0);
+                .filter(|(idx, _)| !batch_test_ids[*idx].contains(test_id))
+                .map(|(idx, load)| (idx, *load))
+                .collect();
 
-            let old_load = batch_loads[min_idx];
-            batches[min_idx].push(test);
-            batch_loads[min_idx] += duration;
+            // Sort by load (ascending)
+            candidates.sort_by_key(|(_, load)| *load);
+
+            let target_idx = candidates.first().map(|(idx, _)| *idx).expect(
+                "No available batch for test - this should be impossible due to earlier assertion",
+            );
+
+            let old_load = batch_loads[target_idx];
+            batches[target_idx].push(test);
+            batch_loads[target_idx] += duration;
+            batch_test_ids[target_idx].insert(test_id.to_string());
 
             println!(
                 "  Assign {} ({:?}) -> Batch {} (load: {:?} -> {:?})",
-                test.id(),
+                test_id,
                 duration,
-                min_idx,
+                target_idx,
                 old_load,
-                batch_loads[min_idx]
+                batch_loads[target_idx]
             );
 
             // Show current batch loads
