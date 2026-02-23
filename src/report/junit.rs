@@ -21,15 +21,35 @@ pub enum TestStatus {
 }
 
 /// Unique identifier for a test case.
+///
+/// Normalizes the classname by keeping only the last 2 components to avoid
+/// path prefix mismatches when PYTHONPATH differs across sandboxes.
+/// e.g., `libs.foo.test_bar` and `imbue.libs.foo.test_bar` both become `foo.test_bar`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TestId {
-    classname: Option<String>,
+    /// Normalized classname (last 2 components of the dotted path)
+    classname_suffix: Option<String>,
     name: String,
 }
 
 impl TestId {
     fn new(classname: Option<String>, name: String) -> Self {
-        Self { classname, name }
+        // Normalize classname by taking only the last 2 components
+        // This handles PYTHONPATH differences like:
+        // - "libs.foo.test_bar" -> "foo.test_bar"
+        // - "imbue.libs.foo.test_bar" -> "foo.test_bar"
+        let classname_suffix = classname.map(|c| {
+            let parts: Vec<&str> = c.rsplitn(3, '.').collect();
+            match parts.len() {
+                1 => parts[0].to_string(),
+                2 => format!("{}.{}", parts[1], parts[0]),
+                _ => format!("{}.{}", parts[1], parts[0]),
+            }
+        });
+        Self {
+            classname_suffix,
+            name,
+        }
     }
 }
 
