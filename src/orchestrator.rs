@@ -585,17 +585,19 @@ where
             }
         }
 
-        // Total tests from discovery, results from JUnit XML
+        // Use JUnit report as source of truth for all counts
         let total_discovered = tests.iter().filter(|t| !t.skipped).count();
-        let tests_with_results = if let Ok(report) = junit_report.lock() {
+        let total_in_junit = if let Ok(report) = junit_report.lock() {
             report.total_count()
         } else {
             0
         };
-        let not_run = total_discovered.saturating_sub(tests_with_results);
+        let not_run = total_discovered.saturating_sub(total_in_junit);
 
+        // Use the JUnit total as the authoritative count (passed + failed + flaky = total)
+        // This ensures passed can never exceed total
         let run_result = RunResult {
-            total_tests: total_discovered,
+            total_tests: total_in_junit,
             passed: passed + flaky_count, // Flaky tests count as passed
             failed,
             skipped: skipped_count,
