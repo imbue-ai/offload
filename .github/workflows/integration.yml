@@ -60,6 +60,9 @@ jobs:
 
     - name: Run integration test
       working-directory: mngr
+      env:
+        MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+        MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
         just test-offload
