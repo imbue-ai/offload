@@ -429,11 +429,7 @@ where
             sandboxes.len()
         );
         for (i, batch) in batches.iter().enumerate() {
-            info!(
-                "[ORCHESTRATOR] Batch {}: {} tests",
-                i,
-                batch.len()
-            );
+            info!("[ORCHESTRATOR] Batch {}: {} tests", i, batch.len());
         }
         let total_in_batches: usize = batches.iter().map(|b| b.len()).sum();
         info!(
@@ -546,7 +542,8 @@ where
         // Aggregate results from TestRecords (handles parallel retries automatically)
         // Get results from the shared JUnit report
         info!("[ORCHESTRATOR] All batches completed, aggregating results...");
-        let (passed, failed, flaky_count, total_in_report) = if let Ok(report) = junit_report.lock() {
+        let (passed, failed, flaky_count, total_in_report) = if let Ok(report) = junit_report.lock()
+        {
             let summary = report.summary();
             let total = report.total_count();
             info!(

@@ -335,8 +335,9 @@ impl Scheduler {
         println!("\n--- PHASE 4: LPT Assignment (with duplicate prevention) ---");
 
         // Track which test IDs are in each batch to prevent duplicates
-        let mut batch_test_ids: Vec<std::collections::HashSet<String>> =
-            (0..num_batches).map(|_| std::collections::HashSet::new()).collect();
+        let mut batch_test_ids: Vec<std::collections::HashSet<String>> = (0..num_batches)
+            .map(|_| std::collections::HashSet::new())
+            .collect();
 
         for (test, duration) in tests_with_duration {
             let test_id = test.id();
@@ -363,11 +364,7 @@ impl Scheduler {
 
             println!(
                 "  Assign {} ({:?}) -> Batch {} (load: {:?} -> {:?})",
-                test_id,
-                duration,
-                target_idx,
-                old_load,
-                batch_loads[target_idx]
+                test_id, duration, target_idx, old_load, batch_loads[target_idx]
             );
 
             // Show current batch loads

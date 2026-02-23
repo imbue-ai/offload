@@ -53,9 +53,7 @@ use crate::report::SharedJunitReport;
 
 /// Count testcases in a JUnit XML string.
 fn count_testcases_in_xml(xml: &str) -> usize {
-    // Count both <testcase .../> (self-closing) and <testcase ...> (with content)
-    let self_closing = xml.matches("<testcase ").count();
-    self_closing
+    xml.matches("<testcase ").count()
 }
 
 /// JSON result format from default provider sandboxes.
@@ -404,7 +402,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             Some((xml_content, actual_count)) => {
                 info!(
                     "[BATCH RESULTS] Sandbox {} downloaded junit.xml: total={}, unique={}, actual={}, bytes={}",
-                    sandbox_id, expected_count, unique_count, actual_count, xml_content.len()
+                    sandbox_id,
+                    expected_count,
+                    unique_count,
+                    actual_count,
+                    xml_content.len()
                 );
 
                 // CRASH if we got fewer results than unique count (what pytest should produce)
@@ -436,7 +438,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                             let after = report.total_count();
                             info!(
                                 "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
-                                sandbox_id, before, after, after - before
+                                sandbox_id,
+                                before,
+                                after,
+                                after - before
                             );
                         }
                         Err(e) => {
@@ -471,7 +476,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let sandbox_id = self.sandbox.id().to_string();
 
         // Debug: List /tmp contents before download
-        info!("[DOWNLOAD] Sandbox {} listing /tmp/ contents...", sandbox_id);
+        info!(
+            "[DOWNLOAD] Sandbox {} listing /tmp/ contents...",
+            sandbox_id
+        );
         let list_cmd = crate::provider::Command::new("ls").arg("-la").arg("/tmp/");
         if let Ok(mut stream) = self.sandbox.exec_stream(&list_cmd).await {
             use futures::StreamExt;
@@ -496,10 +504,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         );
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
         match self.sandbox.download(&path_pairs).await {
-            Ok(_) => info!(
-                "[DOWNLOAD] Sandbox {} download succeeded",
-                sandbox_id
-            ),
+            Ok(_) => info!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
             Err(e) => {
                 error!(
                     "[DOWNLOAD FAILED] Sandbox {} download failed: {}",
@@ -544,8 +549,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
             } else {
                 // Sanitize sandbox ID to be a valid filename
-                let safe_id = sandbox_id
-                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                let safe_id =
+                    sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
                 let part_file = parts_dir.join(format!("{}.xml", safe_id));
                 if let Err(e) = std::fs::write(&part_file, &content) {
                     warn!("Failed to save part file {:?}: {}", part_file, e);
