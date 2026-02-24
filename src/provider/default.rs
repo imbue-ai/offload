@@ -210,13 +210,17 @@ impl SandboxProvider for DefaultProvider {
 
         debug!("Created default sandbox with ID: {}", remote_id);
 
+        // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
+        let mut env = self.base_env();
+        env.extend(config.env.iter().cloned());
+
         Ok(DefaultSandbox {
             id: remote_id,
             connector: self.connector.clone(),
             exec_command: self.config.exec_command.clone(),
             destroy_command: self.config.destroy_command.clone(),
             download_command: self.config.download_command.clone(),
-            env: self.base_env(),
+            env,
         })
     }
 
