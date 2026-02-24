@@ -544,4 +544,84 @@ mod tests {
         assert_eq!(batches[2].len(), 3);
         assert_eq!(batches[3].len(), 1);
     }
+
+    #[test]
+    fn test_schedule_lpt_duplicate_prevention() {
+        // Simulate retry scenario: same test appears multiple times
+        let scheduler = Scheduler::new(3);
+        let records = [
+            TestRecord::new("test_a"),
+            TestRecord::new("test_a"), // retry 1
+            TestRecord::new("test_a"), // retry 2
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_secs(5));
+
+        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+
+        // Each instance of test_a must be in a different batch
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches[1].len(), 1);
+        assert_eq!(batches[2].len(), 1);
+
+        // Verify no batch contains duplicate test IDs
+        for batch in &batches {
+            let ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(ids.len(), unique.len(), "Batch contains duplicate test IDs");
+        }
+    }
+
+    #[test]
+    fn test_schedule_lpt_mixed_duplicates_and_unique() {
+        // Mix of retried and unique tests
+        let scheduler = Scheduler::new(3);
+        let records = [
+            TestRecord::new("test_a"),
+            TestRecord::new("test_a"), // retry
+            TestRecord::new("test_b"),
+            TestRecord::new("test_c"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_secs(10));
+        durations.insert("test_b".to_string(), Duration::from_secs(5));
+        durations.insert("test_c".to_string(), Duration::from_secs(1));
+
+        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+
+        // Verify no batch contains duplicate test IDs
+        for batch in &batches {
+            let ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(ids.len(), unique.len(), "Batch contains duplicate test IDs");
+        }
+
+        // Both instances of test_a should exist across batches
+        let all_ids: Vec<_> = batches
+            .iter()
+            .flat_map(|b| b.iter().map(|t| t.id()))
+            .collect();
+        assert_eq!(all_ids.iter().filter(|&&id| id == "test_a").count(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not enough workers")]
+    fn test_schedule_lpt_panics_insufficient_workers_for_retries() {
+        // 2 workers but 3 instances of same test - should panic
+        let scheduler = Scheduler::new(2);
+        let records = [
+            TestRecord::new("test_a"),
+            TestRecord::new("test_a"),
+            TestRecord::new("test_a"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let durations = HashMap::new();
+        scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
+    }
 }
