@@ -39,30 +39,6 @@ use rand::thread_rng;
 
 use crate::framework::TestInstance;
 
-/// Look up a test's duration with suffix matching.
-///
-/// First tries an exact match. If not found, looks for a key where the
-/// test_id ends with that key (handling path prefix mismatches like
-/// `libs/mng/imbue/...` vs `imbue/...`).
-fn lookup_duration_with_suffix_match(
-    durations: &HashMap<String, Duration>,
-    test_id: &str,
-) -> Option<Duration> {
-    // Try exact match first
-    if let Some(&duration) = durations.get(test_id) {
-        return Some(duration);
-    }
-
-    // Try suffix matching: find a key where test_id ends with "/" + key
-    for (key, &duration) in durations {
-        if test_id.ends_with(&format!("/{}", key)) {
-            return Some(duration);
-        }
-    }
-
-    None
-}
-
 /// Distributes tests across parallel sandboxes.
 ///
 /// The scheduler is responsible for creating batches of tests that can
@@ -298,14 +274,13 @@ impl Scheduler {
         let mut tests_with_duration: Vec<(TestInstance<'a>, Duration)> = tests
             .iter()
             .map(|t| {
-                let (duration, source) =
-                    if let Some(d) = lookup_duration_with_suffix_match(durations, t.id()) {
-                        known_count += 1;
-                        (d, "junit.xml")
-                    } else {
-                        default_count += 1;
-                        (default_duration, "DEFAULT")
-                    };
+                let (duration, source) = if let Some(&d) = durations.get(t.id()) {
+                    known_count += 1;
+                    (d, "junit.xml")
+                } else {
+                    default_count += 1;
+                    (default_duration, "DEFAULT")
+                };
                 println!("  {:?} <- {} [{}]", duration, t.id(), source);
                 (*t, duration)
             })
