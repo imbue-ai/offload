@@ -9,9 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Golden version of mngr to test against
-  # Update this SHA when mngr changes in a way that affects offload integration
-  MNGR_SHA: "f96fc0ea2115778c38e6685cd1d621a43b9ad9e1"
+  # Branch of mng to test against
+  MNG_REF: "fix/junit-classname-nodeid"
 
 jobs:
   integration:
@@ -23,13 +22,13 @@ jobs:
       with:
         path: offload
 
-    - name: Checkout mngr (golden version)
+    - name: Checkout mng
       uses: actions/checkout@v4
       with:
-        repository: imbue-ai/mngr
-        ref: ${{ env.MNGR_SHA }}
+        repository: imbue-ai/mng
+        ref: ${{ env.MNG_REF }}
         token: ${{ secrets.MNGR_ACCESS_TOKEN }}
-        path: mngr
+        path: mng
 
     - name: Install Rust stable
       uses: dtolnay/rust-toolchain@stable
@@ -51,15 +50,15 @@ jobs:
       working-directory: offload
       run: just install
 
-    - name: Install mngr dependencies
-      working-directory: mngr
+    - name: Install mng dependencies
+      working-directory: mng
       run: |
         uv venv .venv --clear
         uv sync --all-packages
-        uv tool install -e libs/mngr
+        uv tool install -e libs/mng
 
     - name: Run integration test
-      working-directory: mngr
+      working-directory: mng
       env:
         MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
