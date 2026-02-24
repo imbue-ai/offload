@@ -461,6 +461,12 @@ where
         .collect();
 
     // Pre-populate sandbox pool
+    let mut env = provider.base_env();
+    env.push((
+        "OFFLOAD_ROOT".to_string(),
+        config.offload.sandbox_project_root.clone(),
+    ));
+
     let sandbox_config = SandboxConfig {
         id: format!("offload-{}", uuid::Uuid::new_v4()),
         working_dir: config
@@ -468,7 +474,7 @@ where
             .working_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        env: provider.base_env(),
+        env,
         copy_dirs: copy_dir_tuples.clone(),
     };
 
