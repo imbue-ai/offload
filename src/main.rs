@@ -286,8 +286,6 @@ async fn run_tests(
         .next()
         .ok_or_else(|| anyhow!("No groups configured"))?;
 
-    let junit_format = first_group_config.junit_format;
-
     let exit_code = match (&config.provider, &first_group_config.framework) {
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
             run_all_tests(
@@ -297,7 +295,6 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -309,7 +306,6 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -321,7 +317,6 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -341,7 +336,6 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -361,7 +355,6 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -381,7 +374,6 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -396,7 +388,6 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -411,7 +402,6 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -426,7 +416,6 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
-                junit_format,
             )
             .await?
         }
@@ -448,7 +437,6 @@ async fn run_all_tests<P, D>(
     framework: D,
     copy_dirs: &[CopyDir],
     verbose: bool,
-    junit_format: offload::report::JunitFormat,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -484,7 +472,7 @@ where
         .await
         .context("Failed to create sandboxes")?;
 
-    let orchestrator = Orchestrator::new(config.clone(), framework, verbose, junit_format);
+    let orchestrator = Orchestrator::new(config.clone(), framework, verbose);
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
 

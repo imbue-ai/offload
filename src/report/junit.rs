@@ -541,10 +541,7 @@ pub fn merge_junit_files(parts_dir: &Path, output_path: &Path) -> std::io::Resul
 ///
 /// A HashMap where keys are test IDs and values are durations.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
-pub fn load_test_durations(
-    junit_path: &Path,
-    format: super::JunitFormat,
-) -> HashMap<String, std::time::Duration> {
+pub fn load_test_durations(junit_path: &Path) -> HashMap<String, std::time::Duration> {
     let mut durations = HashMap::new();
 
     let content = match std::fs::read_to_string(junit_path) {
@@ -565,12 +562,9 @@ pub fn load_test_durations(
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) if e.name().as_ref() == b"testcase" => {
                 let name = get_attr(&e, b"name");
-                let classname = get_attr(&e, b"classname");
                 let time = get_attr_f64(&e, b"time");
 
-                if let Some(test_name) = name {
-                    let classname_str = classname.as_deref().unwrap_or("");
-                    let test_id = format.to_test_id(classname_str, &test_name);
+                if let Some(test_id) = name {
                     let duration = std::time::Duration::from_secs_f64(time);
                     // Use max duration if test appears multiple times (from retries)
                     durations
@@ -598,11 +592,7 @@ pub fn load_test_durations(
     // Debug: show a sample of loaded test IDs to help diagnose mismatches
     if !durations.is_empty() {
         let sample_ids: Vec<&String> = durations.keys().take(3).collect();
-        tracing::debug!(
-            "Sample loaded test IDs (format={:?}): {:?}",
-            format,
-            sample_ids
-        );
+        tracing::debug!("Sample loaded test IDs: {:?}", sample_ids);
     }
 
     durations
@@ -620,7 +610,6 @@ pub fn cleanup_parts(parts_dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::JunitFormat;
 
     #[test]
     fn test_parse_testcase_passed() {
@@ -708,8 +697,7 @@ mod tests {
         let mut file = std::fs::File::create(&path).expect("create file");
         file.write_all(xml.as_bytes()).expect("write xml");
 
-        // Use default format (just returns name)
-        let durations = load_test_durations(&path, JunitFormat::Default);
+        let durations = load_test_durations(&path);
 
         assert_eq!(durations.len(), 3);
         assert_eq!(
@@ -746,8 +734,7 @@ mod tests {
         let mut file = std::fs::File::create(&path).expect("create file");
         file.write_all(xml.as_bytes()).expect("write xml");
 
-        // Use default format (just returns name)
-        let durations = load_test_durations(&path, JunitFormat::Default);
+        let durations = load_test_durations(&path);
 
         assert_eq!(durations.len(), 1);
         // Should use max duration (3.0s, not 1.0s)
@@ -759,42 +746,7 @@ mod tests {
 
     #[test]
     fn test_load_test_durations_nonexistent_file() {
-        let durations = load_test_durations(
-            Path::new("/nonexistent/path/junit.xml"),
-            JunitFormat::Default,
-        );
+        let durations = load_test_durations(Path::new("/nonexistent/path/junit.xml"));
         assert!(durations.is_empty());
-    }
-
-    #[test]
-    fn test_load_test_durations_with_pytest_format() {
-        use std::io::Write;
-
-        // Test that the pytest format produces correct test IDs
-        let xml = r#"<?xml version="1.0"?>
-<testsuites>
-  <testsuite name="test">
-    <testcase name="test_foo" classname="libs.mng.api.test_list" time="1.5" />
-    <testcase name="test_bar" classname="apps.changelings.cli.add_test" time="2.0" />
-  </testsuite>
-</testsuites>"#;
-
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let path = dir.path().join("junit.xml");
-        let mut file = std::fs::File::create(&path).expect("create file");
-        file.write_all(xml.as_bytes()).expect("write xml");
-
-        // Use pytest format
-        let durations = load_test_durations(&path, JunitFormat::Pytest);
-
-        assert_eq!(durations.len(), 2);
-        assert_eq!(
-            durations.get("libs/mng/api/test_list.py::test_foo"),
-            Some(&std::time::Duration::from_millis(1500))
-        );
-        assert_eq!(
-            durations.get("apps/changelings/cli/add_test.py::test_bar"),
-            Some(&std::time::Duration::from_secs(2))
-        );
     }
 }

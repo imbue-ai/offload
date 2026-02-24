@@ -59,7 +59,6 @@
 //! use offload::config::{load_config, SandboxConfig};
 //! use offload::provider::local::LocalProvider;
 //! use offload::framework::{TestFramework, pytest::PytestFramework};
-//! use offload::report::JunitFormat;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -82,7 +81,7 @@
 //!     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
 //!
 //!     // Run tests using the orchestrator
-//!     let orchestrator = Orchestrator::new(config, framework, false, JunitFormat::Pytest);
+//!     let orchestrator = Orchestrator::new(config, framework, false);
 //!     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 //!
 //!     if result.success() {
@@ -259,7 +258,6 @@ pub struct Orchestrator<S, D> {
     config: Config,
     framework: D,
     verbose: bool,
-    junit_format: crate::report::JunitFormat,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -275,18 +273,11 @@ where
     /// * `config` - Configuration loaded from TOML
     /// * `framework` - Test framework for running tests
     /// * `verbose` - Whether to show verbose output (streaming test output)
-    /// * `junit_format` - Format for parsing test IDs from JUnit XML
-    pub fn new(
-        config: Config,
-        framework: D,
-        verbose: bool,
-        junit_format: crate::report::JunitFormat,
-    ) -> Self {
+    pub fn new(config: Config, framework: D, verbose: bool) -> Self {
         Self {
             config,
             framework,
             verbose,
-            junit_format,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -322,7 +313,7 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path, self.junit_format);
+        let durations = load_test_durations(&junit_path);
 
         // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
         let output_dir = &self.config.report.output_dir;
