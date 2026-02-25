@@ -1,0 +1,20 @@
+# Offload configuration for Rust cargo test suite - using cargo framework
+
+type = "cargo"
+
+[offload]
+max_parallel = 2
+test_timeout_secs = 120
+stream_output = true
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+working_dir = "."
+shell = "/bin/bash"
+
+[groups.all]
+retry_count = 1
+
+[report]
+output_dir = "test-results"

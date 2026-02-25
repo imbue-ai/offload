@@ -1,0 +1,5 @@
+[profile.default]
+retries = 0
+
+[profile.default.junit]
+path = "target/nextest/default/junit.xml"

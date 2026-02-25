@@ -15,6 +15,34 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+/// Formats a test ID from JUnit XML attributes using the provided format string.
+///
+/// # Arguments
+///
+/// * `format` - Format string with placeholders like `{name}` and `{classname}`
+/// * `name` - The testcase name attribute from JUnit XML
+/// * `classname` - The testcase classname attribute from JUnit XML (optional)
+///
+/// # Example
+///
+/// ```
+/// use offload::config::format_test_id;
+///
+/// // Cargo/nextest format
+/// let id = format_test_id("{classname} {name}", "test_foo", Some("my-crate::tests"));
+/// assert_eq!(id, "my-crate::tests test_foo");
+///
+/// // Pytest format (name only)
+/// let id = format_test_id("{name}", "tests/test_math.py::test_add", None);
+/// assert_eq!(id, "tests/test_math.py::test_add");
+/// ```
+pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> String {
+    let mut result = format.to_string();
+    result = result.replace("{name}", name);
+    result = result.replace("{classname}", classname.unwrap_or(""));
+    result
+}
+
 /// Loads offload configuration from a TOML file.
 ///
 /// This is the primary way to load configuration. The file must be valid TOML

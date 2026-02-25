@@ -1,0 +1,29 @@
+# Offload configuration for Rust cargo test suite
+
+# Use default framework with custom commands to work around cargo parsing bug
+type = "default"
+
+# Discovery: parse nextest list output to get full test IDs (binary::test_name)
+discover_command = "cargo nextest list --color=never 2>/dev/null | grep -E '^rust-tests' | awk '{print $1 \"::\" $2}'"
+
+# Run: use nextest filter expression
+run_command = "cargo nextest run --no-fail-fast -E \"$(echo '{tests}' | tr ' ' '\n' | sed 's/.*::/test(=/' | sed 's/$/)/' | tr '\n' ' ' | sed 's/ / | /g' | sed 's/ | $//')\""
+
+result_file = "target/nextest/default/junit.xml"
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 120
+stream_output = true
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+working_dir = "."
+shell = "/bin/bash"
+
+[groups.all]
+retry_count = 1
+
+[report]
+output_dir = "test-results"

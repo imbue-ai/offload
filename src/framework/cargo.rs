@@ -98,7 +98,12 @@ impl CargoFramework {
 
     /// Parse cargo nextest list output to extract test records.
     ///
-    /// Nextest output format: `binary_name test::path::here`
+    /// Nextest output formats:
+    /// - `binary_name module::test_func` - tests in lib.rs
+    /// - `binary::test_file test_func` - tests in integration test files
+    ///
+    /// Returns test IDs in the format `binary test_name` to match
+    /// JUnit XML output where classname=binary and name=test_name.
     fn parse_list_output(&self, output: &str) -> Vec<TestRecord> {
         let mut tests = Vec::new();
 
@@ -113,10 +118,14 @@ impl CargoFramework {
                 continue;
             }
 
-            // Nextest format: "binary_name test::path"
-            // Extract the test path (part with ::)
-            if let Some(test_path) = trimmed.split_whitespace().find(|s| s.contains("::")) {
-                tests.push(TestRecord::new(test_path));
+            // Nextest format: "binary test_path" (space-separated)
+            // Binary may contain "::" for integration tests (e.g., "rust-tests::algorithm_tests")
+            // Test path may contain "::" for module paths (e.g., "tests::test_add")
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                // Full test ID: "binary test_name" matching JUnit classname + name format
+                let test_id = format!("{} {}", parts[0], parts[1]);
+                tests.push(TestRecord::new(&test_id));
             }
         }
 
@@ -185,7 +194,8 @@ impl TestFramework for CargoFramework {
     }
 
     fn produce_test_execution_command(&self, tests: &[TestInstance]) -> Command {
-        // JUnit output configured via .config/nextest.toml
+        // JUnit output should be configured via .config/nextest.toml to /tmp/junit.xml
+        // where offload's runner expects it
         let mut cmd = Command::new("cargo")
             .arg("nextest")
             .arg("run")
@@ -208,9 +218,15 @@ impl TestFramework for CargoFramework {
         }
 
         // Build filter expression: test(=test1) | test(=test2) | ...
+        // Test IDs are in format "binary_name test::path", extract just the test path for filtering
         let filter_expr: String = tests
             .iter()
-            .map(|t| format!("test(={})", t.id()))
+            .map(|t| {
+                let id = t.id();
+                // Extract test path (part after first space, or whole ID if no space)
+                let test_path = id.split_once(' ').map(|(_, path)| path).unwrap_or(id);
+                format!("test(={})", test_path)
+            })
             .collect::<Vec<_>>()
             .join(" | ");
 
@@ -223,7 +239,7 @@ impl TestFramework for CargoFramework {
         result_file: Option<&str>,
     ) -> FrameworkResult<Vec<TestResult>> {
         if let Some(xml) = result_file {
-            parse_junit_xml(xml)
+            parse_junit_xml(xml, &self.config.test_id_format)
         } else {
             Ok(Vec::new())
         }

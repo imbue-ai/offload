@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="offload" tests="18" failures="3" errors="0" time="36.013">
+  <testsuite name="github.com/test/go-tests" tests="18" failures="3" errors="0" skipped="0" time="36.013" timestamp="2026-02-24T11:43:30-08:00"><testcase name="TestCollectionMapLookup" classname="github.com/test/go-tests" time="0.800"><failure message="Failed">=== RUN   TestCollectionMapLookup
+    collection_test.go:173: m[500] = &quot;G&quot;, true; want &quot;U&quot;, true
+--- FAIL: TestCollectionMapLookup (0.80s)
+</failure></testcase><testcase name="TestEdgeBoundaryPrimes" classname="github.com/test/go-tests" time="0.600"><failure message="Failed">=== RUN   TestEdgeBoundaryPrimes
+    edge_test.go:210: IsPrime(2147483563) = true; want false
+--- FAIL: TestEdgeBoundaryPrimes (0.60s)
+</failure></testcase><testcase name="TestFlakyRandomFailure" classname="github.com/test/go-tests" time="0.500"><failure message="Failed">=== RUN   TestFlakyRandomFailure
+    flaky_test.go:30: Random failure triggered (random value: 0.1853 &lt; 0.3). This test is intentionally flaky.
+--- FAIL: TestFlakyRandomFailure (0.50s)
+</failure></testcase><testcase name="TestAlgorithmQuickSort" classname="github.com/test/go-tests" time="4.540"/><testcase name="TestAlgorithmInsertionSort" classname="github.com/test/go-tests" time="2.560"/><testcase name="TestCollectionSliceMax" classname="github.com/test/go-tests" time="0.310"/><testcase name="TestCollectionSliceReverse" classname="github.com/test/go-tests" time="1.590"/><testcase name="TestConcurrentWorkerPool" classname="github.com/test/go-tests" time="3.000"/><testcase name="TestEdgeZeroValues" classname="github.com/test/go-tests" time="0.300"/><testcase name="TestFastSubtraction" classname="github.com/test/go-tests" time="0.200"/><testcase name="TestIntegrationConcurrentPipeline" classname="github.com/test/go-tests" time="5.000"/><testcase name="TestMathFactorialLarge" classname="github.com/test/go-tests" time="0.500"/><testcase name="TestMathPrimeLarge" classname="github.com/test/go-tests" time="1.500"/><testcase name="TestMathPower" classname="github.com/test/go-tests" time="0.400"/><testcase name="TestMediumVowelCount" classname="github.com/test/go-tests" time="2.530"/><testcase name="TestSlowIntensiveComputation" classname="github.com/test/go-tests" time="10.020"/><testcase name="TestStringToUpperCase" classname="github.com/test/go-tests" time="0.410"/><testcase name="TestStringReplace" classname="github.com/test/go-tests" time="1.000"/></testsuite>
+</testsuites>

@@ -1,0 +1,15 @@
+[package]
+name = "rust-tests"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+rand = "0.8"
+
+# Nextest configuration is handled via .config/nextest.toml if needed
+# cargo-nextest produces JUnit XML with full test paths by default

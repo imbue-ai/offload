@@ -44,6 +44,35 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Available placeholders:
+    /// - `{name}` - the testcase name attribute
+    /// - `{classname}` - the testcase classname attribute
+    ///
+    /// This format must match how test IDs are produced during discovery.
+    ///
+    /// # Examples
+    ///
+    /// ```toml
+    /// # For cargo/nextest (classname is binary, name is test function)
+    /// test_id_format = "{classname} {name}"
+    ///
+    /// # For pytest (name already contains full path)
+    /// test_id_format = "{name}"
+    ///
+    /// # For pytest when classname needs combining
+    /// test_id_format = "{classname}::{name}"
+    /// ```
+    ///
+    /// Default: `"{name}"` (uses testcase name as-is)
+    #[serde(default = "default_test_id_format")]
+    pub test_id_format: String,
+}
+
+fn default_test_id_format() -> String {
+    "{name}".to_string()
 }
 
 /// Core offload execution settings.
@@ -458,6 +487,16 @@ pub struct PytestFrameworkConfig {
     /// Python interpreter to use.
     #[serde(default = "default_python")]
     pub python: String,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Default: `"{name}"` - pytest test names typically contain the full path.
+    #[serde(default = "default_pytest_test_id_format")]
+    pub test_id_format: String,
+}
+
+fn default_pytest_test_id_format() -> String {
+    "{name}".to_string()
 }
 
 fn default_test_paths() -> Vec<PathBuf> {
@@ -494,6 +533,17 @@ pub struct CargoFrameworkConfig {
     /// Default: false
     #[serde(default)]
     pub include_ignored: bool,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Default: `"{classname} {name}"` - nextest uses classname for binary name
+    /// and name for the test function.
+    #[serde(default = "default_cargo_test_id_format")]
+    pub test_id_format: String,
+}
+
+fn default_cargo_test_id_format() -> String {
+    "{classname} {name}".to_string()
 }
 
 /// Configuration for generic/custom test framework.
@@ -555,6 +605,12 @@ pub struct DefaultFrameworkConfig {
 
     /// Working directory for running test commands.
     pub working_dir: Option<PathBuf>,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Default: `"{name}"` - uses the testcase name attribute directly.
+    #[serde(default = "default_test_id_format")]
+    pub test_id_format: String,
 }
 
 /// Configuration for test result reporting.

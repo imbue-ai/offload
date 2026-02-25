@@ -1,0 +1,22 @@
+# Offload configuration for Rust cargo test suite - using cargo framework
+
+type = "cargo"
+result_file = "target/nextest/default/junit.xml"
+
+[offload]
+max_parallel = 2
+test_timeout_secs = 120
+stream_output = true
+sandbox_project_root = "/tmp/offload-multi-binary/test-suite/rust-tests"
+
+[provider]
+type = "local"
+working_dir = "/tmp/offload-multi-binary/test-suite/rust-tests"
+shell = "/bin/bash"
+
+[groups.all]
+type = "cargo"
+retry_count = 1
+
+[report]
+output_dir = "test-results"

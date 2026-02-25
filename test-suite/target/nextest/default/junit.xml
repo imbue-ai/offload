@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="75" failures="0" errors="0" uuid="402392bd-204c-4845-8b67-10c098231721" timestamp="2026-02-24T16:20:00.224-08:00" time="17.499">
+    <testsuite name="rust-tests" tests="3" disabled="0" errors="0" failures="0">
+        <testcase name="tests::test_multiply_basic" classname="rust-tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.007">
+        </testcase>
+        <testcase name="tests::test_factorial_basic" classname="rust-tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.008">
+        </testcase>
+        <testcase name="tests::test_add_basic" classname="rust-tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.008">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::algorithm_tests" tests="8" disabled="0" errors="0" failures="0">
+        <testcase name="test_bubble_sort_implementation" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.515">
+        </testcase>
+        <testcase name="test_linear_search_and_find" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.617">
+        </testcase>
+        <testcase name="test_binary_search_variants" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="0.813">
+        </testcase>
+        <testcase name="test_quicksort_implementation" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="1.014">
+        </testcase>
+        <testcase name="test_merge_sort_implementation" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="1.515">
+        </testcase>
+        <testcase name="test_sieve_of_eratosthenes" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.233-08:00" time="2.012">
+        </testcase>
+        <testcase name="test_euclidean_algorithm_extended" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="2.514">
+        </testcase>
+        <testcase name="test_kadane_max_subarray" classname="rust-tests::algorithm_tests" timestamp="2026-02-24T16:20:00.225-08:00" time="3.011">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::collection_tests" tests="10" disabled="0" errors="0" failures="0">
+        <testcase name="test_hashmap_basic_operations" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:00.233-08:00" time="0.709">
+        </testcase>
+        <testcase name="test_vec_creation_and_access" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:01.038-08:00" time="0.112">
+        </testcase>
+        <testcase name="test_vec_modification" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:01.239-08:00" time="0.316">
+        </testcase>
+        <testcase name="test_hashmap_iteration_and_aggregation" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:00.740-08:00" time="0.919">
+        </testcase>
+        <testcase name="test_collection_conversions" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:00.233-08:00" time="1.508">
+        </testcase>
+        <testcase name="test_vec_iterators" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:01.150-08:00" time="0.611">
+        </testcase>
+        <testcase name="test_hashset_operations" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:00.842-08:00" time="1.020">
+        </testcase>
+        <testcase name="test_vec_slice_operations" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:01.555-08:00" time="0.518">
+        </testcase>
+        <testcase name="test_hashset_subset_superset" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:00.943-08:00" time="1.221">
+        </testcase>
+        <testcase name="test_vec_sorting_and_searching" classname="rust-tests::collection_tests" timestamp="2026-02-24T16:20:01.659-08:00" time="0.817">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::edge_case_tests" tests="8" disabled="0" errors="0" failures="0">
+        <testcase name="test_factorial_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.476-08:00" time="0.317">
+        </testcase>
+        <testcase name="test_integer_overflow_handling" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.882-08:00" time="0.115">
+        </testcase>
+        <testcase name="test_fibonacci_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.739-08:00" time="0.417">
+        </testcase>
+        <testcase name="test_combined_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.245-08:00" time="1.015">
+        </testcase>
+        <testcase name="test_gcd_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.793-08:00" time="0.512">
+        </testcase>
+        <testcase name="test_prime_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:02.997-08:00" time="0.616">
+        </testcase>
+        <testcase name="test_string_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:03.236-08:00" time="0.710">
+        </testcase>
+        <testcase name="test_slice_edge_cases" classname="rust-tests::edge_case_tests" timestamp="2026-02-24T16:20:03.155-08:00" time="0.812">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::concurrent_tests" tests="6" disabled="0" errors="0" failures="0">
+        <testcase name="test_parallel_prime_counting" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:01.862-08:00" time="1.020">
+        </testcase>
+        <testcase name="test_parallel_fibonacci_computation" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:01.742-08:00" time="1.512">
+        </testcase>
+        <testcase name="test_parallel_factorial_computation" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:01.740-08:00" time="2.019">
+        </testcase>
+        <testcase name="test_parallel_sum_reduction" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:02.073-08:00" time="2.510">
+        </testcase>
+        <testcase name="test_thread_local_computation" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:02.164-08:00" time="3.012">
+        </testcase>
+        <testcase name="test_parallel_matrix_operations" classname="rust-tests::concurrent_tests" timestamp="2026-02-24T16:20:01.761-08:00" time="4.014">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::fast_tests" tests="5" disabled="0" errors="0" failures="0">
+        <testcase name="test_addition_operations" classname="rust-tests::fast_tests" timestamp="2026-02-24T16:20:03.253-08:00" time="0.111">
+        </testcase>
+        <testcase name="test_multiplication_chain" classname="rust-tests::fast_tests" timestamp="2026-02-24T16:20:03.365-08:00" time="0.213">
+        </testcase>
+        <testcase name="test_fibonacci_sequence" classname="rust-tests::fast_tests" timestamp="2026-02-24T16:20:03.305-08:00" time="0.312">
+        </testcase>
+        <testcase name="test_factorial_values" classname="rust-tests::fast_tests" timestamp="2026-02-24T16:20:03.261-08:00" time="0.411">
+        </testcase>
+        <testcase name="test_palindrome_detection" classname="rust-tests::fast_tests" timestamp="2026-02-24T16:20:03.578-08:00" time="0.517">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::flaky_tests" tests="2" disabled="0" errors="0" failures="0">
+        <testcase name="test_flaky_random_calculation" classname="rust-tests::flaky_tests" timestamp="2026-02-24T16:20:03.613-08:00" time="0.519">
+        </testcase>
+        <testcase name="test_flaky_timing_sensitive" classname="rust-tests::flaky_tests" timestamp="2026-02-24T16:20:03.618-08:00" time="0.812">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::math_tests" tests="10" disabled="0" errors="0" failures="0">
+        <testcase name="test_factorial_large_numbers" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:04.430-08:00" time="0.110">
+        </testcase>
+        <testcase name="test_factorial_sum_products" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:04.540-08:00" time="0.320">
+        </testcase>
+        <testcase name="test_fibonacci_properties" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:04.584-08:00" time="0.514">
+        </testcase>
+        <testcase name="test_fibonacci_sum_identities" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:04.860-08:00" time="0.813">
+        </testcase>
+        <testcase name="test_euler_totient_approximation" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:04.132-08:00" time="2.009">
+        </testcase>
+        <testcase name="test_gcd_properties" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:05.176-08:00" time="1.516">
+        </testcase>
+        <testcase name="test_gcd_lcm_relationship" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:05.097-08:00" time="1.813">
+        </testcase>
+        <testcase name="test_prime_gaps_analysis" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:05.775-08:00" time="1.217">
+        </testcase>
+        <testcase name="test_prime_sieve_verification" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:06.114-08:00" time="1.012">
+        </testcase>
+        <testcase name="test_number_theory_combined" classname="rust-tests::math_tests" timestamp="2026-02-24T16:20:05.673-08:00" time="1.516">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::integration_tests" tests="5" disabled="0" errors="0" failures="0">
+        <testcase name="test_statistical_analysis_pipeline" classname="rust-tests::integration_tests" timestamp="2026-02-24T16:20:04.096-08:00" time="2.018">
+        </testcase>
+        <testcase name="test_cryptographic_operations_simulation" classname="rust-tests::integration_tests" timestamp="2026-02-24T16:20:03.672-08:00" time="3.017">
+        </testcase>
+        <testcase name="test_data_transformation_pipeline" classname="rust-tests::integration_tests" timestamp="2026-02-24T16:20:03.759-08:00" time="4.020">
+        </testcase>
+        <testcase name="test_search_engine_simulation" classname="rust-tests::integration_tests" timestamp="2026-02-24T16:20:03.968-08:00" time="5.028">
+        </testcase>
+        <testcase name="test_financial_calculation_simulation" classname="rust-tests::integration_tests" timestamp="2026-02-24T16:20:03.946-08:00" time="6.022">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::medium_tests" tests="5" disabled="0" errors="0" failures="0">
+        <testcase name="test_prime_number_search" classname="rust-tests::medium_tests" timestamp="2026-02-24T16:20:06.692-08:00" time="1.013">
+        </testcase>
+        <testcase name="test_string_manipulations" classname="rust-tests::medium_tests" timestamp="2026-02-24T16:20:06.992-08:00" time="1.519">
+        </testcase>
+        <testcase name="test_gcd_calculations" classname="rust-tests::medium_tests" timestamp="2026-02-24T16:20:06.689-08:00" time="2.018">
+        </testcase>
+        <testcase name="test_fibonacci_and_factorial_combined" classname="rust-tests::medium_tests" timestamp="2026-02-24T16:20:06.142-08:00" time="3.012">
+        </testcase>
+        <testcase name="test_slice_operations" classname="rust-tests::medium_tests" timestamp="2026-02-24T16:20:06.910-08:00" time="2.515">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::string_tests" tests="10" disabled="0" errors="0" failures="0">
+        <testcase name="test_palindrome_basic" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:07.778-08:00" time="0.210">
+        </testcase>
+        <testcase name="test_palindrome_numbers_as_strings" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:07.988-08:00" time="0.623">
+        </testcase>
+        <testcase name="test_palindrome_sentences" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:08.511-08:00" time="0.418">
+        </testcase>
+        <testcase name="test_string_reversal_basic" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:09.153-08:00" time="0.113">
+        </testcase>
+        <testcase name="test_string_reversal_unicode" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:09.426-08:00" time="0.315">
+        </testcase>
+        <testcase name="test_string_reversal_bulk" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:09.266-08:00" time="0.519">
+        </testcase>
+        <testcase name="test_string_parsing_integers" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:08.995-08:00" time="0.809">
+        </testcase>
+        <testcase name="test_string_parsing_floats" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:08.929-08:00" time="1.018">
+        </testcase>
+        <testcase name="test_string_manipulation_split_join" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:08.707-08:00" time="1.515">
+        </testcase>
+        <testcase name="test_string_case_transformations" classname="rust-tests::string_tests" timestamp="2026-02-24T16:20:08.611-08:00" time="2.016">
+        </testcase>
+    </testsuite>
+    <testsuite name="rust-tests::slow_tests" tests="3" disabled="0" errors="0" failures="0">
+        <testcase name="test_extensive_prime_computation" classname="rust-tests::slow_tests" timestamp="2026-02-24T16:20:07.189-08:00" time="5.011">
+        </testcase>
+        <testcase name="test_complex_gcd_matrix" classname="rust-tests::slow_tests" timestamp="2026-02-24T16:20:07.127-08:00" time="7.012">
+        </testcase>
+        <testcase name="test_fibonacci_performance_analysis" classname="rust-tests::slow_tests" timestamp="2026-02-24T16:20:07.705-08:00" time="10.018">
+        </testcase>
+    </testsuite>
+</testsuites>
