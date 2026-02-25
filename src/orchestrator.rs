@@ -371,7 +371,7 @@ where
         let skipped_count = tests.len() - tests.iter().filter(|t| !t.skipped).count();
 
         // Schedule tests using LPT (Longest Processing Time First) if we have durations,
-        // otherwise fall back to round-robin with a warning and user confirmation.
+        // otherwise fall back to round-robin with a warning.
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
         let batches = if durations.is_empty() {
             warn!(
@@ -379,17 +379,6 @@ where
                  Run tests once to generate junit.xml for optimized LPT scheduling.",
                 junit_path.display()
             );
-            eprintln!();
-            eprintln!("WARNING: No junit.xml found at {}", junit_path.display());
-            eprintln!(
-                "Using round-robin scheduling instead of LPT (suboptimal for parallel execution)."
-            );
-            eprintln!("Run tests once to generate junit.xml for optimized scheduling.");
-            eprintln!();
-            eprint!("Press Enter to continue with round-robin scheduling...");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            let mut input = String::new();
-            let _ = std::io::stdin().read_line(&mut input);
             scheduler.schedule(&tests_to_run)
         } else {
             debug!(
