@@ -102,8 +102,6 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// use offload::config::load_config_str;
 ///
 /// let config = load_config_str(r#"
-///     test_id_format = "{name}"
-///
 ///     [offload]
 ///     max_parallel = 4
 ///     sandbox_project_root = "/app"
@@ -111,8 +109,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
 ///     [provider]
 ///     type = "local"
 ///
-///     [groups.all]
+///     [framework]
 ///     type = "pytest"
+///
+///     [groups.all]
+///     retry_count = 1
 /// "#)?;
 ///
 /// assert_eq!(config.offload.max_parallel, 4);

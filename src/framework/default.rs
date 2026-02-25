@@ -136,6 +136,7 @@ impl DefaultFramework {
     ///     run_command: "jest {tests}".into(),
     ///     result_file: Some("junit.xml".into()),
     ///     working_dir: None,
+    ///     test_id_format: "{name}".into(),
     /// });
     /// ```
     pub fn new(config: DefaultFrameworkConfig) -> Self {

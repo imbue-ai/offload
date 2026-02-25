@@ -312,7 +312,7 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path, &self.config.test_id_format);
+        let durations = load_test_durations(&junit_path, self.config.framework.test_id_format());
 
         // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
         let output_dir = &self.config.report.output_dir;

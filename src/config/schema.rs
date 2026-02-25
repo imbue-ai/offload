@@ -13,9 +13,9 @@
 //! │   ├── Local              - Local process execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
 //! ├── FrameworkConfig        - Tagged enum selecting test framework (top-level)
-//! │   ├── Pytest             - pytest test framework
-//! │   ├── Cargo              - Rust/Cargo test framework
-//! │   └── Default            - Custom shell-based framework
+//! │   ├── Pytest             - pytest test framework (test_id_format defaults to "{name}")
+//! │   ├── Cargo              - Rust/Cargo test framework (test_id_format defaults to "{classname} {name}")
+//! │   └── Default            - Custom shell-based framework (test_id_format required)
 //! ├── Groups                 - Named test groups (HashMap<String, GroupConfig>)
 //! │   └── GroupConfig        - Per-group settings (retry_count)
 //! └── ReportConfig           - Output and reporting settings
@@ -48,28 +48,6 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
-
-    /// Format string for constructing test IDs from JUnit XML attributes.
-    ///
-    /// Available placeholders:
-    /// - `{name}` - the testcase name attribute
-    /// - `{classname}` - the testcase classname attribute
-    ///
-    /// This format must match how test IDs are produced during discovery.
-    ///
-    /// # Examples
-    ///
-    /// ```toml
-    /// # For cargo/nextest (classname is binary, name is test function)
-    /// test_id_format = "{classname} {name}"
-    ///
-    /// # For pytest (name already contains full path)
-    /// test_id_format = "{name}"
-    ///
-    /// # For pytest when classname needs combining
-    /// test_id_format = "{classname}::{name}"
-    /// ```
-    pub test_id_format: String,
 }
 
 /// Core offload execution settings.
@@ -461,6 +439,20 @@ pub enum FrameworkConfig {
     Default(DefaultFrameworkConfig),
 }
 
+impl FrameworkConfig {
+    /// Returns the test ID format string for this framework.
+    ///
+    /// The format string is used to construct test IDs from JUnit XML attributes.
+    /// Available placeholders are `{name}` and `{classname}`.
+    pub fn test_id_format(&self) -> &str {
+        match self {
+            FrameworkConfig::Pytest(config) => &config.test_id_format,
+            FrameworkConfig::Cargo(config) => &config.test_id_format,
+            FrameworkConfig::Default(config) => &config.test_id_format,
+        }
+    }
+}
+
 /// Configuration for pytest test framework.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PytestFrameworkConfig {
@@ -480,6 +472,16 @@ pub struct PytestFrameworkConfig {
     /// Python interpreter to use.
     #[serde(default = "default_python")]
     pub python: String,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Available placeholders:
+    /// - `{name}` - the testcase name attribute
+    /// - `{classname}` - the testcase classname attribute
+    ///
+    /// Default: `"{name}"` (pytest typically includes full path in name)
+    #[serde(default = "default_pytest_test_id_format")]
+    pub test_id_format: String,
 }
 
 fn default_test_paths() -> Vec<PathBuf> {
@@ -488,6 +490,14 @@ fn default_test_paths() -> Vec<PathBuf> {
 
 fn default_python() -> String {
     "python".to_string()
+}
+
+fn default_pytest_test_id_format() -> String {
+    "{name}".to_string()
+}
+
+fn default_cargo_test_id_format() -> String {
+    "{classname} {name}".to_string()
 }
 
 /// Configuration for Rust/Cargo test framework.
@@ -516,6 +526,16 @@ pub struct CargoFrameworkConfig {
     /// Default: false
     #[serde(default)]
     pub include_ignored: bool,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Available placeholders:
+    /// - `{name}` - the testcase name attribute
+    /// - `{classname}` - the testcase classname attribute
+    ///
+    /// Default: `"{classname} {name}"` (cargo/nextest uses classname as binary name)
+    #[serde(default = "default_cargo_test_id_format")]
+    pub test_id_format: String,
 }
 
 /// Configuration for generic/custom test framework.
@@ -529,24 +549,27 @@ pub struct CargoFrameworkConfig {
 /// - **discover_command**: Outputs one test ID per line to stdout
 /// - **run_command**: Uses `{tests}` placeholder for space-separated test IDs
 /// - **result_file**: Optional JUnit XML for detailed results
+/// - **test_id_format**: Required format string for constructing test IDs from JUnit XML
 ///
 /// # Example: Jest
 ///
 /// ```toml
-/// [groups.javascript]
+/// [framework]
 /// type = "default"
 /// discover_command = "jest --listTests --json | jq -r '.[]'"
 /// run_command = "jest {tests} --ci --reporters=jest-junit"
 /// result_file = "junit.xml"
+/// test_id_format = "{name}"
 /// ```
 ///
 /// # Example: Go tests
 ///
 /// ```toml
-/// [groups.go]
+/// [framework]
 /// type = "default"
 /// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
 /// run_command = "go test -v -run '{tests}' ./..."
+/// test_id_format = "{classname}/{name}"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultFrameworkConfig {
@@ -577,6 +600,16 @@ pub struct DefaultFrameworkConfig {
 
     /// Working directory for running test commands.
     pub working_dir: Option<PathBuf>,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Available placeholders:
+    /// - `{name}` - the testcase name attribute
+    /// - `{classname}` - the testcase classname attribute
+    ///
+    /// This field is required for the default framework as the format varies
+    /// by test runner.
+    pub test_id_format: String,
 }
 
 /// Configuration for test result reporting.
@@ -681,8 +714,6 @@ mod tests {
     #[test]
     fn test_modal_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
-            test_id_format = "{name}"
-
             [offload]
             max_parallel = 4
             sandbox_project_root = "/app"
@@ -695,6 +726,7 @@ mod tests {
 
             [framework]
             type = "pytest"
+            test_id_format = "{classname}::{name}"
 
             [groups.all]
             retry_count = 1
@@ -714,11 +746,12 @@ mod tests {
             assert_eq!(&modal_config.dockerfile, ".devcontainer/Dockerfile");
         }
 
-        // Verify framework is at top level
+        // Verify framework is at top level with test_id_format
         assert!(
             matches!(&config.framework, FrameworkConfig::Pytest(_)),
             "Expected Pytest framework"
         );
+        assert_eq!(config.framework.test_id_format(), "{classname}::{name}");
 
         // Verify group only has retry_count
         assert_eq!(config.groups.get("all").unwrap().retry_count, 1);

@@ -77,7 +77,8 @@ retry_count = 0
 
 ```toml
 [framework]
-type = "generic"
+type = "default"
+test_id_format = "{name}"  # Required for default framework
 discover_command = "find tests -name 'test_*.py' | xargs -I {} basename {}"
 run_command = "pytest {tests} -v"
 
