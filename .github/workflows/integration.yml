@@ -10,7 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Branch of mng to test against
-  MNG_REF: "fix/junit-classname-nodeid"
+  MNG_REF: "fix/offload-test-id-format"
 
 jobs:
   integration:
