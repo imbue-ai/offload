@@ -15,11 +15,12 @@ build:
 test:
     cargo nextest run
 
-test-modal:
-    cargo run -- -c offload-modal.toml run
+test-modal args="":
+    cargo run -- -c offload-modal.toml {{args}} run
 
-test-cargo-modal:
-    cargo run -- -c offload-cargo-modal.toml run
+# args is empty by default
+test-cargo-modal args="":
+    cargo run -- -c offload-cargo-modal.toml {{args}} run
 
 # Install the /offload-onboard skill for Claude Code
 install-skill:
