@@ -577,13 +577,6 @@ pub struct DefaultFrameworkConfig {
 
     /// Working directory for running test commands.
     pub working_dir: Option<PathBuf>,
-
-    /// Format string for constructing test IDs from JUnit XML attributes.
-    ///
-    /// Available placeholders:
-    /// - `{name}` - the testcase name attribute
-    /// - `{classname}` - the testcase classname attribute
-    pub test_id_format: String,
 }
 
 /// Configuration for test result reporting.
