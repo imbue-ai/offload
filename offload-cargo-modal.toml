@@ -14,8 +14,10 @@ type = "modal"
 dockerfile = ".devcontainer/Dockerfile"
 include_cwd = true
 
-[groups.all]
+[framework]
 type = "cargo"
+
+[groups.all]
 retry_count = 1
 
 [report]

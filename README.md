@@ -50,31 +50,39 @@ junit_file = "junit.xml"
 ### pytest
 
 ```toml
-[groups.unit]
+[framework]
 type = "pytest"
 paths = ["tests"]
 python = "python3"
 markers = "not slow"  # Optional: filter by markers
+
+[groups.unit]
 retry_count = 2       # Optional: retries for failed tests (default: 0)
 ```
 
 ### Cargo Test
 
 ```toml
-[groups.rust]
+[framework]
 type = "cargo"
 package = "my-crate"  # Optional: for workspaces
 features = ["feature1", "feature2"]
 include_ignored = false
+
+[groups.rust]
+retry_count = 0
 ```
 
 ### Generic (Custom)
 
 ```toml
-[groups.custom]
+[framework]
 type = "generic"
 discover_command = "find tests -name 'test_*.py' | xargs -I {} basename {}"
 run_command = "pytest {tests} -v"
+
+[groups.custom]
+retry_count = 0
 ```
 
 The `{tests}` placeholder is replaced with discovered test names.

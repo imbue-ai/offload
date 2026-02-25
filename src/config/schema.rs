@@ -12,11 +12,12 @@
 //! ├── ProviderConfig         - Tagged enum selecting provider type
 //! │   ├── Local              - Local process execution
 //! │   └── Default            - Custom remote execution (Modal, etc.)
+//! ├── FrameworkConfig        - Tagged enum selecting test framework (top-level)
+//! │   ├── Pytest             - pytest test framework
+//! │   ├── Cargo              - Rust/Cargo test framework
+//! │   └── Default            - Custom shell-based framework
 //! ├── Groups                 - Named test groups (HashMap<String, GroupConfig>)
-//! │   └── GroupConfig        - Flattened FrameworkConfig (write [groups.name] directly)
-//! │       ├── Pytest         - pytest test framework
-//! │       ├── Cargo          - Rust/Cargo test framework
-//! │       └── Default        - Custom shell-based framework
+//! │   └── GroupConfig        - Per-group settings (retry_count)
 //! └── ReportConfig           - Output and reporting settings
 //! ```
 
@@ -37,6 +38,9 @@ pub struct Config {
 
     /// Provider configuration determines where tests are run
     pub provider: ProviderConfig,
+
+    /// Framework configuration specifying how tests are discovered and run
+    pub framework: FrameworkConfig,
 
     /// Group configuration allows segmenting tests into named groups
     pub groups: HashMap<String, GroupConfig>,
@@ -416,27 +420,20 @@ fn default_remote_timeout() -> u64 {
 
 /// Configuration for a test group.
 ///
-/// Groups allow organizing tests by framework or purpose. The framework
-/// configuration is flattened, so you write `[groups.mygroup]` directly
-/// with the framework fields.
+/// Groups allow segmenting tests for different retry behaviors or filtering.
+/// The test framework is configured at the top level, not per-group.
 ///
 /// # Example
 ///
 /// ```toml
-/// [groups.python]
-/// type = "pytest"
-/// paths = ["tests"]
+/// [groups.all]
+/// retry_count = 1
 ///
-/// [groups.rust]
-/// type = "cargo"
-/// package = "my-crate"
+/// [groups.flaky]
+/// retry_count = 3
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct GroupConfig {
-    /// Framework configuration for this group (flattened in TOML).
-    #[serde(flatten)]
-    pub framework: FrameworkConfig,
-
     /// Number of times to retry failed tests in this group.
     ///
     /// Failed tests are retried up to this many times. If a test passes
@@ -675,4 +672,57 @@ pub struct SandboxConfig {
     ///
     /// Each tuple is (local_path, remote_path).
     pub copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_modal_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            test_id_format = "{name}"
+
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+            app_name = "offload-sandbox"
+            dockerfile = ".devcontainer/Dockerfile"
+            timeout_secs = 600
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 1
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+
+        assert!(
+            matches!(&config.provider, ProviderConfig::Modal(_)),
+            "Expected Modal provider"
+        );
+
+        if let ProviderConfig::Modal(modal_config) = &config.provider {
+            assert_eq!(modal_config.app_name, "offload-sandbox");
+            assert_eq!(modal_config.timeout_secs, 600);
+            assert!(modal_config.working_dir.is_none());
+            assert_eq!(&modal_config.dockerfile, ".devcontainer/Dockerfile");
+        }
+
+        // Verify framework is at top level
+        assert!(
+            matches!(&config.framework, FrameworkConfig::Pytest(_)),
+            "Expected Pytest framework"
+        );
+
+        // Verify group only has retry_count
+        assert_eq!(config.groups.get("all").unwrap().retry_count, 1);
+
+        Ok(())
+    }
 }
