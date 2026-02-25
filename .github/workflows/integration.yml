@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Branch of mng to test against
-  MNG_REF: "fix/offload-test-id-format"
+  # Branch of mng to test against, was main
+  MNG_REF: "41bf50ab1cccf3d9683842f7b0fc9624e357bd86"
 
 jobs:
   integration:
