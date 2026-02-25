@@ -596,8 +596,11 @@ pub fn load_test_durations(
                 let time = get_attr_f64(&e, b"time");
 
                 if let Some(test_name) = name {
-                    let test_id =
-                        crate::config::format_test_id(test_id_format, &test_name, classname.as_deref());
+                    let test_id = crate::config::format_test_id(
+                        test_id_format,
+                        &test_name,
+                        classname.as_deref(),
+                    );
                     let duration = std::time::Duration::from_secs_f64(time);
                     // Use max duration if test appears multiple times (from retries)
                     durations
