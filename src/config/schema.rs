@@ -759,49 +759,7 @@ mod tests {
         Ok(())
     }
 
-    /// Build the same Config that init_config would build for a given
-    /// provider/framework combination, for use in tests.
-    fn build_init_config(provider: &str, framework: &str) -> Config {
-        let provider_config = match provider {
-            "local" => ProviderConfig::Local(LocalProviderConfig {
-                working_dir: Some(PathBuf::from(".")),
-                ..Default::default()
-            }),
-            "default" => ProviderConfig::Default(DefaultProviderConfig {
-                create_command: "./scripts/create-sandbox.sh".into(),
-                exec_command: "./scripts/exec-sandbox.sh {sandbox_id} {command}".into(),
-                destroy_command: "./scripts/destroy-sandbox.sh {sandbox_id}".into(),
-                prepare_command: None,
-                download_command: None,
-                working_dir: None,
-                timeout_secs: 3600,
-                copy_dirs: vec![],
-                env: HashMap::new(),
-            }),
-            _ => panic!("unsupported provider in test: {}", provider),
-        };
-
-        let framework_config = match framework {
-            "pytest" => FrameworkConfig::Pytest(PytestFrameworkConfig {
-                paths: vec![PathBuf::from("tests")],
-                python: "python".into(),
-                test_id_format: "{name}".into(),
-                ..Default::default()
-            }),
-            "cargo" => FrameworkConfig::Cargo(CargoFrameworkConfig {
-                test_id_format: "{classname} {name}".into(),
-                ..Default::default()
-            }),
-            "default" => FrameworkConfig::Default(DefaultFrameworkConfig {
-                discover_command: "echo test1 test2".into(),
-                run_command: "echo Running {tests}".into(),
-                test_id_format: "{name}".into(),
-                result_file: None,
-                working_dir: None,
-            }),
-            _ => panic!("unsupported framework in test: {}", framework),
-        };
-
+    fn pytest_local_config() -> Config {
         Config {
             offload: OffloadConfig {
                 max_parallel: 10,
@@ -810,8 +768,63 @@ mod tests {
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
             },
-            provider: provider_config,
-            framework: framework_config,
+            provider: ProviderConfig::Local(LocalProviderConfig {
+                working_dir: Some(PathBuf::from(".")),
+                ..Default::default()
+            }),
+            framework: FrameworkConfig::Pytest(PytestFrameworkConfig {
+                paths: vec![PathBuf::from("tests")],
+                python: "python".into(),
+                test_id_format: "{name}".into(),
+                ..Default::default()
+            }),
+            groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+            report: ReportConfig::default(),
+        }
+    }
+
+    fn cargo_local_config() -> Config {
+        Config {
+            offload: OffloadConfig {
+                max_parallel: 10,
+                test_timeout_secs: 900,
+                working_dir: None,
+                stream_output: false,
+                sandbox_project_root: "/app".to_string(),
+            },
+            provider: ProviderConfig::Local(LocalProviderConfig {
+                working_dir: Some(PathBuf::from(".")),
+                ..Default::default()
+            }),
+            framework: FrameworkConfig::Cargo(CargoFrameworkConfig {
+                test_id_format: "{classname} {name}".into(),
+                ..Default::default()
+            }),
+            groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+            report: ReportConfig::default(),
+        }
+    }
+
+    fn default_local_config() -> Config {
+        Config {
+            offload: OffloadConfig {
+                max_parallel: 10,
+                test_timeout_secs: 900,
+                working_dir: None,
+                stream_output: false,
+                sandbox_project_root: "/app".to_string(),
+            },
+            provider: ProviderConfig::Local(LocalProviderConfig {
+                working_dir: Some(PathBuf::from(".")),
+                ..Default::default()
+            }),
+            framework: FrameworkConfig::Default(DefaultFrameworkConfig {
+                discover_command: "echo test1 test2".into(),
+                run_command: "echo Running {tests}".into(),
+                test_id_format: "{name}".into(),
+                result_file: None,
+                working_dir: None,
+            }),
             groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
             report: ReportConfig::default(),
         }
@@ -820,57 +833,36 @@ mod tests {
     /// Test that the Config built for pytest/local serializes to TOML and
     /// round-trips back through deserialization successfully.
     #[test]
-    fn test_init_config_pytest_deserializes() {
-        let config = build_init_config("local", "pytest");
-        let toml_str = toml::to_string_pretty(&config).expect("Config should serialize to TOML");
-
-        let result = toml::from_str::<Config>(&toml_str);
-        assert!(
-            result.is_ok(),
-            "Expected pytest/local config to round-trip successfully, but got error: {:?}",
-            result.err()
-        );
-
-        let deserialized = result.unwrap();
+    fn test_init_config_pytest_deserializes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = pytest_local_config();
+        let toml_str = toml::to_string_pretty(&config)?;
+        let deserialized: Config = toml::from_str(&toml_str)?;
         assert_eq!(deserialized.framework.test_id_format(), "{name}");
+        Ok(())
     }
 
     /// Test that the Config built for cargo/local serializes to TOML and
     /// round-trips back through deserialization successfully.
     #[test]
-    fn test_init_config_cargo_deserializes() {
-        let config = build_init_config("local", "cargo");
-        let toml_str = toml::to_string_pretty(&config).expect("Config should serialize to TOML");
-
-        let result = toml::from_str::<Config>(&toml_str);
-        assert!(
-            result.is_ok(),
-            "Expected cargo/local config to round-trip successfully, but got error: {:?}",
-            result.err()
-        );
-
-        let deserialized = result.unwrap();
+    fn test_init_config_cargo_deserializes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = cargo_local_config();
+        let toml_str = toml::to_string_pretty(&config)?;
+        let deserialized: Config = toml::from_str(&toml_str)?;
         assert_eq!(
             deserialized.framework.test_id_format(),
             "{classname} {name}"
         );
+        Ok(())
     }
 
     /// Test that the Config built for default/local serializes to TOML and
     /// round-trips back through deserialization successfully.
     #[test]
-    fn test_init_config_default_deserializes() {
-        let config = build_init_config("local", "default");
-        let toml_str = toml::to_string_pretty(&config).expect("Config should serialize to TOML");
-
-        let result = toml::from_str::<Config>(&toml_str);
-        assert!(
-            result.is_ok(),
-            "Expected default/local config to round-trip successfully, but got error: {:?}",
-            result.err()
-        );
-
-        let deserialized = result.unwrap();
+    fn test_init_config_default_deserializes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = default_local_config();
+        let toml_str = toml::to_string_pretty(&config)?;
+        let deserialized: Config = toml::from_str(&toml_str)?;
         assert_eq!(deserialized.framework.test_id_format(), "{name}");
+        Ok(())
     }
 }

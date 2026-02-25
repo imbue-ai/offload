@@ -34,11 +34,22 @@ jobs:
         with:
           tool: cargo-nextest@0.9.85
 
+      - name: Install just CLI runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.11.0
+
       - name: Build offload
         run: cargo build --release
 
-      - name: Run tests on Modal
+      - name: Run cargo tests on Modal
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: ./target/release/offload -c offload-cargo-modal.toml run
+
+      - name: Run pytest tests on Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: just test-modal
