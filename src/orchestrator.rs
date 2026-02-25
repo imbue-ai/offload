@@ -224,7 +224,6 @@ impl RunResult {
 /// use offload::config::{load_config, SandboxConfig};
 /// use offload::provider::local::LocalProvider;
 /// use offload::framework::{TestFramework, pytest::PytestFramework};
-/// use offload::report::JunitFormat;
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -248,7 +247,7 @@ impl RunResult {
 ///     sandbox_pool.populate(config.offload.max_parallel, &provider, &sandbox_config).await?;
 ///
 ///     // Create orchestrator and run tests
-///     let orchestrator = Orchestrator::new(config, framework, false, JunitFormat::Pytest);
+///     let orchestrator = Orchestrator::new(config, framework, false);
 ///     let result = orchestrator.run_with_tests(&tests, sandbox_pool).await?;
 ///
 ///     std::process::exit(result.exit_code());
@@ -313,7 +312,7 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path);
+        let durations = load_test_durations(&junit_path, &self.config.test_id_format);
 
         // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
         let output_dir = &self.config.report.output_dir;

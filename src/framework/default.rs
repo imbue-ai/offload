@@ -254,8 +254,9 @@ impl TestFramework for DefaultFramework {
         result_file: Option<&str>,
     ) -> FrameworkResult<Vec<TestResult>> {
         // Try to parse JUnit XML if result file is provided
+        // Default framework uses "{name}" format - test IDs match the name attribute
         if let Some(xml_content) = result_file {
-            return parse_junit_xml(xml_content);
+            return parse_junit_xml(xml_content, "{name}");
         }
 
         // Fall back to basic success/failure based on exit code.
@@ -293,7 +294,7 @@ impl TestFramework for DefaultFramework {
 }
 
 /// Parse JUnit XML content to extract test results.
-fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
+fn parse_junit_xml(content: &str, test_id_format: &str) -> FrameworkResult<Vec<TestResult>> {
     use regex::Regex;
 
     let mut results = Vec::new();
@@ -306,18 +307,15 @@ fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
 
     for cap in testcase_re.captures_iter(content) {
         let name = &cap[1];
-        let classname = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let classname = cap.get(2).map(|m| m.as_str());
         let time: f64 = cap
             .get(3)
             .and_then(|m| m.as_str().parse().ok())
             .unwrap_or(0.0);
         let inner = cap.get(4).map(|m| m.as_str()).unwrap_or("");
 
-        let test_id = if classname.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}::{}", classname, name)
-        };
+        // Use the configured format to construct test ID
+        let test_id = crate::config::format_test_id(test_id_format, name, classname);
 
         let (outcome, error_message) = if inner.contains("<failure") {
             let msg = msg_re.captures(inner).map(|c| c[1].to_string());

@@ -1,5 +1,7 @@
 # offload configuration for running cargo tests on Modal
 
+test_id_format = "{classname} {name}"
+
 [offload]
 max_parallel = 4
 test_timeout_secs = 600

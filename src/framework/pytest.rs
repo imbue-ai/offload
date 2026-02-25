@@ -174,8 +174,9 @@ impl TestFramework for PytestFramework {
         let mut results = Vec::new();
 
         // Try to parse JUnit XML if available
+        // pytest test IDs use {name} format - the name attribute contains the full test path
         if let Some(xml_content) = result_file {
-            results = parse_junit_xml(xml_content)?;
+            results = parse_junit_xml(xml_content, "{name}")?;
         }
 
         // If no JUnit results, parse from stdout
@@ -188,7 +189,23 @@ impl TestFramework for PytestFramework {
 }
 
 /// Parse JUnit XML content to extract test results.
-pub fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
+///
+/// # Arguments
+///
+/// * `content` - The JUnit XML content as a string
+/// * `test_id_format` - Format string for constructing test IDs from JUnit attributes.
+///   Uses placeholders `{name}` and `{classname}`.
+///
+/// # Example
+///
+/// ```ignore
+/// // For cargo/nextest where classname is binary and name is test function
+/// let results = parse_junit_xml(xml, "{classname} {name}")?;
+///
+/// // For pytest where name contains the full path
+/// let results = parse_junit_xml(xml, "{name}")?;
+/// ```
+pub fn parse_junit_xml(content: &str, test_id_format: &str) -> FrameworkResult<Vec<TestResult>> {
     // Basic JUnit XML parsing
     // In production, we'd use quick-xml for proper parsing
     let mut results = Vec::new();
@@ -211,13 +228,8 @@ pub fn parse_junit_xml(content: &str) -> FrameworkResult<Vec<TestResult>> {
         let classname = &cap[2];
         let time: f64 = cap[3].parse().unwrap_or(0.0);
 
-        // If name already contains ::, it's a full test path (nextest format)
-        // Otherwise combine classname with name (pytest format)
-        let test_id = if name.contains("::") {
-            name.to_string()
-        } else {
-            format!("{}::{}", classname.replace('.', "/"), name)
-        };
+        // Use the configured format to construct test ID
+        let test_id = crate::config::format_test_id(test_id_format, name, Some(classname));
 
         // Find the content between this testcase and the next (or </testcase>)
         // Group 0 always exists when a match succeeds

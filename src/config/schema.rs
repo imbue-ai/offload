@@ -44,6 +44,28 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
+
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    ///
+    /// Available placeholders:
+    /// - `{name}` - the testcase name attribute
+    /// - `{classname}` - the testcase classname attribute
+    ///
+    /// This format must match how test IDs are produced during discovery.
+    ///
+    /// # Examples
+    ///
+    /// ```toml
+    /// # For cargo/nextest (classname is binary, name is test function)
+    /// test_id_format = "{classname} {name}"
+    ///
+    /// # For pytest (name already contains full path)
+    /// test_id_format = "{name}"
+    ///
+    /// # For pytest when classname needs combining
+    /// test_id_format = "{classname}::{name}"
+    /// ```
+    pub test_id_format: String,
 }
 
 /// Core offload execution settings.
@@ -659,6 +681,8 @@ mod tests {
     #[test]
     fn test_modal_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
+            test_id_format = "{name}"
+
             [offload]
             max_parallel = 4
             sandbox_project_root = "/app"
