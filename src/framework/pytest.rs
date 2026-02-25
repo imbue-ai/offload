@@ -174,8 +174,9 @@ impl TestFramework for PytestFramework {
         let mut results = Vec::new();
 
         // Try to parse JUnit XML if available
+        // pytest test IDs use {name} format - the name attribute contains the full test path
         if let Some(xml_content) = result_file {
-            results = parse_junit_xml(xml_content, &self.config.test_id_format)?;
+            results = parse_junit_xml(xml_content, "{name}")?;
         }
 
         // If no JUnit results, parse from stdout

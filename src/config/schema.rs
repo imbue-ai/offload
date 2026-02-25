@@ -487,16 +487,6 @@ pub struct PytestFrameworkConfig {
     /// Python interpreter to use.
     #[serde(default = "default_python")]
     pub python: String,
-
-    /// Format string for constructing test IDs from JUnit XML attributes.
-    ///
-    /// Default: `"{name}"` - pytest test names typically contain the full path.
-    #[serde(default = "default_pytest_test_id_format")]
-    pub test_id_format: String,
-}
-
-fn default_pytest_test_id_format() -> String {
-    "{name}".to_string()
 }
 
 fn default_test_paths() -> Vec<PathBuf> {
@@ -605,12 +595,6 @@ pub struct DefaultFrameworkConfig {
 
     /// Working directory for running test commands.
     pub working_dir: Option<PathBuf>,
-
-    /// Format string for constructing test IDs from JUnit XML attributes.
-    ///
-    /// Default: `"{name}"` - uses the testcase name attribute directly.
-    #[serde(default = "default_test_id_format")]
-    pub test_id_format: String,
 }
 
 /// Configuration for test result reporting.

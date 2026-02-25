@@ -136,7 +136,6 @@ impl DefaultFramework {
     ///     run_command: "jest {tests}".into(),
     ///     result_file: Some("junit.xml".into()),
     ///     working_dir: None,
-    ///     test_id_format: "{name}".into(),
     /// });
     /// ```
     pub fn new(config: DefaultFrameworkConfig) -> Self {
@@ -255,8 +254,9 @@ impl TestFramework for DefaultFramework {
         result_file: Option<&str>,
     ) -> FrameworkResult<Vec<TestResult>> {
         // Try to parse JUnit XML if result file is provided
+        // Default framework uses {name} format - the name attribute is the test ID
         if let Some(xml_content) = result_file {
-            return parse_junit_xml(xml_content, &self.config.test_id_format);
+            return parse_junit_xml(xml_content, "{name}");
         }
 
         // Fall back to basic success/failure based on exit code.
