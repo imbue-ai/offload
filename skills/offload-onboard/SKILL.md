@@ -211,7 +211,7 @@ By default, pytest's JUnit XML output uses a `classname` + `name` format that ca
 Add an autouse fixture that writes the full nodeid into the JUnit `name` attribute. Offload's parser already handles `name` values containing `::` by using them verbatim.
 
 1. Identify the root `conftest.py` for the test paths configured in `offload.toml` (e.g., `tests/conftest.py`)
-2. If a `conftest.py` already exists at that location, check whether it already contains `_set_junit_test_id` or an equivalent `record_xml_attribute("name", ...)` override. If so, skip.
+2. If a `conftest.py` already exists at that location, check whether it already contains `_set_junit_test_id` or an equivalent `record_xml_attribute("name", ...)` override. If so, **stop and show the user the existing fixture**. Explain that offload needs the JUnit `name` attribute to match collected test IDs, and ask if they want to replace the existing fixture with offload's version. If they approve, replace it. If they decline, switch the `[framework]` section in `offload.toml` to `type = "default"` using the fallback pattern from Step 4, wrapping their existing pytest invocation in custom `discover_command` and `run_command` so that offload controls the `--junitxml` flag directly without needing the conftest fixture.
 3. If no `conftest.py` exists, create one. If one exists, append to it.
 
 Add the following fixture:
