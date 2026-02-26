@@ -106,6 +106,7 @@ impl CargoFramework {
     /// JUnit XML output where classname=binary and name=test_name.
     fn parse_list_output(&self, output: &str) -> Vec<TestRecord> {
         let mut tests = Vec::new();
+        let mut current_binary: Option<String> = None;
 
         for line in output.lines() {
             let trimmed = line.trim();
@@ -118,14 +119,31 @@ impl CargoFramework {
                 continue;
             }
 
-            // Nextest format: "binary test_path" (space-separated)
-            // Binary may contain "::" for integration tests (e.g., "rust-tests::algorithm_tests")
-            // Test path may contain "::" for module paths (e.g., "tests::test_add")
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                // Full test ID: "binary test_name" matching JUnit classname + name format
-                let test_id = format!("{} {}", parts[0], parts[1]);
-                tests.push(TestRecord::new(&test_id));
+            // Nextest list has two output formats:
+            //
+            // Indented format (default):
+            //   binary_name:
+            //       module::test_func
+            //
+            // Flat format:
+            //   binary_name module::test_func
+
+            if let Some(binary) = trimmed.strip_suffix(':') {
+                // "binary_name:" header line
+                current_binary = Some(binary.to_string());
+            } else {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    // Flat format: "binary test_path"
+                    let test_id = format!("{} {}", parts[0], parts[1]);
+                    tests.push(TestRecord::new(&test_id));
+                } else if parts.len() == 1
+                    && let Some(ref binary) = current_binary
+                {
+                    // Indented format: test name under a binary header
+                    let test_id = format!("{} {}", binary, parts[0]);
+                    tests.push(TestRecord::new(&test_id));
+                }
             }
         }
 
@@ -140,6 +158,8 @@ impl TestFramework for CargoFramework {
             "nextest".to_string(),
             "list".to_string(),
             "--color=never".to_string(), // Prevent ANSI codes in test names
+            "-T".to_string(),            // Explicit output format: "binary test_path"
+            "oneline".to_string(),       // (default varies by nextest version / TTY)
         ];
 
         if let Some(package) = &self.config.package {
