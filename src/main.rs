@@ -207,38 +207,61 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Phase 1: Discover tests using the top-level framework config
+    // Phase 1: Discover tests for each group
     eprint!("Discovering tests... ");
 
-    let tests = match &config.framework {
-        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
-    };
+    let mut all_tests: Vec<TestRecord> = Vec::new();
 
-    // Get retry_count from the first group (if any), defaulting to 0
-    let (group_name, retry_count) = config
-        .groups
-        .iter()
-        .next()
-        .map(|(name, cfg)| (name.clone(), cfg.retry_count))
-        .unwrap_or_else(|| ("default".to_string(), 0));
+    for (group_name, group_cfg) in &config.groups {
+        let tests = match &config.framework {
+            FrameworkConfig::Pytest(cfg) => {
+                PytestFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                CargoFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+        };
 
-    // Apply group name and retry count to all discovered tests
-    let all_tests: Vec<TestRecord> = tests
-        .into_iter()
-        .map(|t| {
-            t.with_retry_count(retry_count)
-                .with_group(group_name.clone())
-        })
-        .collect();
+        // Tag tests with group info
+        let group_tests: Vec<TestRecord> = tests
+            .into_iter()
+            .map(|t| {
+                t.with_retry_count(group_cfg.retry_count)
+                    .with_group(group_name.clone())
+            })
+            .collect();
 
-    eprintln!("found {} tests", all_tests.len());
+        all_tests.extend(group_tests);
+    }
+
+    eprintln!(
+        "found {} tests across {} groups",
+        all_tests.len(),
+        config.groups.len()
+    );
 
     if collect_only {
-        println!("\nGroup '{}':", group_name);
-        for test in &all_tests {
-            println!("  {}", test.id);
+        // Group tests by their group name for display
+        for group_name in config.groups.keys() {
+            let group_tests: Vec<_> = all_tests
+                .iter()
+                .filter(|t| t.group.as_deref() == Some(group_name.as_str()))
+                .collect();
+            if !group_tests.is_empty() {
+                println!("\nGroup '{}':", group_name);
+                for test in group_tests {
+                    println!("  {}", test.id);
+                }
+            }
         }
         return Ok(());
     }
@@ -457,27 +480,67 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    // Discover tests once using the top-level framework config
-    let tests = match &config.framework {
-        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
-    };
+    // Discover tests for each group
+    let mut all_tests: Vec<TestRecord> = Vec::new();
+
+    for (group_name, group_cfg) in &config.groups {
+        let tests = match &config.framework {
+            FrameworkConfig::Pytest(cfg) => {
+                PytestFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                CargoFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters)
+                    .await?
+            }
+        };
+
+        // Tag tests with group info
+        let group_tests: Vec<TestRecord> = tests
+            .into_iter()
+            .map(|t| {
+                t.with_retry_count(group_cfg.retry_count)
+                    .with_group(group_name.clone())
+            })
+            .collect();
+
+        all_tests.extend(group_tests);
+    }
 
     match format {
         "json" => {
-            let json = serde_json::to_string_pretty(&tests)?;
+            let json = serde_json::to_string_pretty(&all_tests)?;
             println!("{}", json);
         }
         _ => {
-            println!("Discovered {} tests:", tests.len());
-            for test in &tests {
-                let markers = if test.markers.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", test.markers.join(", "))
-                };
-                println!("  {}{}", test.id, markers);
+            println!(
+                "Discovered {} tests across {} groups:",
+                all_tests.len(),
+                config.groups.len()
+            );
+            for group_name in config.groups.keys() {
+                let group_tests: Vec<_> = all_tests
+                    .iter()
+                    .filter(|t| t.group.as_deref() == Some(group_name.as_str()))
+                    .collect();
+                if !group_tests.is_empty() {
+                    println!("\nGroup '{}':", group_name);
+                    for test in group_tests {
+                        let markers = if test.markers.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", test.markers.join(", "))
+                        };
+                        println!("  {}{}", test.id, markers);
+                    }
+                }
             }
         }
     }
@@ -582,7 +645,13 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
         },
         provider: provider_config,
         framework: framework_config,
-        groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+        groups: HashMap::from([(
+            "default".to_string(),
+            GroupConfig {
+                retry_count: 0,
+                filters: String::new(),
+            },
+        )]),
         report: ReportConfig::default(),
     };
 

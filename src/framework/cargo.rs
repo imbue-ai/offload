@@ -45,7 +45,7 @@
 //!     };
 //!
 //!     let framework = CargoFramework::new(config);
-//!     let tests = framework.discover(&[]).await?;
+//!     let tests = framework.discover(&[], "").await?;
 //!
 //!     println!("Found {} tests", tests.len());
 //!     Ok(())
@@ -74,7 +74,18 @@ struct NextestListOutput {
 struct NextestSuite {
     #[serde(rename = "binary-id")]
     binary_id: String,
-    testcases: HashMap<String, serde_json::Value>,
+    testcases: HashMap<String, NextestTestcase>,
+}
+
+#[derive(Deserialize)]
+struct NextestTestcase {
+    #[serde(rename = "filter-match")]
+    filter_match: Option<FilterMatch>,
+}
+
+#[derive(Deserialize)]
+struct FilterMatch {
+    status: String,
 }
 
 /// Test framework for Rust projects using `cargo nextest`.
@@ -116,15 +127,30 @@ impl CargoFramework {
     ///
     /// Returns test IDs in the format `binary_id test_name` to match
     /// JUnit XML output where classname=binary and name=test_name.
+    ///
+    /// When filters are applied, nextest includes all tests in the output but marks
+    /// each with a `filter-match` field. Only tests with `status: "matches"` (or no
+    /// filter-match field) are included in the result.
     fn parse_json_output(&self, json: &str) -> FrameworkResult<Vec<TestRecord>> {
         let listing: NextestListOutput = serde_json::from_str(json)
             .map_err(|e| FrameworkError::DiscoveryFailed(format!("Failed to parse JSON: {}", e)))?;
 
         let mut tests = Vec::new();
         for suite in listing.rust_suites.values() {
-            for test_name in suite.testcases.keys() {
-                let test_id = format!("{} {}", suite.binary_id, test_name);
-                tests.push(TestRecord::new(&test_id));
+            for (test_name, testcase) in &suite.testcases {
+                // Include test if:
+                // - filter-match is not present (no filter applied), or
+                // - filter-match.status == "matches"
+                let include = testcase
+                    .filter_match
+                    .as_ref()
+                    .map(|fm| fm.status == "matches")
+                    .unwrap_or(true);
+
+                if include {
+                    let test_id = format!("{} {}", suite.binary_id, test_name);
+                    tests.push(TestRecord::new(&test_id));
+                }
             }
         }
         Ok(tests)
@@ -133,7 +159,11 @@ impl CargoFramework {
 
 #[async_trait]
 impl TestFramework for CargoFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
+    async fn discover(
+        &self,
+        _paths: &[PathBuf],
+        filters: &str,
+    ) -> FrameworkResult<Vec<TestRecord>> {
         let mut cmd_args = vec![
             "nextest".to_string(),
             "list".to_string(),
@@ -159,6 +189,17 @@ impl TestFramework for CargoFramework {
         if self.config.include_ignored {
             cmd_args.push("--run-ignored".to_string());
             cmd_args.push("only".to_string());
+        }
+
+        // Add filters if provided
+        if !filters.is_empty() {
+            let args = shell_words::split(filters).map_err(|e| {
+                FrameworkError::DiscoveryFailed(format!(
+                    "Invalid filter string '{}': {}",
+                    filters, e
+                ))
+            })?;
+            cmd_args.extend(args);
         }
 
         let output = tokio::process::Command::new("cargo")

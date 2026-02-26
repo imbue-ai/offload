@@ -68,7 +68,7 @@
 //!     let framework = PytestFramework::new(Default::default());
 //!
 //!     // Discover tests using the framework
-//!     let tests = framework.discover(&[]).await?;
+//!     let tests = framework.discover(&[], "").await?;
 //!
 //!     // Pre-populate sandbox pool
 //!     let sandbox_config = SandboxConfig {
@@ -234,7 +234,7 @@ impl RunResult {
 ///     let framework = PytestFramework::new(Default::default());
 ///
 ///     // Discover tests using the framework
-///     let tests = framework.discover(&[]).await?;
+///     let tests = framework.discover(&[], "").await?;
 ///
 ///     // Pre-populate sandbox pool
 ///     let sandbox_config = SandboxConfig {

@@ -41,7 +41,7 @@
 
 [no-expect]
 "." = 0
-"src/report" = 6  # test fixtures use expect for clarity
+"src/report" = 6
 
 [no-fixme-comments]
 "." = 0
@@ -99,7 +99,7 @@
 "examples/tests" = 5
 
 [no-todo-comments]
-"." = 14
+"." = 11
 
 [no-trailing-comments]
 "." = 0
@@ -112,7 +112,7 @@
 "." = 0
 
 [no-unwrap]
-"." = 4
+"." = 3
 
 [no-while-true]
 "." = 0
@@ -121,4 +121,5 @@
 "." = 0
 
 [rust-no-todo-comments]
-"." = 14
+"." = 11
+

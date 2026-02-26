@@ -406,6 +406,7 @@ fn default_remote_timeout() -> u64 {
 /// ```toml
 /// [groups.all]
 /// retry_count = 1
+/// filters = "-m not acceptance"
 ///
 /// [groups.flaky]
 /// retry_count = 3
@@ -420,6 +421,21 @@ pub struct GroupConfig {
     /// Default: 0 (no retries)
     #[serde(default = "default_retry_count")]
     pub retry_count: usize,
+
+    /// Filter strings passed to test frameworks during discovery.
+    ///
+    /// These filters are appended to the test discovery command to narrow
+    /// down which tests are included in the group. The format depends on
+    /// the test framework being used.
+    ///
+    /// # Examples
+    ///
+    /// - pytest: `"-m not acceptance"` or `"-k test_name"`
+    /// - cargo: `"--ignored"` or specific test patterns
+    ///
+    /// An empty string means no filtering.
+    #[serde(default)]
+    pub filters: String,
 }
 
 /// Test framework configuration specifying how tests are found and run.
@@ -776,7 +792,13 @@ mod tests {
                 test_id_format: "{name}".into(),
                 ..Default::default()
             }),
-            groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+            groups: HashMap::from([(
+                "default".to_string(),
+                GroupConfig {
+                    retry_count: 0,
+                    filters: String::new(),
+                },
+            )]),
             report: ReportConfig::default(),
         }
     }
@@ -798,7 +820,13 @@ mod tests {
                 test_id_format: "{classname} {name}".into(),
                 ..Default::default()
             }),
-            groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+            groups: HashMap::from([(
+                "default".to_string(),
+                GroupConfig {
+                    retry_count: 0,
+                    filters: String::new(),
+                },
+            )]),
             report: ReportConfig::default(),
         }
     }
@@ -817,13 +845,19 @@ mod tests {
                 ..Default::default()
             }),
             framework: FrameworkConfig::Default(DefaultFrameworkConfig {
-                discover_command: "echo test1 test2".into(),
+                discover_command: "echo test1 test2 {filters}".into(),
                 run_command: "echo Running {tests}".into(),
                 test_id_format: "{name}".into(),
                 result_file: None,
                 working_dir: None,
             }),
-            groups: HashMap::from([("default".to_string(), GroupConfig { retry_count: 0 })]),
+            groups: HashMap::from([(
+                "default".to_string(),
+                GroupConfig {
+                    retry_count: 0,
+                    filters: String::new(),
+                },
+            )]),
             report: ReportConfig::default(),
         }
     }

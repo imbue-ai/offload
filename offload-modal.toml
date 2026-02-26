@@ -23,9 +23,11 @@ extra_args = ["run", "--with=pytest"]
 
 [groups.unit]
 retry_count = 2
+filters = "-m 'not slow'"
 
 [groups.slow]
-retry_count = 2
+retry_count = 3
+filters = "-m 'slow'"
 
 [report]
 output_dir = "test-results"
