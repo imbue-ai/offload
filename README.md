@@ -54,11 +54,11 @@ Offload relies on a stable relationship between test discovery, execution, and r
 
 ### Discovery
 
-Each group triggers its own discovery call. The framework must output **one test ID per line** to stdout. These IDs become the canonical identifiers for the entire run.
+Each group triggers its own discovery call. The discovered test IDs become the canonical identifiers for the entire run.
 
-- **pytest**: Runs `{python} -m pytest --collect-only -q` locally. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`). If filters are provided, they take precedence over the framework-level `markers` config.
-- **cargo**: Runs `cargo nextest list --message-format json` locally. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
-- **default**: Runs `discover_command` through `sh -c`. The `{filters}` placeholder is replaced with the group's filter string (or empty string). Output must be one test ID per line; lines starting with `#` are ignored.
+- **pytest**: Runs `{python} -m pytest --collect-only -q` locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`). If filters are provided, they take precedence over the framework-level `markers` config.
+- **cargo**: Runs `cargo nextest list --message-format json` locally and parses test IDs from the JSON output. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
+- **default**: Runs `discover_command` through `sh -c` and reads one test ID per line from stdout. The `{filters}` placeholder is replaced with the group's filter string (or empty string). Lines starting with `#` are ignored.
 
 ### Test ID Matching
 
