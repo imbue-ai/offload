@@ -21,13 +21,33 @@
 //!
 //! # Markers
 //!
-//! pytest markers are extracted and stored in [`TestRecord::markers`].
-//! The `markers` configuration option filters tests during discovery:
+//! The `markers` configuration option filters tests during discovery.
+//! This applies to all groups as a baseline filter:
 //!
 //! ```toml
 //! [framework]
 //! type = "pytest"
 //! markers = "not slow and not integration"
+//! ```
+//!
+//! # Group-Level Filters
+//!
+//! Groups can specify their own `filters` which are passed as additional
+//! pytest arguments during discovery. When filters are provided, they
+//! take precedence over the framework-level `markers`:
+//!
+//! ```toml
+//! [framework]
+//! type = "pytest"
+//! paths = ["tests"]
+//!
+//! [groups.unit]
+//! retry_count = 0
+//! filters = "-m 'not slow'"
+//!
+//! [groups.slow]
+//! retry_count = 2
+//! filters = "-m 'slow'"
 //! ```
 
 use std::path::PathBuf;
