@@ -85,7 +85,7 @@ impl TestFramework for PytestFramework {
     async fn discover(
         &self,
         paths: &[PathBuf],
-        _filters: Option<&str>,
+        filters: Option<&str>,
     ) -> FrameworkResult<Vec<TestRecord>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
@@ -97,8 +97,14 @@ impl TestFramework for PytestFramework {
 
         cmd.arg("-m").arg("pytest").arg("--collect-only").arg("-q");
 
-        // Add marker filter if specified
-        if let Some(markers) = &self.config.markers {
+        // Add filters if provided, otherwise fall back to markers config
+        if let Some(filter_str) = filters {
+            if let Ok(args) = shell_words::split(filter_str) {
+                for arg in args {
+                    cmd.arg(arg);
+                }
+            }
+        } else if let Some(markers) = &self.config.markers {
             cmd.arg("-m").arg(markers);
         }
 
