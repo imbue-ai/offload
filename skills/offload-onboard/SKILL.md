@@ -83,7 +83,6 @@ __pycache__
 *.egg-info
 .offload
 .offload-image-cache
-.offload-cache
 test-results
 build
 dist
@@ -267,7 +266,6 @@ Append offload artifacts to `.gitignore`:
 ```
 # Offload
 test-results/
-.offload-cache/
 ```
 
 ### Step 8: Authenticate with Modal
@@ -470,6 +468,7 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | All tests "Not Run" / junit.xml missing | Test command failing inside sandbox | Check Dockerfile has correct runtime; debug with `modal sandbox create` |
 | "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before offload |
 | Slow sandbox creation | Docker image not cached | Run once to warm cache; `.offload-image-cache` tracks the base image ID |
+| Stale sandbox image | `.offload-image-cache` points to an outdated image | Delete `.offload-image-cache` to force a fresh image build on next run |
 | High parallelism slower than low | Sandbox creation overhead dominates | Reduce `max_parallel`; optimal is usually 2-6 for small test suites |
 
 ## Summary of Files Created/Modified

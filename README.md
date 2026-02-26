@@ -320,6 +320,10 @@ This demonstrates using the `default` framework with custom pytest discovery and
 
 Commands in configuration can reference bundled scripts using `@filename.ext` syntax. For example, `uv run @modal_sandbox.py create {image_id}` references the bundled `modal_sandbox.py` script. Scripts are extracted to a cache directory on first use.
 
+## Image Cache
+
+When using the `modal` provider or a `default` provider with a `prepare_command`, the bundled `modal_sandbox.py` script caches the image ID in `.offload-image-cache` at the project root. Delete this file to force a fresh image build on the next run. You can also pass `--no-cache` to `offload run` to skip cached image lookup.
+
 ## Environment Variable Expansion
 
 Configuration values support environment variable expansion:

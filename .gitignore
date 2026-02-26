@@ -39,4 +39,3 @@ offload.local.toml
 __pycache__/
 *.pyc
 .venv/
-.offload-image-cache
