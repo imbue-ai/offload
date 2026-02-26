@@ -10,6 +10,7 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 - **Automatic retry** with flaky test detection
 - **JUnit XML** reporting
 - **LPT scheduling** when historical timing data is available, with round-robin fallback
+- **Group-level filtering** to split tests into groups with different filters and retry policies
 - **Environment variable expansion** in config values (`${VAR}` and `${VAR:-default}`)
 - **Bundled script references** using `@filename.ext` syntax in commands
 
@@ -177,7 +178,7 @@ Custom shell commands for test discovery and execution.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discover_command` | string | required | Command that outputs one test ID per line to stdout |
+| `discover_command` | string | required | Command that outputs one test ID per line to stdout. Must contain `{filters}` placeholder |
 | `run_command` | string | required | Command template; `{tests}` is replaced with space-separated test IDs. `{result_file}` is replaced with the result file path if configured |
 | `result_file` | string | (none) | Path to JUnit XML result file produced by the test runner |
 | `working_dir` | string | (cwd) | Working directory for test commands |
@@ -185,9 +186,12 @@ Custom shell commands for test discovery and execution.
 
 ### `[groups.NAME]` -- Test Groups
 
+At least one group is required. Each group runs its own test discovery with its filters.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `retry_count` | integer | `0` | Number of times to retry failed tests |
+| `filters` | string | `""` | Filter string passed to the framework during discovery. For pytest: pytest args (e.g. `-m 'not slow'`). For cargo: nextest list args. For default: substituted into `{filters}` placeholder in `discover_command` |
 
 Failed tests that pass on retry are marked as "flaky" (exit code 2).
 
@@ -252,6 +256,11 @@ extra_args = ["run", "--with=pytest"]
 
 [groups.unit]
 retry_count = 2
+filters = "-m 'not slow'"
+
+[groups.slow]
+retry_count = 3
+filters = "-m 'slow'"
 
 [report]
 output_dir = "test-results"
@@ -301,12 +310,13 @@ timeout_secs = 600
 
 [framework]
 type = "default"
-discover_command = "uv sync --all-packages && uv run pytest --collect-only -q -m 'not acceptance and not release' 2>/dev/null | grep '::'"
+discover_command = "uv sync --all-packages && uv run pytest --collect-only -q {filters} 2>/dev/null | grep '::'"
 run_command = "cd /code/mng && uv sync --all-packages && uv run pytest -v --tb=short --no-cov -p no:xdist -o addopts= --junitxml={result_file} {tests}"
 test_id_format = "{name}"
 
 [groups.all]
 retry_count = 0
+filters = "-m 'not acceptance and not release'"
 
 [report]
 output_dir = "test-results"

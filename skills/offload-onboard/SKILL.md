@@ -123,6 +123,7 @@ extra_args = ["{extra-args}"]    # e.g. ["run", "--with=pytest"] for uv
 
 [groups.all]
 retry_count = 0
+filters = ""                    # pytest args for discovery filtering (e.g. "-m 'not slow'")
 
 [report]
 output_dir = "test-results"
@@ -158,6 +159,7 @@ extra_args = ["{extra-args}"]    # e.g. ["run", "--with=pytest"] for uv
 
 [groups.all]
 retry_count = 0
+filters = ""                    # pytest args for discovery filtering (e.g. "-m 'not slow'")
 
 [report]
 output_dir = "test-results"
@@ -187,7 +189,7 @@ Example — pytest in a monorepo with xdist conflict:
 ```toml
 [framework]
 type = "default"
-discover_command = "uv sync --all-packages && uv run pytest --collect-only -q -m 'not acceptance and not release' 2>/dev/null | grep '::'"
+discover_command = "uv sync --all-packages && uv run pytest --collect-only -q {filters} 2>/dev/null | grep '::'"
 run_command = "cd /app && uv sync --all-packages && uv run pytest -v --tb=short --no-cov -p no:xdist -o addopts= --junitxml={result_file} {tests}"
 test_id_format = "{name}"
 ```
