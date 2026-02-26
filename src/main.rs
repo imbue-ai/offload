@@ -14,7 +14,7 @@ use offload::framework::{
     pytest::PytestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
-use offload::provider::{default::DefaultProvider, local::LocalProvider};
+use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -202,6 +202,9 @@ async fn run_tests(
         match &mut config.provider {
             ProviderConfig::Local(cfg) => cfg.env.extend(cli_env),
             ProviderConfig::Default(cfg) => cfg.env.extend(cli_env),
+            ProviderConfig::Modal(_) => {
+                // Modal provider doesn't have env config - env vars are passed per-sandbox
+            }
         }
     }
 
@@ -376,6 +379,60 @@ async fn run_tests(
             )
             .await?
         }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
+                .await
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                PytestFramework::new(f_cfg.clone()),
+                &copy_dirs,
+                verbose,
+            )
+            .await?
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
+                .await
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                CargoFramework::new(f_cfg.clone()),
+                &copy_dirs,
+                verbose,
+            )
+            .await?
+        }
+        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
+                .await
+                .context("Failed to create Modal provider")?;
+            run_all_tests(
+                &config,
+                &all_tests,
+                provider,
+                DefaultFramework::new(f_cfg.clone()),
+                &copy_dirs,
+                verbose,
+            )
+            .await?
+        }
     };
 
     if exit_code != 0 {
@@ -482,6 +539,7 @@ fn validate_config(config_path: &Path) -> Result<()> {
             let provider_name = match &config.provider {
                 ProviderConfig::Local(_) => "local",
                 ProviderConfig::Default(_) => "default",
+                ProviderConfig::Modal(_) => "modal",
             };
             println!("  Provider: {}", provider_name);
 

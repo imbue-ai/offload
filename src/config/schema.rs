@@ -132,6 +132,7 @@ fn default_test_timeout() -> u64 {
 /// |------|-------------|----------|
 /// | `local` | Local processes | Development, CI without containers |
 /// | `default` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
+/// | `modal` | Modal sandboxes | Modal cloud execution with simplified config |
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
@@ -147,6 +148,12 @@ pub enum ProviderConfig {
     /// Use this to integrate with cloud providers like Modal, AWS Lambda,
     /// or any custom execution environment.
     Default(DefaultProviderConfig),
+
+    /// Run tests on Modal sandboxes with simplified configuration.
+    ///
+    /// Uses the DefaultSandbox implementation internally but exposes
+    /// high-level configuration options instead of raw command strings.
+    Modal(ModalProviderConfig),
 }
 
 /// Configuration for the local process provider.
@@ -190,6 +197,61 @@ pub struct LocalProviderConfig {
 
 fn default_shell() -> String {
     "/bin/sh".to_string()
+}
+
+/// Configuration for Modal sandbox provider.
+///
+/// This provider runs tests on Modal sandboxes using a simplified configuration.
+/// Instead of specifying raw shell commands, you provide high-level options
+/// and the provider generates the appropriate Modal CLI commands internally.
+///
+/// # Example
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// dockerfile = "./Dockerfile"
+/// include_cwd = true
+/// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
+/// ```
+///
+/// # Example: Minimal Configuration
+///
+/// ```toml
+/// [provider]
+/// type = "modal"
+/// # Uses default Modal image, no additional files copied
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ModalProviderConfig {
+    /// Path to a Dockerfile for building the sandbox image.
+    ///
+    /// If provided, Modal will build an image from this Dockerfile.
+    /// If not specified, a default Modal image is used.
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+
+    /// Whether to include the current working directory in the image.
+    ///
+    /// When enabled, the entire current working directory is copied
+    /// into the sandbox image during preparation.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub include_cwd: bool,
+
+    /// Directories to copy into the sandbox image.
+    ///
+    /// Each entry is a string in the format "local_path:remote_path".
+    /// These directories are baked into the image during preparation,
+    /// making sandbox creation faster.
+    ///
+    /// # Example
+    /// ```toml
+    /// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
+    /// ```
+    #[serde(default)]
+    pub copy_dirs: Vec<String>,
 }
 
 /// Configuration for custom remote execution provider.

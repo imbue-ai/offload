@@ -1,0 +1,25 @@
+# offload configuration for running cargo tests on Modal
+
+test_id_format = "{classname} {name}"
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 600
+stream_output = true
+sandbox_project_root = "/app"
+
+[provider]
+type = "default"
+prepare_command = "uv run @modal_sandbox.py prepare --include-cwd .devcontainer/Dockerfile"
+create_command = "uv run @modal_sandbox.py create {image_id}"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
+download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"
+timeout_secs = 600
+
+[groups.all]
+type = "cargo"
+retry_count = 1
+
+[report]
+output_dir = "test-results"

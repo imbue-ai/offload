@@ -271,6 +271,37 @@ pub struct DefaultSandbox {
 }
 
 impl DefaultSandbox {
+    /// Creates a new DefaultSandbox with the given configuration.
+    ///
+    /// This constructor is primarily used by providers that want to create
+    /// sandboxes with custom command templates (e.g., ModalProvider).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Unique identifier for this sandbox instance
+    /// * `connector` - Shell connector for running commands
+    /// * `exec_command` - Command template with `{sandbox_id}` and `{command}` placeholders
+    /// * `destroy_command` - Command template with `{sandbox_id}` placeholder
+    /// * `download_command` - Optional command template with `{sandbox_id}` and `{paths}` placeholders
+    /// * `env` - Environment variables to pass to commands
+    pub fn new(
+        id: String,
+        connector: Arc<ShellConnector>,
+        exec_command: String,
+        destroy_command: String,
+        download_command: Option<String>,
+        env: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            id,
+            connector,
+            exec_command,
+            destroy_command,
+            download_command,
+            env,
+        }
+    }
+
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
         // Build env var prefix (KEY=value KEY2=value2 ...)

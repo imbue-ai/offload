@@ -220,6 +220,8 @@ fn expand_provider_env(provider: &mut ProviderConfig) -> Result<()> {
     match provider {
         ProviderConfig::Local(config) => expand_env_hashmap(&mut config.env),
         ProviderConfig::Default(config) => expand_env_hashmap(&mut config.env),
+        // Modal provider doesn't have environment variables to expand
+        ProviderConfig::Modal(_) => Ok(()),
     }
 }
 
