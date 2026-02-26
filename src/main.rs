@@ -211,9 +211,17 @@ async fn run_tests(
     eprint!("Discovering tests... ");
 
     let tests = match &config.framework {
-        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
+        FrameworkConfig::Pytest(cfg) => {
+            PytestFramework::new(cfg.clone())
+                .discover(&[], None)
+                .await?
+        }
+        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[], None).await?,
+        FrameworkConfig::Default(cfg) => {
+            DefaultFramework::new(cfg.clone())
+                .discover(&[], None)
+                .await?
+        }
     };
 
     // Get retry_count from the first group (if any), defaulting to 0
@@ -459,9 +467,17 @@ async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
 
     // Discover tests once using the top-level framework config
     let tests = match &config.framework {
-        FrameworkConfig::Pytest(cfg) => PytestFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[]).await?,
-        FrameworkConfig::Default(cfg) => DefaultFramework::new(cfg.clone()).discover(&[]).await?,
+        FrameworkConfig::Pytest(cfg) => {
+            PytestFramework::new(cfg.clone())
+                .discover(&[], None)
+                .await?
+        }
+        FrameworkConfig::Cargo(cfg) => CargoFramework::new(cfg.clone()).discover(&[], None).await?,
+        FrameworkConfig::Default(cfg) => {
+            DefaultFramework::new(cfg.clone())
+                .discover(&[], None)
+                .await?
+        }
     };
 
     match format {

@@ -82,7 +82,11 @@ impl PytestFramework {
 
 #[async_trait]
 impl TestFramework for PytestFramework {
-    async fn discover(&self, paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
+    async fn discover(
+        &self,
+        paths: &[PathBuf],
+        _filters: Option<&str>,
+    ) -> FrameworkResult<Vec<TestRecord>> {
         // Build the pytest --collect-only command
         let mut cmd = tokio::process::Command::new(&self.config.python);
 

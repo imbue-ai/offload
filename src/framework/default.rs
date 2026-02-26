@@ -172,7 +172,11 @@ impl DefaultFramework {
 
 #[async_trait]
 impl TestFramework for DefaultFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
+    async fn discover(
+        &self,
+        _paths: &[PathBuf],
+        _filters: Option<&str>,
+    ) -> FrameworkResult<Vec<TestRecord>> {
         // Run test discovery command through shell to support pipes, globs, etc.
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c");

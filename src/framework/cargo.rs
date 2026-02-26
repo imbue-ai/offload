@@ -45,7 +45,7 @@
 //!     };
 //!
 //!     let framework = CargoFramework::new(config);
-//!     let tests = framework.discover(&[]).await?;
+//!     let tests = framework.discover(&[], None).await?;
 //!
 //!     println!("Found {} tests", tests.len());
 //!     Ok(())
@@ -133,7 +133,11 @@ impl CargoFramework {
 
 #[async_trait]
 impl TestFramework for CargoFramework {
-    async fn discover(&self, _paths: &[PathBuf]) -> FrameworkResult<Vec<TestRecord>> {
+    async fn discover(
+        &self,
+        _paths: &[PathBuf],
+        _filters: Option<&str>,
+    ) -> FrameworkResult<Vec<TestRecord>> {
         let mut cmd_args = vec![
             "nextest".to_string(),
             "list".to_string(),

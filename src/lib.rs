@@ -70,7 +70,7 @@
 //!     let framework = PytestFramework::new(Default::default());
 //!
 //!     // Discover tests using the framework
-//!     let tests = framework.discover(&[]).await?;
+//!     let tests = framework.discover(&[], None).await?;
 //!
 //!     // Pre-populate sandbox pool
 //!     let sandbox_config = SandboxConfig {
