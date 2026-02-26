@@ -28,6 +28,26 @@ From source:
 cargo install --path .
 ```
 
+## Prerequisites
+
+**Core:**
+- Rust toolchain (`cargo`) to install offload
+
+**For Modal providers** (`type = "modal"` or `type = "default"` with `@modal_sandbox.py`):
+- [uv](https://docs.astral.sh/uv/) — the bundled `modal_sandbox.py` is invoked via `uv run`, which auto-installs its dependencies (`modal`, `click`)
+- Python >= 3.10
+- A Modal account — authenticate with `modal token new`
+
+**For the pytest framework** (local test discovery):
+- Python and pytest installed locally — offload runs `pytest --collect-only` on the local machine to discover tests
+- The configured Python runner (e.g. `uv`, `poetry`, `python`) must be on PATH
+
+**For the cargo framework:**
+- [cargo-nextest](https://nexte.st/) — offload runs `cargo nextest list` for test discovery. Install with `cargo install cargo-nextest`
+
+**For the default framework:**
+- Whatever tools your `discover_command` and `run_command` invoke
+
 ## Quick Start
 
 1. Initialize a configuration file:

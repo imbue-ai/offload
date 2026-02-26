@@ -28,6 +28,12 @@ Investigate how the repository runs its tests:
 
 Ask the user to confirm your detection if anything is ambiguous.
 
+Before proceeding, verify the following are installed:
+- `uv` (required to run the bundled Modal sandbox script)
+- `modal` CLI — run `modal token new` if not yet authenticated
+- For pytest projects: the configured Python runner (`uv`, `poetry`, or `python`) and pytest must be available locally for test discovery
+- For cargo projects: `cargo-nextest` must be installed (`cargo install cargo-nextest`)
+
 ### Step 2: Find or Create a Dockerfile
 
 Offload's Modal provider needs a Dockerfile to build sandbox images. Look for an existing one:
