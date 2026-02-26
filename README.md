@@ -124,15 +124,15 @@ Run tests as local child processes.
 
 #### `type = "default"`
 
-Custom shell commands for sandbox lifecycle management. Supports placeholders: `{sandbox_id}`, `{command}`, `{image_id}`, `{paths}`.
+Custom shell commands for sandbox lifecycle management. Commands use placeholder variables that are replaced via simple string substitution at runtime.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `prepare_command` | string | (none) | Runs once before sandbox creation; prints image ID to stdout |
-| `create_command` | string | required | Creates a sandbox; prints sandbox ID to stdout. Can use `{image_id}` |
-| `exec_command` | string | required | Runs a command on a sandbox. Uses `{sandbox_id}` and `{command}` |
-| `destroy_command` | string | required | Destroys a sandbox. Uses `{sandbox_id}` |
-| `download_command` | string | (none) | Downloads files from sandbox. Uses `{sandbox_id}` and `{paths}` |
+| `prepare_command` | string | (none) | Runs once before sandbox creation. Must print an image ID as its last line of stdout (e.g. `im-rlXozWoN3Q9TWD8I6fnxm5`) |
+| `create_command` | string | required | Creates a sandbox. Must print a sandbox ID to stdout (e.g. `sb-xyz123`). `{image_id}` is replaced with the output of `prepare_command` |
+| `exec_command` | string | required | Runs a command inside a sandbox. `{sandbox_id}` is replaced with the sandbox ID from `create_command`. `{command}` is replaced with the full shell-escaped command string (program + args + env vars as a single quoted argument) |
+| `destroy_command` | string | required | Destroys a sandbox. `{sandbox_id}` is replaced with the sandbox ID |
+| `download_command` | string | (none) | Downloads files from a sandbox. `{sandbox_id}` is replaced with the sandbox ID. `{paths}` is replaced with space-separated `'remote':'local'` pairs |
 | `working_dir` | string | (cwd) | Working directory for lifecycle commands |
 | `timeout_secs` | integer | `3600` | Timeout for remote commands in seconds |
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
