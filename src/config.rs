@@ -77,6 +77,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     expand_provider_env(&mut config.provider)?;
+    validate_config(&config)?;
 
     Ok(config)
 }
@@ -123,8 +124,29 @@ pub fn load_config_str(content: &str) -> Result<Config> {
     let mut config: Config = toml::from_str(content).context("Failed to parse config")?;
 
     expand_provider_env(&mut config.provider)?;
+    validate_config(&config)?;
 
     Ok(config)
+}
+
+/// Validates configuration invariants that cannot be expressed in the schema.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Default framework's `discover_command` is missing the `{filters}` placeholder
+fn validate_config(config: &Config) -> Result<()> {
+    if let FrameworkConfig::Default(ref cfg) = config.framework
+        && !cfg.discover_command.contains("{filters}")
+    {
+        anyhow::bail!(
+            "Default framework discover_command must contain '{{filters}}' placeholder for group filtering. \
+             Got: '{}'. \
+             Add '{{filters}}' to your discover_command, e.g., 'my-command {{filters}}'",
+            cfg.discover_command
+        );
+    }
+    Ok(())
 }
 
 /// Expands environment variable references in a string value.
@@ -229,6 +251,67 @@ fn expand_provider_env(provider: &mut ProviderConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_default_framework_missing_filters_placeholder_returns_error() {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "default"
+            discover_command = "echo test1 test2"
+            run_command = "echo {tests}"
+            test_id_format = "{name}"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error for missing {{filters}} placeholder"
+        );
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("{filters}"),
+            "Error message should mention {{filters}} placeholder, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_default_framework_with_filters_placeholder_succeeds() {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "default"
+            discover_command = "echo test1 test2 {filters}"
+            run_command = "echo {tests}"
+            test_id_format = "{name}"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_ok(),
+            "Expected success with {{filters}} placeholder: {:?}",
+            result.err()
+        );
+    }
 
     #[test]
     fn test_expand_env_value_no_variables() -> Result<(), String> {

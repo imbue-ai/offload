@@ -845,7 +845,7 @@ mod tests {
                 ..Default::default()
             }),
             framework: FrameworkConfig::Default(DefaultFrameworkConfig {
-                discover_command: "echo test1 test2".into(),
+                discover_command: "echo test1 test2 {filters}".into(),
                 run_command: "echo Running {tests}".into(),
                 test_id_format: "{name}".into(),
                 result_file: None,
