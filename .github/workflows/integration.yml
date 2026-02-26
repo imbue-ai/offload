@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Branch of mng to test against, was main
-  MNG_REF: "a734bfb013638893fe73d2f96498d4bc723a1127"
+  # Reference of mng to test against. Should ideally be a pinned commit on the main branch.
+  MNG_REF: "ded3b841ffbefb440915b1b06d6da4717d95b7fc"
 
 jobs:
   integration:
@@ -64,4 +64,4 @@ jobs:
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
-        LAST_COMMIT_SHA=${{MNG_REF}} just test-offload
+        LAST_COMMIT_SHA=${{ env.MNG_REF }} just test-offload
