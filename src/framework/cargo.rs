@@ -158,8 +158,6 @@ impl TestFramework for CargoFramework {
             "nextest".to_string(),
             "list".to_string(),
             "--color=never".to_string(), // Prevent ANSI codes in test names
-            "-T".to_string(),            // Explicit output format: "binary test_path"
-            "oneline".to_string(),       // (default varies by nextest version / TTY)
         ];
 
         if let Some(package) = &self.config.package {
