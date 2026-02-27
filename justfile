@@ -1,3 +1,4 @@
+
 default: help
 
 help:
@@ -38,6 +39,9 @@ install-skill:
     ln -s "$skill_src" "$skill_dst"
     echo "Installed: $skill_dst -> $skill_src"
     echo "You can now use /offload-onboard in any repository."
+
+ratchets:
+    ratchets check
 
 _repo-root:
     @git rev-parse --show-toplevel

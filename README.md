@@ -19,7 +19,7 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 From crates.io:
 
 ```bash
-cargo install offload@0.3.4
+cargo install offload@0.4.0
 ```
 
 From source:
