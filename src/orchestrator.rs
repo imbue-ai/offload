@@ -529,14 +529,11 @@ where
                     let extension = match &outcome {
                         Ok(BatchOutcome::Success) => "success",
                         Ok(BatchOutcome::Failure) => "failure",
-                        Ok(BatchOutcome::Cancelled) => "",
+                        Ok(BatchOutcome::Cancelled) => "cancelled",
                         Err(_) => "error",
                     };
 
-                    if extension.is_empty() {
-                        // Cancelled batch — delete partial log
-                        let _ = std::fs::remove_file(&log_src);
-                    } else if log_src.exists() {
+                    if log_src.exists() {
                         let log_dst =
                             logs_dir.join(format!("batch-{}.{}", batch_idx, extension));
                         if let Err(e) = std::fs::rename(&log_src, &log_dst) {
