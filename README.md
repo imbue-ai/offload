@@ -56,18 +56,18 @@ Offload relies on a stable relationship between test discovery, execution, and r
 
 Each group triggers its own discovery call. The discovered test IDs become the canonical identifiers for the entire run.
 
-- **pytest**: Runs `{python} -m pytest --collect-only -q` locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`). If filters are provided, they take precedence over the framework-level `markers` config.
+- **pytest**: Runs `{python} -m pytest --collect-only -q` locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`).
 - **cargo**: Runs `cargo nextest list --message-format json` locally and parses test IDs from the JSON output. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
 - **default**: Runs `discover_command` through `sh -c` and reads one test ID per line from stdout. The `{filters}` placeholder is replaced with the group's filter string (or empty string). Lines starting with `#` are ignored.
 
 ### Test ID Matching
 
-Offload matches discovered test IDs to JUnit XML results using `test_id_format`. This is the most common source of "Not Run" errors.
+Offload matches discovered test IDs to JUnit XML results using a `test_id_format` string that controls how JUnit XML `name` and `classname` attributes are combined into a test ID. For example, `"{name}"` uses just the name attribute; `"{classname} {name}"` joins them with a space. This is the most common source of "Not Run" errors.
 
-- The `test_id_format` field controls how JUnit XML `name` and `classname` attributes are combined into a test ID. For example, `"{name}"` uses just the name attribute; `"{classname} {name}"` joins them with a space.
-- The JUnit `name` attribute produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, offload reports the test as "Not Run".
-- For pytest: the default `test_id_format` is `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output.
-- For cargo/nextest: the default `test_id_format` is `"{classname} {name}"` where classname is the binary ID and name is the test function.
+- The JUnit attributes produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, offload reports the test as "Not Run".
+- **pytest**: The format is fixed internally as `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Users do not configure this field.
+- **cargo**: The format is fixed internally as `"{classname} {name}"` where classname is the binary ID and name is the test function. Users do not configure this field.
+- **default**: The `test_id_format` field is a required configuration option. Set it to match how your test runner populates the JUnit XML `name` and `classname` attributes.
 
 ### Result Reporting
 
@@ -223,13 +223,10 @@ The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
 | `paths` | list | `["tests"]` | Directories to search for tests |
 | `extra_args` | list | `[]` | Additional pytest arguments for discovery |
 | `python` | string | `"python"` | Python interpreter to use |
-| `test_id_format` | string | `"{name}"` | Format for test IDs from JUnit XML (`{name}`, `{classname}`) |
 
 #### `type = "cargo"`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `test_id_format` | string | `"{classname} {name}"` | Format for test IDs from JUnit XML (`{name}`, `{classname}`) |
+No additional configuration. Requires [cargo-nextest](https://nexte.st/).
 
 #### `type = "default"`
 
