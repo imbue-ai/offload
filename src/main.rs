@@ -85,7 +85,7 @@ enum Commands {
         #[arg(short, long, default_value = "local")]
         provider: String,
 
-        /// Test framework (pytest, cargo, generic)
+        /// Test framework (pytest, cargo, default)
         #[arg(short, long, default_value = "pytest")]
         framework: String,
     },
