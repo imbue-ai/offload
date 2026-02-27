@@ -26,7 +26,7 @@ jobs:
     - name: Install cargo tools
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-nextest,cargo-deny,ratchets@0.2.4
+        tool: cargo-nextest,cargo-deny,ratchets@0.2.6
 
     - name: Check formatting
       run: cargo fmt --check
