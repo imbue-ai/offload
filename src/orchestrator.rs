@@ -483,13 +483,13 @@ where
                             Ok(file) => {
                                 let log_file = Arc::new(std::sync::Mutex::new(file));
                                 let callback: OutputCallback =
-                                    Arc::new(move |test_id, line| {
+                                    Arc::new(move |_test_id, line| {
                                         let msg = match line {
                                             OutputLine::Stdout(s) => {
-                                                format!("[{}] {}\n", test_id, s)
+                                                format!("{}\n", s)
                                             }
                                             OutputLine::Stderr(s) => {
-                                                format!("[{}] [stderr] {}\n", test_id, s)
+                                                format!("[stderr] {}\n", s)
                                             }
                                             OutputLine::ExitCode(_) => return,
                                         };
