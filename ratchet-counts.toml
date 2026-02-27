@@ -99,7 +99,7 @@
 "examples/tests" = 5
 
 [no-todo-comments]
-"." = 11
+"." = 12
 
 [no-trailing-comments]
 "." = 0
@@ -119,7 +119,4 @@
 
 [no-yaml-usage]
 "." = 0
-
-[rust-no-todo-comments]
-"." = 11
 

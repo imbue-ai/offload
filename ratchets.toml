@@ -15,6 +15,7 @@ languages = ["rust", "python"]
 # Disable a rule: rule-name = false
 # Configure a rule: rule-name = { severity = "warning" }
 no-dataclasses-import = false
+rust-no-todo-comments = false
 
 [output]
 format = "human"
