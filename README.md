@@ -221,7 +221,6 @@ The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `paths` | list | `["tests"]` | Directories to search for tests |
-| `markers` | string | (none) | pytest marker expression to filter tests |
 | `extra_args` | list | `[]` | Additional pytest arguments for discovery |
 | `python` | string | `"python"` | Python interpreter to use |
 | `test_id_format` | string | `"{name}"` | Format for test IDs from JUnit XML (`{name}`, `{classname}`) |
@@ -230,10 +229,6 @@ The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `package` | string | (none) | Package to test in a Cargo workspace |
-| `features` | list | `[]` | Cargo features to enable |
-| `bin` | string | (none) | Specific binary to test |
-| `include_ignored` | boolean | `false` | Include `#[ignore]` tests |
 | `test_id_format` | string | `"{classname} {name}"` | Format for test IDs from JUnit XML (`{name}`, `{classname}`) |
 
 #### `type = "default"`
