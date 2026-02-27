@@ -429,9 +429,14 @@ where
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(Mutex::new(Vec::new()));
 
-        // Truncate output log file (callbacks will open in append mode)
-        let output_log_path = output_dir.join("offload-out");
-        let _ = std::fs::File::create(&output_log_path);
+        // Create/truncate logs directory for per-runner output
+        let logs_dir = output_dir.join("logs");
+        if logs_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&logs_dir)
+        {
+            warn!("Failed to clear logs directory: {}", e);
+        }
+        std::fs::create_dir_all(&logs_dir).ok();
 
         // Run tests in parallel
         // Execute batches concurrently using scoped spawns (no 'static required)
@@ -445,7 +450,7 @@ where
                 let all_passed = Arc::clone(&all_passed);
                 let cancellation_token = cancellation_token.clone();
                 let sandboxes_for_cleanup = Arc::clone(&sandboxes_for_cleanup);
-                let output_log_path = output_log_path.clone();
+                let logs_dir = logs_dir.clone();
 
                 scope.spawn(async move {
                     // Early exit if all tests have already passed
@@ -471,29 +476,42 @@ where
                     .with_junit_report(Arc::clone(&junit_report))
                     .with_parts_dir(parts_dir);
 
-                    // Log test output to offload-out file
+                    // Log test output to per-runner log file
                     {
-                        let path = output_log_path.clone();
-                        let callback: OutputCallback = Arc::new(move |test_id, line| {
-                            let msg = match line {
-                                OutputLine::Stdout(s) => format!("[{}] {}\n", test_id, s),
-                                OutputLine::Stderr(s) => {
-                                    format!("[{}] [stderr] {}\n", test_id, s)
-                                }
-                                OutputLine::ExitCode(_) => return,
-                            };
-                            match std::fs::OpenOptions::new().append(true).open(&path) {
-                                Ok(mut f) => {
-                                    if let Err(e) = f.write_all(msg.as_bytes()) {
-                                        warn!("Failed to write to offload-out: {}", e);
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Failed to open offload-out: {}", e);
-                                }
+                        let log_path = logs_dir.join(format!("batch-{}.log", batch_idx));
+                        match std::fs::File::create(&log_path) {
+                            Ok(file) => {
+                                let log_file = Arc::new(std::sync::Mutex::new(file));
+                                let callback: OutputCallback =
+                                    Arc::new(move |test_id, line| {
+                                        let msg = match line {
+                                            OutputLine::Stdout(s) => {
+                                                format!("[{}] {}\n", test_id, s)
+                                            }
+                                            OutputLine::Stderr(s) => {
+                                                format!("[{}] [stderr] {}\n", test_id, s)
+                                            }
+                                            OutputLine::ExitCode(_) => return,
+                                        };
+                                        if let Ok(mut f) = log_file.lock()
+                                            && let Err(e) = f.write_all(msg.as_bytes())
+                                        {
+                                            warn!(
+                                                "Failed to write to batch log: {}",
+                                                e
+                                            );
+                                        }
+                                    });
+                                runner = runner.with_output_callback(callback);
                             }
-                        });
-                        runner = runner.with_output_callback(callback);
+                            Err(e) => {
+                                warn!(
+                                    "Failed to create batch log {}: {}",
+                                    log_path.display(),
+                                    e
+                                );
+                            }
+                        }
                     }
 
                     // Log test starts in verbose mode
@@ -504,7 +522,30 @@ where
                     }
 
                     // Run all tests in batch with a single command
-                    match runner.run_tests(&batch).await {
+                    let log_src = logs_dir.join(format!("batch-{}.log", batch_idx));
+                    let outcome = runner.run_tests(&batch).await;
+
+                    // Rename log file to reflect outcome
+                    let extension = match &outcome {
+                        Ok(BatchOutcome::Success) => "success",
+                        Ok(BatchOutcome::Failure) => "failure",
+                        Ok(BatchOutcome::Cancelled) => "",
+                        Err(_) => "error",
+                    };
+
+                    if extension.is_empty() {
+                        // Cancelled batch — delete partial log
+                        let _ = std::fs::remove_file(&log_src);
+                    } else if log_src.exists() {
+                        let log_dst =
+                            logs_dir.join(format!("batch-{}.{}", batch_idx, extension));
+                        if let Err(e) = std::fs::rename(&log_src, &log_dst) {
+                            warn!("Failed to rename batch log: {}", e);
+                        }
+                    }
+
+                    // Handle outcome-specific logic
+                    match &outcome {
                         Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
                             // Check shared report for early stopping
                             if let Ok(report) = junit_report.lock()
@@ -521,7 +562,6 @@ where
                             }
                         }
                         Ok(BatchOutcome::Cancelled) => {
-                            // Batch was cancelled - no results to record
                             debug!("Batch {} was cancelled", batch_idx);
                         }
                         Err(e) => {
