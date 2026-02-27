@@ -1,4 +1,4 @@
-# offload configuration for running cargo tests on Modal
+# Offload configuration for running cargo tests on Modal
 # Uses the simplified Modal provider
 
 [offload]

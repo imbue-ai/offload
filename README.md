@@ -1,4 +1,4 @@
-# offload
+# Offload
 
 A flexible parallel test runner written in Rust with pluggable execution providers. By [Imbue AI](https://github.com/imbue-ai).
 
@@ -31,7 +31,7 @@ cargo install --path .
 ## Prerequisites
 
 **Core:**
-- Rust toolchain (`cargo`) to install offload
+- Rust toolchain (`cargo`) to install Offload
 
 **For Modal providers** (`type = "modal"` or `type = "default"` with `@modal_sandbox.py`):
 - [uv](https://docs.astral.sh/uv/) — the bundled `modal_sandbox.py` is invoked via `uv run`, which auto-installs its dependencies (`modal`, `click`)
@@ -39,11 +39,11 @@ cargo install --path .
 - A Modal account — authenticate with `modal token new`
 
 **For the pytest framework** (local test discovery):
-- Python and pytest installed locally — offload runs `pytest --collect-only` on the local machine to discover tests
+- Python and pytest installed locally — Offload runs `pytest --collect-only` on the local machine to discover tests
 - The configured Python runner (e.g. `uv`, `poetry`, `python`) must be on PATH
 
 **For the cargo framework:**
-- [cargo-nextest](https://nexte.st/) — offload runs `cargo nextest list` for test discovery. Install with `cargo install cargo-nextest`
+- [cargo-nextest](https://nexte.st/) — Offload runs `cargo nextest list` for test discovery. Install with `cargo install cargo-nextest`
 
 **For the default framework:**
 - Whatever tools your `discover_command` and `run_command` invoke
@@ -64,17 +64,17 @@ Each group triggers its own discovery call. The discovered test IDs become the c
 
 Offload matches discovered test IDs to JUnit XML results using a `test_id_format` string that controls how JUnit XML `name` and `classname` attributes are combined into a test ID. For example, `"{name}"` uses just the name attribute; `"{classname} {name}"` joins them with a space. This is the most common source of "Not Run" errors.
 
-- The JUnit attributes produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, offload reports the test as "Not Run".
+- The JUnit attributes produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, Offload reports the test as "Not Run".
 - **pytest**: The format is fixed internally as `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Users do not configure this field.
 - **cargo**: The format is fixed internally as `"{classname} {name}"` where classname is the binary ID and name is the test function. Users do not configure this field.
 - **default**: The `test_id_format` field is a required configuration option. Set it to match how your test runner populates the JUnit XML `name` and `classname` attributes.
 
 ### Result Reporting
 
-After execution, offload collects results via one of two mechanisms:
+After execution, Offload collects results via one of two mechanisms:
 
-- **JUnit XML** (recommended): The test command writes a JUnit XML file. For the `default` framework, configure `result_file` with the path and use `{result_file}` in `run_command`. For pytest and cargo, offload generates the `--junitxml` / nextest JUnit flags automatically.
-- **Exit code fallback** (default framework only): If no `result_file` is configured, offload infers pass/fail from the command's exit code. This loses per-test granularity — all tests are reported under a synthetic `all_tests` ID, and flaky test detection will not work.
+- **JUnit XML** (recommended): The test command writes a JUnit XML file. For the `default` framework, configure `result_file` with the path and use `{result_file}` in `run_command`. For pytest and cargo, Offload generates the `--junitxml` / nextest JUnit flags automatically.
+- **Exit code fallback** (default framework only): If no `result_file` is configured, Offload infers pass/fail from the command's exit code. This loses per-test granularity — all tests are reported under a synthetic `all_tests` ID, and flaky test detection will not work.
 
 ### Retry and Flaky Test Behavior
 
@@ -94,7 +94,7 @@ After execution, offload collects results via one of two mechanisms:
 
 ### Output Files
 
-After a test run, offload writes per-batch log files to `{output_dir}/logs/`:
+After a test run, Offload writes per-batch log files to `{output_dir}/logs/`:
 
 | File | Meaning |
 |------|---------|
@@ -409,7 +409,7 @@ Configuration values support environment variable expansion:
 
 ## Self-Testing
 
-offload can run its own test suite on Modal:
+Offload can run its own test suite on Modal:
 
 ```bash
 cargo run -- -c offload-modal.toml run

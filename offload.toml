@@ -1,4 +1,4 @@
-# offload configuration for running cargo tests locally
+# Offload configuration for running cargo tests locally
 
 [offload]
 max_parallel = 4

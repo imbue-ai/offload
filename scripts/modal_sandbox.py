@@ -6,7 +6,7 @@
 #     "click>=8.0",
 # ]
 # ///
-"""Modal sandbox management for offload.
+"""Modal sandbox management for Offload.
 
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 """
@@ -99,7 +99,7 @@ def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
 
 @click.group()
 def cli():
-    """Modal sandbox management for offload."""
+    """Modal sandbox management for Offload."""
     pass
 
 
@@ -405,7 +405,7 @@ def run(command: str):
     with run_app.run():
         result = _run_test.remote(command)
 
-    # Output JSON for offload to parse
+    # Output JSON for Offload to parse
     print(json.dumps(result))
     sys.exit(result["exit_code"])
 

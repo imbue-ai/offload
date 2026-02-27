@@ -1,4 +1,4 @@
-# Guide for Agents working on offload
+# Guide for Agents working on Offload
 
 This repo is designed for long-horizon, agentic coding. Follow these rules strictly.
 
