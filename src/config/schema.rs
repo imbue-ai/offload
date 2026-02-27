@@ -79,11 +79,10 @@ pub struct OffloadConfig {
     pub working_dir: Option<PathBuf>,
 
     /// Stream test output in real-time instead of buffering.
-    ///
-    /// When enabled, test output is printed as it occurs. When disabled
-    /// (default), output is collected and displayed after each test completes.
-    /// Streaming is useful for debugging but may interleave output from
-    /// parallel tests.
+    /// Deprecated: kept only for backward compatibility with existing TOML
+    /// files. This field is ignored — output is always logged to
+    /// `{output_dir}/offload-out`. TODO: remove this field once external
+    /// configs have been updated.
     #[serde(default)]
     pub stream_output: bool,
 
