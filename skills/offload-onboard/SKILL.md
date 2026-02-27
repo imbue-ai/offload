@@ -1,13 +1,13 @@
 ---
 name: offload-onboard
-description: "Onboard a repository to use offload for parallel test execution on Modal. Detects test setup, creates config, Dockerfile, CI job, and optimizes performance."
+description: "Onboard a repository to use Offload for parallel test execution on Modal. Detects test setup, creates config, Dockerfile, CI job, and optimizes performance."
 ---
 
 # Onboard Repository to Offload
 
-This skill walks through onboarding the current repository to use **offload** — a parallel test runner that executes tests across Modal cloud sandboxes.
+This skill walks through onboarding the current repository to use **Offload** — a parallel test runner that executes tests across Modal cloud sandboxes.
 
-**Install offload**: `cargo install offload@0.4.0`
+**Install Offload**: `cargo install offload@0.4.0`
 
 ## Procedure
 
@@ -74,7 +74,7 @@ WORKDIR /app
 Key principles:
 - Match the language/runtime version from the project's config (e.g. `requires-python`, `rust-version`)
 - Include `git` if any tests create git repos or the project uses git-based dependencies
-- Do NOT `COPY . .` — offload overlays source via `--copy-dir` at image build time
+- Do NOT `COPY . .` — Offload overlays source via `--copy-dir` at image build time
 - Keep it minimal — dependencies are installed at runtime inside the sandbox
 
 ### Step 3: Create .dockerignore
@@ -185,7 +185,7 @@ type = "cargo"
 The built-in `pytest` and `cargo` frameworks cover straightforward setups. Fall back to `type = "default"` when:
 
 - **Monorepo / workspace setup**: Discovery or execution needs pre-steps like `uv sync --all-packages` or `npm install` across packages
-- **Conflicting local config**: The project's `pyproject.toml` or `setup.cfg` has `addopts` that conflict with offload (e.g. xdist workers, coverage plugins) and you need to override them with `-o addopts=` or `-p no:xdist`
+- **Conflicting local config**: The project's `pyproject.toml` or `setup.cfg` has `addopts` that conflict with Offload (e.g. xdist workers, coverage plugins) and you need to override them with `-o addopts=` or `-p no:xdist`
 - **Pre-test commands**: Tests need setup before running (e.g. `git apply` for patches, database migrations, service startup)
 - **Custom discovery pipeline**: Standard collection doesn't work and you need shell pipelines (e.g. grep filtering, marker exclusions combined with workspace sync)
 - **Unsupported framework**: Jest, Go, Mocha, or any framework not directly supported
@@ -200,7 +200,7 @@ run_command = "cd /app && uv sync --all-packages && uv run pytest -v --tb=short 
 test_id_format = "{name}"
 ```
 
-For the full configuration reference and more examples, see the offload README.
+For the full configuration reference and more examples, see the Offload README.
 
 Configuration reference:
 - `max_parallel`: Number of concurrent Modal sandboxes (start with 3, optimize later)
@@ -212,7 +212,7 @@ Configuration reference:
 
 **Skip this step if the framework is not `pytest`.**
 
-By default, pytest's JUnit XML output uses a `classname` + `name` format that cannot be losslessly converted back to the original nodeid used during test collection. This causes offload to report tests as "Not Run" because it cannot match JUnit results to discovered tests.
+By default, pytest's JUnit XML output uses a `classname` + `name` format that cannot be losslessly converted back to the original nodeid used during test collection. This causes Offload to report tests as "Not Run" because it cannot match JUnit results to discovered tests.
 
 Add an autouse fixture that writes the full nodeid into the JUnit `name` attribute. Offload's parser already handles `name` values containing `::` by using them verbatim.
 
@@ -230,9 +230,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _set_junit_test_id(request: pytest.FixtureRequest, record_xml_attribute) -> None:
-    """Set JUnit XML name to the full test ID for exact matching with offload.
+    """Set JUnit XML name to the full test ID for exact matching with Offload.
 
-    Uses OFFLOAD_ROOT env var if set (for consistent paths in offload runs),
+    Uses OFFLOAD_ROOT env var if set (for consistent paths in Offload runs),
     otherwise falls back to pytest's nodeid directly.
     """
     offload_root = os.environ.get("OFFLOAD_ROOT")
@@ -265,8 +265,8 @@ Create `scripts/offload-tests.sh`:
 ```bash
 #!/usr/bin/env bash
 #
-# Run the project's test suite via offload (parallel on Modal).
-# Requires: offload (cargo install offload@0.4.0), Modal CLI + credentials
+# Run the project's test suite via Offload (parallel on Modal).
+# Requires: Offload (cargo install offload@0.4.0), Modal CLI + credentials
 #
 set -euo pipefail
 
@@ -281,13 +281,13 @@ exec offload run --copy-dir ".:/app" "$@"
 
 Make it executable with `chmod +x scripts/offload-tests.sh`.
 
-The `--copy-dir ".:/app"` flag tells offload to copy the current directory into `/app` in the sandbox. This is specified at invocation time (not in offload.toml) because it's a runtime concern.
+The `--copy-dir ".:/app"` flag tells Offload to copy the current directory into `/app` in the sandbox. This is specified at invocation time (not in offload.toml) because it's a runtime concern.
 
 If the project uses a Makefile, justfile, or Taskfile instead of scripts/, add the invocation there instead to be consistent with existing practice.
 
 ### Step 7: Update .gitignore
 
-Append offload artifacts to `.gitignore`:
+Append Offload artifacts to `.gitignore`:
 
 ```
 # Offload
@@ -347,11 +347,11 @@ Report the results as a table to the user and set the optimal values in `offload
 
 ### Step 11: Update Agent/Project Instructions (Optional)
 
-**First, ask the user:** "Would you like to configure offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
+**First, ask the user:** "Would you like to configure Offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
 
 **If the user declines**, skip this step entirely and proceed to Step 12.
 
-**If the user agrees**, ensure that future AI agents working in this repository know to use offload for running tests:
+**If the user agrees**, ensure that future AI agents working in this repository know to use Offload for running tests:
 
 1. Check for these files (in priority order):
    - `CLAUDE.md` or `.claude/CLAUDE.md` — Claude Code project instructions
@@ -364,12 +364,12 @@ Report the results as a table to the user and set the optimal values in `offload
 
 4. **If none of these files exist**, create a `CLAUDE.md` at the project root. It only needs the testing section — don't fabricate other content.
 
-5. **Amend or add** a testing section that is directive, not merely suggestive. The instruction must tell agents to use offload as the way to run tests locally. Do not remove any existing test commands — keep them as a fallback — but make offload the primary instruction. Example:
+5. **Amend or add** a testing section that is directive, not merely suggestive. The instruction must tell agents to use Offload as the way to run tests locally. Do not remove any existing test commands — keep them as a fallback — but make Offload the primary instruction. Example:
 
    ````markdown
    ## Running tests
 
-   Run the test suite via offload, which parallelizes execution across Modal cloud sandboxes:
+   Run the test suite via Offload, which parallelizes execution across Modal cloud sandboxes:
 
    ```bash
    ./scripts/offload-tests.sh
@@ -381,7 +381,7 @@ Report the results as a table to the user and set the optimal values in `offload
    offload run --copy-dir ".:/app"
    ```
 
-   Prerequisites: offload (`cargo install offload@0.4.0`) and Modal credentials (`modal token new`).
+   Prerequisites: Offload (`cargo install offload@0.4.0`) and Modal credentials (`modal token new`).
    ````
 
    Adapt the exact command to match what was configured in earlier steps (the script path, `--copy-dir` mapping, etc.).
@@ -390,7 +390,7 @@ Report the results as a table to the user and set the optimal values in `offload
 
 ### Step 12: Set Up CI Job (optional)
 
-Ask the user if they want to set up a CI job to run offload tests automatically on push/PR. If they decline, skip Steps 12 and 13.
+Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 12 and 13.
 
 If they want CI, detect the CI system from the repository:
 - `.github/workflows/` → GitHub Actions
@@ -461,11 +461,11 @@ jobs:
         run: offload run --copy-dir ".:/app"
 ```
 
-**IMPORTANT**: The CI runner needs the project's language toolchain and dependencies installed because offload discovers tests **locally** (e.g. `uv -m pytest --collect-only`), then sends them to Modal for execution. Without local discovery dependencies, offload will fail with "No such file or directory".
+**IMPORTANT**: The CI runner needs the project's language toolchain and dependencies installed because Offload discovers tests **locally** (e.g. `uv -m pytest --collect-only`), then sends them to Modal for execution. Without local discovery dependencies, Offload will fail with "No such file or directory".
 
 `continue-on-error: true` makes the job advisory — it always reports success to branch protection, but step-level pass/fail is visible in the Actions UI.
 
-For other CI systems, adapt the same pattern: install offload + Modal CLI, set Modal secrets as env vars, run `offload run --copy-dir ".:/app"`.
+For other CI systems, adapt the same pattern: install Offload + Modal CLI, set Modal secrets as env vars, run `offload run --copy-dir ".:/app"`.
 
 ### Step 13: Configure CI Secrets
 
@@ -494,7 +494,7 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | "Exec format error (os error 8)" | Local `.venv` (macOS/Windows binaries) copied into Linux sandbox | Add `.venv` to `.dockerignore` |
 | "Token validation failed" | Modal credentials expired | `modal token new` |
 | All tests "Not Run" / junit.xml missing | Test command failing inside sandbox | Check Dockerfile has correct runtime; debug with `modal sandbox create` |
-| "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before offload |
+| "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before Offload |
 | Slow sandbox creation | Docker image not cached | Run once to warm cache; `.offload-image-cache` tracks the base image ID |
 | Stale sandbox image | `.offload-image-cache` points to an outdated image | Delete `.offload-image-cache` to force a fresh image build on next run |
 | High parallelism slower than low | Sandbox creation overhead dominates | Reduce `max_parallel`; optimal is usually 2-6 for small test suites |
@@ -507,6 +507,6 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | `.dockerignore` | Exclude local artifacts from sandbox |
 | `offload.toml` | Offload configuration |
 | `scripts/offload-tests.sh` (or Makefile target) | Local invocation convenience |
-| `.gitignore` | Exclude offload artifacts |
-| `CLAUDE.md` / `AGENTS.md` | (Optional) Add or create directive offload test instructions for agents |
+| `.gitignore` | Exclude Offload artifacts |
+| `CLAUDE.md` / `AGENTS.md` | (Optional) Add or create directive Offload test instructions for agents |
 | `.github/workflows/test-offload.yml` (or equivalent) | Advisory CI job |

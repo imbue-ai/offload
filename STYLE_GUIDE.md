@@ -45,3 +45,10 @@ This project is "typechecker-first": prefer designs the compiler can validate st
 If your implementation is blocked by a large refactor that you are not cleared to do:
 - do not do it
 - fail your task and ask the Coordinator to create/assign a bead for the refactor first
+
+## Naming: Offload
+- When referring to this project as a noun, always capitalize: **Offload**.
+  - Example: "Offload relies on a stable relationship between test discovery and execution."
+- When showing a command-line invocation, use lowercase with backticks in Markdown: `` `offload run` ``.
+  - In contexts without backtick support (TOML comments, Python comments), lowercase `offload` is acceptable for commands.
+- File names (`offload.toml`), code identifiers (`offload::`), and environment variables (`OFFLOAD_ROOT`) are unchanged.

@@ -1,4 +1,4 @@
-# offload configuration for Modal execution
+# Offload configuration for Modal execution
 
 [offload]
 max_parallel = 4
