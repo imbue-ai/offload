@@ -1,12 +1,5 @@
-//! Modal image cache management.
-//!
-//! This module provides functionality to cache Modal image IDs to avoid rebuilding
-//! images that haven't changed. The cache is stored in `{working_dir}/.offload/modal_images.json`.
-//!
-//! # Cache Structure
-//!
-//! The cache maps cache keys (like "default", "rust", or "dockerfile:/path/to/Dockerfile")
-//! to image metadata including the Modal image ID and optional dockerfile hash.
+//! Image cache for avoiding redundant sandbox image builds.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

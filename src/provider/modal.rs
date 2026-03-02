@@ -1,34 +1,4 @@
-//! Modal provider for running tests on Modal sandboxes.
-//!
-//! This provider simplifies Modal integration by exposing high-level configuration
-//! options instead of raw command strings. It internally generates the appropriate
-//! `modal_sandbox.py` commands and uses [`DefaultSandbox`] for execution.
-//!
-//! # When to Use
-//!
-//! Use this provider when you want to run tests on Modal with a simplified
-//! configuration. For advanced use cases requiring custom commands, use the
-//! [`default`](super::default) provider instead.
-//!
-//! # Example Configuration
-//!
-//! ```toml
-//! [provider]
-//! type = "modal"
-//! dockerfile = "./Dockerfile"
-//! include_cwd = true
-//! copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
-//! ```
-//!
-//! # Generated Commands
-//!
-//! The provider generates these `modal_sandbox.py` commands:
-//!
-//! - **prepare**: `uv run @modal_sandbox.py prepare [DOCKERFILE] [--include-cwd] [--cached] [--copy-dir=...]`
-//! - **create**: `uv run @modal_sandbox.py create {image_id}`
-//! - **exec**: `uv run @modal_sandbox.py exec {sandbox_id} {command}`
-//! - **destroy**: `uv run @modal_sandbox.py destroy {sandbox_id}`
-//! - **download**: `uv run @modal_sandbox.py download {sandbox_id} {paths}`
+//! Modal provider — simplified configuration for running tests on Modal sandboxes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,23 +60,6 @@ impl ModalProvider {
     /// - The prepare command fails (non-zero exit code)
     /// - The prepare command returns an empty image ID
     ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use offload::provider::modal::ModalProvider;
-    /// use offload::config::ModalProviderConfig;
-    ///
-    /// # async fn example() -> anyhow::Result<()> {
-    /// let config = ModalProviderConfig {
-    ///     dockerfile: Some("./Dockerfile".to_string()),
-    ///     include_cwd: true,
-    ///     copy_dirs: vec!["./src:/app/src".to_string()],
-    /// };
-    ///
-    /// let provider = ModalProvider::from_config(config, &[], false).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn from_config(
         config: ModalProviderConfig,
         copy_dirs: &[(PathBuf, PathBuf)],

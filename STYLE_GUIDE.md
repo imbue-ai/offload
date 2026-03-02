@@ -46,6 +46,11 @@ If your implementation is blocked by a large refactor that you are not cleared t
 - do not do it
 - fail your task and ask the Coordinator to create/assign a bead for the refactor first
 
+## Doc comments
+- Doc comments should explain **why** a type or function exists and **when** to use it — not repeat the signature or restate what the code already shows.
+- Omit inline code examples on internal APIs unless the usage is non-obvious or the type has subtle invariants.
+- Prefer a one-line `///` summary for most items. Add a longer body only when the summary is insufficient.
+
 ## Naming: Offload
 - When referring to this project as a noun, always capitalize: **Offload**.
   - Example: "Offload relies on a stable relationship between test discovery and execution."

@@ -1,42 +1,4 @@
-//! Test runner for executing tests in a sandbox.
-//!
-//! The [`TestRunner`] is responsible for executing tests within a single
-//! sandbox and parsing their results.
-//!
-//! # Features
-//!
-//! - **Test execution**: Run tests with [`run_tests`](TestRunner::run_tests)
-//! - **Output callback**: Real-time output via callback with [`with_output_callback`](TestRunner::with_output_callback)
-//! - **Result parsing**: Automatic parsing via the framework
-//!
-//! # Example
-//!
-//! ```no_run
-//! use std::time::Duration;
-//! use offload::orchestrator::TestRunner;
-//! use offload::provider::local::LocalSandbox;
-//! use offload::framework::pytest::PytestFramework;
-//! use offload::framework::TestRecord;
-//!
-//! async fn run_test_example(
-//!     sandbox: LocalSandbox,
-//!     framework: &PytestFramework,
-//! ) -> anyhow::Result<()> {
-//!     let mut runner = TestRunner::new(sandbox, framework, Duration::from_secs(300));
-//!
-//!     let record = TestRecord::new("tests/test_math.py::test_add");
-//!     let test = record.test();
-//!     runner.run_tests(&[test]).await?;
-//!
-//!     // Results are stored in the TestRecord
-//!     if let Some(result) = record.final_result() {
-//!         if result.outcome.is_success() {
-//!             println!("Test passed!");
-//!         }
-//!     }
-//!     Ok(())
-//! }
-//! ```
+//! Test runner — executes test batches within a single sandbox.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,22 +35,6 @@ struct JsonExecResult {
 ///
 /// Called for each line of output during streaming execution. The callback
 /// receives the test ID and the output line.
-///
-/// # Example
-///
-/// ```
-/// use std::sync::Arc;
-/// use offload::orchestrator::OutputCallback;
-/// use offload::provider::OutputLine;
-///
-/// let callback: OutputCallback = Arc::new(|test_id, line| {
-///     match line {
-///         OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
-///         OutputLine::Stderr(s) => eprintln!("[{}] {}", test_id, s),
-///         OutputLine::ExitCode(_) => {}
-///     }
-/// });
-/// ```
 pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
 /// Outcome of executing a single batch of tests.
@@ -182,28 +128,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// # Arguments
     ///
     /// * `callback` - Function called for each line of output
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use std::sync::Arc;
-    /// use offload::orchestrator::TestRunner;
-    /// use offload::provider::OutputLine;
-    /// # use offload::provider::local::LocalSandbox;
-    /// # use offload::framework::pytest::PytestFramework;
-    /// # use std::time::Duration;
-    ///
-    /// # fn example(sandbox: LocalSandbox, framework: &PytestFramework) {
-    /// let runner = TestRunner::new(sandbox, framework, Duration::from_secs(300))
-    ///     .with_output_callback(Arc::new(|test_id, line| {
-    ///         match line {
-    ///             OutputLine::Stdout(s) => println!("[{}] {}", test_id, s),
-    ///             OutputLine::Stderr(s) => eprintln!("[{}] ERR: {}", test_id, s),
-    ///             OutputLine::ExitCode(_) => {}
-    ///         }
-    ///     }));
-    /// # }
-    /// ```
     pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
         self.output_callback = Some(callback);
         self

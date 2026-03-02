@@ -1,73 +1,4 @@
-//! Cargo test framework implementation.
-//!
-//! This module provides test framework support for Rust projects using `cargo nextest`.
-//! It uses `cargo nextest list` for test discovery and parses JUnit XML for results.
-//!
-//! # Discovery Process
-//!
-//! 1. Run `cargo nextest list --message-format json` to enumerate tests
-//! 2. Parse JSON to extract binary IDs and test names
-//! 3. Generate run commands with JUnit XML output via temp config
-//! 4. Parse results from JUnit XML
-//!
-//! # Test ID Format
-//!
-//! Cargo test IDs follow the Rust module path format:
-//! ```text
-//! module::submodule::test_function
-//! tests::integration::test_scenario
-//! ```
-//!
-//! # Workspace Support
-//!
-//! For workspaces, specify the package to test:
-//!
-//! ```toml
-//! [framework]
-//! type = "cargo"
-//! package = "my-crate"
-//! features = ["test-utils"]
-//! ```
-//!
-//! # Group-Level Filters
-//!
-//! Groups can specify `filters` which are passed as additional arguments
-//! to `cargo nextest list` during discovery:
-//!
-//! ```toml
-//! [framework]
-//! type = "cargo"
-//!
-//! [groups.default]
-//! retry_count = 0
-//!
-//! [groups.ignored]
-//! retry_count = 1
-//! filters = "--ignored"
-//! ```
-//!
-//! # Example Usage
-//!
-//! ```no_run
-//! use offload::framework::cargo::CargoFramework;
-//! use offload::framework::TestFramework;
-//! use offload::config::CargoFrameworkConfig;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let config = CargoFrameworkConfig {
-//!         package: Some("my-crate".into()),
-//!         features: vec!["test-utils".into()],
-//!         ..Default::default()
-//!     };
-//!
-//!     let framework = CargoFramework::new(config);
-//!     let tests = framework.discover(&[], "").await?;
-//!
-//!     println!("Found {} tests", tests.len());
-//!     Ok(())
-//! }
-//! ```
+//! Cargo test framework implementation using `cargo nextest` for discovery.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -122,19 +53,6 @@ pub struct CargoFramework {
 
 impl CargoFramework {
     /// Creates a new cargo test framework with the given configuration.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::framework::cargo::CargoFramework;
-    /// use offload::config::CargoFrameworkConfig;
-    ///
-    /// let framework = CargoFramework::new(CargoFrameworkConfig {
-    ///     package: Some("my-lib".into()),
-    ///     features: vec!["test-utils".into()],
-    ///     ..Default::default()
-    /// });
-    /// ```
     pub fn new(config: CargoFrameworkConfig) -> Self {
         Self { config }
     }

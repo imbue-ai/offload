@@ -1,68 +1,4 @@
-//! Local process provider implementation.
-//!
-//! This provider runs tests as child processes on the local machine.
-//! It's the simplest provider and requires no external dependencies.
-//!
-//! # When to Use
-//!
-//! - **Development**: Fast iteration without container overhead
-//! - **Simple CI**: When containerization isn't available or needed
-//! - **Debugging**: Direct access to processes and filesystem
-//!
-//! # Characteristics
-//!
-//! | Feature | Support |
-//! |---------|---------|
-//! | Isolation | None (shared filesystem and network) |
-//! | Resource limits | Not supported |
-//! | File transfer | Local copy operations |
-//! | Streaming output | Supported |
-//! | Parallel execution | Yes, via multiple processes |
-//!
-//! # Example Configuration
-//!
-//! ```toml
-//! [provider]
-//! type = "local"
-//! working_dir = "/path/to/project"
-//! shell = "/bin/bash"
-//!
-//! [provider.env]
-//! PYTHONPATH = "/path/to/project/src"
-//! ```
-//!
-//! # Example Usage
-//!
-//! ```no_run
-//! use offload::provider::local::LocalProvider;
-//! use offload::provider::{SandboxProvider, Sandbox, Command, OutputLine};
-//! use offload::config::{LocalProviderConfig, SandboxConfig};
-//! use futures::StreamExt;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let provider = LocalProvider::new(LocalProviderConfig::default());
-//!
-//!     let config = SandboxConfig {
-//!         id: "test-1".to_string(),
-//!         working_dir: None,
-//!         env: vec![],
-//!         copy_dirs: vec![],
-//!     };
-//!
-//!     let sandbox = provider.create_sandbox(&config).await?;
-//!     let mut stream = sandbox.exec_stream(&Command::new("echo").arg("hello")).await?;
-//!     while let Some(line) = stream.next().await {
-//!         match line {
-//!             OutputLine::Stdout(s) => println!("{}", s),
-//!             OutputLine::Stderr(s) => eprintln!("{}", s),
-//!             OutputLine::ExitCode(code) => println!("Exit: {}", code),
-//!         }
-//!     }
-//!
-//!     Ok(())
-//! }
-//! ```
+//! Local process provider — runs tests as child processes on the local machine.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -96,24 +32,6 @@ impl LocalProvider {
     ///
     /// * `config` - Configuration specifying working directory, environment
     ///   variables, and shell to use
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::provider::local::LocalProvider;
-    /// use offload::config::LocalProviderConfig;
-    ///
-    /// // With defaults
-    /// let provider = LocalProvider::new(LocalProviderConfig::default());
-    ///
-    /// // With custom config
-    /// let config = LocalProviderConfig {
-    ///     working_dir: Some("/app".into()),
-    ///     shell: "/bin/bash".to_string(),
-    ///     ..Default::default()
-    /// };
-    /// let provider = LocalProvider::new(config);
-    /// ```
     pub fn new(config: LocalProviderConfig) -> Self {
         Self { config }
     }

@@ -1,25 +1,4 @@
-//! Configuration schema definitions for offload.
-//!
-//! This module defines all configuration types that can be deserialized from
-//! TOML configuration files. The schema uses serde for serialization and
-//! tagged enums for provider/framework type selection.
-//!
-//! # Schema Overview
-//!
-//! ```text
-//! Config (root)
-//! ├── OffloadConfig          - Core settings (parallelism, timeouts, retries)
-//! ├── ProviderConfig         - Tagged enum selecting provider type
-//! │   ├── Local              - Local process execution
-//! │   └── Default            - Custom remote execution (Modal, etc.)
-//! ├── FrameworkConfig        - Tagged enum selecting test framework (top-level)
-//! │   ├── Pytest             - pytest test framework (test_id_format defaults to "{name}")
-//! │   ├── Cargo              - Rust/Cargo test framework (test_id_format defaults to "{classname} {name}")
-//! │   └── Default            - Custom shell-based framework (test_id_format required)
-//! ├── Groups                 - Named test groups (HashMap<String, GroupConfig>)
-//! │   └── GroupConfig        - Per-group settings (retry_count)
-//! └── ReportConfig           - Output and reporting settings
-//! ```
+//! Configuration schema types for deserialization from TOML.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -141,19 +120,6 @@ pub enum ProviderConfig {
 ///
 /// Tests run as child processes of offload on the local machine.
 /// This is the simplest provider and requires no external dependencies.
-///
-/// # Example
-///
-/// ```toml
-/// [provider]
-/// type = "local"
-/// working_dir = "/path/to/project"
-/// shell = "/bin/bash"
-///
-/// [provider.env]
-/// PYTHONPATH = "/app"
-/// DEBUG = "1"
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LocalProviderConfig {
     /// Working directory for spawned processes.
@@ -185,24 +151,6 @@ fn default_shell() -> String {
 /// This provider runs tests on Modal sandboxes using a simplified configuration.
 /// Instead of specifying raw shell commands, you provide high-level options
 /// and the provider generates the appropriate Modal CLI commands internally.
-///
-/// # Example
-///
-/// ```toml
-/// [provider]
-/// type = "modal"
-/// dockerfile = "./Dockerfile"
-/// include_cwd = true
-/// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
-/// ```
-///
-/// # Example: Minimal Configuration
-///
-/// ```toml
-/// [provider]
-/// type = "modal"
-/// # Uses default Modal image, no additional files copied
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ModalProviderConfig {
     /// Path to a Dockerfile for building the sandbox image.
@@ -226,11 +174,6 @@ pub struct ModalProviderConfig {
     /// Each entry is a string in the format "local_path:remote_path".
     /// These directories are baked into the image during preparation,
     /// making sandbox creation faster.
-    ///
-    /// # Example
-    /// ```toml
-    /// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
-    /// ```
     #[serde(default)]
     pub copy_dirs: Vec<String>,
 }
@@ -253,41 +196,6 @@ pub struct ModalProviderConfig {
 /// ```json
 /// {"exit_code": 0, "stdout": "...", "stderr": "..."}
 /// ```
-///
-/// # Example: Modal Integration
-///
-/// ```toml
-/// [provider]
-/// type = "default"
-/// create_command = "modal sandbox create --image python:3.11"
-/// exec_command = "modal sandbox exec {sandbox_id} -- sh -c {command}"
-/// destroy_command = "modal sandbox delete {sandbox_id}"
-/// download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"
-/// timeout_secs = 3600
-/// ```
-///
-/// # Example: Custom Script
-///
-/// ```toml
-/// [provider]
-/// type = "default"
-/// working_dir = "/path/to/scripts"
-/// create_command = "./create_worker.sh"
-/// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
-/// destroy_command = "./destroy_worker.sh {sandbox_id}"
-/// ```
-///
-/// # Example: With Prepare Command and Copy Dirs
-///
-/// ```toml
-/// [provider]
-/// type = "default"
-/// prepare_command = "./build_image.sh"
-/// create_command = "./create_worker.sh {image_id}"
-/// exec_command = "./run_on_worker.sh {sandbox_id} {command}"
-/// destroy_command = "./destroy_worker.sh {sandbox_id}"
-/// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultProviderConfig {
     /// Optional command to prepare an image before sandbox creation.
@@ -298,12 +206,6 @@ pub struct DefaultProviderConfig {
     ///
     /// This is useful for building container images or preparing
     /// execution environments that can be reused across multiple sandboxes.
-    ///
-    /// # Example
-    /// ```sh
-    /// # Build and return image ID
-    /// docker build -q -t myimage .
-    /// ```
     #[serde(default)]
     pub prepare_command: Option<String>,
 
@@ -314,15 +216,6 @@ pub struct DefaultProviderConfig {
     ///
     /// If `prepare_command` is specified, `{image_id}` will be substituted
     /// with the image ID returned by the prepare command.
-    ///
-    /// # Example
-    /// ```sh
-    /// # Simple: UUID generation
-    /// uuidgen
-    ///
-    /// # Cloud: Create and return instance ID
-    /// aws ec2 run-instances --query 'Instances[0].InstanceId' --output text
-    /// ```
     pub create_command: String,
 
     /// Command to execute a test command on a sandbox.
@@ -350,13 +243,6 @@ pub struct DefaultProviderConfig {
     ///
     /// Each path specification downloads the remote path to the local path.
     /// Both files and directories are supported.
-    ///
-    /// # Example
-    /// ```sh
-    /// # Download multiple paths
-    /// uv run @modal_sandbox.py download {sandbox_id} {paths}
-    /// # Expands to: uv run @modal_sandbox.py download sb-abc123 "/app/out:./out" "/app/logs:./logs"
-    /// ```
     #[serde(default)]
     pub download_command: Option<String>,
 
@@ -376,11 +262,6 @@ pub struct DefaultProviderConfig {
     /// Each entry is a string in the format "local_path:remote_path".
     /// These directories are baked into the image during the prepare step,
     /// making sandbox creation faster.
-    ///
-    /// # Example
-    /// ```toml
-    /// copy_dirs = ["./src:/app/src", "./tests:/app/tests"]
-    /// ```
     #[serde(default)]
     pub copy_dirs: Vec<String>,
 
@@ -399,17 +280,6 @@ fn default_remote_timeout() -> u64 {
 ///
 /// Groups allow segmenting tests for different retry behaviors or filtering.
 /// The test framework is configured at the top level, not per-group.
-///
-/// # Example
-///
-/// ```toml
-/// [groups.all]
-/// retry_count = 1
-/// filters = "-m not acceptance"
-///
-/// [groups.flaky]
-/// retry_count = 3
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct GroupConfig {
     /// Number of times to retry failed tests in this group.
@@ -426,11 +296,6 @@ pub struct GroupConfig {
     /// These filters are appended to the test discovery command to narrow
     /// down which tests are included in the group. The format depends on
     /// the test framework being used.
-    ///
-    /// # Examples
-    ///
-    /// - pytest: `"-m not acceptance"` or `"-k test_name"`
-    /// - cargo: `"--ignored"` or specific test patterns
     ///
     /// An empty string means no filtering.
     #[serde(default)]
@@ -565,27 +430,6 @@ pub struct CargoFrameworkConfig {
 /// - **run_command**: Uses `{tests}` placeholder for space-separated test IDs
 /// - **result_file**: Optional JUnit XML for detailed results
 /// - **test_id_format**: Required format string for constructing test IDs from JUnit XML
-///
-/// # Example: Jest
-///
-/// ```toml
-/// [framework]
-/// type = "default"
-/// discover_command = "jest --listTests --json | jq -r '.[]'"
-/// run_command = "jest {tests} --ci --reporters=jest-junit"
-/// result_file = "junit.xml"
-/// test_id_format = "{name}"
-/// ```
-///
-/// # Example: Go tests
-///
-/// ```toml
-/// [framework]
-/// type = "default"
-/// discover_command = "go test -list '.*' ./... 2>/dev/null | grep -v '^ok\\|^$'"
-/// run_command = "go test -v -run '{tests}' ./..."
-/// test_id_format = "{classname}/{name}"
-/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultFrameworkConfig {
     /// Command to discover test IDs.
@@ -599,12 +443,6 @@ pub struct DefaultFrameworkConfig {
     /// Command template to run tests.
     ///
     /// The placeholder `{tests}` is replaced with space-separated test IDs.
-    ///
-    /// # Example
-    /// ```toml
-    /// run_command = "npm test -- {tests}"
-    /// # Becomes: npm test -- test1 test2 test3
-    /// ```
     pub run_command: String,
 
     /// Path to JUnit XML result file produced by the test runner.
@@ -638,15 +476,6 @@ pub struct DefaultFrameworkConfig {
 /// | `output_dir` | `"test-results"` |
 /// | `junit` | `true` |
 /// | `junit_file` | `"junit.xml"` |
-///
-/// # Example
-///
-/// ```toml
-/// [report]
-/// output_dir = "build/test-results"
-/// junit = true
-/// junit_file = "junit.xml"
-/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ReportConfig {
     /// Directory where report files are written.

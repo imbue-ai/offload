@@ -11,20 +11,6 @@ use crate::provider::{ProviderError, Sandbox, SandboxProvider};
 /// Sandboxes are added to the pool after initial test execution and can be
 /// reused for retry attempts. The pool manages sandbox lifecycle and provides
 /// methods to take and return sandboxes.
-///
-/// # Example
-///
-/// ```ignore
-/// let mut pool = SandboxPool::new();
-///
-/// // After initial batch execution, add sandboxes to pool
-/// pool.add(sandbox);
-///
-/// // For retries, take all sandboxes
-/// let sandboxes = pool.take_all();
-/// // ... run retries in parallel ...
-/// pool.return_all(sandboxes);
-/// ```
 pub struct SandboxPool<S: Sandbox> {
     sandboxes: Vec<S>,
 }

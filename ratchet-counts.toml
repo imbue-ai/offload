@@ -99,7 +99,7 @@
 "examples/tests" = 5
 
 [no-todo-comments]
-"." = 12
+"." = 1
 
 [no-trailing-comments]
 "." = 0

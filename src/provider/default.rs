@@ -1,38 +1,5 @@
-//! Default execution provider using lifecycle-based shell commands.
-//!
-//! This provider enables integration with any execution environment by
-//! defining shell commands for sandbox lifecycle management. It's designed
-//! for cloud providers like Modal, AWS Lambda, Fly.io, or custom systems.
-//!
-//! # When to Use
-//!
-//! - **Cloud functions**: Modal, AWS Lambda, Google Cloud Functions
-//! - **Custom orchestration**: Kubernetes pods, Nomad jobs
-//! - **Specialized hardware**: GPU instances, ARM machines
-//! - **Serverless execution**: On-demand compute scaling
-//!
-//! # Characteristics
-//!
-//! | Feature | Support |
-//! |---------|---------|
-//! | Isolation | Depends on backend |
-//! | Resource limits | Depends on backend |
-//! | File transfer | Not supported |
-//! | Streaming output | Supported |
-//! | Parallel execution | Yes |
-//!
-//! # Command Protocol
-//!
-//! The provider uses three commands for lifecycle management:
-//!
-//! 1. **create_command**: Creates a sandbox, prints ID to stdout
-//! 2. **exec_command**: Runs a command, uses `{sandbox_id}` and `{command}` placeholders
-//! 3. **destroy_command**: Cleans up, uses `{sandbox_id}` placeholder
-//!
-//! The exec command can return either plain text or JSON:
-//! ```json
-//! {"exit_code": 0, "stdout": "output", "stderr": "errors"}
-//! ```
+//! Default provider — uses custom shell commands for sandbox lifecycle management.
+
 use std::path::Path;
 use std::sync::Arc;
 

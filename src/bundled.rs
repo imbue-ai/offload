@@ -1,9 +1,5 @@
-//! Bundled scripts for common provider integrations.
-//!
-//! This module embeds scripts (like `modal_sandbox.py`) directly into the
-//! binary and extracts them on demand to a cache directory. Users can
-//! reference these scripts in their configuration using `@filename.ext` syntax.
-//!
+//! Bundled scripts embedded in the binary, referenced via `@filename.ext` syntax.
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;

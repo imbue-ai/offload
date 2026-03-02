@@ -1,10 +1,4 @@
-//! Configuration loading and schema definitions for offload.
-//!
-//! This module provides types and functions for loading offload configuration
-//! from TOML files or strings. The configuration schema defines all settings
-//! for providers, test frameworks, and reporting.
-//!
-//! # The Configuration File Format is described in the README.
+//! Configuration loading and TOML schema definitions.
 
 pub mod schema;
 
@@ -22,20 +16,6 @@ use anyhow::{Context, Result};
 /// * `format` - Format string with placeholders like `{name}` and `{classname}`
 /// * `name` - The testcase name attribute from JUnit XML
 /// * `classname` - The testcase classname attribute from JUnit XML (optional)
-///
-/// # Example
-///
-/// ```
-/// use offload::config::format_test_id;
-///
-/// // Cargo/nextest format
-/// let id = format_test_id("{classname} {name}", "test_foo", Some("my-crate::tests"));
-/// assert_eq!(id, "my-crate::tests test_foo");
-///
-/// // Pytest format (name only)
-/// let id = format_test_id("{name}", "tests/test_math.py::test_add", None);
-/// assert_eq!(id, "tests/test_math.py::test_add");
-/// ```
 pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> String {
     let mut result = format.to_string();
     result = result.replace("{name}", name);
@@ -59,16 +39,6 @@ pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> Stri
 /// - The file contains invalid TOML syntax
 /// - The configuration doesn't match the expected schema
 ///
-/// # Example
-///
-/// ```no_run
-/// use offload::config::load_config;
-/// use std::path::Path;
-///
-/// let config = load_config(Path::new("offload.toml"))?;
-/// println!("Max parallel: {}", config.offload.max_parallel);
-/// # Ok::<(), anyhow::Error>(())
-/// ```
 pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
@@ -96,30 +66,6 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// Returns an error if:
 /// - The string contains invalid TOML syntax
 /// - The configuration doesn't match the expected schema
-///
-/// # Example
-///
-/// ```
-/// use offload::config::load_config_str;
-///
-/// let config = load_config_str(r#"
-///     [offload]
-///     max_parallel = 4
-///     sandbox_project_root = "/app"
-///
-///     [provider]
-///     type = "local"
-///
-///     [framework]
-///     type = "pytest"
-///
-///     [groups.all]
-///     retry_count = 1
-/// "#)?;
-///
-/// assert_eq!(config.offload.max_parallel, 4);
-/// # Ok::<(), anyhow::Error>(())
-/// ```
 pub fn load_config_str(content: &str) -> Result<Config> {
     let mut config: Config = toml::from_str(content).context("Failed to parse config")?;
 

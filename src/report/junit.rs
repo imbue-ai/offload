@@ -558,16 +558,6 @@ pub fn merge_junit_files(parts_dir: &Path, output_path: &Path) -> std::io::Resul
 ///
 /// A HashMap where keys are test IDs and values are durations.
 /// Returns an empty map if the file doesn't exist or can't be parsed.
-///
-/// # Example
-///
-/// ```ignore
-/// // For cargo/nextest where classname is binary and name is test function
-/// let durations = load_test_durations(path, "{classname} {name}");
-///
-/// // For pytest where name contains the full path
-/// let durations = load_test_durations(path, "{name}");
-/// ```
 pub fn load_test_durations(
     junit_path: &Path,
     test_id_format: &str,

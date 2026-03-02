@@ -1,35 +1,4 @@
-//! Test scheduling and distribution.
-//!
-//! This module handles distributing tests across available sandboxes
-//! for parallel execution. The scheduler creates batches of tests that
-//! can be executed independently.
-//!
-//! # Scheduling Strategies
-//!
-//! The scheduler provides multiple strategies for test distribution:
-//!
-//! | Method | Description | Use Case |
-//! |--------|-------------|----------|
-//! | [`schedule`](Scheduler::schedule) | Round-robin across sandboxes | Default, balanced load |
-//! | [`schedule_with_batch_size`](Scheduler::schedule_with_batch_size) | Fixed batch sizes | Limited per-sandbox resources |
-//! | [`schedule_individual`](Scheduler::schedule_individual) | One test per sandbox | Maximum isolation |
-//!
-//! # Example
-//!
-//! ```
-//! use offload::orchestrator::Scheduler;
-//! use offload::framework::TestRecord;
-//!
-//! let scheduler = Scheduler::new(4); // 4 parallel sandboxes
-//!
-//! let records: Vec<TestRecord> = (0..10)
-//!     .map(|i| TestRecord::new(format!("test_{}", i)))
-//!     .collect();
-//!
-//! let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-//! let batches = scheduler.schedule(&tests);
-//! assert_eq!(batches.len(), 4); // 4 batches for 4 sandboxes
-//! ```
+//! Test scheduling and distribution across parallel sandboxes.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -56,14 +25,6 @@ impl Scheduler {
     ///
     /// * `max_parallel` - Maximum number of parallel batches/sandboxes.
     ///   Minimum is 1 (values below 1 are clamped).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    ///
-    /// let scheduler = Scheduler::new(4);
-    /// ```
     pub fn new(max_parallel: usize) -> Self {
         Self {
             max_parallel: max_parallel.max(1),
@@ -80,28 +41,6 @@ impl Scheduler {
     ///
     /// A vector of batches. Each batch is a vector of tests that will
     /// run sequentially in the same sandbox. Empty batches are removed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    ///
-    /// let scheduler = Scheduler::new(2);
-    /// let records = vec![
-    ///     TestRecord::new("test_a"),
-    ///     TestRecord::new("test_b"),
-    ///     TestRecord::new("test_c"),
-    ///     TestRecord::new("test_d"),
-    /// ];
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let batches = scheduler.schedule(&tests);
-    /// // Batch 0: test_a, test_c
-    /// // Batch 1: test_b, test_d
-    /// assert_eq!(batches.len(), 2);
-    /// assert_eq!(batches[0].len(), 2);
-    /// ```
     pub fn schedule<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
             return Vec::new();
@@ -130,26 +69,6 @@ impl Scheduler {
     /// # Returns
     ///
     /// A vector of batches with randomly distributed tests.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    ///
-    /// let scheduler = Scheduler::new(2);
-    /// let records = vec![
-    ///     TestRecord::new("test_a"),
-    ///     TestRecord::new("test_b"),
-    ///     TestRecord::new("test_c"),
-    ///     TestRecord::new("test_d"),
-    /// ];
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let batches = scheduler.schedule_random(&tests);
-    /// assert_eq!(batches.len(), 2);
-    /// // Tests are randomly distributed
-    /// ```
     pub fn schedule_random<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
             return Vec::new();
@@ -197,33 +116,6 @@ impl Scheduler {
     /// 3. Sort batches by total duration (descending) so heaviest starts first
     ///
     /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    /// use std::collections::HashMap;
-    /// use std::time::Duration;
-    ///
-    /// let scheduler = Scheduler::new(2);
-    /// let records = vec![
-    ///     TestRecord::new("slow_test"),
-    ///     TestRecord::new("fast_test"),
-    ///     TestRecord::new("medium_test"),
-    /// ];
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let mut durations = HashMap::new();
-    /// durations.insert("slow_test".to_string(), Duration::from_secs(10));
-    /// durations.insert("fast_test".to_string(), Duration::from_secs(1));
-    /// durations.insert("medium_test".to_string(), Duration::from_secs(5));
-    ///
-    /// let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1));
-    /// // Batch 0 (heaviest): slow_test (10s)
-    /// // Batch 1: medium_test (5s), fast_test (1s) = 6s total
-    /// assert_eq!(batches.len(), 2);
-    /// ```
     pub fn schedule_lpt<'a>(
         &self,
         tests: &[TestInstance<'a>],
@@ -313,23 +205,6 @@ impl Scheduler {
     ///
     /// * `tests` - Tests to schedule
     /// * `max_batch_size` - Maximum tests per batch
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    ///
-    /// let scheduler = Scheduler::new(10);
-    /// let records: Vec<_> = (0..25).map(|i| TestRecord::new(format!("test_{}", i))).collect();
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let batches = scheduler.schedule_with_batch_size(&tests, 10);
-    /// assert_eq!(batches.len(), 3);
-    /// assert_eq!(batches[0].len(), 10);
-    /// assert_eq!(batches[1].len(), 10);
-    /// assert_eq!(batches[2].len(), 5);
-    /// ```
     pub fn schedule_with_batch_size<'a>(
         &self,
         tests: &[TestInstance<'a>],
@@ -356,25 +231,6 @@ impl Scheduler {
     ///
     /// **Note**: This ignores `max_parallel` for batch creation but the
     /// orchestrator still limits concurrent execution.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    ///
-    /// let scheduler = Scheduler::new(2);
-    /// let records = vec![
-    ///     TestRecord::new("test_a"),
-    ///     TestRecord::new("test_b"),
-    ///     TestRecord::new("test_c"),
-    /// ];
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let batches = scheduler.schedule_individual(&tests);
-    /// assert_eq!(batches.len(), 3);
-    /// assert!(batches.iter().all(|b| b.len() == 1));
-    /// ```
     pub fn schedule_individual<'a>(
         &self,
         tests: &[TestInstance<'a>],
