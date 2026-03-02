@@ -75,10 +75,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord, TestResult};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
 use crate::config::CargoFrameworkConfig;
-use crate::framework::pytest::parse_junit_xml;
-use crate::provider::{Command, ExecResult};
+use crate::provider::Command;
 
 /// Minimal representation of `cargo nextest list --message-format json` output.
 #[derive(Deserialize)]
@@ -320,19 +319,5 @@ impl TestFramework for CargoFramework {
         );
 
         Command::new("sh").arg("-c").arg(&shell_cmd)
-    }
-
-    fn parse_results(
-        &self,
-        _output: &ExecResult,
-        result_file: Option<&str>,
-    ) -> FrameworkResult<Vec<TestResult>> {
-        if let Some(xml) = result_file {
-            // Cargo nextest always uses "{classname} {name}" format where
-            // classname is the binary name and name is the test function path
-            parse_junit_xml(xml, "{classname} {name}")
-        } else {
-            Ok(Vec::new())
-        }
     }
 }

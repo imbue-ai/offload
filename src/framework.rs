@@ -1,16 +1,15 @@
 //! Test framework traits and implementations.
 //!
 //! This module provides a framework-agnostic interface for collecting tests
-//! and parsing their results. It supports pytest, cargo test, and custom
+//! and generating execution commands. It supports pytest, cargo test, and custom
 //! test frameworks via the [`TestFramework`] trait.
 //!
 //! # Architecture
 //!
-//! The framework system has three main responsibilities:
+//! The framework system has two main responsibilities:
 //!
 //! 1. **Discover**: Find tests in the codebase ([`TestFramework::discover`])
 //! 2. **Run**: Generate commands to execute tests ([`TestFramework::produce_test_execution_command`])
-//! 3. **Parse**: Extract results from execution ([`TestFramework::parse_results`])
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
@@ -21,9 +20,6 @@
 //! │                                    │                             │
 //! │                                    ▼                             │
 //! │  produce_test_execution_command(&tests) ──► Command             │
-//! │                                    │                             │
-//! │                                    ▼ (execute in sandbox)       │
-//! │  parse_results(output) ────► Vec<TestResult>                    │
 //! │                                                                  │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
@@ -43,7 +39,7 @@
 //! ```no_run
 //! use async_trait::async_trait;
 //! use offload::framework::*;
-//! use offload::provider::{Command, ExecResult};
+//! use offload::provider::Command;
 //! use std::path::PathBuf;
 //!
 //! struct MyFramework;
@@ -57,12 +53,6 @@
 //!
 //!     fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
 //!         // Generate command to run these tests
-//!         todo!()
-//!     }
-//!
-//!     fn parse_results(&self, output: &ExecResult, result_file: Option<&str>)
-//!         -> FrameworkResult<Vec<TestResult>> {
-//!         // Parse test results from output
 //!         todo!()
 //!     }
 //! }
@@ -79,7 +69,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::provider::{Command, ExecResult};
+use crate::provider::Command;
 
 /// Result type for framework operations.
 ///
@@ -669,14 +659,13 @@ impl TestOutcome {
     }
 }
 
-/// Trait for collecting tests and parsing their results.
+/// Trait for collecting tests and generating execution commands.
 ///
 /// A `TestFramework` encapsulates the logic for a specific test framework.
-/// It handles three main operations:
+/// It handles two main operations:
 ///
 /// 1. **Discovery**: Find tests in the codebase
 /// 2. **Command generation**: Create commands to run specific tests
-/// 3. **Result parsing**: Extract results from command output
 ///
 /// # Implementors
 ///
@@ -693,7 +682,7 @@ impl TestOutcome {
 /// ```no_run
 /// use async_trait::async_trait;
 /// use offload::framework::*;
-/// use offload::provider::{Command, ExecResult};
+/// use offload::provider::Command;
 /// use std::path::PathBuf;
 ///
 /// struct JestFramework { config_path: PathBuf }
@@ -712,12 +701,6 @@ impl TestOutcome {
 ///             .args(test_args)
 ///             .arg("--ci")
 ///             .arg("--reporters=jest-junit")
-///     }
-///
-///     fn parse_results(&self, output: &ExecResult, result_file: Option<&str>)
-///         -> FrameworkResult<Vec<TestResult>> {
-///         // Parse JUnit XML from jest-junit reporter
-///         todo!()
 ///     }
 /// }
 /// ```
@@ -747,7 +730,7 @@ pub trait TestFramework: Send + Sync {
     ///
     /// The returned [`Command`] should:
     /// - Run only the specified tests (not all tests)
-    /// - Produce output that can be parsed by [`parse_results`](Self::parse_results)
+    /// - Produce structured output (e.g., JUnit XML) for result collection
     /// - Generate a result file if the framework supports it
     ///
     /// # Arguments
@@ -758,26 +741,4 @@ pub trait TestFramework: Send + Sync {
     ///
     /// For pytest: `pytest -v tests/test_a.py::test_func tests/test_b.py::test_other`
     fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command;
-
-    /// Parses test results from command execution.
-    ///
-    /// This method extracts structured [`TestResult`]s from:
-    /// - Command stdout/stderr
-    /// - Result files (e.g., JUnit XML downloaded from sandbox)
-    ///
-    /// # Arguments
-    ///
-    /// * `output` - The execution result from running the test command
-    /// * `result_file` - Optional contents of a result file (e.g., JUnit XML)
-    ///
-    /// # Returns
-    ///
-    /// A list of [`TestResult`] objects. If parsing fails completely,
-    /// returns an error. If some results are missing, may return partial
-    /// results based on what's available.
-    fn parse_results(
-        &self,
-        output: &ExecResult,
-        result_file: Option<&str>,
-    ) -> FrameworkResult<Vec<TestResult>>;
 }

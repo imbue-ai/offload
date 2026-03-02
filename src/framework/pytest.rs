@@ -9,7 +9,6 @@
 //! 1. Run `pytest --collect-only -q` to list all tests
 //! 2. Parse output to extract test IDs (e.g., `tests/test_math.py::test_add`)
 //! 3. Generate run commands with `pytest -v --junitxml=/tmp/junit.xml`
-//! 4. Parse results from JUnit XML or stdout
 //!
 //! # Test ID Format
 //!
@@ -53,14 +52,10 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use regex::Regex;
 
-use super::{
-    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestOutcome, TestRecord,
-    TestResult,
-};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
 use crate::config::PytestFrameworkConfig;
-use crate::provider::{Command, ExecResult};
+use crate::provider::Command;
 
 /// Test framework for Python pytest projects.
 ///
@@ -195,140 +190,4 @@ impl TestFramework for PytestFramework {
 
         cmd
     }
-
-    fn parse_results(
-        &self,
-        output: &ExecResult,
-        result_file: Option<&str>,
-    ) -> FrameworkResult<Vec<TestResult>> {
-        let mut results = Vec::new();
-
-        // Try to parse JUnit XML if available
-        // pytest test IDs use {name} format - the name attribute contains the full test path
-        if let Some(xml_content) = result_file {
-            results = parse_junit_xml(xml_content, "{name}")?;
-        }
-
-        // If no JUnit results, parse from stdout
-        if results.is_empty() {
-            results = parse_pytest_stdout(&output.stdout, &output.stderr)?;
-        }
-
-        Ok(results)
-    }
-}
-
-/// Parse JUnit XML content to extract test results.
-///
-/// # Arguments
-///
-/// * `content` - The JUnit XML content as a string
-/// * `test_id_format` - Format string for constructing test IDs from JUnit attributes.
-///   Uses placeholders `{name}` and `{classname}`.
-///
-/// # Example
-///
-/// ```ignore
-/// // For cargo/nextest where classname is binary and name is test function
-/// let results = parse_junit_xml(xml, "{classname} {name}")?;
-///
-/// // For pytest where name contains the full path
-/// let results = parse_junit_xml(xml, "{name}")?;
-/// ```
-pub fn parse_junit_xml(content: &str, test_id_format: &str) -> FrameworkResult<Vec<TestResult>> {
-    // Basic JUnit XML parsing
-    // In production, we'd use quick-xml for proper parsing
-    let mut results = Vec::new();
-
-    // Simple regex-based parsing for now
-    let testcase_re = Regex::new(
-        r#"<testcase[^>]*name="([^"]+)"[^>]*classname="([^"]+)"[^>]*time="([^"]+)"[^>]*>"#,
-    )
-    .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-
-    let failure_re = Regex::new(r#"<failure[^>]*message="([^"]*)"[^>]*>"#)
-        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-    let error_re = Regex::new(r#"<error[^>]*message="([^"]*)"[^>]*>"#)
-        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-    let skipped_re = Regex::new(r#"<skipped"#)
-        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-
-    for cap in testcase_re.captures_iter(content) {
-        let name = &cap[1];
-        let classname = &cap[2];
-        let time: f64 = cap[3].parse().unwrap_or(0.0);
-
-        // Use the configured format to construct test ID
-        let test_id = crate::config::format_test_id(test_id_format, name, Some(classname));
-
-        // Find the content between this testcase and the next (or </testcase>)
-        // Group 0 always exists when a match succeeds
-        let start = cap.get(0).map_or(0, |m| m.end());
-        let end = content[start..]
-            .find("</testcase>")
-            .map(|i| start + i)
-            .unwrap_or(content.len());
-        let testcase_content = &content[start..end];
-
-        let (outcome, error_message) = if let Some(fail_cap) = failure_re.captures(testcase_content)
-        {
-            (TestOutcome::Failed, Some(fail_cap[1].to_string()))
-        } else if let Some(err_cap) = error_re.captures(testcase_content) {
-            (TestOutcome::Error, Some(err_cap[1].to_string()))
-        } else if skipped_re.is_match(testcase_content) {
-            (TestOutcome::Skipped, None)
-        } else {
-            (TestOutcome::Passed, None)
-        };
-
-        results.push(TestResult {
-            test_id,
-            outcome,
-            duration: std::time::Duration::from_secs_f64(time),
-            stdout: String::new(),
-            stderr: String::new(),
-            error_message,
-            stack_trace: None,
-            group: None,
-        });
-    }
-
-    Ok(results)
-}
-
-/// Parse pytest stdout to extract test results.
-fn parse_pytest_stdout(stdout: &str, _stderr: &str) -> FrameworkResult<Vec<TestResult>> {
-    let mut results = Vec::new();
-
-    // Match lines like:
-    // tests/test_foo.py::test_bar PASSED
-    // tests/test_foo.py::test_baz FAILED
-    let result_re = Regex::new(r"(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|ERROR)")
-        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-
-    for cap in result_re.captures_iter(stdout) {
-        let test_id = &cap[1];
-        let status = &cap[2];
-
-        let outcome = match status {
-            "PASSED" => TestOutcome::Passed,
-            "FAILED" => TestOutcome::Failed,
-            "SKIPPED" => TestOutcome::Skipped,
-            "ERROR" => TestOutcome::Error,
-            _ => continue,
-        };
-
-        results.push(TestResult {
-            test_id: test_id.to_string(),
-            outcome,
-            duration: std::time::Duration::ZERO,
-            stdout: String::new(),
-            stderr: String::new(),
-            error_message: None,
-            stack_trace: None,
-            group: None,
-        });
-    }
-
-    Ok(results)
 }

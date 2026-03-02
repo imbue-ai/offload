@@ -31,7 +31,6 @@
 //!       │                                  │
 //!       │                        Sandbox.exec(cmd)
 //!       │                                  │
-//!       │ parse_results() ◄─────── ExecResult
 //!       ▼
 //!  Vec<TestResult> ──► TestRecord.record_result()
 //! ```
