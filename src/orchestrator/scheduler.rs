@@ -12,7 +12,7 @@ use crate::framework::TestInstance;
 ///
 /// Prevents command lines from exceeding OS or shell limits. A single test
 /// whose ID already exceeds this is still placed alone in its own batch.
-const MAX_BATCH_COMMAND_LEN: usize = 60_000;
+const MAX_BATCH_COMMAND_LEN: usize = 30_000;
 
 /// A batch of tests being built by the scheduler.
 ///
