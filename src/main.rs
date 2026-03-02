@@ -89,6 +89,17 @@ enum Commands {
         #[arg(short, long, default_value = "pytest")]
         framework: String,
     },
+
+    /// View test run logs
+    Logs {
+        /// Show only failure logs
+        #[arg(long)]
+        failures: bool,
+
+        /// Show only error logs
+        #[arg(long)]
+        errors: bool,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -132,6 +143,7 @@ async fn main() -> Result<()> {
             provider,
             framework,
         } => init_config(&provider, &framework),
+        Commands::Logs { failures, errors } => show_logs(&cli.config, failures, errors),
     }
 }
 
@@ -669,6 +681,100 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
     println!();
     println!("Edit the configuration as needed, then run:");
     println!("  offload run");
+
+    Ok(())
+}
+
+fn show_logs(config_path: &Path, failures: bool, errors: bool) -> Result<()> {
+    let config = config::load_config(config_path)
+        .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    let junit_path = config.report.output_dir.join(&config.report.junit_file);
+
+    if !junit_path.is_file() {
+        eprintln!(
+            "No test results found at {}. Run `offload run` first.",
+            junit_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    let xml_content = std::fs::read_to_string(&junit_path)
+        .with_context(|| format!("Failed to read {}", junit_path.display()))?;
+
+    let testsuites = offload::report::parse_all_testsuites_xml(&xml_content);
+
+    // Collect all testcases, deduplicating by test name (keep the one with failure/error info if any)
+    use std::collections::BTreeMap;
+    let mut tests: BTreeMap<String, &offload::report::TestcaseXml> = BTreeMap::new();
+    for suite in &testsuites {
+        for tc in &suite.testcases {
+            let existing = tests.get(tc.name.as_str());
+            // Prefer the entry that has failure/error info over a passing one
+            let dominated = match existing {
+                None => true,
+                Some(prev) => {
+                    (tc.failure.is_some() || tc.error.is_some())
+                        && prev.failure.is_none()
+                        && prev.error.is_none()
+                }
+            };
+            if dominated {
+                tests.insert(tc.name.clone(), tc);
+            }
+        }
+    }
+
+    // Filter by status flags
+    let filtered: Vec<(&String, &&offload::report::TestcaseXml)> = tests
+        .iter()
+        .filter(|(_name, tc)| {
+            if failures && errors {
+                tc.failure.is_some() || tc.error.is_some()
+            } else if failures {
+                tc.failure.is_some()
+            } else if errors {
+                tc.error.is_some()
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        eprintln!("No matching test results found in {}", junit_path.display());
+        return Ok(());
+    }
+
+    for (name, tc) in &filtered {
+        let status = if tc.failure.is_some() {
+            "FAILED"
+        } else if tc.error.is_some() {
+            "ERROR"
+        } else {
+            "PASSED"
+        };
+
+        println!("=== {} [{}] ===", name, status);
+
+        if let Some(ref failure) = tc.failure {
+            if let Some(ref msg) = failure.message {
+                println!("{}", msg);
+            }
+            if !failure.content.is_empty() {
+                println!("{}", failure.content);
+            }
+        }
+        if let Some(ref error) = tc.error {
+            if let Some(ref msg) = error.message {
+                println!("{}", msg);
+            }
+            if !error.content.is_empty() {
+                println!("{}", error.content);
+            }
+        }
+        println!();
+    }
 
     Ok(())
 }

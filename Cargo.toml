@@ -76,3 +76,5 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"
+assert_cmd = "2"
+predicates = "3"
