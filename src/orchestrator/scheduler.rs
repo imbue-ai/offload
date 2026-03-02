@@ -673,4 +673,37 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_schedule_lpt_splits_on_command_length() {
+        let scheduler = Scheduler::new(1);
+        // Create tests whose IDs together exceed MAX_BATCH_COMMAND_LEN
+        let long_name = "a".repeat(MAX_BATCH_COMMAND_LEN / 2 + 1);
+        let records = [
+            TestRecord::new(format!("{long_name}_1")),
+            TestRecord::new(format!("{long_name}_2")),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(1), None);
+
+        // Two tests that each use >half the command length budget must be in separate batches
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches[1].len(), 1);
+    }
+
+    #[test]
+    fn test_schedule_lpt_groups_short_commands() {
+        let scheduler = Scheduler::new(1);
+        // Create many tests with short IDs that fit in one batch
+        let records: Vec<_> = (0..100).map(|i| TestRecord::new(format!("t{i}"))).collect();
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(0), None);
+
+        // Total command length is ~400 chars, well under 30k — should be 1 batch
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 100);
+    }
 }
