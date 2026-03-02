@@ -122,12 +122,9 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{
-    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestOutcome, TestRecord,
-    TestResult,
-};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
 use crate::config::DefaultFrameworkConfig;
-use crate::provider::{Command, ExecResult};
+use crate::provider::Command;
 
 /// Test framework using custom shell commands.
 ///
@@ -259,119 +256,4 @@ impl TestFramework for DefaultFramework {
 
         cmd
     }
-
-    /// Parse test results from execution output.
-    ///
-    /// # Result Sources (in order of preference)
-    ///
-    /// 1. **JUnit XML** (`result_file`): Provides per-test results with timing and error details.
-    ///    This is the recommended approach for accurate test tracking.
-    ///
-    /// 2. **Exit code fallback**: If no JUnit XML is available, returns a single aggregate result
-    ///    based on the command's exit code. This means:
-    ///    - Individual test pass/fail status is lost
-    ///    - All tests are reported under a synthetic "all_tests" ID
-    ///    - Flaky test detection won't work correctly
-    ///
-    /// # Recommendation
-    ///
-    /// Always configure `result_file` pointing to JUnit XML output for accurate results.
-    /// Most test frameworks support JUnit XML output:
-    /// - Jest: `--reporters=jest-junit`
-    /// - Go: `go-junit-report`
-    /// - pytest: `--junitxml=results.xml`
-    fn parse_results(
-        &self,
-        output: &ExecResult,
-        result_file: Option<&str>,
-    ) -> FrameworkResult<Vec<TestResult>> {
-        // Try to parse JUnit XML if result file is provided
-        // Default framework uses "{name}" format - test IDs match the name attribute
-        if let Some(xml_content) = result_file {
-            return parse_junit_xml(xml_content, "{name}");
-        }
-
-        // Fall back to basic success/failure based on exit code.
-        // WARNING: This loses per-test granularity. Without JUnit XML, we cannot determine
-        // which specific tests passed or failed - only whether the batch as a whole succeeded.
-        tracing::warn!(
-            "No JUnit XML result file - falling back to exit code. \
-             Per-test results will not be tracked. Configure 'result_file' for accurate results."
-        );
-
-        if output.success() {
-            Ok(vec![TestResult {
-                test_id: "all_tests".to_string(),
-                outcome: TestOutcome::Passed,
-                duration: output.duration,
-                stdout: output.stdout.clone(),
-                stderr: output.stderr.clone(),
-                error_message: None,
-                stack_trace: None,
-                group: None,
-            }])
-        } else {
-            Ok(vec![TestResult {
-                test_id: "all_tests".to_string(),
-                outcome: TestOutcome::Failed,
-                duration: output.duration,
-                stdout: output.stdout.clone(),
-                stderr: output.stderr.clone(),
-                error_message: Some(format!("Exit code: {}", output.exit_code)),
-                stack_trace: None,
-                group: None,
-            }])
-        }
-    }
-}
-
-/// Parse JUnit XML content to extract test results.
-fn parse_junit_xml(content: &str, test_id_format: &str) -> FrameworkResult<Vec<TestResult>> {
-    use regex::Regex;
-
-    let mut results = Vec::new();
-
-    let testcase_re = Regex::new(
-        r#"<testcase[^>]*name="([^"]+)"[^>]*(?:classname="([^"]+)")?[^>]*(?:time="([^"]+)")?[^>]*(?:/>|>([\s\S]*?)</testcase>)"#
-    ).map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-    let msg_re = Regex::new(r#"message="([^"]*)""#)
-        .map_err(|e| FrameworkError::ParseError(format!("Invalid regex pattern: {}", e)))?;
-
-    for cap in testcase_re.captures_iter(content) {
-        let name = &cap[1];
-        let classname = cap.get(2).map(|m| m.as_str());
-        let time: f64 = cap
-            .get(3)
-            .and_then(|m| m.as_str().parse().ok())
-            .unwrap_or(0.0);
-        let inner = cap.get(4).map(|m| m.as_str()).unwrap_or("");
-
-        // Use the configured format to construct test ID
-        let test_id = crate::config::format_test_id(test_id_format, name, classname);
-
-        let (outcome, error_message) = if inner.contains("<failure") {
-            let msg = msg_re.captures(inner).map(|c| c[1].to_string());
-            (TestOutcome::Failed, msg)
-        } else if inner.contains("<error") {
-            let msg = msg_re.captures(inner).map(|c| c[1].to_string());
-            (TestOutcome::Error, msg)
-        } else if inner.contains("<skipped") {
-            (TestOutcome::Skipped, None)
-        } else {
-            (TestOutcome::Passed, None)
-        };
-
-        results.push(TestResult {
-            test_id,
-            outcome,
-            duration: std::time::Duration::from_secs_f64(time),
-            stdout: String::new(),
-            stderr: String::new(),
-            error_message,
-            stack_trace: None,
-            group: None,
-        });
-    }
-
-    Ok(results)
 }
