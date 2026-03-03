@@ -15,7 +15,10 @@ use tracing::{debug, error, info, warn};
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord, TestResult};
 use crate::provider::Sandbox;
-use crate::report::{MasterJunitReport, load_test_durations, print_summary};
+use crate::report::{
+    MasterJunitReport, load_test_durations, load_timings, print_summary, save_timings,
+    update_timings,
+};
 
 pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
@@ -163,13 +166,9 @@ where
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
-        // Load test durations from previous junit.xml for LPT scheduling
-        let junit_path = self
-            .config
-            .report
-            .output_dir
-            .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path, self.config.framework.test_id_format());
+        // Load test durations from persistent timings cache for LPT scheduling
+        let timings_path = std::path::PathBuf::from(".offload/timings");
+        let durations = load_timings(&timings_path);
 
         // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
         let output_dir = &self.config.report.output_dir;
@@ -233,15 +232,15 @@ where
         let batches = if durations.is_empty() {
             warn!(
                 "No historical test durations found at {}. Falling back to round-robin scheduling. \
-                 Run tests once to generate junit.xml for optimized LPT scheduling.",
-                junit_path.display()
+                 Run tests once to generate timing data for optimized LPT scheduling.",
+                timings_path.display()
             );
             scheduler.schedule(&tests_to_run)
         } else {
             debug!(
                 "Using LPT scheduling with {} historical durations from {}",
                 durations.len(),
-                junit_path.display()
+                timings_path.display()
             );
             // Default duration for unknown tests: 1 second (conservative estimate)
             scheduler.schedule_lpt(
@@ -360,6 +359,23 @@ where
                 && let Err(e) = report.write_to_file(&output_path)
             {
                 warn!("Failed to write JUnit XML: {}", e);
+            }
+        }
+
+        // Write-back: merge new durations into the persistent timings cache
+        if self.config.report.junit {
+            let output_path = self
+                .config
+                .report
+                .output_dir
+                .join(&self.config.report.junit_file);
+            let new_durations =
+                load_test_durations(&output_path, self.config.framework.test_id_format());
+            if !new_durations.is_empty() {
+                let merged = update_timings(&durations, &new_durations);
+                if let Err(e) = save_timings(&timings_path, &merged) {
+                    warn!("Failed to write timings cache: {}", e);
+                }
             }
         }
 
