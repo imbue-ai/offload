@@ -642,6 +642,124 @@ pub fn cleanup_parts(parts_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Loads test durations from a persistent timings cache file.
+///
+/// Each line has the format `<duration_ms> <test_id>`. Returns an empty map
+/// if the file does not exist. Malformed lines are skipped with a warning.
+pub fn load_timings(path: &Path) -> HashMap<String, std::time::Duration> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return HashMap::new();
+        }
+        Err(e) => {
+            warn!("Failed to read timings cache {}: {}", path.display(), e);
+            return HashMap::new();
+        }
+    };
+
+    let mut timings = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Some((ms_str, test_id_raw)) = trimmed.split_once(char::is_whitespace) else {
+            warn!("Malformed timings line (no whitespace): {:?}", trimmed);
+            continue;
+        };
+
+        let test_id = test_id_raw.trim();
+        if test_id.is_empty() {
+            warn!("Malformed timings line (empty test_id): {:?}", trimmed);
+            continue;
+        }
+
+        let Ok(ms) = ms_str.parse::<u64>() else {
+            warn!(
+                "Malformed timings line (non-numeric ms {:?}): {:?}",
+                ms_str, trimmed
+            );
+            continue;
+        };
+
+        timings.insert(test_id.to_string(), std::time::Duration::from_millis(ms));
+    }
+
+    info!("Loaded {} timings from {}", timings.len(), path.display());
+
+    eprintln!(
+        "Loaded {} test timings from {}",
+        timings.len(),
+        path.display()
+    );
+
+    if !timings.is_empty() {
+        let mut samples: Vec<_> = timings.iter().collect();
+        samples.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("Test timings loaded (sorted by duration):");
+        for (test_id, duration) in samples.iter().take(10) {
+            eprintln!("  {:.3}s  {}", duration.as_secs_f64(), test_id);
+        }
+        if samples.len() > 10 {
+            eprintln!("  ... and {} more", samples.len() - 10);
+        }
+    }
+
+    timings
+}
+
+/// Saves test durations to a persistent timings cache file.
+///
+/// Entries are sorted by test ID for deterministic output.
+pub fn save_timings(
+    path: &Path,
+    timings: &HashMap<String, std::time::Duration>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut entries: Vec<_> = timings.iter().collect();
+    entries.sort_by_key(|(id, _)| (*id).clone());
+
+    let mut output = String::new();
+    for (test_id, duration) in entries {
+        output.push_str(&format!("{} {}\n", duration.as_millis(), test_id));
+    }
+
+    std::fs::write(path, output)
+}
+
+/// Merges new durations into existing timings using exponential moving average.
+///
+/// For existing keys: `updated = 0.2 * latest + 0.8 * current`
+/// For new keys (not in `current`): inserted directly from `new`.
+pub fn update_timings(
+    current: &HashMap<String, std::time::Duration>,
+    new: &HashMap<String, std::time::Duration>,
+) -> HashMap<String, std::time::Duration> {
+    let mut merged = current.clone();
+
+    for (key, new_dur) in new {
+        if let Some(cur_dur) = current.get(key) {
+            let new_ms = new_dur.as_millis() as f64;
+            let cur_ms = cur_dur.as_millis() as f64;
+            let ema_ms = 0.2 * new_ms + 0.8 * cur_ms;
+            merged.insert(
+                key.clone(),
+                std::time::Duration::from_millis(ema_ms.round() as u64),
+            );
+        } else {
+            merged.insert(key.clone(), *new_dur);
+        }
+    }
+
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +903,92 @@ mod tests {
     fn test_load_test_durations_nonexistent_file() {
         let durations = load_test_durations(Path::new("/nonexistent/path/junit.xml"), "{name}");
         assert!(durations.is_empty());
+    }
+
+    #[test]
+    fn test_load_timings_empty_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("timings");
+        std::fs::write(&path, "").expect("write empty file");
+
+        let timings = load_timings(&path);
+        assert!(timings.is_empty());
+    }
+
+    #[test]
+    fn test_load_timings_nonexistent() {
+        let timings = load_timings(Path::new("/nonexistent/path/timings"));
+        assert!(timings.is_empty());
+    }
+
+    #[test]
+    fn test_save_and_load_timings_roundtrip() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("timings");
+
+        let mut original = HashMap::new();
+        original.insert(
+            "tests/test_math.py::test_add".to_string(),
+            Duration::from_millis(12340),
+        );
+        original.insert(
+            "tests/test_math.py::test_sub".to_string(),
+            Duration::from_millis(530),
+        );
+        original.insert(
+            "tests/test_io.py::test_read".to_string(),
+            Duration::from_millis(100),
+        );
+
+        save_timings(&path, &original).expect("save timings");
+        let loaded = load_timings(&path);
+
+        assert_eq!(loaded.len(), original.len());
+        for (key, value) in &original {
+            assert_eq!(loaded.get(key), Some(value), "mismatch for key {}", key);
+        }
+    }
+
+    #[test]
+    fn test_update_timings_ema_blending() {
+        use std::time::Duration;
+
+        let mut current = HashMap::new();
+        current.insert("test_a".to_string(), Duration::from_millis(1000));
+        let mut new = HashMap::new();
+        new.insert("test_a".to_string(), Duration::from_millis(500));
+
+        let merged = update_timings(&current, &new);
+        // EMA: 0.2 * 500 + 0.8 * 1000 = 100 + 800 = 900
+        assert_eq!(merged.get("test_a"), Some(&Duration::from_millis(900)));
+    }
+
+    #[test]
+    fn test_update_timings_new_key() {
+        use std::time::Duration;
+
+        let current = HashMap::new();
+        let mut new = HashMap::new();
+        new.insert("test_new".to_string(), Duration::from_millis(500));
+
+        let merged = update_timings(&current, &new);
+        assert_eq!(merged.get("test_new"), Some(&Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn test_update_timings_preserves_untouched() {
+        use std::time::Duration;
+
+        let mut current = HashMap::new();
+        current.insert("test_a".to_string(), Duration::from_millis(1000));
+        current.insert("test_b".to_string(), Duration::from_millis(2000));
+        let mut new = HashMap::new();
+        new.insert("test_a".to_string(), Duration::from_millis(500));
+        // test_b not in new — should be preserved unchanged
+
+        let merged = update_timings(&current, &new);
+        assert_eq!(merged.get("test_b"), Some(&Duration::from_millis(2000)));
     }
 }

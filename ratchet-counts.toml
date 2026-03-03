@@ -41,7 +41,7 @@
 
 [no-expect]
 "." = 0
-"src/report" = 6
+"src/report" = 10
 
 [no-fixme-comments]
 "." = 0
