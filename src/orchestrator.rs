@@ -21,6 +21,13 @@ pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
+/// Maximum expected duration for a single batch of tests.
+///
+/// Batches produced by LPT scheduling will not exceed this duration
+/// (unless a single test already exceeds it). This keeps batches
+/// small enough for fast feedback and efficient retry granularity.
+const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
+
 /// Aggregated results of an entire test run.
 ///
 /// Contains summary statistics and individual test results. This is the
@@ -237,7 +244,12 @@ where
                 junit_path.display()
             );
             // Default duration for unknown tests: 1 second (conservative estimate)
-            scheduler.schedule_lpt(&tests_to_run, &durations, std::time::Duration::from_secs(1))
+            scheduler.schedule_lpt(
+                &tests_to_run,
+                &durations,
+                Duration::from_secs(1),
+                Some(MAX_BATCH_DURATION),
+            )
         };
 
         // Take sandboxes from pool
