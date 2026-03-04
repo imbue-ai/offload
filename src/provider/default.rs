@@ -57,6 +57,7 @@ impl DefaultProvider {
         config: DefaultProviderConfig,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
         no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
     ) -> ProviderResult<Self> {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
@@ -86,6 +87,13 @@ impl DefaultProvider {
                     " --copy-dir={}:{}",
                     local.display(),
                     remote.display()
+                ));
+            }
+
+            if let Some(init_cmd) = sandbox_init_cmd {
+                full_prepare_cmd.push_str(&format!(
+                    " --sandbox-init-cmd={}",
+                    shell_words::quote(init_cmd)
                 ));
             }
 
@@ -661,7 +669,7 @@ mod tests {
             copy_dirs: vec![],
         };
 
-        let provider = DefaultProvider::from_config(config, &[], false).await?;
+        let provider = DefaultProvider::from_config(config, &[], false, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

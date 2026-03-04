@@ -64,6 +64,7 @@ impl ModalProvider {
         config: ModalProviderConfig,
         copy_dirs: &[(PathBuf, PathBuf)],
         no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
     ) -> ProviderResult<Self> {
         let connector = Arc::new(ShellConnector::new());
 
@@ -97,6 +98,13 @@ impl ModalProvider {
                 " --copy-dir={}:{}",
                 local.display(),
                 remote.display()
+            ));
+        }
+
+        if let Some(init_cmd) = sandbox_init_cmd {
+            prepare_cmd.push_str(&format!(
+                " --sandbox-init-cmd={}",
+                shell_words::quote(init_cmd)
             ));
         }
 
