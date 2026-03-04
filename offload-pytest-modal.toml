@@ -1,0 +1,28 @@
+# Offload configuration for running example pytest tests on Modal (simplified provider)
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 600
+sandbox_project_root = "/app"
+
+[provider]
+type = "modal"
+dockerfile = "examples/Dockerfile"
+include_cwd = true
+
+[framework]
+type = "pytest"
+paths = ["examples/tests"]
+python = "uv"
+extra_args = ["run", "--with=pytest"]
+
+[groups.unit]
+retry_count = 2
+filters = "-m 'not slow'"
+
+[groups.slow]
+retry_count = 3
+filters = "-m 'slow'"
+
+[report]
+output_dir = "test-results"

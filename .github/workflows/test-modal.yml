@@ -40,16 +40,28 @@ jobs:
           tool: just@1.11.0
 
       - name: Build offload
-        run: cargo build --release
+        run: cargo build
 
-      - name: Run cargo tests on Modal
+      - name: Run offload cargo-modal
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: ./target/release/offload -c offload-cargo-modal.toml run
+        run: just test-cargo-modal
 
-      - name: Run pytest tests on Modal
+      - name: Run offload pytest-modal
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: just test-modal
+        run: just test-pytest-modal
+
+      - name: Run offload cargo-default
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: just test-cargo-default
+
+      - name: Run offload pytest-default
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: just test-pytest-default

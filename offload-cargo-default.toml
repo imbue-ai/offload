@@ -1,6 +1,4 @@
-# Offload configuration for running cargo tests on Modal
-
-test_id_format = "{classname} {name}"
+# Offload configuration for running cargo tests with default provider (backed by Modal)
 
 [offload]
 max_parallel = 4
@@ -16,8 +14,11 @@ destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
 download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"
 timeout_secs = 600
 
-[groups.all]
+[framework]
 type = "cargo"
+# test_id_format defaults to "{classname} {name}" for cargo
+
+[groups.all]
 retry_count = 1
 
 [report]

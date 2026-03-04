@@ -1,0 +1,18 @@
+# Offload configuration for running cargo tests locally
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 300
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+
+[framework]
+type = "cargo"
+
+[groups.all]
+retry_count = 0
+
+[report]
+output_dir = "test-results"

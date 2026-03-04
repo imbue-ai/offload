@@ -1,4 +1,4 @@
-# Offload configuration for Modal execution
+# Offload configuration for running pytest tests with default provider (backed by Modal)
 
 [offload]
 max_parallel = 4

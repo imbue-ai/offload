@@ -1,0 +1,26 @@
+# Offload configuration for running example pytest tests locally
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 300
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+
+[framework]
+type = "pytest"
+paths = ["examples/tests"]
+python = "uv"
+extra_args = ["run", "--with=pytest"]
+
+[groups.unit]
+retry_count = 0
+filters = "-m 'not slow'"
+
+[groups.slow]
+retry_count = 0
+filters = "-m 'slow'"
+
+[report]
+output_dir = "test-results"
