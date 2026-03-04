@@ -269,7 +269,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_noop_tracer_is_noop() {
+    fn test_noop_tracer_is_noop() -> anyhow::Result<()> {
         let tracer = Tracer::noop();
 
         // Methods don't panic
@@ -280,30 +280,34 @@ mod tests {
         drop(_guard);
 
         // to_json returns empty array
-        let json = tracer.to_json().unwrap();
+        let json = tracer.to_json()?;
         assert_eq!(json, "[]");
 
         // write_to_file is ok (doesn't actually write)
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trace.json");
         assert!(tracer.write_to_file(&path).is_ok());
         assert!(!path.exists());
+
+        Ok(())
     }
 
     #[test]
-    fn test_active_tracer_collects_events() {
+    fn test_active_tracer_collects_events() -> anyhow::Result<()> {
         let tracer = Tracer::new();
 
         tracer.complete_event("compile", "build", 0, 0, 0.0, 100.0, None);
         tracer.instant_event("checkpoint", "debug", 0, 0, None);
 
-        let json = tracer.to_json().unwrap();
-        let events: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let json = tracer.to_json()?;
+        let events: Vec<serde_json::Value> = serde_json::from_str(&json)?;
         assert_eq!(events.len(), 2);
+
+        Ok(())
     }
 
     #[test]
-    fn test_span_guard_measures_duration() {
+    fn test_span_guard_measures_duration() -> anyhow::Result<()> {
         let tracer = Tracer::new();
 
         {
@@ -311,19 +315,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let json = tracer.to_json().unwrap();
-        let events: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let json = tracer.to_json()?;
+        let events: Vec<serde_json::Value> = serde_json::from_str(&json)?;
         assert_eq!(events.len(), 1);
 
         let event = &events[0];
         assert_eq!(event["ph"], "X");
         assert_eq!(event["name"], "sleep_span");
-        let dur = event["dur"].as_f64().unwrap();
+        let dur = event["dur"]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("dur field missing or not f64"))?;
         assert!(dur > 0.0, "duration should be > 0, got {dur}");
+
+        Ok(())
     }
 
     #[test]
-    fn test_json_output_valid() {
+    fn test_json_output_valid() -> anyhow::Result<()> {
         let tracer = Tracer::new();
 
         tracer.metadata_event(
@@ -341,8 +349,8 @@ mod tests {
             Some(serde_json::json!({"info": "start"})),
         );
 
-        let json = tracer.to_json().unwrap();
-        let events: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let json = tracer.to_json()?;
+        let events: Vec<serde_json::Value> = serde_json::from_str(&json)?;
         assert_eq!(events.len(), 3);
 
         // Metadata event
@@ -366,6 +374,8 @@ mod tests {
         assert_eq!(instant["name"], "marker");
         assert_eq!(instant["args"]["info"], "start");
         assert_eq!(instant["args"]["s"], "t");
+
+        Ok(())
     }
 
     #[test]
