@@ -8,6 +8,7 @@ pub mod framework;
 pub mod orchestrator;
 pub mod provider;
 pub mod report;
+pub mod trace;
 
 // Re-export commonly used types for convenience.
 // These are the types most users will need when setting up offload.
@@ -17,3 +18,4 @@ pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestRe
 pub use orchestrator::{Orchestrator, RunResult, SandboxPool};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::print_summary;
+pub use trace::Tracer;
