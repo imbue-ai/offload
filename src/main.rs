@@ -67,6 +67,10 @@ enum Commands {
         /// Skip cached image lookup during prepare (forces fresh build)
         #[arg(long)]
         no_cache: bool,
+
+        /// Emit a Perfetto trace to {output_dir}/trace.json
+        #[arg(long)]
+        trace: bool,
     },
 
     /// Discover tests without running them
@@ -133,6 +137,7 @@ async fn main() -> Result<()> {
             copy_dir,
             env_vars,
             no_cache,
+            trace,
         } => {
             run_tests(
                 &cli.config,
@@ -142,6 +147,7 @@ async fn main() -> Result<()> {
                 env_vars,
                 no_cache,
                 cli.verbose,
+                trace,
             )
             .await
         }
@@ -169,6 +175,7 @@ fn framework_type_name(framework: &FrameworkConfig) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tests(
     config_path: &Path,
     parallel_override: Option<usize>,
@@ -177,7 +184,14 @@ async fn run_tests(
     env_vars: Vec<String>,
     no_cache: bool,
     verbose: bool,
+    trace: bool,
 ) -> Result<()> {
+    let tracer = if trace {
+        offload::trace::Tracer::new()
+    } else {
+        offload::trace::Tracer::noop()
+    };
+
     // Load configuration
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
@@ -306,6 +320,7 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -317,6 +332,7 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -328,6 +344,7 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -352,6 +369,7 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -376,6 +394,7 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -400,6 +419,7 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -423,6 +443,7 @@ async fn run_tests(
                 PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -446,6 +467,7 @@ async fn run_tests(
                 CargoFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
@@ -469,10 +491,19 @@ async fn run_tests(
                 DefaultFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
+                &tracer,
             )
             .await?
         }
     };
+
+    // Write trace file if tracing was enabled
+    let trace_path = config.report.output_dir.join("trace.json");
+    if let Err(e) = tracer.write_to_file(&trace_path) {
+        eprintln!("Warning: failed to write trace file: {}", e);
+    } else if trace {
+        eprintln!("Trace written to {}", trace_path.display());
+    }
 
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -490,6 +521,7 @@ async fn run_all_tests<P, D>(
     framework: D,
     copy_dirs: &[CopyDir],
     verbose: bool,
+    _tracer: &offload::trace::Tracer,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
