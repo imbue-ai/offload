@@ -68,6 +68,8 @@ pub struct TestRunner<'a, S, D> {
     junit_report: Option<SharedJunitReport>,
     /// Optional directory to save individual batch JUnit XMLs for debugging.
     parts_dir: Option<std::path::PathBuf>,
+    tracer: crate::trace::Tracer,
+    sandbox_pid: u32,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -78,7 +80,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// * `sandbox` - The sandbox to execute tests in
     /// * `framework` - The framework for command generation and result parsing
     /// * `timeout` - Maximum time for test execution
-    pub fn new(sandbox: S, framework: &'a D, timeout: Duration) -> Self {
+    pub fn new(
+        sandbox: S,
+        framework: &'a D,
+        timeout: Duration,
+        tracer: crate::trace::Tracer,
+        sandbox_pid: u32,
+    ) -> Self {
         Self {
             sandbox,
             framework,
@@ -87,6 +95,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             cancellation_token: None,
             junit_report: None,
             parts_dir: None,
+            tracer,
+            sandbox_pid,
         }
     }
 
@@ -355,6 +365,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         );
 
         // Execute the command with streaming (always use streaming for default provider support)
+        let _exec_span = self.tracer.span(
+            "exec_batch",
+            "exec",
+            self.sandbox_pid,
+            crate::trace::TID_EXEC,
+        );
         let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
             Some(result) => result,
             None => {
@@ -366,6 +382,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 return Ok(BatchOutcome::Cancelled);
             }
         };
+        drop(_exec_span);
 
         let duration = start.elapsed();
 
@@ -379,6 +396,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let unique_count = unique_test_ids.len();
 
         // Download JUnit XML and add to shared report
+        let _io_span = self.tracer.span(
+            "download_results",
+            "io",
+            self.sandbox_pid,
+            crate::trace::TID_IO,
+        );
         let batch_had_failures = match self.try_download_results(unique_count).await {
             Some((xml_content, actual_count)) => {
                 info!(
@@ -434,6 +457,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 ));
             }
         };
+        drop(_io_span);
 
         if batch_had_failures {
             Ok(BatchOutcome::Failure)
