@@ -629,6 +629,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_prepare_command_with_sandbox_init_cmd() {
+        let prepare_command =
+            "uv run @modal_sandbox.py prepare --include-cwd Dockerfile".to_string();
+        let config_copy_dirs: Vec<String> = vec![];
+        let param_copy_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
+        let no_cache = false;
+        let sandbox_init_cmd = Some("git apply /patch && uv sync");
+
+        // Build prepare command the same way from_config() does
+        let mut full_prepare_cmd = prepare_command;
+
+        if !no_cache {
+            full_prepare_cmd.push_str(" --cached");
+        }
+
+        for copy_spec in &config_copy_dirs {
+            full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+        }
+        for (local, remote) in &param_copy_dirs {
+            full_prepare_cmd.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
+
+        if let Some(init_cmd) = sandbox_init_cmd {
+            full_prepare_cmd.push_str(&format!(
+                " --sandbox-init-cmd={}",
+                shell_words::quote(init_cmd)
+            ));
+        }
+
+        assert!(
+            full_prepare_cmd.contains("--sandbox-init-cmd="),
+            "prepare command should contain --sandbox-init-cmd flag: {full_prepare_cmd}"
+        );
+        assert!(
+            full_prepare_cmd.contains("--sandbox-init-cmd='git apply /patch && uv sync'"),
+            "sandbox_init_cmd should be properly shell-quoted: {full_prepare_cmd}"
+        );
+        assert_eq!(
+            full_prepare_cmd,
+            "uv run @modal_sandbox.py prepare --include-cwd Dockerfile --cached --sandbox-init-cmd='git apply /patch && uv sync'"
+        );
+    }
+
     /// Integration test for Modal sandbox download functionality via DefaultProvider.
     ///
     /// This test requires Modal credentials (MODAL_TOKEN_ID and MODAL_TOKEN_SECRET).

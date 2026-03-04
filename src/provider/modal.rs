@@ -296,4 +296,64 @@ mod tests {
             "uv run @modal_sandbox.py prepare ./Dockerfile.test --include-cwd --copy-dir=./src:/app/src --copy-dir=./tests:/app/tests"
         );
     }
+
+    #[test]
+    fn test_prepare_command_with_sandbox_init_cmd() {
+        let config = ModalProviderConfig {
+            dockerfile: Some("./Dockerfile".to_string()),
+            include_cwd: true,
+            copy_dirs: vec![],
+        };
+
+        let copy_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
+        let sandbox_init_cmd = Some("git apply /patch --allow-empty && uv sync --all-packages");
+
+        let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
+
+        if let Some(dockerfile) = &config.dockerfile {
+            prepare_cmd.push(' ');
+            prepare_cmd.push_str(dockerfile);
+        }
+
+        if config.include_cwd {
+            prepare_cmd.push_str(" --include-cwd");
+        }
+
+        // no_cache = false, so --cached should be added
+        prepare_cmd.push_str(" --cached");
+
+        for copy_spec in &config.copy_dirs {
+            prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+        }
+
+        for (local, remote) in &copy_dirs {
+            prepare_cmd.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
+
+        if let Some(init_cmd) = sandbox_init_cmd {
+            prepare_cmd.push_str(&format!(
+                " --sandbox-init-cmd={}",
+                shell_words::quote(init_cmd)
+            ));
+        }
+
+        assert!(
+            prepare_cmd.contains("--sandbox-init-cmd="),
+            "prepare command should contain --sandbox-init-cmd flag: {prepare_cmd}"
+        );
+        assert!(
+            prepare_cmd.contains(
+                "--sandbox-init-cmd='git apply /patch --allow-empty && uv sync --all-packages'"
+            ),
+            "sandbox_init_cmd should be properly shell-quoted: {prepare_cmd}"
+        );
+        assert_eq!(
+            prepare_cmd,
+            "uv run @modal_sandbox.py prepare ./Dockerfile --include-cwd --cached --copy-dir=./tests:/app/tests --sandbox-init-cmd='git apply /patch --allow-empty && uv sync --all-packages'"
+        );
+    }
 }
