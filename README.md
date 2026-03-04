@@ -212,6 +212,7 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `test_timeout_secs` | integer | `900` | Timeout per test batch in seconds |
 | `working_dir` | string | (cwd) | Working directory for test execution |
 | `sandbox_project_root` | string | required | Project root path on the remote sandbox (exported as `OFFLOAD_ROOT`) |
+| `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
 
 ### `[provider]` -- Execution Provider
 
@@ -384,17 +385,18 @@ retry_count = 1
 output_dir = "test-results"
 ```
 
-### Default Framework on Modal (`offload-modal.toml` from mng)
+### Pytest on Modal with sandbox_init_cmd (`offload-modal.toml` from mng)
 
 ```toml
 [offload]
 max_parallel = 40
 test_timeout_secs = 60
 sandbox_project_root = "/code/mng"
+sandbox_init_cmd = "git apply /offload-upload/patch --allow-empty && uv sync --all-packages"
 
 [provider]
 type = "default"
-prepare_command = "uv run @modal_sandbox.py prepare --cached libs/mng/imbue/mng/resources/Dockerfile"
+prepare_command = "uv run @modal_sandbox.py prepare --include-cwd --cached libs/mng/imbue/mng/resources/Dockerfile"
 create_command = "uv run @modal_sandbox.py create {image_id}"
 exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
 destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
@@ -402,10 +404,10 @@ download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"
 timeout_secs = 600
 
 [framework]
-type = "default"
-discover_command = "uv sync --all-packages && uv run pytest --collect-only -q {filters} 2>/dev/null | grep '::'"
-run_command = "cd /code/mng && uv sync --all-packages && uv run pytest -v --tb=short --no-cov -p no:xdist -o addopts= --junitxml={result_file} {tests}"
-test_id_format = "{name}"
+type = "pytest"
+paths = ["libs/mng/tests"]
+python = "uv"
+extra_args = ["run", "--with=pytest"]
 
 [groups.all]
 retry_count = 0
@@ -417,7 +419,7 @@ junit = true
 junit_file = "junit.xml"
 ```
 
-This demonstrates using the `default` framework with custom pytest discovery and execution on Modal. This is necessary when the built-in `pytest` framework doesn't support your workflow — common reasons include monorepo workspaces requiring pre-sync steps (`uv sync --all-packages`), conflicting `addopts` in `pyproject.toml` (e.g. xdist workers or coverage that must be disabled), or pre-test setup commands. Better support for these workflows in the built-in frameworks is planned for upcoming versions.
+This demonstrates using `sandbox_init_cmd` to run setup commands during image build. The `sandbox_init_cmd` applies a patch and syncs packages after the working directory is copied into the image, enabling the use of the native `pytest` framework instead of the `default` framework with inline setup commands.
 
 ## Bundled Scripts
 

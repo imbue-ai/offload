@@ -622,6 +622,10 @@ fn validate_config(config_path: &Path) -> Result<()> {
             let framework_name = framework_type_name(&config.framework);
             println!("  Framework: {}", framework_name);
 
+            if let Some(ref init_cmd) = config.offload.sandbox_init_cmd {
+                println!("  Sandbox init cmd: {}", init_cmd);
+            }
+
             println!();
             println!("Groups:");
             for (group_name, group_config) in &config.groups {
