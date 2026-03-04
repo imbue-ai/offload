@@ -313,9 +313,38 @@ where
         let queue = Arc::new(std::sync::Mutex::new(VecDeque::from(batches)));
         let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+        // Emit per-sandbox metadata events for trace
+        for i in 0..sandboxes.len() {
+            let pid = crate::trace::sandbox_pid(i);
+            self.tracer.metadata_event(
+                "process_name",
+                pid,
+                crate::trace::TID_API,
+                serde_json::json!({"name": format!("Sandbox {}", i)}),
+            );
+            self.tracer.metadata_event(
+                "thread_name",
+                pid,
+                crate::trace::TID_API,
+                serde_json::json!({"name": "API"}),
+            );
+            self.tracer.metadata_event(
+                "thread_name",
+                pid,
+                crate::trace::TID_EXEC,
+                serde_json::json!({"name": "Exec"}),
+            );
+            self.tracer.metadata_event(
+                "thread_name",
+                pid,
+                crate::trace::TID_IO,
+                serde_json::json!({"name": "I/O"}),
+            );
+        }
+
         // Run tests in parallel using queue-based workers
         tokio_scoped::scope(|scope| {
-            for sandbox in sandboxes {
+            for (sandbox_index, sandbox) in sandboxes.into_iter().enumerate() {
                 let cfg = spawn::SpawnConfig {
                     config: &self.config,
                     framework: &self.framework,
@@ -329,6 +358,8 @@ where
                     logs_dir: logs_dir.clone(),
                     batch_counter: Arc::clone(&batch_counter),
                     verbose: self.verbose,
+                    tracer: self.tracer.clone(),
+                    sandbox_index,
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
