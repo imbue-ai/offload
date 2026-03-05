@@ -175,6 +175,44 @@ fn framework_type_name(framework: &FrameworkConfig) -> &'static str {
     }
 }
 
+/// Discover tests for every group, tagging each with its group config.
+async fn discover_all_tests(
+    framework: &FrameworkConfig,
+    groups: &HashMap<String, GroupConfig>,
+) -> Result<Vec<TestRecord>> {
+    let mut all_tests: Vec<TestRecord> = Vec::new();
+
+    for (group_name, group_cfg) in groups {
+        let tests = match framework {
+            FrameworkConfig::Pytest(cfg) => {
+                PytestFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                CargoFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+        };
+
+        // Tag tests with group retry count
+        let group_tests: Vec<TestRecord> = tests
+            .into_iter()
+            .map(|t| t.with_retry_count(group_cfg.retry_count))
+            .collect();
+
+        all_tests.extend(group_tests);
+    }
+
+    Ok(all_tests)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tests(
     config_path: &Path,
@@ -267,37 +305,7 @@ async fn run_tests(
         offload::trace::TID_MAIN,
     );
     eprint!("Discovering tests... ");
-
-    let mut all_tests: Vec<TestRecord> = Vec::new();
-
-    for (group_name, group_cfg) in &config.groups {
-        let tests = match &config.framework {
-            FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Cargo(cfg) => {
-                CargoFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Default(cfg) => {
-                DefaultFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-        };
-
-        // Tag tests with group retry count
-        let group_tests: Vec<TestRecord> = tests
-            .into_iter()
-            .map(|t| t.with_retry_count(group_cfg.retry_count))
-            .collect();
-
-        all_tests.extend(group_tests);
-    }
-
+    let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
     eprintln!(
         "found {} tests across {} groups",
         all_tests.len(),
