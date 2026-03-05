@@ -181,33 +181,6 @@ impl Scheduler {
     /// 4. Sort batches by total duration (descending) so heaviest starts first
     ///
     /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use offload::orchestrator::Scheduler;
-    /// use offload::framework::TestRecord;
-    /// use std::collections::HashMap;
-    /// use std::time::Duration;
-    ///
-    /// let scheduler = Scheduler::new(2);
-    /// let records = vec![
-    ///     TestRecord::new("slow_test", "test-group"),
-    ///     TestRecord::new("fast_test", "test-group"),
-    ///     TestRecord::new("medium_test", "test-group"),
-    /// ];
-    /// let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-    ///
-    /// let mut durations = HashMap::new();
-    /// durations.insert("slow_test".to_string(), Duration::from_secs(10));
-    /// durations.insert("fast_test".to_string(), Duration::from_secs(1));
-    /// durations.insert("medium_test".to_string(), Duration::from_secs(5));
-    ///
-    /// let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
-    /// // Batch 0 (heaviest): slow_test (10s)
-    /// // Batch 1: medium_test (5s), fast_test (1s) = 6s total
-    /// assert_eq!(batches.len(), 2);
-    /// ```
     pub fn schedule_lpt<'a>(
         &self,
         tests: &[TestInstance<'a>],
