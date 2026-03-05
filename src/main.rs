@@ -331,6 +331,12 @@ async fn run_tests(
     }
 
     // Phase 2: Run ALL tests at once with a single orchestrator
+    // Convert CopyDir to tuples for providers that need it (cheap, no-op if unused)
+    let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+        .iter()
+        .map(|cd| (cd.local.clone(), cd.remote.clone()))
+        .collect();
+
     let exit_code = match (&config.provider, &config.framework) {
         (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
             run_all_tests(
@@ -369,26 +375,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            // Convert CopyDir to tuples for provider
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = DefaultProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Default provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                DefaultProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Default provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
@@ -401,26 +403,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            // Convert CopyDir to tuples for provider
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = DefaultProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Default provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                DefaultProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Default provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
@@ -433,26 +431,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            // Convert CopyDir to tuples for provider
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = DefaultProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Default provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                DefaultProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Default provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
@@ -465,25 +459,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = ModalProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Modal provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                ModalProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Modal provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
@@ -496,25 +487,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = ModalProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Modal provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                ModalProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Modal provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
@@ -527,25 +515,22 @@ async fn run_tests(
             .await?
         }
         (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-                .iter()
-                .map(|cd| (cd.local.clone(), cd.remote.clone()))
-                .collect();
-            let _prepare_span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            let provider = ModalProvider::from_config(
-                p_cfg.clone(),
-                &copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-            )
-            .await
-            .context("Failed to create Modal provider")?;
-            drop(_prepare_span);
+            let provider = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                ModalProvider::from_config(
+                    p_cfg.clone(),
+                    &copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                )
+                .await
+                .context("Failed to create Modal provider")?
+            };
             run_all_tests(
                 &config,
                 &all_tests,
