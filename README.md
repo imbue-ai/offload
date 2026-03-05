@@ -353,11 +353,15 @@ command = "uv run pytest"
 
 [groups.unit]
 retry_count = 2
-filters = "-m 'not slow'"
+filters = "-m 'not slow' -k 'not test_flaky'"
 
 [groups.slow]
 retry_count = 3
 filters = "-m 'slow'"
+
+[groups.flaky]
+retry_count = 5
+filters = "-k test_flaky"
 
 [report]
 output_dir = "test-results"
