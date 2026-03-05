@@ -548,36 +548,7 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    // Discover tests for each group
-    let mut all_tests: Vec<TestRecord> = Vec::new();
-
-    for (group_name, group_cfg) in &config.groups {
-        let tests = match &config.framework {
-            FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Cargo(cfg) => {
-                CargoFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Default(cfg) => {
-                DefaultFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-        };
-
-        // Tag tests with group retry count
-        let group_tests: Vec<TestRecord> = tests
-            .into_iter()
-            .map(|t| t.with_retry_count(group_cfg.retry_count))
-            .collect();
-
-        all_tests.extend(group_tests);
-    }
+    let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
 
     match format {
         "json" => {
