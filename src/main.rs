@@ -337,9 +337,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Default provider")?;
+            let provider = DefaultProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -356,9 +361,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Default provider")?;
+            let provider = DefaultProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -375,9 +385,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = DefaultProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Default provider")?;
+            let provider = DefaultProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Default provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -393,9 +408,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Modal provider")?;
+            let provider = ModalProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Modal provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -411,9 +431,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Modal provider")?;
+            let provider = ModalProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Modal provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -429,9 +454,14 @@ async fn run_tests(
                 .iter()
                 .map(|cd| (cd.local.clone(), cd.remote.clone()))
                 .collect();
-            let provider = ModalProvider::from_config(p_cfg.clone(), &copy_dir_tuples, no_cache)
-                .await
-                .context("Failed to create Modal provider")?;
+            let provider = ModalProvider::from_config(
+                p_cfg.clone(),
+                &copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+            )
+            .await
+            .context("Failed to create Modal provider")?;
             run_all_tests(
                 &config,
                 &all_tests,
@@ -592,6 +622,10 @@ fn validate_config(config_path: &Path) -> Result<()> {
             let framework_name = framework_type_name(&config.framework);
             println!("  Framework: {}", framework_name);
 
+            if let Some(ref init_cmd) = config.offload.sandbox_init_cmd {
+                println!("  Sandbox init cmd: {}", init_cmd);
+            }
+
             println!();
             println!("Groups:");
             for (group_name, group_config) in &config.groups {
@@ -667,6 +701,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             working_dir: None,
             stream_output: false,
             sandbox_project_root: "/app".to_string(),
+            sandbox_init_cmd: None,
         },
         provider: provider_config,
         framework: framework_config,

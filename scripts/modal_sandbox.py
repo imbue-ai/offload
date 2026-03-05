@@ -176,6 +176,7 @@ def _build_final_image(
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
     ignore_patterns: list[str],
+    sandbox_init_cmd: str | None = None,
 ) -> str:
     """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
     final_img = base_img
@@ -203,6 +204,10 @@ def _build_final_image(
             local_path, remote_path, copy=True, ignore=ignore_patterns
         )
 
+    if sandbox_init_cmd:
+        logger.info("Running sandbox_init_cmd: %s", sandbox_init_cmd)
+        final_img = final_img.run_commands(sandbox_init_cmd)
+
     # Build and materialize the final image if we added anything
     if final_img is not base_img:
         final_img.build(app)
@@ -227,11 +232,17 @@ def _build_final_image(
     multiple=True,
     help="Copy local dir into image (format: local_path:remote_path)",
 )
+@click.option(
+    "--sandbox-init-cmd",
+    default=None,
+    help="Command to run during image build after cwd/copy-dirs are applied",
+)
 def prepare(
     dockerfile_path: str | None,
     cached: bool,
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
+    sandbox_init_cmd: str | None,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
@@ -281,7 +292,8 @@ def prepare(
         # Step 3: Build final image, catching cache invalidation errors
         try:
             image_id = _build_final_image(
-                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns
+                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
+                sandbox_init_cmd=sandbox_init_cmd,
             )
         except Exception as e:
             # Cached image no longer exists on Modal - rebuild from scratch
@@ -291,7 +303,8 @@ def prepare(
             clear_image_cache()
             base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
             image_id = _build_final_image(
-                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns
+                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
+                sandbox_init_cmd=sandbox_init_cmd,
             )
 
     sys.stdout.write("%s\n" % image_id)

@@ -71,6 +71,10 @@ pub struct OffloadConfig {
     /// Used by test frameworks to compute paths relative to the project root,
     /// ensuring JUnit XML classnames match the test IDs from discovery.
     pub sandbox_project_root: String,
+
+    /// Optional command to run during image build, after cwd/copy-dirs are applied.
+    #[serde(default)]
+    pub sandbox_init_cmd: Option<String>,
 }
 
 fn default_max_parallel() -> usize {
@@ -616,6 +620,7 @@ mod tests {
                 working_dir: None,
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
+                sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -646,6 +651,7 @@ mod tests {
                 working_dir: None,
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
+                sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -674,6 +680,7 @@ mod tests {
                 working_dir: None,
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
+                sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -730,6 +737,40 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config)?;
         let deserialized: Config = toml::from_str(&toml_str)?;
         assert_eq!(deserialized.framework.test_id_format(), "{name}");
+        Ok(())
+    }
+
+    /// Test that sandbox_init_cmd deserializes from TOML and survives a round-trip.
+    #[test]
+    fn test_sandbox_init_cmd_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+            sandbox_init_cmd = "git apply /offload-upload/patch --allow-empty && uv sync --all-packages"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "cargo"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.offload.sandbox_init_cmd.as_deref(),
+            Some("git apply /offload-upload/patch --allow-empty && uv sync --all-packages")
+        );
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        assert_eq!(
+            round_tripped.offload.sandbox_init_cmd.as_deref(),
+            Some("git apply /offload-upload/patch --allow-empty && uv sync --all-packages")
+        );
+
         Ok(())
     }
 }
