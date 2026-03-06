@@ -265,6 +265,12 @@ where
                 &durations,
                 Duration::from_secs(1),
                 Some(MAX_BATCH_DURATION),
+                Some(
+                    self.config
+                        .offload
+                        .max_batch_size
+                        .unwrap_or(scheduler::DEFAULT_MAX_BATCH_SIZE),
+                ),
             )
         };
         drop(_sched_span);

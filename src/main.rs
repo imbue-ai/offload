@@ -700,6 +700,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             stream_output: false,
             sandbox_project_root: "/app".to_string(),
             sandbox_init_cmd: None,
+            max_batch_size: None,
         },
         provider: provider_config,
         framework: framework_config,

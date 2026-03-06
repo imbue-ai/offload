@@ -75,6 +75,14 @@ pub struct OffloadConfig {
     /// Optional command to run during image build, after cwd/copy-dirs are applied.
     #[serde(default)]
     pub sandbox_init_cmd: Option<String>,
+
+    /// Maximum number of tests per batch in LPT scheduling.
+    ///
+    /// Caps how many tests the scheduler packs into a single batch,
+    /// preventing mega-batches that take much longer than estimated.
+    /// Defaults to 50 when not set.
+    #[serde(default)]
+    pub max_batch_size: Option<usize>,
 }
 
 fn default_max_parallel() -> usize {
@@ -633,6 +641,7 @@ mod tests {
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
+                max_batch_size: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -664,6 +673,7 @@ mod tests {
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
+                max_batch_size: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -693,6 +703,7 @@ mod tests {
                 stream_output: false,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
+                max_batch_size: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
