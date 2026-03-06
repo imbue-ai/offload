@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -175,6 +176,93 @@ fn framework_type_name(framework: &FrameworkConfig) -> &'static str {
     }
 }
 
+/// Discover tests for every group, tagging each with its group config.
+async fn discover_all_tests(
+    framework: &FrameworkConfig,
+    groups: &HashMap<String, GroupConfig>,
+) -> Result<Vec<TestRecord>> {
+    let mut all_tests: Vec<TestRecord> = Vec::new();
+
+    for (group_name, group_cfg) in groups {
+        let tests = match framework {
+            FrameworkConfig::Pytest(cfg) => {
+                PytestFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+            FrameworkConfig::Cargo(cfg) => {
+                CargoFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+            FrameworkConfig::Default(cfg) => {
+                DefaultFramework::new(cfg.clone())
+                    .discover(&[], &group_cfg.filters, group_name)
+                    .await?
+            }
+        };
+
+        // Tag tests with group retry count
+        let group_tests: Vec<TestRecord> = tests
+            .into_iter()
+            .map(|t| t.with_retry_count(group_cfg.retry_count))
+            .collect();
+
+        all_tests.extend(group_tests);
+    }
+
+    Ok(all_tests)
+}
+
+/// Dispatch test execution to the appropriate framework, using the given provider.
+async fn dispatch_framework<P: offload::provider::SandboxProvider>(
+    config: &Config,
+    all_tests: &[TestRecord],
+    provider: P,
+    copy_dirs: &[CopyDir],
+    verbose: bool,
+    tracer: &offload::trace::Tracer,
+) -> Result<i32> {
+    match &config.framework {
+        FrameworkConfig::Pytest(f_cfg) => {
+            run_all_tests(
+                config,
+                all_tests,
+                provider,
+                PytestFramework::new(f_cfg.clone()),
+                copy_dirs,
+                verbose,
+                tracer,
+            )
+            .await
+        }
+        FrameworkConfig::Cargo(f_cfg) => {
+            run_all_tests(
+                config,
+                all_tests,
+                provider,
+                CargoFramework::new(f_cfg.clone()),
+                copy_dirs,
+                verbose,
+                tracer,
+            )
+            .await
+        }
+        FrameworkConfig::Default(f_cfg) => {
+            run_all_tests(
+                config,
+                all_tests,
+                provider,
+                DefaultFramework::new(f_cfg.clone()),
+                copy_dirs,
+                verbose,
+                tracer,
+            )
+            .await
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tests(
     config_path: &Path,
@@ -259,54 +347,15 @@ async fn run_tests(
 
     info!("Loaded configuration from {}", config_path.display());
 
-    // Phase 1: Discover tests for each group
-    let _discovery_span = tracer.span(
-        "test_discovery",
-        "local",
-        offload::trace::PID_LOCAL,
-        offload::trace::TID_MAIN,
-    );
-    eprint!("Discovering tests... ");
-
-    let mut all_tests: Vec<TestRecord> = Vec::new();
-
-    for (group_name, group_cfg) in &config.groups {
-        let tests = match &config.framework {
-            FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Cargo(cfg) => {
-                CargoFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Default(cfg) => {
-                DefaultFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-        };
-
-        // Tag tests with group retry count
-        let group_tests: Vec<TestRecord> = tests
-            .into_iter()
-            .map(|t| t.with_retry_count(group_cfg.retry_count))
-            .collect();
-
-        all_tests.extend(group_tests);
-    }
-
-    eprintln!(
-        "found {} tests across {} groups",
-        all_tests.len(),
-        config.groups.len()
-    );
-    drop(_discovery_span);
-
+    // Handle collect-only: only discovery needed, no provider setup
     if collect_only {
-        // Group tests by their group name for display
+        eprint!("Discovering tests... ");
+        let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
+        eprintln!(
+            "found {} tests across {} groups",
+            all_tests.len(),
+            config.groups.len()
+        );
         for group_name in config.groups.keys() {
             let group_tests: Vec<_> = all_tests
                 .iter()
@@ -322,222 +371,120 @@ async fn run_tests(
         return Ok(());
     }
 
-    if all_tests.is_empty() {
-        info!("No tests to run");
-        return Ok(());
-    }
-
-    // Phase 2: Run ALL tests at once with a single orchestrator
-    // Convert CopyDir to tuples for providers that need it (cheap, no-op if unused)
-    let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-        .iter()
-        .map(|cd| (cd.local.clone(), cd.remote.clone()))
-        .collect();
-
-    let exit_code = match (&config.provider, &config.framework) {
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            run_all_tests(
+    // Phase 1+2: Discover tests and prepare provider (concurrently where possible)
+    let exit_code = match &config.provider {
+        ProviderConfig::Local(p_cfg) => {
+            // Local provider is synchronous — no concurrency benefit
+            eprint!("Discovering tests... ");
+            let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
+            eprintln!(
+                "found {} tests across {} groups",
+                all_tests.len(),
+                config.groups.len()
+            );
+            if all_tests.is_empty() {
+                info!("No tests to run");
+                return Ok(());
+            }
+            dispatch_framework(
                 &config,
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
-                PytestFramework::new(f_cfg.clone()),
                 &copy_dirs,
                 verbose,
                 &tracer,
             )
             .await?
         }
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            run_all_tests(
-                &config,
-                &all_tests,
-                LocalProvider::new(p_cfg.clone()),
-                CargoFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
+        ProviderConfig::Default(p_cfg) => {
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            // Run discovery and image preparation concurrently
+            let discovery_done = AtomicBool::new(false);
+            let (all_tests, provider) = tokio::try_join!(
+                async {
+                    eprintln!("[discover] Discovering tests...");
+                    let result = discover_all_tests(&config.framework, &config.groups).await;
+                    if let Ok(ref tests) = result {
+                        eprintln!(
+                            "[discover] found {} tests across {} groups",
+                            tests.len(),
+                            config.groups.len()
+                        );
+                    }
+                    discovery_done.store(true, Ordering::Release);
+                    result
+                },
+                async {
+                    let _span = tracer.span(
+                        "image_prepare",
+                        "local",
+                        offload::trace::PID_LOCAL,
+                        offload::trace::TID_MAIN,
+                    );
+                    DefaultProvider::from_config(
+                        p_cfg.clone(),
+                        &copy_dir_tuples,
+                        no_cache,
+                        config.offload.sandbox_init_cmd.as_deref(),
+                        Some(&discovery_done),
+                    )
+                    .await
+                    .context("Failed to create Default provider")
+                }
+            )?;
+            if all_tests.is_empty() {
+                info!("No tests to run");
+                return Ok(());
+            }
+            dispatch_framework(&config, &all_tests, provider, &copy_dirs, verbose, &tracer).await?
         }
-        (ProviderConfig::Local(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            run_all_tests(
-                &config,
-                &all_tests,
-                LocalProvider::new(p_cfg.clone()),
-                DefaultFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                DefaultProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Default provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                PytestFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                DefaultProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Default provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                CargoFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Default(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                DefaultProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Default provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                DefaultFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Pytest(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                ModalProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Modal provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                PytestFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Cargo(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                ModalProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Modal provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                CargoFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
-        }
-        (ProviderConfig::Modal(p_cfg), FrameworkConfig::Default(f_cfg)) => {
-            let provider = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                ModalProvider::from_config(
-                    p_cfg.clone(),
-                    &copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                )
-                .await
-                .context("Failed to create Modal provider")?
-            };
-            run_all_tests(
-                &config,
-                &all_tests,
-                provider,
-                DefaultFramework::new(f_cfg.clone()),
-                &copy_dirs,
-                verbose,
-                &tracer,
-            )
-            .await?
+        ProviderConfig::Modal(p_cfg) => {
+            let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
+                .iter()
+                .map(|cd| (cd.local.clone(), cd.remote.clone()))
+                .collect();
+            // Run discovery and image preparation concurrently
+            let discovery_done = AtomicBool::new(false);
+            let (all_tests, provider) = tokio::try_join!(
+                async {
+                    eprintln!("[discover] Discovering tests...");
+                    let result = discover_all_tests(&config.framework, &config.groups).await;
+                    if let Ok(ref tests) = result {
+                        eprintln!(
+                            "[discover] found {} tests across {} groups",
+                            tests.len(),
+                            config.groups.len()
+                        );
+                    }
+                    discovery_done.store(true, Ordering::Release);
+                    result
+                },
+                async {
+                    let _span = tracer.span(
+                        "image_prepare",
+                        "local",
+                        offload::trace::PID_LOCAL,
+                        offload::trace::TID_MAIN,
+                    );
+                    ModalProvider::from_config(
+                        p_cfg.clone(),
+                        &copy_dir_tuples,
+                        no_cache,
+                        config.offload.sandbox_init_cmd.as_deref(),
+                        Some(&discovery_done),
+                    )
+                    .await
+                    .context("Failed to create Modal provider")
+                }
+            )?;
+            if all_tests.is_empty() {
+                info!("No tests to run");
+                return Ok(());
+            }
+            dispatch_framework(&config, &all_tests, provider, &copy_dirs, verbose, &tracer).await?
         }
     };
 
@@ -618,36 +565,7 @@ where
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    // Discover tests for each group
-    let mut all_tests: Vec<TestRecord> = Vec::new();
-
-    for (group_name, group_cfg) in &config.groups {
-        let tests = match &config.framework {
-            FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Cargo(cfg) => {
-                CargoFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Default(cfg) => {
-                DefaultFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-        };
-
-        // Tag tests with group retry count
-        let group_tests: Vec<TestRecord> = tests
-            .into_iter()
-            .map(|t| t.with_retry_count(group_cfg.retry_count))
-            .collect();
-
-        all_tests.extend(group_tests);
-    }
+    let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
 
     match format {
         "json" => {

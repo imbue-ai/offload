@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tracing::{debug, warn};
@@ -58,6 +59,7 @@ impl DefaultProvider {
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Self> {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
@@ -69,8 +71,6 @@ impl DefaultProvider {
 
         // Run prepare command if configured
         let image_id = if let Some(prepare_cmd) = &config.prepare_command {
-            eprintln!("Preparing environment...");
-
             // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
             let mut full_prepare_cmd = prepare_cmd.clone();
 
@@ -97,7 +97,26 @@ impl DefaultProvider {
                 ));
             }
 
-            // Stream output in real-time
+            // Helper: emit a prepare log line, buffering while discovery is
+            // still running so the two streams don't interleave.
+            let mut buffer: Vec<String> = Vec::new();
+            let emit = |msg: String, buf: &mut Vec<String>| {
+                if discovery_done.is_some_and(|flag| !flag.load(Ordering::Acquire)) {
+                    buf.push(msg);
+                } else {
+                    for buffered in buf.drain(..) {
+                        eprintln!("{}", buffered);
+                    }
+                    eprintln!("{}", msg);
+                }
+            };
+
+            emit(
+                "[prepare] Preparing environment...".to_string(),
+                &mut buffer,
+            );
+
+            // Stream output, buffering while discovery is in-flight
             use crate::provider::OutputLine;
             use futures::StreamExt;
 
@@ -108,16 +127,21 @@ impl DefaultProvider {
             while let Some(line) = stream.next().await {
                 match line {
                     OutputLine::Stdout(s) => {
-                        eprintln!("  {}", s);
+                        emit(format!("[prepare]   {}", s), &mut buffer);
                         last_stdout_line = s;
                     }
                     OutputLine::Stderr(s) => {
-                        eprintln!("  {}", s);
+                        emit(format!("[prepare]   {}", s), &mut buffer);
                     }
                     OutputLine::ExitCode(code) => {
                         exit_code = code;
                     }
                 }
+            }
+
+            // Flush any remaining buffered output
+            for buffered in buffer.drain(..) {
+                eprintln!("{}", buffered);
             }
 
             if exit_code != 0 {
@@ -722,7 +746,7 @@ mod tests {
             copy_dirs: vec![],
         };
 
-        let provider = DefaultProvider::from_config(config, &[], false, None).await?;
+        let provider = DefaultProvider::from_config(config, &[], false, None, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

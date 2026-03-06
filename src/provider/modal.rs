@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -65,6 +66,7 @@ impl ModalProvider {
         copy_dirs: &[(PathBuf, PathBuf)],
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Self> {
         let connector = Arc::new(ShellConnector::new());
 
@@ -108,10 +110,28 @@ impl ModalProvider {
             ));
         }
 
-        eprintln!("Preparing Modal environment...");
         debug!("Running prepare command: {}", prepare_cmd);
 
-        // Stream output in real-time (like DefaultProvider does)
+        // Helper: emit a prepare log line, buffering while discovery is
+        // still running so the two streams don't interleave.
+        let mut buffer: Vec<String> = Vec::new();
+        let emit = |msg: String, buf: &mut Vec<String>| {
+            if discovery_done.is_some_and(|flag| !flag.load(Ordering::Acquire)) {
+                buf.push(msg);
+            } else {
+                for buffered in buf.drain(..) {
+                    eprintln!("{}", buffered);
+                }
+                eprintln!("{}", msg);
+            }
+        };
+
+        emit(
+            "[prepare] Preparing Modal environment...".to_string(),
+            &mut buffer,
+        );
+
+        // Stream output, buffering while discovery is in-flight
         let mut stream = connector.run_stream(&prepare_cmd).await?;
         let mut last_stdout_line = String::new();
         let mut exit_code = 0;
@@ -119,16 +139,21 @@ impl ModalProvider {
         while let Some(line) = stream.next().await {
             match line {
                 OutputLine::Stdout(s) => {
-                    eprintln!("  {}", s);
+                    emit(format!("[prepare]   {}", s), &mut buffer);
                     last_stdout_line = s;
                 }
                 OutputLine::Stderr(s) => {
-                    eprintln!("  {}", s);
+                    emit(format!("[prepare]   {}", s), &mut buffer);
                 }
                 OutputLine::ExitCode(code) => {
                     exit_code = code;
                 }
             }
+        }
+
+        // Flush any remaining buffered output
+        for buffered in buffer.drain(..) {
+            eprintln!("{}", buffered);
         }
 
         if exit_code != 0 {
