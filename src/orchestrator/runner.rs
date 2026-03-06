@@ -68,6 +68,8 @@ pub struct TestRunner<'a, S, D> {
     junit_report: Option<SharedJunitReport>,
     /// Optional directory to save individual batch JUnit XMLs for debugging.
     parts_dir: Option<std::path::PathBuf>,
+    /// Optional local log file path passed to the sandbox exec command.
+    log_file: Option<std::path::PathBuf>,
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
 }
@@ -95,6 +97,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             cancellation_token: None,
             junit_report: None,
             parts_dir: None,
+            log_file: None,
             tracer,
             sandbox_pid,
         }
@@ -140,6 +143,15 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// * `callback` - Function called for each line of output
     pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
         self.output_callback = Some(callback);
+        self
+    }
+
+    /// Sets a local log file path for sandbox-side output logging.
+    ///
+    /// When set, the log path is passed to the sandbox exec command,
+    /// which writes stdout/stderr to the file.
+    pub fn with_log_file(mut self, path: std::path::PathBuf) -> Self {
+        self.log_file = Some(path);
         self
     }
 
@@ -349,6 +361,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             .framework
             .produce_test_execution_command(tests, &result_path);
         cmd = cmd.timeout(self.timeout.as_secs());
+        if let Some(ref log_path) = self.log_file {
+            cmd.log_file = Some(log_path.clone());
+        }
 
         info!(
             "[BATCH EXEC] Sandbox {} executing command for {} tests: {}",
