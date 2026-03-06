@@ -242,7 +242,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
     offload_root = os.environ.get("OFFLOAD_ROOT")
     if offload_root:
-        fspath = str(item.fspath)
+        fspath = str(item.path)
         rel_path = os.path.relpath(fspath, offload_root)
         nodeid_parts = item.nodeid.split("::")
         test_id = "::".join([rel_path] + nodeid_parts[1:])
