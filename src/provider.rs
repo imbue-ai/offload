@@ -4,7 +4,7 @@ pub mod default;
 pub mod local;
 pub mod modal;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -102,6 +102,9 @@ pub struct Command {
     ///
     /// If the command runs longer, it will be terminated.
     pub timeout_secs: Option<u64>,
+
+    /// Optional local file path for the sandbox script to write stdout/stderr logs.
+    pub log_file: Option<PathBuf>,
 }
 
 impl Command {
@@ -113,6 +116,7 @@ impl Command {
             working_dir: None,
             env: Vec::new(),
             timeout_secs: None,
+            log_file: None,
         }
     }
 
@@ -143,6 +147,12 @@ impl Command {
     /// Commands exceeding this limit will be terminated.
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
+        self
+    }
+
+    /// Sets a local log file path for sandbox-side output logging.
+    pub fn log_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.log_file = Some(path.into());
         self
     }
 
