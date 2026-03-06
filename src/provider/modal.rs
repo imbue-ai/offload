@@ -181,6 +181,15 @@ impl ModalProvider {
     }
 }
 
+/// Builds the `modal_sandbox.py create` command string, including `--env` flags.
+fn build_create_command(image_id: &str, env: &[(String, String)]) -> String {
+    let mut cmd = format!("uv run @modal_sandbox.py create {}", image_id);
+    for (key, value) in env {
+        cmd.push_str(&format!(" --env {}={}", key, shell_words::quote(value)));
+    }
+    cmd
+}
+
 #[async_trait]
 impl SandboxProvider for ModalProvider {
     type Sandbox = DefaultSandbox;
@@ -189,7 +198,7 @@ impl SandboxProvider for ModalProvider {
         debug!("Creating Modal sandbox: {}", config.id);
 
         // Run create command to get sandbox_id
-        let create_command = format!("uv run @modal_sandbox.py create {}", self.image_id);
+        let create_command = build_create_command(&self.image_id, &config.env);
         debug!("Running: {}", create_command);
 
         let result = self.connector.run(&create_command).await?;
@@ -278,6 +287,32 @@ mod tests {
             prepare_cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile --cached"
         );
+    }
+
+    #[test]
+    fn test_create_command_includes_env_flags() {
+        let image_id = "im-abc123";
+        let env = vec![
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "hello world".to_string()),
+        ];
+
+        let create_command = build_create_command(image_id, &env);
+
+        assert_eq!(
+            create_command,
+            "uv run @modal_sandbox.py create im-abc123 --env FOO=bar --env BAZ='hello world'"
+        );
+    }
+
+    #[test]
+    fn test_create_command_no_env() {
+        let image_id = "im-abc123";
+        let env: Vec<(String, String)> = vec![];
+
+        let create_command = build_create_command(image_id, &env);
+
+        assert_eq!(create_command, "uv run @modal_sandbox.py create im-abc123");
     }
 
     #[test]
