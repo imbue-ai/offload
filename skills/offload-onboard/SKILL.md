@@ -7,7 +7,7 @@ description: "Onboard a repository to use Offload for parallel test execution on
 
 This skill walks through onboarding the current repository to use **Offload** — a parallel test runner that executes tests across Modal cloud sandboxes.
 
-**Install Offload**: `cargo install offload@0.4.1`
+**Install Offload**: `cargo install offload@0.5.0`
 
 ## Procedure
 
@@ -292,12 +292,12 @@ Create `scripts/offload-tests.sh`:
 #!/usr/bin/env bash
 #
 # Run the project's test suite via Offload (parallel on Modal).
-# Requires: Offload (cargo install offload@0.4.1), Modal CLI + credentials
+# Requires: Offload (cargo install offload@0.5.0), Modal CLI + credentials
 #
 set -euo pipefail
 
 if ! command -v offload &> /dev/null; then
-    echo "Error: 'offload' not installed. Install with: cargo install offload@0.4.1"
+    echo "Error: 'offload' not installed. Install with: cargo install offload@0.5.0"
     exit 1
 fi
 
@@ -340,7 +340,7 @@ Wait for the user to confirm they've authenticated before proceeding.
 Install offload if not already present:
 
 ```bash
-cargo install offload@0.4.1
+cargo install offload@0.5.0
 ```
 
 Run the tests:
@@ -407,7 +407,7 @@ Report the results as a table to the user and set the optimal values in `offload
    offload run --copy-dir ".:/app"
    ```
 
-   Prerequisites: Offload (`cargo install offload@0.4.1`) and Modal credentials (`modal token new`).
+   Prerequisites: Offload (`cargo install offload@0.5.0`) and Modal credentials (`modal token new`).
    ````
 
    Adapt the exact command to match what was configured in earlier steps (the script path, `--copy-dir` mapping, etc.).
@@ -469,12 +469,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/offload
-          key: cargo-offload-0.4.1-${{ runner.os }}
+          key: cargo-offload-0.5.0-${{ runner.os }}
 
       - name: Install offload
         run: |
           if ! command -v offload &> /dev/null; then
-            cargo install offload@0.4.1
+            cargo install offload@0.5.0
           fi
 
       - name: Install Modal CLI
