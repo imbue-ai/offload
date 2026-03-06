@@ -72,11 +72,11 @@ impl SandboxProvider for LocalProvider {
 /// The sandbox provides a consistent working directory and environment
 /// for all commands.
 ///
-/// # File Transfer
+/// # File Download
 ///
-/// Upload and download operations are implemented as local file copies
-/// relative to the working directory. This is useful for tests that
-/// produce output files.
+/// Download operations are implemented as local file copies relative
+/// to the working directory. This is useful for tests that produce
+/// output files.
 ///
 /// # Termination
 ///
@@ -144,29 +144,6 @@ impl Sandbox for LocalSandbox {
         let combined = stream::select(stdout_stream, stderr_stream);
 
         Ok(Box::pin(combined))
-    }
-
-    async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()> {
-        // For process sandbox, just copy the file
-        let dest = self.working_dir.join(remote);
-
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
-        }
-
-        if local.is_dir() {
-            copy_dir_all(local, &dest)
-                .await
-                .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
-        } else {
-            tokio::fs::copy(local, &dest)
-                .await
-                .map_err(|e| ProviderError::UploadFailed(e.to_string()))?;
-        }
-
-        Ok(())
     }
 
     async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {

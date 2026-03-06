@@ -3,9 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-
 use crate::framework::TestInstance;
 
 /// Maximum total length (in chars) of all test IDs in a single batch.
@@ -116,38 +113,6 @@ impl Scheduler {
         batches
     }
 
-    /// Schedules tests with random distribution across sandboxes.
-    ///
-    /// Shuffles tests randomly before distributing them across sandboxes
-    /// using round-robin. This helps avoid systematic biases in test ordering.
-    ///
-    /// # Returns
-    ///
-    /// A vector of batches with randomly distributed tests.
-    pub fn schedule_random<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
-        if tests.is_empty() {
-            return Vec::new();
-        }
-
-        // Shuffle tests randomly
-        let mut shuffled: Vec<TestInstance<'a>> = tests.to_vec();
-        shuffled.shuffle(&mut thread_rng());
-
-        // Round-robin distribution of shuffled tests
-        let mut batches: Vec<Vec<TestInstance<'a>>> =
-            (0..self.max_parallel).map(|_| Vec::new()).collect();
-
-        for (i, test) in shuffled.into_iter().enumerate() {
-            let batch_idx = i % self.max_parallel;
-            batches[batch_idx].push(test);
-        }
-
-        // Remove empty batches
-        batches.retain(|b| !b.is_empty());
-
-        batches
-    }
-
     /// Schedules tests using Longest Processing Time First (LPT) algorithm.
     ///
     /// Uses historical test durations to minimize total execution time (makespan).
@@ -235,49 +200,6 @@ impl Scheduler {
             .filter(|b| !b.is_empty())
             .map(|b| b.tests)
             .collect()
-    }
-
-    /// Schedules tests with a maximum batch size.
-    ///
-    /// Creates batches of at most `max_batch_size` tests. This may create
-    /// more batches than `max_parallel`, but each batch is limited in size.
-    /// Useful when sandboxes have resource constraints.
-    ///
-    /// # Arguments
-    ///
-    /// * `tests` - Tests to schedule
-    /// * `max_batch_size` - Maximum tests per batch
-    pub fn schedule_with_batch_size<'a>(
-        &self,
-        tests: &[TestInstance<'a>],
-        max_batch_size: usize,
-    ) -> Vec<Vec<TestInstance<'a>>> {
-        if tests.is_empty() {
-            return Vec::new();
-        }
-
-        let mut batches = Vec::new();
-
-        for chunk in tests.chunks(max_batch_size) {
-            batches.push(chunk.to_vec());
-        }
-
-        batches
-    }
-
-    /// Schedules each test in its own batch for maximum isolation.
-    ///
-    /// Creates one batch per test, ensuring each test runs in a fresh
-    /// sandbox. Useful for integration tests that require complete
-    /// isolation or modify shared state.
-    ///
-    /// **Note**: This ignores `max_parallel` for batch creation but the
-    /// orchestrator still limits concurrent execution.
-    pub fn schedule_individual<'a>(
-        &self,
-        tests: &[TestInstance<'a>],
-    ) -> Vec<Vec<TestInstance<'a>>> {
-        tests.iter().map(|t| vec![*t]).collect()
     }
 }
 
@@ -410,39 +332,6 @@ mod tests {
         assert_eq!(batches[0][1].id(), "test3");
         assert_eq!(batches[1][0].id(), "test2");
         assert_eq!(batches[1][1].id(), "test4");
-    }
-
-    #[test]
-    fn test_schedule_individual() {
-        let scheduler = Scheduler::new(4);
-        let records = [
-            TestRecord::new("test1", "test-group"),
-            TestRecord::new("test2", "test-group"),
-            TestRecord::new("test3", "test-group"),
-        ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-        let batches = scheduler.schedule_individual(&tests);
-
-        assert_eq!(batches.len(), 3);
-        assert_eq!(batches[0].len(), 1);
-        assert_eq!(batches[1].len(), 1);
-        assert_eq!(batches[2].len(), 1);
-    }
-
-    #[test]
-    fn test_schedule_with_batch_size() {
-        let scheduler = Scheduler::new(4);
-        let records: Vec<_> = (0..10)
-            .map(|i| TestRecord::new(format!("test{}", i), "test-group"))
-            .collect();
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-        let batches = scheduler.schedule_with_batch_size(&tests, 3);
-
-        assert_eq!(batches.len(), 4);
-        assert_eq!(batches[0].len(), 3);
-        assert_eq!(batches[1].len(), 3);
-        assert_eq!(batches[2].len(), 3);
-        assert_eq!(batches[3].len(), 1);
     }
 
     #[test]

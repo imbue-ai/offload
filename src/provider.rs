@@ -40,10 +40,6 @@ pub enum ProviderError {
     #[error("Failed to execute command: {0}")]
     ExecFailed(String),
 
-    /// Failed to upload a file to the sandbox.
-    #[error("Failed to upload file: {0}")]
-    UploadFailed(String),
-
     /// Failed to download a file from the sandbox.
     #[error("Failed to download file: {0}")]
     DownloadFailed(String),
@@ -142,14 +138,6 @@ impl Command {
         self
     }
 
-    /// Adds an environment variable for this command.
-    ///
-    /// Can be called multiple times to add multiple variables.
-    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.push((key.into(), value.into()));
-        self
-    }
-
     /// Sets the execution timeout in seconds.
     ///
     /// Commands exceeding this limit will be terminated.
@@ -191,13 +179,6 @@ pub struct ExecResult {
     pub duration: std::time::Duration,
 }
 
-impl ExecResult {
-    /// Returns `true` if the command succeeded (exit code 0).
-    pub fn success(&self) -> bool {
-        self.exit_code == 0
-    }
-}
-
 /// A single line of output from a streaming command.
 ///
 /// Used with [`Sandbox::exec_stream`] to process output in real-time.
@@ -227,7 +208,7 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 ///
 /// - **Command execution**: Run commands with [`exec`](Self::exec) or
 ///   [`exec_stream`](Self::exec_stream)
-/// - **File transfer**: Copy files with [`upload`](Self::upload) and
+/// - **File download**: Copy files from the sandbox with
 ///   [`download`](Self::download)
 /// - **Lifecycle management**: Check [`status`](Self::status) and
 ///   [`terminate`](Self::terminate) when done
@@ -257,17 +238,6 @@ pub trait Sandbox: Send {
     ///
     /// A stream of [`OutputLine`] items (stdout/stderr lines).
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream>;
-
-    /// Uploads a file or directory to the sandbox.
-    ///
-    /// Copies files from the local filesystem into the sandbox's filesystem.
-    /// For directory uploads, the entire tree is copied recursively.
-    ///
-    /// # Arguments
-    ///
-    /// * `local` - Path on the local filesystem
-    /// * `remote` - Destination path inside the sandbox
-    async fn upload(&self, local: &Path, remote: &Path) -> ProviderResult<()>;
 
     /// Downloads files or directories from the sandbox.
     ///

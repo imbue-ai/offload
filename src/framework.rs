@@ -3,9 +3,7 @@ pub mod cargo;
 pub mod default;
 pub mod pytest;
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -52,16 +50,8 @@ pub enum FrameworkError {
     Other(#[from] anyhow::Error),
 }
 
-/// A record of a test and its execution history.
-///
-/// `TestRecord` owns the test metadata and collects results from multiple
-/// execution attempts. This enables flaky test detection and retry tracking.
-///
-/// # Thread Safety
-///
-/// Results are stored in a `Mutex` to allow concurrent updates from
-/// multiple test executions.
-#[derive(Serialize, Deserialize)]
+/// A record of a test and its metadata.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TestRecord {
     /// Unique identifier for this test.
     pub id: String,
@@ -90,16 +80,6 @@ pub struct TestRecord {
 
     /// Group name this test belongs to (for JUnit testsuite grouping).
     pub group: String,
-
-    /// Results from each execution attempt.
-    /// Skipped during serialization as it contains runtime state.
-    #[serde(skip)]
-    results: Mutex<Vec<TestResult>>,
-
-    /// Whether this test has been counted as passed (for early stopping).
-    /// Used to avoid double-counting when multiple instances of the same test pass.
-    #[serde(skip)]
-    has_recorded_pass: AtomicBool,
 }
 
 impl TestRecord {
@@ -121,8 +101,6 @@ impl TestRecord {
             skipped: false,
             retry_count: 0,
             group: group.into(),
-            results: Mutex::new(Vec::new()),
-            has_recorded_pass: AtomicBool::new(false),
         }
     }
 
@@ -138,215 +116,16 @@ impl TestRecord {
         self
     }
 
-    /// Sets the source line number.
-    pub fn with_line(mut self, line: u32) -> Self {
-        self.line = Some(line);
-        self
-    }
-
-    /// Adds a marker/tag to the test.
-    pub fn with_marker(mut self, marker: impl Into<String>) -> Self {
-        self.markers.push(marker.into());
-        self
-    }
-
-    /// Marks this test as flaky.
-    pub fn set_flaky(mut self) -> Self {
-        self.flaky = true;
-        self
-    }
-
-    /// Marks this test as skipped.
-    pub fn set_skipped(mut self) -> Self {
-        self.skipped = true;
-        self
-    }
-
     /// Creates a `TestInstance` handle for execution in a sandbox.
     pub fn test(&self) -> TestInstance<'_> {
         TestInstance::new(self)
-    }
-
-    /// Records a result from a test execution.
-    pub fn record_result(&self, result: TestResult) {
-        if let Ok(mut guard) = self.results.lock() {
-            guard.push(result);
-        }
-    }
-
-    /// Returns the results collected so far.
-    pub fn results(&self) -> Vec<TestResult> {
-        self.results
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
-    }
-
-    /// Returns whether this test is flaky based on recorded results.
-    ///
-    /// A test is flaky if it has both passes and failures across attempts.
-    pub fn is_flaky(&self) -> bool {
-        if let Ok(results) = self.results.lock() {
-            let has_pass = results.iter().any(|r| r.outcome == TestOutcome::Passed);
-            let has_fail = results
-                .iter()
-                .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
-            has_pass && has_fail
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether this test passed.
-    ///
-    /// With parallel retries, returns true if ANY attempt passed.
-    pub fn passed(&self) -> bool {
-        self.results
-            .lock()
-            .ok()
-            .map(|guard| guard.iter().any(|r| r.outcome == TestOutcome::Passed))
-            .unwrap_or(false)
-    }
-
-    /// Atomically marks this test as having passed.
-    ///
-    /// Returns `true` if this was the first time marking the test as passed,
-    /// `false` if it was already marked. Used for early stopping to count
-    /// each test only once.
-    pub fn try_mark_passed(&self) -> bool {
-        // swap returns the previous value, so true means it was already set
-        !self.has_recorded_pass.swap(true, Ordering::SeqCst)
-    }
-
-    /// Returns the number of execution attempts.
-    pub fn attempt_count(&self) -> usize {
-        self.results.lock().map(|guard| guard.len()).unwrap_or(0)
-    }
-
-    /// Returns the final/canonical result (last result).
-    /// Returns the final result for this test.
-    ///
-    /// If multiple attempts were run in parallel, returns passed if any passed.
-    /// A test that passed after failures is marked as flaky.
-    pub fn final_result(&self) -> Option<TestResult> {
-        let results = self.results.lock().ok()?;
-        if results.is_empty() {
-            return None;
-        }
-
-        let any_passed = results.iter().any(|r| r.outcome == TestOutcome::Passed);
-        let any_failed = results
-            .iter()
-            .any(|r| r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error);
-
-        // Return passed result if any passed, otherwise first failure
-        let mut result = if any_passed {
-            results
-                .iter()
-                .find(|r| r.outcome == TestOutcome::Passed)
-                .cloned()?
-        } else {
-            results.first().cloned()?
-        };
-
-        // Mark as flaky if passed but had failures
-        if any_passed && any_failed {
-            result.error_message = Some("Flaky - passed on parallel retry".to_string());
-        }
-
-        Some(result)
-    }
-}
-
-impl std::fmt::Debug for TestRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let results_debug = self
-            .results
-            .lock()
-            .as_ref()
-            .map(|guard| format!("{:?}", &**guard))
-            .unwrap_or_else(|_| "<poisoned>".to_string());
-        f.debug_struct("TestRecord")
-            .field("id", &self.id)
-            .field("name", &self.name)
-            .field("file", &self.file)
-            .field("line", &self.line)
-            .field("markers", &self.markers)
-            .field("flaky", &self.flaky)
-            .field("skipped", &self.skipped)
-            .field("results", &results_debug)
-            .finish()
-    }
-}
-
-/// A named group of tests with their execution results.
-///
-/// `TestGroup` owns the test records for a group and allows callers to
-/// inspect results after execution completes. Results are stored in each
-/// `TestRecord` via interior mutability.
-#[derive(Debug)]
-pub struct TestGroup {
-    name: String,
-    tests: Vec<TestRecord>,
-}
-
-impl TestGroup {
-    /// Creates a new test group with the given name and tests.
-    pub fn new(name: impl Into<String>, tests: Vec<TestRecord>) -> Self {
-        Self {
-            name: name.into(),
-            tests,
-        }
-    }
-
-    /// Returns the group name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns a reference to the tests in this group.
-    pub fn tests(&self) -> &[TestRecord] {
-        &self.tests
-    }
-
-    /// Returns the number of tests in this group.
-    pub fn len(&self) -> usize {
-        self.tests.len()
-    }
-
-    /// Returns true if this group has no tests.
-    pub fn is_empty(&self) -> bool {
-        self.tests.is_empty()
-    }
-
-    /// Returns the number of tests that passed.
-    pub fn passed_count(&self) -> usize {
-        self.tests.iter().filter(|t| t.passed()).count()
-    }
-
-    /// Returns the number of tests that failed.
-    pub fn failed_count(&self) -> usize {
-        self.tests
-            .iter()
-            .filter(|t| {
-                t.final_result().is_some_and(|r| {
-                    r.outcome == TestOutcome::Failed || r.outcome == TestOutcome::Error
-                })
-            })
-            .count()
-    }
-
-    /// Returns the number of flaky tests (passed on retry).
-    pub fn flaky_count(&self) -> usize {
-        self.tests.iter().filter(|t| t.is_flaky()).count()
     }
 }
 
 /// A lightweight handle to a test for execution in a sandbox.
 ///
 /// `TestInstance` holds a reference to a [`TestRecord`] and provides read access
-/// to test metadata plus the ability to record results. Sandboxes only
-/// see `TestInstance`, while `TestRecord` owns the data and aggregates results.
+/// to test metadata.
 ///
 /// # Lifetime
 ///
@@ -366,53 +145,6 @@ impl<'a> TestInstance<'a> {
     /// Returns the unique identifier for this test.
     pub fn id(&self) -> &str {
         &self.record.id
-    }
-
-    /// Returns the human-readable display name.
-    pub fn name(&self) -> &str {
-        &self.record.name
-    }
-
-    /// Returns the source file where the test is defined.
-    pub fn file(&self) -> Option<&Path> {
-        self.record.file.as_deref()
-    }
-
-    /// Returns the line number where the test is defined.
-    pub fn line(&self) -> Option<u32> {
-        self.record.line
-    }
-
-    /// Returns the tags/markers associated with the test.
-    pub fn markers(&self) -> &[String] {
-        &self.record.markers
-    }
-
-    /// Returns whether this test is known to be flaky.
-    pub fn flaky(&self) -> bool {
-        self.record.flaky
-    }
-
-    /// Returns whether this test should be skipped.
-    pub fn skipped(&self) -> bool {
-        self.record.skipped
-    }
-
-    /// Returns the test ID as an owned String.
-    pub fn id_owned(&self) -> String {
-        self.record.id.clone()
-    }
-
-    /// Returns the underlying test record.
-    pub fn record(&self) -> &'a TestRecord {
-        self.record
-    }
-
-    /// Records a result from executing this test.
-    ///
-    /// The result is stored in the associated `TestRecord`.
-    pub fn record_result(&self, result: TestResult) {
-        self.record.record_result(result);
     }
 }
 
@@ -471,36 +203,6 @@ impl TestResult {
             group: group.into(),
         }
     }
-
-    /// Sets the duration.
-    pub fn with_duration(mut self, duration: std::time::Duration) -> Self {
-        self.duration = duration;
-        self
-    }
-
-    /// Sets the stdout.
-    pub fn with_stdout(mut self, stdout: impl Into<String>) -> Self {
-        self.stdout = stdout.into();
-        self
-    }
-
-    /// Sets the stderr.
-    pub fn with_stderr(mut self, stderr: impl Into<String>) -> Self {
-        self.stderr = stderr.into();
-        self
-    }
-
-    /// Sets the error message.
-    pub fn with_error(mut self, message: impl Into<String>) -> Self {
-        self.error_message = Some(message.into());
-        self
-    }
-
-    /// Sets the stack trace.
-    pub fn with_stack_trace(mut self, trace: impl Into<String>) -> Self {
-        self.stack_trace = Some(trace.into());
-        self
-    }
 }
 
 /// The outcome status of a test execution.
@@ -536,16 +238,6 @@ pub enum TestOutcome {
     /// Unlike `Failed`, this indicates the test couldn't complete
     /// normally (e.g., exception in fixtures, infrastructure failure).
     Error,
-}
-
-impl TestOutcome {
-    /// Returns `true` if this outcome is considered successful.
-    ///
-    /// Both `Passed` and `Skipped` are considered successful outcomes
-    /// that don't fail the test run.
-    pub fn is_success(&self) -> bool {
-        matches!(self, TestOutcome::Passed | TestOutcome::Skipped)
-    }
 }
 
 /// Trait for collecting tests and generating execution commands.

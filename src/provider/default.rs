@@ -219,11 +219,11 @@ impl SandboxProvider for DefaultProvider {
 /// on the same remote instance. This is useful for stateful workflows where
 /// subsequent commands depend on previous ones.
 ///
-/// # File Transfer
+/// # File Download
 ///
-/// File upload/download is not supported by this provider. If you need
-/// file transfer, include the files in your execution environment (e.g.,
-/// baked into a container image) or use a different provider.
+/// File download is supported via an optional `download_command` template.
+/// Files should be included in the execution environment at build time
+/// (e.g., baked into a container image).
 ///
 /// # JSON Protocol
 ///
@@ -356,13 +356,6 @@ impl Sandbox for DefaultSandbox {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
         self.connector.run_stream(&shell_cmd).await
-    }
-
-    async fn upload(&self, _local: &Path, _remote: &Path) -> ProviderResult<()> {
-        warn!(
-            "upload() not supported by DefaultSandbox - files should be included in execution environment"
-        );
-        Ok(())
     }
 
     async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {

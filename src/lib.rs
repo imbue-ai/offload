@@ -1,7 +1,6 @@
 //! Flexible parallel test runner with pluggable execution providers.
 
 pub mod bundled;
-pub mod cache;
 pub mod config;
 pub mod connector;
 pub mod framework;
