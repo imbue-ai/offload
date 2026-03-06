@@ -143,13 +143,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self
     }
 
-    /// Returns a reference to the underlying sandbox.
-    ///
-    /// Useful for terminating the sandbox after tests complete.
-    pub fn sandbox(&self) -> &S {
-        &self.sandbox
-    }
-
     /// Consumes the runner and returns the owned sandbox.
     ///
     /// Use this to return the sandbox to a pool for reuse.

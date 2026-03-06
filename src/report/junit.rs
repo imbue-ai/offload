@@ -489,60 +489,6 @@ fn write_failure_or_error(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, failu
 /// Thread-safe handle to a MasterJunitReport.
 pub type SharedJunitReport = Arc<Mutex<MasterJunitReport>>;
 
-/// Merges multiple JUnit XML files into a single output file using quick-xml.
-pub fn merge_junit_files(parts_dir: &Path, output_path: &Path) -> std::io::Result<()> {
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let mut part_files: Vec<_> = std::fs::read_dir(parts_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "xml"))
-        .map(|e| e.path())
-        .collect();
-
-    part_files.sort();
-
-    if part_files.is_empty() {
-        warn!("No JUnit XML files found in {}", parts_dir.display());
-        let output = write_testsuites_xml(&[], 0, 0, 0, 0.0);
-        std::fs::write(output_path, output)?;
-        return Ok(());
-    }
-
-    info!(
-        "Merging {} JUnit XML files from {}",
-        part_files.len(),
-        parts_dir.display()
-    );
-
-    let mut testsuites = Vec::new();
-
-    for path in &part_files {
-        let content = std::fs::read_to_string(path)?;
-        let mut parsed = parse_all_testsuites_xml(&content);
-        testsuites.append(&mut parsed);
-    }
-
-    // Calculate totals from parsed testsuites
-    let total_tests: i32 = testsuites.iter().map(|s| s.tests).sum();
-    let total_failures: i32 = testsuites.iter().map(|s| s.failures).sum();
-    let total_errors: i32 = testsuites.iter().map(|s| s.errors).sum();
-    let total_time: f64 = testsuites.iter().map(|s| s.time).sum();
-
-    let output = write_testsuites_xml(
-        &testsuites,
-        total_tests,
-        total_failures,
-        total_errors,
-        total_time,
-    );
-    std::fs::write(output_path, output)?;
-    info!("Wrote merged JUnit XML to {}", output_path.display());
-
-    Ok(())
-}
-
 /// Loads test durations from an existing JUnit XML file.
 ///
 /// Parses the XML and extracts the duration (`time` attribute) for each test case.
@@ -631,15 +577,6 @@ pub fn load_test_durations(
     }
 
     durations
-}
-
-/// Removes the parts directory after merging.
-pub fn cleanup_parts(parts_dir: &Path) -> std::io::Result<()> {
-    if parts_dir.exists() {
-        std::fs::remove_dir_all(parts_dir)?;
-        info!("Cleaned up JUnit parts directory: {}", parts_dir.display());
-    }
-    Ok(())
 }
 
 #[cfg(test)]
