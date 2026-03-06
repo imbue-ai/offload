@@ -14,6 +14,19 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 - **Environment variable expansion** in config values (`${VAR}` and `${VAR:-default}`)
 - **Bundled script references** using `@filename.ext` syntax in commands
 
+## Benchmarks
+
+### mypy — 13,787 tests
+
+Tested on the [mypy](https://github.com/python/mypy) type checker ([fork with Offload config](https://github.com/imbue-ai/mypy/tree/offload-demo)).
+
+| Runner | Wall time | Speedup |
+|--------|-----------|---------|
+| pytest-xdist (`-nauto`, GitHub Actions 4-core) | ~14 min | 1x |
+| **Offload** (100 Modal sandboxes) | **62 sec** | **~14x** |
+
+mypy's test suite includes both standard pytest tests and custom data-driven test items (`DataDrivenTestCase`). Offload handles both via the `pytest_runtest_setup` hook for JUnit ID normalization.
+
 ## Installation
 
 From crates.io:
