@@ -120,7 +120,7 @@ pub struct Orchestrator<S, D> {
 
 impl<S, D> Orchestrator<S, D>
 where
-    S: Sandbox,
+    S: Sandbox + 'static,
     D: TestFramework,
 {
     /// Creates a new orchestrator with the given components.
@@ -443,7 +443,7 @@ where
         progress.finish_and_clear();
         print_summary(&run_result);
 
-        // Terminate all sandboxes in parallel (after printing results)
+        // Terminate all sandboxes in parallel (fire-and-forget so we don't block the caller)
         let _cleanup_span = self.tracer.span(
             "sandbox_cleanup",
             "orchestrator",
@@ -457,14 +457,177 @@ where
                 Vec::new()
             }
         };
-        let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
-            if let Err(e) = sandbox.terminate().await {
-                warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
-            }
+        tokio::spawn(async move {
+            let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
+                if let Err(e) = sandbox.terminate().await {
+                    warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
+                }
+            });
+            futures::future::join_all(terminate_futures).await;
+            drop(_cleanup_span);
         });
-        futures::future::join_all(terminate_futures).await;
-        drop(_cleanup_span);
 
         Ok(run_result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        CargoFrameworkConfig, FrameworkConfig, GroupConfig, LocalProviderConfig, OffloadConfig,
+        ProviderConfig, ReportConfig,
+    };
+    use crate::framework::TestRecord;
+    use crate::provider::{Command, OutputStream, ProviderResult};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Sandbox whose `terminate()` sleeps for a long time, used to verify
+    /// that cleanup does not block `run_with_tests`.
+    struct SlowTerminateSandbox {
+        id: String,
+        terminated: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Sandbox for SlowTerminateSandbox {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn exec_stream(&self, _cmd: &Command) -> ProviderResult<OutputStream> {
+            use crate::provider::OutputLine;
+            use futures::stream;
+            Ok(Box::pin(stream::iter(vec![OutputLine::ExitCode(0)])))
+        }
+
+        async fn upload(&self, _local: &Path, _remote: &Path) -> ProviderResult<()> {
+            Ok(())
+        }
+
+        async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+            // Write a minimal JUnit XML with a passing testcase to the local path.
+            for &(_remote, local) in paths {
+                let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="suite" tests="1" failures="0">
+<testcase classname="offload" name="fake_test" time="0.001"/>
+</testsuite></testsuites>"#;
+                std::fs::write(local, xml).map_err(crate::provider::ProviderError::Io)?;
+            }
+            Ok(())
+        }
+
+        async fn terminate(&self) -> ProviderResult<()> {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            self.terminated.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Minimal framework that generates a no-op command.
+    struct FakeFramework;
+
+    #[async_trait]
+    impl TestFramework for FakeFramework {
+        async fn discover(
+            &self,
+            _paths: &[PathBuf],
+            _filters: &str,
+            _group: &str,
+        ) -> crate::framework::FrameworkResult<Vec<TestRecord>> {
+            Ok(vec![])
+        }
+
+        fn produce_test_execution_command(
+            &self,
+            _tests: &[crate::framework::TestInstance],
+            _result_path: &str,
+        ) -> Command {
+            Command::new("true")
+        }
+    }
+
+    fn test_config(output_dir: &Path) -> Config {
+        Config {
+            offload: OffloadConfig {
+                max_parallel: 1,
+                test_timeout_secs: 30,
+                working_dir: None,
+                stream_output: false,
+                sandbox_project_root: ".".to_string(),
+                sandbox_init_cmd: None,
+            },
+            provider: ProviderConfig::Local(LocalProviderConfig::default()),
+            framework: FrameworkConfig::Cargo(CargoFrameworkConfig {
+                test_id_format: "{classname} {name}".into(),
+                ..Default::default()
+            }),
+            groups: HashMap::from([(
+                "all".to_string(),
+                GroupConfig {
+                    retry_count: 0,
+                    filters: String::new(),
+                },
+            )]),
+            report: ReportConfig {
+                output_dir: output_dir.to_path_buf(),
+                junit: false,
+                junit_file: "junit.xml".into(),
+            },
+        }
+    }
+
+    /// Verify that `run_with_tests` returns promptly without blocking on
+    /// sandbox termination. The mock sandbox sleeps 3 seconds in `terminate()`;
+    /// the test asserts the method returns in well under that.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cleanup_does_not_block_return() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let config = test_config(tmp.path());
+
+        let terminated = Arc::new(AtomicBool::new(false));
+        let sandbox = SlowTerminateSandbox {
+            id: "slow-sandbox-0".to_string(),
+            terminated: Arc::clone(&terminated),
+        };
+
+        let mut pool = SandboxPool::new();
+        pool.add(sandbox);
+
+        let test_record = TestRecord::new("fake_test", "all");
+        let tests = vec![test_record];
+
+        let orchestrator: Orchestrator<SlowTerminateSandbox, FakeFramework> =
+            Orchestrator::new(config, FakeFramework, false, crate::trace::Tracer::noop());
+
+        let start = std::time::Instant::now();
+        let _result = orchestrator.run_with_tests(&tests, pool).await;
+        let elapsed = start.elapsed();
+
+        // run_with_tests should return well before the 3-second terminate() sleep.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "run_with_tests blocked for {:?}; expected < 2s (cleanup should be async)",
+            elapsed
+        );
+
+        // Termination has not completed yet since it is fire-and-forget.
+        assert!(
+            !terminated.load(Ordering::SeqCst),
+            "terminate() should still be running in the background"
+        );
+
+        // Give the background task time to finish so we confirm it does run.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            terminated.load(Ordering::SeqCst),
+            "terminate() should have completed in the background"
+        );
+
+        Ok(())
     }
 }
