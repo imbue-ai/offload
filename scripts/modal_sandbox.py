@@ -365,7 +365,8 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @cli.command("exec")
 @click.argument("sandbox_id")
 @click.argument("command")
-def exec_command(sandbox_id: str, command: str):
+@click.option("--log-file", default=None, help="Write stdout/stderr to this local file")
+def exec_command(sandbox_id: str, command: str, log_file: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
@@ -377,6 +378,15 @@ def exec_command(sandbox_id: str, command: str):
     stderr = process.stderr.read()
     process.wait()
     exit_code = process.returncode
+
+    # Write log file if requested
+    if log_file is not None:
+        os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+        with open(log_file, "w") as f:
+            for line in stdout.splitlines():
+                f.write(line + "\n")
+            for line in stderr.splitlines():
+                f.write("[stderr] " + line + "\n")
 
     # Output JSON result
     result = {
