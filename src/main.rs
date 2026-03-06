@@ -215,14 +215,18 @@ async fn discover_all_tests(
 }
 
 /// Dispatch test execution to the appropriate framework, using the given provider.
-async fn dispatch_framework<P: offload::provider::SandboxProvider>(
+async fn dispatch_framework<P>(
     config: &Config,
     all_tests: &[TestRecord],
     provider: P,
     copy_dirs: &[CopyDir],
     verbose: bool,
     tracer: &offload::trace::Tracer,
-) -> Result<i32> {
+) -> Result<i32>
+where
+    P: offload::provider::SandboxProvider,
+    P::Sandbox: 'static,
+{
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
             run_all_tests(
@@ -516,6 +520,7 @@ async fn run_all_tests<P, D>(
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
+    P::Sandbox: 'static,
     D: TestFramework,
 {
     // Convert CopyDir to tuples
