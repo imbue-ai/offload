@@ -471,37 +471,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     async fn try_download_results(&mut self, expected_count: usize) -> Option<(String, usize)> {
         let sandbox_id = self.sandbox.id().to_string();
 
-        // Debug: List /tmp contents before download
-        info!(
-            "[DOWNLOAD] Sandbox {} listing /tmp/ contents...",
-            sandbox_id
-        );
-        let list_cmd = crate::provider::Command::new("ls").arg("-la").arg("/tmp/");
-        if let Ok(mut stream) = self.sandbox.exec_stream(&list_cmd).await {
-            use futures::StreamExt;
-            let mut tmp_contents = Vec::new();
-            while let Some(line) = stream.next().await {
-                tmp_contents.push(format!("{:?}", line));
-            }
-            info!(
-                "[DOWNLOAD] Sandbox {} /tmp/ contents: {}",
-                sandbox_id,
-                tmp_contents.join(" | ")
-            );
-        }
-
         // Download from /tmp/{sandbox_id}.xml (unique per sandbox to avoid collisions)
         let remote_path_str = format!("/tmp/{}.xml", sandbox_id);
         let remote_path = std::path::Path::new(&remote_path_str);
         let temp_file = tempfile::NamedTempFile::new().ok()?;
 
-        info!(
+        debug!(
             "[DOWNLOAD] Sandbox {} downloading {}...",
             sandbox_id, remote_path_str
         );
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
         match self.sandbox.download(&path_pairs).await {
-            Ok(_) => info!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
+            Ok(_) => debug!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
             Err(e) => {
                 error!(
                     "[DOWNLOAD FAILED] Sandbox {} download failed: {}",
@@ -532,7 +513,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         // Count testcases in the XML
         let actual_count = count_testcases_in_xml(&content);
-        info!(
+        debug!(
             "[DOWNLOAD] Sandbox {} junit.xml: {} bytes, {} testcases (expected {})",
             sandbox_id,
             content.len(),
