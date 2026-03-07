@@ -18,14 +18,20 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 
 ### mypy — 13,787 tests
 
-Tested on the [mypy](https://github.com/python/mypy) type checker ([fork with Offload config](https://github.com/imbue-ai/mypy/tree/offload-demo)).
+Tested on the [mypy](https://github.com/python/mypy) type checker ([fork with Offload config](https://github.com/imbue-ai/mypy/tree/offload-demo)). Benchmarks run on a MacBook Pro with a warm Modal image cache.
 
-| Runner | Wall time | Speedup |
-|--------|-----------|---------|
-| pytest-xdist (`-nauto`, GitHub Actions 4-core) | ~14 min | 1x |
-| **Offload** (100 Modal sandboxes) | **62 sec** | **~14x** |
+| Runner | Wall time | Local CPU time | Local CPU usage |
+|--------|-----------|----------------|-----------------|
+| pytest-xdist (`-nauto`) | 4m 04s | 19m 21s | 475% |
+| **Offload** (100 Modal sandboxes) | **1m 23s** | **1m 45s** | **127%** |
 
-mypy's test suite includes both standard pytest tests and custom data-driven test items (`DataDrivenTestCase`). Offload handles both via the `pytest_runtest_setup` hook for JUnit ID normalization.
+xdist saturates your local machine — 475% CPU for over 4 minutes. Offload farms the work to Modal sandboxes, keeping local CPU near idle (127% is just the orchestrator + test discovery). Your laptop stays free to keep working while 13,787 tests run in the cloud.
+
+| Metric | xdist | Offload | Improvement |
+|--------|-------|---------|-------------|
+| Wall time | 4m 04s | 1m 23s | ~3x faster |
+| Local CPU time | 19m 21s | 1m 45s | ~11x less |
+| Tests per local CPU-second | 12 | 131 | ~11x more efficient |
 
 ## Installation
 
