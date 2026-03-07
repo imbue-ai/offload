@@ -31,7 +31,6 @@ xdist saturates your local machine — 475% CPU for over 4 minutes. Offload farm
 |--------|-------|---------|-------------|
 | Wall time | 4m 04s | 1m 23s | ~3x faster |
 | Local CPU time | 19m 21s | 1m 45s | ~11x less |
-| Tests per local CPU-second | 12 | 131 | ~11x more efficient |
 
 ## Installation
 
