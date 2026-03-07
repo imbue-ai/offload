@@ -14,6 +14,24 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 - **Environment variable expansion** in config values (`${VAR}` and `${VAR:-default}`)
 - **Bundled script references** using `@filename.ext` syntax in commands
 
+## Benchmarks
+
+### mypy — 13,787 tests
+
+Tested on the [mypy](https://github.com/python/mypy) type checker ([fork with Offload config](https://github.com/imbue-ai/mypy/tree/offload-demo)). Benchmarks run on a MacBook Pro with a warm Modal image cache.
+
+| Runner | Wall time | Local CPU time | Local CPU usage |
+|--------|-----------|----------------|-----------------|
+| pytest-xdist (`-nauto`) | 4m 04s | 19m 21s | 475% |
+| **Offload** (100 Modal sandboxes) | **1m 23s** | **1m 45s** | **127%** |
+
+xdist saturates your local machine — 475% CPU for over 4 minutes. Offload farms the work to Modal sandboxes, keeping local CPU near idle (127% is just the orchestrator + test discovery). Your laptop stays free to keep working while 13,787 tests run in the cloud.
+
+| Metric | xdist | Offload | Improvement |
+|--------|-------|---------|-------------|
+| Wall time | 4m 04s | 1m 23s | ~3x faster |
+| Local CPU time | 19m 21s | 1m 45s | ~11x less |
+
 ## Installation
 
 From crates.io:
