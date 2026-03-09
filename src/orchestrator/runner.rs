@@ -156,48 +156,26 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Process a single output line from the stream.
     ///
-    /// Passes lines to the output callback and appends to stdout/stderr buffers.
-    /// Returns `Some(exit_code)` when an ExitCode line is received.
-    fn process_output_line(
-        line: &OutputLine,
-        output_id: &str,
-        stdout: &mut String,
-        stderr: &mut String,
-        callback: &Option<OutputCallback>,
-    ) -> Option<i32> {
+    /// Passes stdout/stderr lines to the output callback; ignores exit codes.
+    fn process_output_line(line: &OutputLine, output_id: &str, callback: &Option<OutputCallback>) {
         match line {
-            OutputLine::Stdout(s) => {
+            OutputLine::Stdout(_) | OutputLine::Stderr(_) => {
                 if let Some(cb) = callback {
                     cb(output_id, line);
                 }
-                stdout.push_str(s);
-                stdout.push('\n');
             }
-            OutputLine::Stderr(s) => {
-                if let Some(cb) = callback {
-                    cb(output_id, line);
-                }
-                stderr.push_str(s);
-                stderr.push('\n');
-            }
-            OutputLine::ExitCode(code) => return Some(*code),
+            OutputLine::ExitCode(_) => {}
         }
-        None
     }
 
-    /// Execute command with streaming, collecting output and exit code.
+    /// Execute command with streaming output.
     ///
-    /// Returns `Ok(None)` if cancelled before completion.
+    /// Returns `Ok(true)` when execution completes, `Ok(false)` if cancelled.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
-    ) -> Result<Option<crate::provider::ExecResult>> {
-        let start = std::time::Instant::now();
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        let mut exit_code: Option<i32> = None;
-
+    ) -> Result<bool> {
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
         // If we have a cancellation token, use select! to race against it
@@ -206,20 +184,16 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 select! {
                     _ = token.cancelled() => {
                         debug!("Test execution cancelled (all tests passed)");
-                        return Ok(None);
+                        return Ok(false);
                     }
                     line = stream.next() => {
                         match line {
                             Some(line) => {
-                                if let Some(code) = Self::process_output_line(
+                                Self::process_output_line(
                                     &line,
                                     output_id,
-                                    &mut stdout,
-                                    &mut stderr,
                                     &self.output_callback,
-                                ) {
-                                    exit_code = Some(code);
-                                }
+                                );
                             }
                             None => break, // Stream ended
                         }
@@ -229,26 +203,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         } else {
             // No cancellation token, process normally
             while let Some(line) = stream.next().await {
-                if let Some(code) = Self::process_output_line(
-                    &line,
-                    output_id,
-                    &mut stdout,
-                    &mut stderr,
-                    &self.output_callback,
-                ) {
-                    exit_code = Some(code);
-                }
+                Self::process_output_line(&line, output_id, &self.output_callback);
             }
         }
 
-        let exit_code = exit_code.unwrap_or(1);
-
-        Ok(Some(crate::provider::ExecResult {
-            exit_code,
-            stdout,
-            stderr,
-            duration: start.elapsed(),
-        }))
+        Ok(true)
     }
 
     /// Runs multiple tests in a batch.
@@ -331,24 +290,22 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_EXEC,
         );
-        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
-            Some(result) => result,
-            None => {
-                // Cancelled - return early without recording results
-                warn!(
-                    "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
-                    sandbox_id, expected_count
-                );
-                return Ok(BatchOutcome::Cancelled);
-            }
-        };
+        let completed = self.exec_with_streaming(&cmd, "batch").await?;
         drop(_exec_span);
 
-        let duration = start.elapsed();
+        if !completed {
+            // Cancelled - return early without recording results
+            warn!(
+                "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
+                sandbox_id, expected_count
+            );
+            return Ok(BatchOutcome::Cancelled);
+        }
 
         info!(
-            "[BATCH COMPLETE] Sandbox {} finished execution: exit_code={}, duration={:?}",
-            sandbox_id, exec_result.exit_code, duration
+            "[BATCH COMPLETE] Sandbox {} finished execution in {:?}",
+            sandbox_id,
+            start.elapsed()
         );
 
         // Calculate unique test count (what pytest will actually produce)
