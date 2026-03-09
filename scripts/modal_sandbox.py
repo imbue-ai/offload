@@ -21,7 +21,6 @@ import time
 
 import click
 import modal
-from modal.io_streams import StreamType
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -370,9 +369,7 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 def exec_command(sandbox_id: str, command: str, log_file: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
-
-    # Merge stderr into stdout for interleaved streaming
-    process = sandbox.exec("bash", "-c", command, stderr=StreamType.STDOUT)
+    process = sandbox.exec("bash", "-c", command)
 
     # Open log file if requested
     log_f = None
@@ -380,7 +377,7 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
         os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
         log_f = open(log_file, "w")
 
-    # Stream output, writing to log file if requested
+    # Stream stdout, writing to log file as lines arrive
     for line in process.stdout:
         if log_f is not None:
             log_f.write(line)
