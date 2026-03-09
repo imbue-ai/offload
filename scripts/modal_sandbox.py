@@ -374,17 +374,14 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
     # Merge stderr into stdout for interleaved streaming
     process = sandbox.exec("bash", "-c", command, stderr=StreamType.STDOUT)
 
-    lines: list[str] = []
-
     # Open log file if requested
     log_f = None
     if log_file is not None:
         os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
         log_f = open(log_file, "w")
 
-    # Stream output as it arrives
+    # Stream output, writing to log file if requested
     for line in process.stdout:
-        lines.append(line)
         if log_f is not None:
             log_f.write(line)
             log_f.flush()
@@ -394,17 +391,7 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
     if log_f is not None:
         log_f.close()
 
-    exit_code = process.returncode
-    stdout = "".join(lines)
-
-    # Output JSON result (stderr merged into stdout)
-    result = {
-        "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": "",
-    }
-    print(json.dumps(result))
-    sys.exit(exit_code)
+    sys.exit(process.returncode)
 
 
 # App and function for the 'run' subcommand

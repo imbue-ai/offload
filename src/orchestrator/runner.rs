@@ -23,14 +23,6 @@ fn has_failures_in_xml(xml: &str) -> bool {
     xml.contains("<failure") || xml.contains("<error")
 }
 
-/// JSON result format from default provider sandboxes.
-#[derive(serde::Deserialize)]
-struct JsonExecResult {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
 /// Callback function for streaming test output.
 ///
 /// Called for each line of output during streaming execution. The callback
@@ -162,45 +154,19 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self.sandbox
     }
 
-    /// Execute command with streaming, collecting output and parsing JSON result.
-    ///
-    /// The `output_id` is passed to the output callback to identify the source.
-    /// Returns `Ok(None)` if cancelled before completion.
     /// Process a single output line from the stream.
     ///
-    /// If the line is a JSON-encoded `JsonExecResult` (the default provider
-    /// protocol), decode it and emit the contained stdout/stderr lines to the
-    /// callback individually. Otherwise pass the line through as-is.
-    ///
-    /// Returns `Some(JsonExecResult)` when a JSON result was decoded, so the
-    /// caller can use the parsed exit code and skip heuristic inference.
+    /// Passes lines to the output callback and appends to stdout/stderr buffers.
+    /// Returns `Some(exit_code)` when an ExitCode line is received.
     fn process_output_line(
         line: &OutputLine,
         output_id: &str,
         stdout: &mut String,
         stderr: &mut String,
         callback: &Option<OutputCallback>,
-    ) -> Option<JsonExecResult> {
+    ) -> Option<i32> {
         match line {
             OutputLine::Stdout(s) => {
-                // Try to decode the default provider JSON protocol
-                if s.trim().starts_with('{')
-                    && let Ok(parsed) = serde_json::from_str::<JsonExecResult>(s)
-                {
-                    // Emit decoded stdout lines to callback
-                    if let Some(cb) = callback {
-                        for decoded_line in parsed.stdout.lines() {
-                            cb(output_id, &OutputLine::Stdout(decoded_line.to_string()));
-                        }
-                        for decoded_line in parsed.stderr.lines() {
-                            cb(output_id, &OutputLine::Stderr(decoded_line.to_string()));
-                        }
-                    }
-                    stdout.push_str(&parsed.stdout);
-                    stderr.push_str(&parsed.stderr);
-                    return Some(parsed);
-                }
-                // Not JSON — pass through as-is
                 if let Some(cb) = callback {
                     cb(output_id, line);
                 }
@@ -214,11 +180,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 stderr.push_str(s);
                 stderr.push('\n');
             }
-            OutputLine::ExitCode(_) => {}
+            OutputLine::ExitCode(code) => return Some(*code),
         }
         None
     }
 
+    /// Execute command with streaming, collecting output and exit code.
+    ///
+    /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
@@ -227,7 +196,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let mut json_result: Option<JsonExecResult> = None;
+        let mut exit_code: Option<i32> = None;
 
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
@@ -242,14 +211,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     line = stream.next() => {
                         match line {
                             Some(line) => {
-                                if let Some(parsed) = Self::process_output_line(
+                                if let Some(code) = Self::process_output_line(
                                     &line,
                                     output_id,
                                     &mut stdout,
                                     &mut stderr,
                                     &self.output_callback,
                                 ) {
-                                    json_result = Some(parsed);
+                                    exit_code = Some(code);
                                 }
                             }
                             None => break, // Stream ended
@@ -260,36 +229,19 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         } else {
             // No cancellation token, process normally
             while let Some(line) = stream.next().await {
-                if let Some(parsed) = Self::process_output_line(
+                if let Some(code) = Self::process_output_line(
                     &line,
                     output_id,
                     &mut stdout,
                     &mut stderr,
                     &self.output_callback,
                 ) {
-                    json_result = Some(parsed);
+                    exit_code = Some(code);
                 }
             }
         }
 
-        // Use parsed JSON result if available (default provider protocol)
-        if let Some(parsed) = json_result {
-            return Ok(Some(crate::provider::ExecResult {
-                exit_code: parsed.exit_code,
-                stdout,
-                stderr,
-                duration: start.elapsed(),
-            }));
-        }
-
-        // Fall back to inferring exit code from output
-        let exit_code =
-            if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR")
-            {
-                0
-            } else {
-                1
-            };
+        let exit_code = exit_code.unwrap_or(1);
 
         Ok(Some(crate::provider::ExecResult {
             exit_code,
