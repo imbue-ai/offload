@@ -21,7 +21,7 @@ import time
 
 import click
 import modal
-from modal import StreamType
+from modal.io_streams import StreamType
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
