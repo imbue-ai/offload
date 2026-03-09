@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestRecord};
 use crate::config::DefaultFrameworkConfig;
 use crate::provider::Command;
 
@@ -45,10 +45,10 @@ impl DefaultFramework {
     /// Substitute {tests} and {result_file} placeholders in run command.
     ///
     /// Test IDs are shell-escaped to handle IDs containing spaces or special characters.
-    fn substitute_command(&self, tests: &[TestInstance], result_path: &str) -> String {
+    fn substitute_command(&self, tests: &[&TestRecord], result_path: &str) -> String {
         let test_ids: Vec<_> = tests
             .iter()
-            .map(|t| shell_words::quote(t.id()).into_owned())
+            .map(|t| shell_words::quote(&t.id).into_owned())
             .collect();
         self.config
             .run_command
@@ -110,7 +110,7 @@ impl TestFramework for DefaultFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(&self, tests: &[&TestRecord], result_path: &str) -> Command {
         let full_command = self.substitute_command(tests, result_path);
 
         // Run through shell to properly handle quoted arguments, pipes, redirects, etc.

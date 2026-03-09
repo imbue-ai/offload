@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestRecord};
 use crate::config::CargoFrameworkConfig;
 use crate::provider::Command;
 
@@ -168,7 +168,7 @@ impl TestFramework for CargoFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(&self, tests: &[&TestRecord], result_path: &str) -> Command {
         // Nextest configures JUnit output via config file, not CLI flags.
         // Write a temporary config that sets the JUnit path, then run nextest
         // with --config-file pointing to it. This ensures each sandbox writes
@@ -208,12 +208,11 @@ impl TestFramework for CargoFramework {
         let filter_expr: String = tests
             .iter()
             .map(|t| {
-                let id = t.id();
                 // Split into binary and test path; fall back to just test filter if no space
-                if let Some((binary, test_path)) = id.split_once(' ') {
+                if let Some((binary, test_path)) = t.id.split_once(' ') {
                     format!("(binary_id(={}) & test(={}))", binary, test_path)
                 } else {
-                    format!("test(={})", id)
+                    format!("test(={})", t.id)
                 }
             })
             .collect::<Vec<_>>()

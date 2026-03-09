@@ -9,7 +9,7 @@ use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::framework::{TestFramework, TestInstance};
+use crate::framework::{TestFramework, TestRecord};
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
 
@@ -302,7 +302,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// - `Ok(BatchOutcome::Failure)` if execution completed but one or more tests failed
     /// - `Ok(BatchOutcome::Cancelled)` if the batch was cancelled before completion
     /// - `Err(...)` if execution failed due to an infrastructure error
-    pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<BatchOutcome> {
+    pub async fn run_tests(&mut self, tests: &[&TestRecord]) -> Result<BatchOutcome> {
         let start = std::time::Instant::now();
         let expected_count = tests.len();
         let sandbox_id = self.sandbox.id().to_string();
@@ -313,7 +313,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         );
 
         // Log all test IDs in this batch
-        let test_ids: Vec<_> = tests.iter().map(|t| t.id()).collect();
+        let test_ids: Vec<_> = tests.iter().map(|t| t.id.as_str()).collect();
         debug!(
             "[BATCH TESTS] Sandbox {} test IDs: {:?}",
             sandbox_id, test_ids

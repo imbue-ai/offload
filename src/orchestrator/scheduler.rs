@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::framework::TestInstance;
+use crate::framework::TestRecord;
 
 /// Maximum total length (in chars) of all test IDs in a single batch.
 ///
@@ -17,7 +17,7 @@ const MAX_BATCH_COMMAND_LEN: usize = 30_000;
 /// and which test IDs are present (to prevent scheduling the same test twice
 /// in one batch).
 struct Batch<'a> {
-    tests: Vec<TestInstance<'a>>,
+    tests: Vec<&'a TestRecord>,
     load: Duration,
     command_len: usize,
     test_ids: HashSet<String>,
@@ -33,9 +33,9 @@ impl<'a> Batch<'a> {
         }
     }
 
-    fn add(&mut self, test: TestInstance<'a>, duration: Duration) {
-        self.command_len += test.id().len();
-        self.test_ids.insert(test.id().to_string());
+    fn add(&mut self, test: &'a TestRecord, duration: Duration) {
+        self.command_len += test.id.len();
+        self.test_ids.insert(test.id.clone());
         self.tests.push(test);
         self.load += duration;
     }
@@ -93,18 +93,18 @@ impl Scheduler {
     ///
     /// A vector of batches. Each batch is a vector of tests that will
     /// run sequentially in the same sandbox. Empty batches are removed.
-    pub fn schedule<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
+    pub fn schedule<'a>(&self, tests: &[&'a TestRecord]) -> Vec<Vec<&'a TestRecord>> {
         if tests.is_empty() {
             return Vec::new();
         }
 
         // Simple round-robin distribution
-        let mut batches: Vec<Vec<TestInstance<'a>>> =
+        let mut batches: Vec<Vec<&'a TestRecord>> =
             (0..self.max_parallel).map(|_| Vec::new()).collect();
 
         for (i, test) in tests.iter().enumerate() {
             let batch_idx = i % self.max_parallel;
-            batches[batch_idx].push(*test);
+            batches[batch_idx].push(test);
         }
 
         // Remove empty batches
@@ -148,11 +148,11 @@ impl Scheduler {
     /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
     pub fn schedule_lpt<'a>(
         &self,
-        tests: &[TestInstance<'a>],
+        tests: &[&'a TestRecord],
         durations: &HashMap<String, Duration>,
         default_duration: Duration,
         max_batch_duration: Option<Duration>,
-    ) -> Vec<Vec<TestInstance<'a>>> {
+    ) -> Vec<Vec<&'a TestRecord>> {
         if tests.is_empty() {
             return Vec::new();
         }
@@ -163,7 +163,7 @@ impl Scheduler {
             .map(|t| {
                 (
                     *t,
-                    durations.get(t.id()).copied().unwrap_or(default_duration),
+                    durations.get(&t.id).copied().unwrap_or(default_duration),
                 )
             })
             .collect();
@@ -175,7 +175,7 @@ impl Scheduler {
 
         // LPT assignment: assign each test to the lightest eligible batch
         for (test, duration) in tests_with_duration {
-            let test_id = test.id();
+            let test_id = &test.id;
 
             let target_idx = (0..batches.len())
                 .filter(|&i| {
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_schedule_empty() {
         let scheduler = Scheduler::new(4);
-        let batches: Vec<Vec<TestInstance>> = scheduler.schedule(&[]);
+        let batches: Vec<Vec<&TestRecord>> = scheduler.schedule(&[]);
         assert!(batches.is_empty());
     }
 
@@ -221,7 +221,7 @@ mod tests {
     fn test_schedule_lpt_empty() {
         let scheduler = Scheduler::new(4);
         let durations = HashMap::new();
-        let batches: Vec<Vec<TestInstance>> =
+        let batches: Vec<Vec<&TestRecord>> =
             scheduler.schedule_lpt(&[], &durations, Duration::from_secs(1), None);
         assert!(batches.is_empty());
     }
@@ -234,7 +234,7 @@ mod tests {
             TestRecord::new("medium_test", "test-group"),
             TestRecord::new("fast_test", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("slow_test".to_string(), Duration::from_secs(10));
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(batches.len(), 2);
         // Heaviest batch first
         assert_eq!(batches[0].len(), 1);
-        assert_eq!(batches[0][0].id(), "slow_test");
+        assert_eq!(batches[0][0].id, "slow_test");
         // Second batch has medium and fast
         assert_eq!(batches[1].len(), 2);
     }
@@ -264,7 +264,7 @@ mod tests {
             TestRecord::new("test_b", "test-group"),
             TestRecord::new("test_c", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(1));
@@ -276,9 +276,9 @@ mod tests {
         // Each test in its own batch (3 workers, 3 tests)
         // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
         assert_eq!(batches.len(), 3);
-        assert_eq!(batches[0][0].id(), "test_b"); // Heaviest first
-        assert_eq!(batches[1][0].id(), "test_c");
-        assert_eq!(batches[2][0].id(), "test_a");
+        assert_eq!(batches[0][0].id, "test_b"); // Heaviest first
+        assert_eq!(batches[1][0].id, "test_c");
+        assert_eq!(batches[2][0].id, "test_a");
     }
 
     #[test]
@@ -288,7 +288,7 @@ mod tests {
             TestRecord::new("known_slow", "test-group"),
             TestRecord::new("unknown_test", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
@@ -298,15 +298,15 @@ mod tests {
 
         assert_eq!(batches.len(), 2);
         // known_slow (10s) should be in heaviest batch
-        assert_eq!(batches[0][0].id(), "known_slow");
-        assert_eq!(batches[1][0].id(), "unknown_test");
+        assert_eq!(batches[0][0].id, "known_slow");
+        assert_eq!(batches[1][0].id, "unknown_test");
     }
 
     #[test]
     fn test_schedule_single() {
         let scheduler = Scheduler::new(4);
         let records = [TestRecord::new("test1", "test-group")];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
         let batches = scheduler.schedule(&tests);
 
         assert_eq!(batches.len(), 1);
@@ -322,16 +322,16 @@ mod tests {
             TestRecord::new("test3", "test-group"),
             TestRecord::new("test4", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
         let batches = scheduler.schedule(&tests);
 
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 2);
         assert_eq!(batches[1].len(), 2);
-        assert_eq!(batches[0][0].id(), "test1");
-        assert_eq!(batches[0][1].id(), "test3");
-        assert_eq!(batches[1][0].id(), "test2");
-        assert_eq!(batches[1][1].id(), "test4");
+        assert_eq!(batches[0][0].id, "test1");
+        assert_eq!(batches[0][1].id, "test3");
+        assert_eq!(batches[1][0].id, "test2");
+        assert_eq!(batches[1][1].id, "test4");
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
             TestRecord::new("test_a", "test-group"), // retry 1
             TestRecord::new("test_a", "test-group"), // retry 2
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
@@ -358,7 +358,7 @@ mod tests {
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
-            let ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let ids: Vec<_> = batch.iter().map(|t| t.id.as_str()).collect();
             let unique: std::collections::HashSet<_> = ids.iter().collect();
             assert_eq!(ids.len(), unique.len(), "Batch contains duplicate test IDs");
         }
@@ -374,7 +374,7 @@ mod tests {
             TestRecord::new("test_b", "test-group"),
             TestRecord::new("test_c", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(10));
@@ -385,7 +385,7 @@ mod tests {
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
-            let ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let ids: Vec<_> = batch.iter().map(|t| t.id.as_str()).collect();
             let unique: std::collections::HashSet<_> = ids.iter().collect();
             assert_eq!(ids.len(), unique.len(), "Batch contains duplicate test IDs");
         }
@@ -393,7 +393,7 @@ mod tests {
         // Both instances of test_a should exist across batches
         let all_ids: Vec<_> = batches
             .iter()
-            .flat_map(|b| b.iter().map(|t| t.id()))
+            .flat_map(|b| b.iter().map(|t| t.id.as_str()))
             .collect();
         assert_eq!(all_ids.iter().filter(|&&id| id == "test_a").count(), 2);
     }
@@ -407,7 +407,7 @@ mod tests {
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_a", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let durations = HashMap::new();
         let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(batches.len(), 3);
         for batch in &batches {
             assert_eq!(batch.len(), 1);
-            assert_eq!(batch[0].id(), "test_a");
+            assert_eq!(batch[0].id, "test_a");
         }
     }
 
@@ -429,7 +429,7 @@ mod tests {
             TestRecord::new("test_c", "test-group"),
             TestRecord::new("test_d", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(6));
@@ -451,7 +451,7 @@ mod tests {
                 .iter()
                 .map(|t| {
                     durations
-                        .get(t.id())
+                        .get(&t.id)
                         .copied()
                         .unwrap_or(Duration::from_secs(1))
                 })
@@ -470,7 +470,7 @@ mod tests {
             TestRecord::new("slow_test", "test-group"),
             TestRecord::new("fast_test", "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         durations.insert("slow_test".to_string(), Duration::from_secs(15));
@@ -488,7 +488,7 @@ mod tests {
         // slow_test should be alone in its batch
         let slow_batch = batches
             .iter()
-            .find(|b| b.iter().any(|t| t.id() == "slow_test"))
+            .find(|b| b.iter().any(|t| t.id == "slow_test"))
             .ok_or_else(|| anyhow::anyhow!("slow_test batch not found"))?;
         assert_eq!(slow_batch.len(), 1);
         Ok(())
@@ -503,7 +503,7 @@ mod tests {
         let records: Vec<_> = (0..7)
             .map(|i| TestRecord::new(format!("test_{}", i), "test-group"))
             .collect();
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let mut durations = HashMap::new();
         for i in 0..7 {
@@ -528,7 +528,7 @@ mod tests {
                 .iter()
                 .map(|t| {
                     durations
-                        .get(t.id())
+                        .get(&t.id)
                         .copied()
                         .unwrap_or(Duration::from_secs(1))
                 })
@@ -549,7 +549,7 @@ mod tests {
             TestRecord::new(format!("{long_name}_1"), "test-group"),
             TestRecord::new(format!("{long_name}_2"), "test-group"),
         ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(1), None);
 
@@ -566,7 +566,7 @@ mod tests {
         let records: Vec<_> = (0..100)
             .map(|i| TestRecord::new(format!("t{i}"), "test-group"))
             .collect();
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let tests: Vec<_> = records.iter().collect();
 
         let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(0), None);
 

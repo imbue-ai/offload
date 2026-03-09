@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::framework::{TestFramework, TestInstance};
+use crate::framework::{TestFramework, TestRecord};
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
@@ -29,7 +29,7 @@ use super::runner::{BatchOutcome, OutputCallback, TestRunner};
 pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub config: &'a Config,
     pub framework: &'a F,
-    pub queue: Arc<Mutex<VecDeque<Vec<TestInstance<'a>>>>>,
+    pub queue: Arc<Mutex<VecDeque<Vec<&'a TestRecord>>>>,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
     pub all_passed: Arc<AtomicBool>,
@@ -65,7 +65,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Early exit if all tests have already passed
         if cfg.all_passed.load(Ordering::SeqCst) {
-            let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let test_ids: Vec<_> = batch.iter().map(|t| t.id.as_str()).collect();
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - all tests already passed",
                 batch_idx,
@@ -147,7 +147,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Verbose logging
         if cfg.verbose {
             for test in &batch {
-                println!("Running: {}", test.id());
+                println!("Running: {}", test.id);
             }
         }
 

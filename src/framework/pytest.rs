@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{FrameworkError, FrameworkResult, TestFramework, TestRecord};
 use crate::config::PytestFrameworkConfig;
 use crate::provider::Command;
 
@@ -148,7 +148,7 @@ impl TestFramework for PytestFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(&self, tests: &[&TestRecord], result_path: &str) -> Command {
         let (program, prefix_args) = self.command_prefix();
         let mut cmd = Command::new(&program);
         for arg in &prefix_args {
@@ -178,7 +178,7 @@ impl TestFramework for PytestFramework {
 
         // Add test IDs
         for test in tests {
-            cmd = cmd.arg(test.id());
+            cmd = cmd.arg(&test.id);
         }
 
         cmd
@@ -224,7 +224,7 @@ mod tests {
         };
         let fw = PytestFramework::new(config);
         let record = TestRecord::new("tests/test_a.py::test_one", "test-group");
-        let tests = vec![TestInstance::new(&record)];
+        let tests = vec![&record];
         let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml");
         assert_eq!(cmd.program, "uv");
         assert!(cmd.args.contains(&"--no-cov".to_string()));
@@ -241,7 +241,7 @@ mod tests {
         };
         let fw = PytestFramework::new(config);
         let record = TestRecord::new("tests/test_a.py::test_one", "test-group");
-        let tests = vec![TestInstance::new(&record)];
+        let tests = vec![&record];
         let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml");
         // run_args should NOT be applied since command is None
         assert!(!cmd.args.contains(&"--no-cov".to_string()));

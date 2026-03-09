@@ -13,7 +13,7 @@ pub mod trace;
 // These are the types most users will need when setting up offload.
 
 pub use config::{Config, load_config};
-pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
+pub use framework::{TestFramework, TestOutcome, TestRecord, TestResult};
 pub use orchestrator::{Orchestrator, RunResult, SandboxPool};
 pub use provider::{Sandbox, SandboxProvider};
 pub use report::print_summary;

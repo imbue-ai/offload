@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::framework::{TestFramework, TestInstance, TestRecord};
+use crate::framework::{TestFramework, TestRecord};
 use crate::provider::Sandbox;
 use crate::report::{MasterJunitReport, load_test_durations, print_summary};
 
@@ -212,13 +212,13 @@ where
         }
         progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
-        // Create Test handles
-        // For tests with retry_count > 0, create multiple instances to run in parallel
-        let tests_to_run: Vec<TestInstance<'_>> = tests
+        // Create test references
+        // For tests with retry_count > 0, create multiple references to run in parallel
+        let tests_to_run: Vec<&TestRecord> = tests
             .iter()
             .flat_map(|t| {
                 let count = t.retry_count + 1; // 1 original + retry_count retries
-                (0..count).map(move |_| t.test())
+                (0..count).map(move |_| t)
             })
             .collect();
 

@@ -99,37 +99,6 @@ impl TestRecord {
         self.file = Some(file.into());
         self
     }
-
-    /// Creates a `TestInstance` handle for execution in a sandbox.
-    pub fn test(&self) -> TestInstance<'_> {
-        TestInstance::new(self)
-    }
-}
-
-/// A lightweight handle to a test for execution in a sandbox.
-///
-/// `TestInstance` holds a reference to a [`TestRecord`] and provides read access
-/// to test metadata.
-///
-/// # Lifetime
-///
-/// The lifetime `'a` ties this `TestInstance` to its associated `TestRecord`.
-#[derive(Debug, Clone, Copy)]
-pub struct TestInstance<'a> {
-    /// Reference to the test record containing all data.
-    record: &'a TestRecord,
-}
-
-impl<'a> TestInstance<'a> {
-    /// Creates a new test handle for the given record.
-    pub fn new(record: &'a TestRecord) -> Self {
-        Self { record }
-    }
-
-    /// Returns the unique identifier for this test.
-    pub fn id(&self) -> &str {
-        &self.record.id
-    }
 }
 
 /// The result of executing a single test.
@@ -279,5 +248,36 @@ pub trait TestFramework: Send + Sync {
     /// # Arguments
     ///
     /// * `tests` - Tests to execute (borrowed from TestRecords)
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command;
+    fn produce_test_execution_command(&self, tests: &[&TestRecord], result_path: &str) -> Command;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_ids_to_records(ids: Vec<String>) -> Vec<TestRecord> {
+        ids.into_iter()
+            .map(|id| {
+                let file = id.split("::").next().map(PathBuf::from);
+                let mut record = TestRecord::new(id, "test-group");
+                if let Some(f) = file {
+                    record = record.with_file(f);
+                }
+                record
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_test_id() {
+        let records = test_ids_to_records(vec![
+            "tests/test_math.py::test_addition".to_string(),
+            "tests/test_math.py::TestClass::test_method".to_string(),
+        ]);
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "test_addition");
+        assert_eq!(records[0].file, Some(PathBuf::from("tests/test_math.py")));
+        assert_eq!(records[1].name, "test_method");
+    }
 }
