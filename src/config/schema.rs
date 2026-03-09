@@ -172,6 +172,12 @@ pub struct ModalProviderConfig {
     /// making sandbox creation faster.
     #[serde(default)]
     pub copy_dirs: Vec<String>,
+
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 /// Configuration for custom remote execution provider.
