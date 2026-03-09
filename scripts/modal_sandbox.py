@@ -21,6 +21,7 @@ import time
 
 import click
 import modal
+from modal import StreamType
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -370,29 +371,37 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    # Execute command
-    process = sandbox.exec("bash", "-c", command)
+    # Merge stderr into stdout for interleaved streaming
+    process = sandbox.exec("bash", "-c", command, stderr=StreamType.STDOUT)
 
-    # Collect output
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
-    process.wait()
-    exit_code = process.returncode
+    lines: list[str] = []
 
-    # Write log file if requested
+    # Open log file if requested
+    log_f = None
     if log_file is not None:
         os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
-        with open(log_file, "w") as f:
-            for line in stdout.splitlines():
-                f.write(line + "\n")
-            for line in stderr.splitlines():
-                f.write("[stderr] " + line + "\n")
+        log_f = open(log_file, "w")
 
-    # Output JSON result
+    # Stream output as it arrives
+    for line in process.stdout:
+        lines.append(line)
+        if log_f is not None:
+            log_f.write(line)
+            log_f.flush()
+
+    process.wait()
+
+    if log_f is not None:
+        log_f.close()
+
+    exit_code = process.returncode
+    stdout = "".join(lines)
+
+    # Output JSON result (stderr merged into stdout)
     result = {
         "exit_code": exit_code,
         "stdout": stdout,
-        "stderr": stderr,
+        "stderr": "",
     }
     print(json.dumps(result))
     sys.exit(exit_code)
