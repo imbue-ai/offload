@@ -18,7 +18,7 @@ use crate::provider::Sandbox;
 use crate::report::{MasterJunitReport, load_test_durations, print_summary};
 
 pub use pool::SandboxPool;
-pub use runner::{BatchOutcome, OutputCallback, TestRunner};
+pub use runner::{BatchOutcome, TestRunner};
 pub use scheduler::Scheduler;
 
 /// Maximum expected duration for a single batch of tests.

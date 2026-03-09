@@ -1,6 +1,5 @@
 //! Test runner — executes test batches within a single sandbox.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -10,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::provider::{OutputLine, Sandbox};
+use crate::provider::Sandbox;
 use crate::report::SharedJunitReport;
 
 /// Count testcases in a JUnit XML string.
@@ -22,12 +21,6 @@ fn count_testcases_in_xml(xml: &str) -> usize {
 fn has_failures_in_xml(xml: &str) -> bool {
     xml.contains("<failure") || xml.contains("<error")
 }
-
-/// Callback function for streaming test output.
-///
-/// Called for each line of output during streaming execution. The callback
-/// receives the test ID and the output line.
-pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
 /// Outcome of executing a single batch of tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +47,6 @@ pub struct TestRunner<'a, S, D> {
     sandbox: S,
     framework: &'a D,
     timeout: Duration,
-    output_callback: Option<OutputCallback>,
     cancellation_token: Option<CancellationToken>,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: Option<SharedJunitReport>,
@@ -85,7 +77,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             sandbox,
             framework,
             timeout,
-            output_callback: None,
             cancellation_token: None,
             junit_report: None,
             parts_dir: None,
@@ -125,19 +116,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self
     }
 
-    /// Sets a callback for test output.
-    ///
-    /// When set, test output is sent to the callback as it occurs.
-    /// This is useful for real-time output display.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function called for each line of output
-    pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
-        self.output_callback = Some(callback);
-        self
-    }
-
     /// Sets a local log file path for sandbox-side output logging.
     ///
     /// When set, the log path is passed to the sandbox exec command,
@@ -154,28 +132,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self.sandbox
     }
 
-    /// Process a single output line from the stream.
-    ///
-    /// Passes stdout/stderr lines to the output callback; ignores exit codes.
-    fn process_output_line(line: &OutputLine, output_id: &str, callback: &Option<OutputCallback>) {
-        match line {
-            OutputLine::Stdout(_) | OutputLine::Stderr(_) => {
-                if let Some(cb) = callback {
-                    cb(output_id, line);
-                }
-            }
-            OutputLine::ExitCode(_) => {}
-        }
-    }
-
     /// Execute command with streaming output.
     ///
     /// Returns `Ok(true)` when execution completes, `Ok(false)` if cancelled.
-    async fn exec_with_streaming(
-        &mut self,
-        cmd: &crate::provider::Command,
-        output_id: &str,
-    ) -> Result<bool> {
+    async fn exec_with_streaming(&mut self, cmd: &crate::provider::Command) -> Result<bool> {
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
         // If we have a cancellation token, use select! to race against it
@@ -187,24 +147,15 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         return Ok(false);
                     }
                     line = stream.next() => {
-                        match line {
-                            Some(line) => {
-                                Self::process_output_line(
-                                    &line,
-                                    output_id,
-                                    &self.output_callback,
-                                );
-                            }
-                            None => break, // Stream ended
+                        if line.is_none() {
+                            break; // Stream ended
                         }
                     }
                 }
             }
         } else {
-            // No cancellation token, process normally
-            while let Some(line) = stream.next().await {
-                Self::process_output_line(&line, output_id, &self.output_callback);
-            }
+            // No cancellation token, drain the stream
+            while stream.next().await.is_some() {}
         }
 
         Ok(true)
@@ -290,7 +241,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_EXEC,
         );
-        let completed = self.exec_with_streaming(&cmd, "batch").await?;
+        let completed = self.exec_with_streaming(&cmd).await?;
         drop(_exec_span);
 
         if !completed {
