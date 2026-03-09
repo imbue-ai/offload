@@ -1,6 +1,5 @@
 //! Test runner — executes test batches within a single sandbox.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -10,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::provider::{OutputLine, Sandbox};
+use crate::provider::Sandbox;
 use crate::report::SharedJunitReport;
 
 /// Count testcases in a JUnit XML string.
@@ -22,20 +21,6 @@ fn count_testcases_in_xml(xml: &str) -> usize {
 fn has_failures_in_xml(xml: &str) -> bool {
     xml.contains("<failure") || xml.contains("<error")
 }
-
-/// JSON result format from default provider sandboxes.
-#[derive(serde::Deserialize)]
-struct JsonExecResult {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Callback function for streaming test output.
-///
-/// Called for each line of output during streaming execution. The callback
-/// receives the test ID and the output line.
-pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
 
 /// Outcome of executing a single batch of tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,12 +47,13 @@ pub struct TestRunner<'a, S, D> {
     sandbox: S,
     framework: &'a D,
     timeout: Duration,
-    output_callback: Option<OutputCallback>,
     cancellation_token: Option<CancellationToken>,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: Option<SharedJunitReport>,
     /// Optional directory to save individual batch JUnit XMLs for debugging.
     parts_dir: Option<std::path::PathBuf>,
+    /// Optional local log file path passed to the sandbox exec command.
+    log_file: Option<std::path::PathBuf>,
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
 }
@@ -91,10 +77,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             sandbox,
             framework,
             timeout,
-            output_callback: None,
             cancellation_token: None,
             junit_report: None,
             parts_dir: None,
+            log_file: None,
             tracer,
             sandbox_pid,
         }
@@ -130,16 +116,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self
     }
 
-    /// Sets a callback for test output.
+    /// Sets a local log file path for sandbox-side output logging.
     ///
-    /// When set, test output is sent to the callback as it occurs.
-    /// This is useful for real-time output display.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function called for each line of output
-    pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
-        self.output_callback = Some(callback);
+    /// When set, the log path is passed to the sandbox exec command,
+    /// which writes stdout/stderr to the file.
+    pub fn with_log_file(mut self, path: std::path::PathBuf) -> Self {
+        self.log_file = Some(path);
         self
     }
 
@@ -150,73 +132,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         self.sandbox
     }
 
-    /// Execute command with streaming, collecting output and parsing JSON result.
+    /// Execute command with streaming output.
     ///
-    /// The `output_id` is passed to the output callback to identify the source.
-    /// Returns `Ok(None)` if cancelled before completion.
-    /// Process a single output line from the stream.
-    ///
-    /// If the line is a JSON-encoded `JsonExecResult` (the default provider
-    /// protocol), decode it and emit the contained stdout/stderr lines to the
-    /// callback individually. Otherwise pass the line through as-is.
-    ///
-    /// Returns `Some(JsonExecResult)` when a JSON result was decoded, so the
-    /// caller can use the parsed exit code and skip heuristic inference.
-    fn process_output_line(
-        line: &OutputLine,
-        output_id: &str,
-        stdout: &mut String,
-        stderr: &mut String,
-        callback: &Option<OutputCallback>,
-    ) -> Option<JsonExecResult> {
-        match line {
-            OutputLine::Stdout(s) => {
-                // Try to decode the default provider JSON protocol
-                if s.trim().starts_with('{')
-                    && let Ok(parsed) = serde_json::from_str::<JsonExecResult>(s)
-                {
-                    // Emit decoded stdout lines to callback
-                    if let Some(cb) = callback {
-                        for decoded_line in parsed.stdout.lines() {
-                            cb(output_id, &OutputLine::Stdout(decoded_line.to_string()));
-                        }
-                        for decoded_line in parsed.stderr.lines() {
-                            cb(output_id, &OutputLine::Stderr(decoded_line.to_string()));
-                        }
-                    }
-                    stdout.push_str(&parsed.stdout);
-                    stderr.push_str(&parsed.stderr);
-                    return Some(parsed);
-                }
-                // Not JSON — pass through as-is
-                if let Some(cb) = callback {
-                    cb(output_id, line);
-                }
-                stdout.push_str(s);
-                stdout.push('\n');
-            }
-            OutputLine::Stderr(s) => {
-                if let Some(cb) = callback {
-                    cb(output_id, line);
-                }
-                stderr.push_str(s);
-                stderr.push('\n');
-            }
-            OutputLine::ExitCode(_) => {}
-        }
-        None
-    }
-
-    async fn exec_with_streaming(
-        &mut self,
-        cmd: &crate::provider::Command,
-        output_id: &str,
-    ) -> Result<Option<crate::provider::ExecResult>> {
-        let start = std::time::Instant::now();
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        let mut json_result: Option<JsonExecResult> = None;
-
+    /// Returns `Ok(true)` when execution completes, `Ok(false)` if cancelled.
+    async fn exec_with_streaming(&mut self, cmd: &crate::provider::Command) -> Result<bool> {
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
         // If we have a cancellation token, use select! to race against it
@@ -225,66 +144,21 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 select! {
                     _ = token.cancelled() => {
                         debug!("Test execution cancelled (all tests passed)");
-                        return Ok(None);
+                        return Ok(false);
                     }
                     line = stream.next() => {
-                        match line {
-                            Some(line) => {
-                                if let Some(parsed) = Self::process_output_line(
-                                    &line,
-                                    output_id,
-                                    &mut stdout,
-                                    &mut stderr,
-                                    &self.output_callback,
-                                ) {
-                                    json_result = Some(parsed);
-                                }
-                            }
-                            None => break, // Stream ended
+                        if line.is_none() {
+                            break; // Stream ended
                         }
                     }
                 }
             }
         } else {
-            // No cancellation token, process normally
-            while let Some(line) = stream.next().await {
-                if let Some(parsed) = Self::process_output_line(
-                    &line,
-                    output_id,
-                    &mut stdout,
-                    &mut stderr,
-                    &self.output_callback,
-                ) {
-                    json_result = Some(parsed);
-                }
-            }
+            // No cancellation token, drain the stream
+            while stream.next().await.is_some() {}
         }
 
-        // Use parsed JSON result if available (default provider protocol)
-        if let Some(parsed) = json_result {
-            return Ok(Some(crate::provider::ExecResult {
-                exit_code: parsed.exit_code,
-                stdout,
-                stderr,
-                duration: start.elapsed(),
-            }));
-        }
-
-        // Fall back to inferring exit code from output
-        let exit_code =
-            if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR")
-            {
-                0
-            } else {
-                1
-            };
-
-        Ok(Some(crate::provider::ExecResult {
-            exit_code,
-            stdout,
-            stderr,
-            duration: start.elapsed(),
-        }))
+        Ok(true)
     }
 
     /// Runs multiple tests in a batch.
@@ -349,6 +223,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             .framework
             .produce_test_execution_command(tests, &result_path);
         cmd = cmd.timeout(self.timeout.as_secs());
+        if let Some(ref log_path) = self.log_file {
+            cmd.log_file = Some(log_path.clone());
+        }
 
         info!(
             "[BATCH EXEC] Sandbox {} executing command for {} tests: {}",
@@ -364,24 +241,22 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_EXEC,
         );
-        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
-            Some(result) => result,
-            None => {
-                // Cancelled - return early without recording results
-                warn!(
-                    "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
-                    sandbox_id, expected_count
-                );
-                return Ok(BatchOutcome::Cancelled);
-            }
-        };
+        let completed = self.exec_with_streaming(&cmd).await?;
         drop(_exec_span);
 
-        let duration = start.elapsed();
+        if !completed {
+            // Cancelled - return early without recording results
+            warn!(
+                "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
+                sandbox_id, expected_count
+            );
+            return Ok(BatchOutcome::Cancelled);
+        }
 
         info!(
-            "[BATCH COMPLETE] Sandbox {} finished execution: exit_code={}, duration={:?}",
-            sandbox_id, exec_result.exit_code, duration
+            "[BATCH COMPLETE] Sandbox {} finished execution in {:?}",
+            sandbox_id,
+            start.elapsed()
         );
 
         // Calculate unique test count (what pytest will actually produce)

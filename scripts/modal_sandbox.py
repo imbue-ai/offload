@@ -365,27 +365,31 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 @cli.command("exec")
 @click.argument("sandbox_id")
 @click.argument("command")
-def exec_command(sandbox_id: str, command: str):
+@click.option("--log-file", default=None, help="Write stdout/stderr to this local file")
+def exec_command(sandbox_id: str, command: str, log_file: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
-    # Execute command
-    process = sandbox.exec("bash", "-c", command)
+    # Redirect stderr to stdout so all output is in one stream
+    process = sandbox.exec("bash", "-c", command + " 2>&1")
 
-    # Collect output
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
+    # Open log file if requested
+    log_f = None
+    if log_file is not None:
+        os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+        log_f = open(log_file, "w")
+
+    # Stream all output to log file
+    for line in process.stdout:
+        if log_f is not None:
+            log_f.write(line)
+            log_f.flush()
+
     process.wait()
-    exit_code = process.returncode
 
-    # Output JSON result
-    result = {
-        "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-    print(json.dumps(result))
-    sys.exit(exit_code)
+    if log_f is not None:
+        log_f.close()
+    sys.exit(process.returncode)
 
 
 # App and function for the 'run' subcommand

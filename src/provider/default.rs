@@ -334,9 +334,25 @@ impl DefaultSandbox {
         // Escape the entire command so it can be passed as a single shell argument
         let escaped_cmd = shell_words::quote(&inner_cmd);
 
-        self.exec_command
+        let mut result = self
+            .exec_command
             .replace("{sandbox_id}", &self.id)
-            .replace("{command}", &escaped_cmd)
+            .replace("{command}", &escaped_cmd);
+
+        // Insert --log-file flag if a log file path is specified.
+        // The exec command looks like: "... exec <sandbox_id> <command>"
+        // We insert: "... exec --log-file <path> <sandbox_id> <command>"
+        if let Some(ref log_path) = cmd.log_file
+            && let Some(pos) = result.find(&self.id)
+        {
+            let log_arg = format!(
+                "--log-file {} ",
+                shell_words::quote(&log_path.to_string_lossy())
+            );
+            result.insert_str(pos, &log_arg);
+        }
+
+        result
     }
 
     /// Build the destroy command with substitutions.
@@ -455,6 +471,7 @@ mod tests {
             working_dir: None,
             env: Vec::new(),
             timeout_secs: None,
+            log_file: None,
         }
     }
 

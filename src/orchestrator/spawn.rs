@@ -4,7 +4,6 @@
 //! from a shared queue so N sandboxes can process M batches (M >= N).
 
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,10 +15,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance};
-use crate::provider::{OutputLine, Sandbox};
+use crate::provider::Sandbox;
 use crate::report::MasterJunitReport;
 
-use super::runner::{BatchOutcome, OutputCallback, TestRunner};
+use super::runner::{BatchOutcome, TestRunner};
 
 /// Configuration for a queue-based spawn worker.
 ///
@@ -118,31 +117,9 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         .with_junit_report(Arc::clone(&cfg.junit_report))
         .with_parts_dir(parts_dir);
 
-        // Per-runner log file
-        {
-            let log_path = cfg.logs_dir.join(format!("batch-{}.log", batch_idx));
-            match std::fs::File::create(&log_path) {
-                Ok(file) => {
-                    let log_file = Arc::new(std::sync::Mutex::new(file));
-                    let callback: OutputCallback = Arc::new(move |_test_id, line| {
-                        let msg = match line {
-                            OutputLine::Stdout(s) => format!("{}\n", s),
-                            OutputLine::Stderr(s) => format!("[stderr] {}\n", s),
-                            OutputLine::ExitCode(_) => return,
-                        };
-                        if let Ok(mut f) = log_file.lock()
-                            && let Err(e) = f.write_all(msg.as_bytes())
-                        {
-                            warn!("Failed to write to batch log: {}", e);
-                        }
-                    });
-                    runner = runner.with_output_callback(callback);
-                }
-                Err(e) => {
-                    warn!("Failed to create batch log {}: {}", log_path.display(), e);
-                }
-            }
-        }
+        // Per-batch log file (written by sandbox script via --log-file flag)
+        let log_path = cfg.logs_dir.join(format!("batch-{}.log", batch_idx));
+        runner = runner.with_log_file(log_path);
 
         // Verbose logging
         if cfg.verbose {
