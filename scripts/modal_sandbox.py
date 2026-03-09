@@ -369,7 +369,9 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
 def exec_command(sandbox_id: str, command: str, log_file: str | None):
     """Execute a command on an existing Modal sandbox."""
     sandbox = modal.Sandbox.from_id(sandbox_id)
-    process = sandbox.exec("bash", "-c", command)
+
+    # Redirect stderr to stdout so all output is in one stream
+    process = sandbox.exec("bash", "-c", command + " 2>&1")
 
     # Open log file if requested
     log_f = None
@@ -377,7 +379,7 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
         os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
         log_f = open(log_file, "w")
 
-    # Stream stdout, writing to log file as lines arrive
+    # Stream all output to log file
     for line in process.stdout:
         if log_f is not None:
             log_f.write(line)
@@ -387,7 +389,6 @@ def exec_command(sandbox_id: str, command: str, log_file: str | None):
 
     if log_f is not None:
         log_f.close()
-
     sys.exit(process.returncode)
 
 
