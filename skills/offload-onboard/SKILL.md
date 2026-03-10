@@ -307,7 +307,7 @@ Do not proceed to optimization until all tests pass.
 Run a simple linear search over `max_parallel` to minimize total runtime:
 
 1. Test `max_parallel` values: 1, 2, 3, 4, 6, 8 (keeping other params fixed)
-2. For each value, edit `offload.toml`, run `./scripts/offload-tests.sh`, and record the duration
+2. For each value, edit `offload.toml`, run `time ./scripts/offload-tests.sh`, and record the wall-clock duration from the `real` line
 3. Pick the value with the lowest duration
 4. Optionally test `retry_count = 0` vs `retry_count = 1` at the optimal parallelism
 
