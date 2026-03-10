@@ -96,8 +96,7 @@ include_cwd = true
 [framework]
 type = "pytest"
 paths = ["<test-paths>"]
-python = "<runner>"              # e.g. "python", "uv"
-extra_args = ["<extra-args>"]    # e.g. ["run", "--with=pytest"] for uv
+command = "<pytest-command>"      # e.g. "uv run pytest", "poetry run pytest", "python -m pytest"
 
 [groups.all]
 retry_count = 0
@@ -493,6 +492,7 @@ node_modules
 |------|---------|
 | `.devcontainer/Dockerfile` (or existing) | Base image for Modal sandboxes |
 | `.dockerignore` | (If needed) Exclude local artifacts from sandbox — see Troubleshooting |
+| `conftest.py` | (pytest only) JUnit ID normalization hook — see Step 5 |
 | `offload.toml` | Offload configuration |
 | `scripts/offload-tests.sh` (or Makefile target) | Local invocation convenience |
 | `.gitignore` | Exclude Offload artifacts |
