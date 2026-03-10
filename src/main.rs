@@ -186,7 +186,7 @@ async fn discover_all_tests(
     for (group_name, group_cfg) in groups {
         let tests = match framework {
             FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())
+                PytestFramework::new(cfg.clone())?
                     .discover(&[], &group_cfg.filters, group_name)
                     .await?
             }
@@ -229,7 +229,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 config,
                 all_tests,
                 provider,
-                PytestFramework::new(f_cfg.clone()),
+                PytestFramework::new(f_cfg.clone())?,
                 copy_dirs,
                 verbose,
                 tracer,
