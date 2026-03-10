@@ -156,12 +156,25 @@ Note: if discovery or execution requires pre-steps like `uv sync --all-packages`
 
 For the full configuration reference and more examples, see the Offload README.
 
-Configuration reference:
+Configuration reference for fields used above:
+
+**`[offload]`**
 - `max_parallel`: Number of concurrent Modal sandboxes (start with 3, optimize later)
-- `test_timeout_secs`: Per-test-batch timeout (120s is generous for unit tests)
-- `sandbox_project_root`: The path where project files live inside the sandbox, exported as `OFFLOAD_ROOT`
+- `test_timeout_secs`: Per-test-batch timeout in seconds (120s is generous for unit tests)
+- `sandbox_project_root`: Project root path inside the sandbox, exported as `OFFLOAD_ROOT`
 - `sandbox_init_cmd`: Optional command to run during image build, after cwd/copy-dirs are applied (e.g. `"uv sync --all-packages"`)
+
+**`[provider]`** (Modal)
+- `dockerfile`: Path to the Dockerfile for building the sandbox image
+- `include_cwd`: Copy the current working directory into the image (default: `false`)
+
+**`[framework]`** (pytest)
+- `paths`: Directories to search for tests (default: `["tests"]`)
+- `command`: Full command prefix for pytest invocation (e.g. `"uv run pytest"`). Replaces the legacy `python`/`extra_args` fields
+
+**`[groups.<name>]`**
 - `retry_count`: Number of retries for failed tests (0 = no retries, 1 = catches transient failures)
+- `filters`: Filter string passed to the framework during discovery (e.g. `-m 'not slow'`)
 
 ### Step 5: Add JUnit ID Normalization (pytest only)
 
