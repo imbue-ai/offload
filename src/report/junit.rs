@@ -237,12 +237,12 @@ impl MasterJunitReport {
     }
 }
 
-/// Helper to extract a string attribute from a BytesStart element.
+/// Extracts a string attribute, decoding XML entities (`&gt;` -> `>`).
 fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == name)
-        .and_then(|a| String::from_utf8(a.value.to_vec()).ok())
+        .and_then(|a| a.unescape_value().ok().map(|s| s.into_owned()))
 }
 
 /// Helper to extract an i32 attribute with default 0.
@@ -723,5 +723,29 @@ mod tests {
     fn test_load_test_durations_nonexistent_file() {
         let durations = load_test_durations(Path::new("/nonexistent/path/junit.xml"), "{name}");
         assert!(durations.is_empty());
+    }
+
+    #[test]
+    fn test_get_attr_unescapes_xml_entities() {
+        let xml =
+            r#"<testcase name="math &gt; add &gt; adds two" classname="tests/math.test.ts"/>"#;
+        let suites = parse_all_testsuites_xml(&format!(
+            r#"<?xml version="1.0"?><testsuites><testsuite name="s" tests="1" failures="0" errors="0" skipped="0" time="0">{}</testsuite></testsuites>"#,
+            xml
+        ));
+        assert_eq!(suites.len(), 1);
+        assert_eq!(suites[0].testcases.len(), 1);
+        assert_eq!(suites[0].testcases[0].name, "math > add > adds two");
+    }
+
+    #[test]
+    fn test_get_attr_unescapes_ampersand_and_quotes() {
+        let xml = r#"<testsuite name="a &amp; b" tests="1" failures="0" errors="0" skipped="0" time="0"><testcase name="x &lt; y &gt; z &quot;q&quot;" classname="c" time="0"/></testsuite>"#;
+        let suites = parse_all_testsuites_xml(&format!(
+            r#"<?xml version="1.0"?><testsuites>{}</testsuites>"#,
+            xml
+        ));
+        assert_eq!(suites[0].name, "a & b");
+        assert_eq!(suites[0].testcases[0].name, r#"x < y > z "q""#);
     }
 }
