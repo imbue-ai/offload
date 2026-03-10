@@ -184,25 +184,27 @@ mod tests {
     use crate::config::PytestFrameworkConfig;
 
     #[test]
-    fn test_command_prefix_with_command() {
+    fn test_command_prefix_with_command() -> Result<(), Box<dyn std::error::Error>> {
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
             ..Default::default()
         };
-        let fw = PytestFramework::new(config).unwrap();
+        let fw = PytestFramework::new(config)?;
         assert_eq!(fw.program, "uv");
         assert_eq!(fw.prefix_args, vec!["run", "pytest"]);
+        Ok(())
     }
 
     #[test]
-    fn test_command_prefix_default() {
+    fn test_command_prefix_default() -> Result<(), Box<dyn std::error::Error>> {
         let config = PytestFrameworkConfig {
             command: "python -m pytest".to_string(),
             ..Default::default()
         };
-        let fw = PytestFramework::new(config).unwrap();
+        let fw = PytestFramework::new(config)?;
         assert_eq!(fw.program, "python");
         assert_eq!(fw.prefix_args, vec!["-m", "pytest"]);
+        Ok(())
     }
 
     #[test]
@@ -224,13 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_command_with_run_args() {
+    fn test_execution_command_with_run_args() -> Result<(), Box<dyn std::error::Error>> {
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
             run_args: Some("--no-cov --timeout=30".to_string()),
             ..Default::default()
         };
-        let fw = PytestFramework::new(config).unwrap();
+        let fw = PytestFramework::new(config)?;
         let record = TestRecord::new("tests/test_a.py::test_one", "test-group");
         let tests = vec![TestInstance::new(&record)];
         let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml");
@@ -238,5 +240,6 @@ mod tests {
         assert!(cmd.args.contains(&"--no-cov".to_string()));
         assert!(cmd.args.contains(&"--timeout=30".to_string()));
         assert!(cmd.args.contains(&"tests/test_a.py::test_one".to_string()));
+        Ok(())
     }
 }
