@@ -5,7 +5,7 @@ description: "Onboard a repository to use Offload for parallel test execution on
 
 # Onboard Repository to Offload
 
-This skill walks through onboarding the current repository to use **Offload** — a parallel test runner that executes tests across Modal cloud sandboxes. Offload is installed as part of the procedure below (`cargo install offload@0.5.0`).
+This skill walks through onboarding the current repository to use **Offload** — a parallel test runner that executes tests across Modal cloud sandboxes. Offload is installed as part of the procedure below.
 
 ## Procedure
 
@@ -494,7 +494,6 @@ If tests fail due to local artifacts leaking into the sandbox (e.g. "Exec format
 .github
 __pycache__
 *.egg-info
-.offload
 .offload-image-cache  # excluded from sandbox, but should be checked in to git
 test-results
 build
