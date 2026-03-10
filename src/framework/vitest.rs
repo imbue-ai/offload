@@ -68,7 +68,13 @@ impl VitestFramework {
                 .unwrap_or(&file_path)
                 .to_string_lossy();
 
-            let test_id = format!("{} > {}", relative, item.name);
+            // Bake file:line into the ID for execution targeting.
+            // Example: "tests/math.test.ts:6 > math > add > adds two positive numbers"
+            let line_suffix = item
+                .location
+                .as_ref()
+                .map_or(String::new(), |loc| format!(":{}", loc.line));
+            let test_id = format!("{}{} > {}", relative, line_suffix, item.name);
 
             let mut record = TestRecord::new(&test_id, group);
             record.name = item.name;
@@ -165,17 +171,17 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd.arg("run");
 
-        // Collect unique file paths from test IDs.
-        // Test ID format: "{relative_file} > {name}" -- extract the file part.
-        let mut files: Vec<&str> = tests
+        // Extract file:line selectors from test IDs.
+        // Test ID format: "{file}:{line} > {name}" -- extract the "file:line" part.
+        let mut selectors: Vec<&str> = tests
             .iter()
             .filter_map(|t| t.id().split(" > ").next())
             .collect();
-        files.sort_unstable();
-        files.dedup();
+        selectors.sort_unstable();
+        selectors.dedup();
 
-        for file in files {
-            cmd = cmd.arg(file);
+        for selector in selectors {
+            cmd = cmd.arg(selector);
         }
 
         cmd = cmd
@@ -235,14 +241,14 @@ mod tests {
         let fw = VitestFramework::new(config)?;
 
         let r1 = TestRecord::new(
-            "tests/math.test.ts > math > add > adds two positive numbers",
+            "tests/math.test.ts:6 > math > add > adds two positive numbers",
             "grp",
         );
         let r2 = TestRecord::new(
-            "tests/math.test.ts > math > subtract > subtracts two numbers",
+            "tests/math.test.ts:20 > math > subtract > subtracts two numbers",
             "grp",
         );
-        let r3 = TestRecord::new("tests/string.test.ts > string utils > capitalize", "grp");
+        let r3 = TestRecord::new("tests/string.test.ts:14 > string utils > capitalize", "grp");
         let tests = vec![
             TestInstance::new(&r1),
             TestInstance::new(&r2),
@@ -253,21 +259,15 @@ mod tests {
         assert_eq!(cmd.program, "npx");
         assert!(cmd.args.contains(&"vitest".to_string()));
         assert!(cmd.args.contains(&"run".to_string()));
-        assert!(cmd.args.contains(&"tests/math.test.ts".to_string()));
-        assert!(cmd.args.contains(&"tests/string.test.ts".to_string()));
+        assert!(cmd.args.contains(&"tests/math.test.ts:6".to_string()));
+        assert!(cmd.args.contains(&"tests/math.test.ts:20".to_string()));
+        assert!(cmd.args.contains(&"tests/string.test.ts:14".to_string()));
         assert!(cmd.args.contains(&"--reporter=junit".to_string()));
         assert!(
             cmd.args
                 .contains(&"--outputFile=/tmp/junit.xml".to_string())
         );
         assert!(cmd.args.contains(&"--no-coverage".to_string()));
-
-        let math_count = cmd
-            .args
-            .iter()
-            .filter(|a| *a == "tests/math.test.ts")
-            .count();
-        assert_eq!(math_count, 1, "tests/math.test.ts should be deduplicated");
 
         Ok(())
     }
@@ -297,7 +297,7 @@ mod tests {
 
         assert_eq!(
             tests[0].id,
-            "tests/math.test.ts > math > add > adds two positive numbers"
+            "tests/math.test.ts:6 > math > add > adds two positive numbers"
         );
         assert_eq!(tests[0].name, "math > add > adds two positive numbers");
         assert_eq!(
@@ -312,7 +312,7 @@ mod tests {
 
         assert_eq!(
             tests[1].id,
-            "tests/string.test.ts > string utils > capitalize"
+            "tests/string.test.ts:10 > string utils > capitalize"
         );
 
         Ok(())
