@@ -161,10 +161,17 @@ impl Scheduler {
         let mut tests_with_duration: Vec<_> = tests
             .iter()
             .map(|t| {
-                (
-                    *t,
-                    durations.get(t.id()).copied().unwrap_or(default_duration),
-                )
+                let duration = match durations.get(t.id()) {
+                    Some(&d) => d,
+                    None => {
+                        tracing::warn!(
+                            "No historical duration for test '{}', using default",
+                            t.id()
+                        );
+                        default_duration
+                    }
+                };
+                (*t, duration)
             })
             .collect();
         tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
