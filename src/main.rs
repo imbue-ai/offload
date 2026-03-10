@@ -336,12 +336,11 @@ async fn run_tests(
         .collect();
 
     if !cli_env.is_empty() {
+        info!("CLI --env vars: {:?}", cli_env.keys().collect::<Vec<_>>());
         match &mut config.provider {
             ProviderConfig::Local(cfg) => cfg.env.extend(cli_env),
             ProviderConfig::Default(cfg) => cfg.env.extend(cli_env),
-            ProviderConfig::Modal(_) => {
-                // Modal provider doesn't have env config - env vars are passed per-sandbox
-            }
+            ProviderConfig::Modal(cfg) => cfg.env.extend(cli_env),
         }
     }
 

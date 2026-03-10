@@ -173,6 +173,12 @@ pub struct ModalProviderConfig {
     #[serde(default)]
     pub include_cwd: bool,
 
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
     /// Directories to copy into the sandbox image.
     ///
     /// Each entry is a string in the format "local_path:remote_path".

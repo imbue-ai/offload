@@ -39,6 +39,8 @@ pub struct ModalProvider {
     connector: Arc<ShellConnector>,
     /// Cached image ID from the prepare command.
     image_id: String,
+    /// Environment variables from provider configuration.
+    env: Vec<(String, String)>,
 }
 
 impl ModalProvider {
@@ -174,9 +176,16 @@ impl ModalProvider {
 
         debug!("Modal image prepared with ID: {}", image_id);
 
+        let env: Vec<(String, String)> = config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         Ok(Self {
             connector,
             image_id,
+            env,
         })
     }
 }
@@ -216,14 +225,22 @@ impl SandboxProvider for ModalProvider {
         let download_command =
             Some("uv run @modal_sandbox.py download {sandbox_id} {paths}".to_string());
 
+        // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
+        let mut env = self.base_env();
+        env.extend(config.env.iter().cloned());
+
         Ok(DefaultSandbox::new(
             sandbox_id,
             self.connector.clone(),
             exec_command,
             destroy_command,
             download_command,
-            config.env.clone(),
+            env,
         ))
+    }
+
+    fn base_env(&self) -> Vec<(String, String)> {
+        self.env.clone()
     }
 }
 
@@ -259,6 +276,7 @@ mod tests {
             dockerfile: Some("./Dockerfile".to_string()),
             include_cwd: false,
             copy_dirs: vec![],
+            env: Default::default(),
         };
 
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -286,6 +304,7 @@ mod tests {
             dockerfile: Some("./Dockerfile.test".to_string()),
             include_cwd: true,
             copy_dirs: vec!["./src:/app/src".to_string()],
+            env: Default::default(),
         };
 
         let copy_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
