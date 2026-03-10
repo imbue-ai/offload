@@ -139,11 +139,8 @@ impl SandboxProvider for ModalProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating Modal sandbox: {}", config.id);
 
-        // Build create command with --env flags so Modal sets them as real sandbox env vars
-        let mut create_command = format!("uv run @modal_sandbox.py create {}", self.image_id);
-        for (k, v) in self.env.iter().chain(config.env.iter()) {
-            create_command.push_str(&format!(" --env {}={}", k, shell_words::quote(v)));
-        }
+        // Run create command to get sandbox_id
+        let create_command = format!("uv run @modal_sandbox.py create {}", self.image_id);
         debug!("Running: {}", create_command);
 
         let result = self.connector.run(&create_command).await?;
