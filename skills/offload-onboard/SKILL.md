@@ -263,7 +263,7 @@ exec offload run --copy-dir ".:/app" "$@"
 
 Make it executable with `chmod +x scripts/offload-tests.sh`.
 
-The `--copy-dir` flag tells Offload to copy the local directory into the sandbox at the given path. The target path must match `sandbox_project_root` in `offload.toml` (e.g. `".:/app"` when `sandbox_project_root = "/app"`). This is specified at invocation time, not in `offload.toml`, because it's a runtime concern.
+The `--copy-dir` flag tells Offload to bake the local directory into the sandbox image at the given path during the prepare step. The target path must match `sandbox_project_root` in `offload.toml` (e.g. `".:/app"` when `sandbox_project_root = "/app"`). This is specified at invocation time, not in `offload.toml`, because it depends on where you're running from.
 
 **Use this script (or the equivalent invocation) for all subsequent steps that run Offload.**
 
