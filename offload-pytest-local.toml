@@ -11,8 +11,7 @@ type = "local"
 [framework]
 type = "pytest"
 paths = ["examples/tests"]
-python = "uv"
-extra_args = ["run", "--with=pytest"]
+command = "uv run --with=pytest pytest"
 
 [groups.unit]
 retry_count = 0

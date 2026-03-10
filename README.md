@@ -40,7 +40,7 @@ cargo install --path .
 
 **For the pytest framework** (local test discovery):
 - Python and pytest installed locally — Offload runs `pytest --collect-only` on the local machine to discover tests
-- The configured Python runner (e.g. `uv`, `poetry`, `python`) must be on PATH
+- The configured `command` (e.g. `uv run pytest`, `python -m pytest`) must be on PATH
 
 **For the cargo framework:**
 - [cargo-nextest](https://nexte.st/) — Offload runs `cargo nextest list` for test discovery. Install with `cargo install cargo-nextest`
@@ -56,7 +56,7 @@ Offload relies on a stable relationship between test discovery, execution, and r
 
 Each group triggers its own discovery call. The discovered test IDs become the canonical identifiers for the entire run.
 
-- **pytest**: Runs `{command} --collect-only -q` (or `{python} {extra_args} -m pytest --collect-only -q` in legacy mode) locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`).
+- **pytest**: Runs `{command} --collect-only -q` locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`).
 - **cargo**: Runs `cargo nextest list --message-format json` locally and parses test IDs from the JSON output. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
 - **default**: Runs `discover_command` through `sh -c` and reads one test ID per line from stdout. The `{filters}` placeholder is replaced with the group's filter string (or empty string). Lines starting with `#` are ignored.
 
@@ -264,10 +264,8 @@ The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `paths` | list | `["tests"]` | Directories to search for tests |
-| `command` | string | (none) | Full command prefix for pytest invocation (e.g. `"uv run pytest"`). When set, replaces `python`/`extra_args`/`-m pytest` |
-| `run_args` | string | (none) | Extra arguments for test execution only (not discovery). Only used when `command` is set |
-| `extra_args` | list | `[]` | (Legacy) Additional pytest arguments for discovery. Ignored when `command` is set |
-| `python` | string | `"python"` | (Legacy) Python interpreter. Ignored when `command` is set |
+| `command` | string | `"python -m pytest"` | Full command prefix for pytest invocation (e.g. `"uv run pytest"`) |
+| `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
 
 #### `type = "cargo"`
 
