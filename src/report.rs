@@ -15,8 +15,9 @@ use crate::orchestrator::RunResult;
 /// Prints a summary of test results to the console.
 ///
 /// Displays pass/fail counts with colored output and appropriate
-/// status messages based on the results.
-pub fn print_summary(result: &RunResult) {
+/// status messages based on the results. When `show_cost` is true
+/// and the estimated cost is non-zero, displays the cost as well.
+pub fn print_summary(result: &RunResult, show_cost: bool) {
     println!();
     println!("Test Results:");
     println!("  Total:   {}", result.total_tests);
@@ -32,6 +33,10 @@ pub fn print_summary(result: &RunResult) {
     }
 
     println!("  Duration: {:?}", result.duration);
+
+    if show_cost && result.estimated_cost.estimated_cost_usd > 0.0 {
+        println!("  {}", result.estimated_cost);
+    }
 
     if result.success() {
         println!();

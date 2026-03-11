@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::framework::{TestFramework, TestInstance, TestRecord};
-use crate::provider::Sandbox;
+use crate::provider::{CostEstimate, Sandbox};
 use crate::report::{MasterJunitReport, load_test_durations, print_summary};
 
 pub use pool::SandboxPool;
@@ -66,6 +66,9 @@ pub struct RunResult {
 
     /// Wall-clock duration of the entire test run.
     pub duration: Duration,
+
+    /// Estimated cost of the test run (aggregated from all sandboxes).
+    pub estimated_cost: CostEstimate,
 }
 
 impl RunResult {
@@ -199,6 +202,7 @@ where
                 flaky: 0,
                 not_run: 0,
                 duration: start.elapsed(),
+                estimated_cost: CostEstimate::default(),
             });
         }
 
@@ -413,6 +417,7 @@ where
 
         // Use the JUnit total as the authoritative count (passed + failed + flaky = total)
         // This ensures passed can never exceed total
+        // Note: estimated_cost is set to default here and updated after sandbox cleanup
         let run_result = RunResult {
             total_tests: total_in_junit,
             passed: passed + flaky_count, // Flaky tests count as passed
@@ -420,13 +425,14 @@ where
             flaky: flaky_count,
             not_run,
             duration: start.elapsed(),
+            estimated_cost: CostEstimate::default(),
         };
         drop(_agg_span);
 
         progress.finish_and_clear();
-        print_summary(&run_result);
 
         // Terminate all sandboxes in parallel (after printing results)
+        // Aggregate cost estimates BEFORE terminating (cost_estimate uses elapsed time)
         let _cleanup_span = self.tracer.span(
             "sandbox_cleanup",
             "orchestrator",
@@ -440,6 +446,17 @@ where
                 Vec::new()
             }
         };
+
+        // Aggregate cost estimates before terminating sandboxes
+        let estimated_cost = sandboxes
+            .iter()
+            .fold(CostEstimate::default(), |mut acc, sb| {
+                let cost = sb.cost_estimate();
+                acc.cpu_seconds += cost.cpu_seconds;
+                acc.estimated_cost_usd += cost.estimated_cost_usd;
+                acc
+            });
+
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
             if let Err(e) = sandbox.terminate().await {
                 warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
@@ -447,6 +464,14 @@ where
         });
         futures::future::join_all(terminate_futures).await;
         drop(_cleanup_span);
+
+        // Update run_result with estimated_cost
+        let run_result = RunResult {
+            estimated_cost,
+            ..run_result
+        };
+
+        print_summary(&run_result, false);
 
         Ok(run_result)
     }
