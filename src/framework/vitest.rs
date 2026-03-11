@@ -77,12 +77,7 @@ impl VitestFramework {
                 .map_or(String::new(), |loc| format!(":{}", loc.line));
             let test_id = format!("{}{} > {}", relative, line_suffix, item.name);
 
-            let mut record = TestRecord::new(&test_id, group);
-            record.name = item.name;
-            record.file = Some(file_path);
-            record.line = item.location.as_ref().map(|loc| loc.line);
-
-            tests.push(record);
+            tests.push(TestRecord::new(&test_id, group));
         }
 
         Ok(tests)
@@ -246,18 +241,14 @@ impl TestFramework for VitestFramework {
         "json"
     }
 
-    fn process_results(&self, raw_output: &str) -> String {
+    fn process_results(&self, raw_output: &str) -> super::FrameworkResult<String> {
         use quick_xml::Writer;
         use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
         use std::io::Cursor;
 
-        let report: VitestJsonReport = match serde_json::from_str(raw_output) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to parse vitest JSON output: {}", e);
-                return raw_output.to_string();
-            }
-        };
+        let report: VitestJsonReport = serde_json::from_str(raw_output).map_err(|e| {
+            super::FrameworkError::ParseError(format!("Failed to parse vitest JSON output: {}", e))
+        })?;
 
         let cwd_str = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
@@ -397,8 +388,9 @@ impl TestFramework for VitestFramework {
 
         let _ = writer.write_event(Event::End(BytesEnd::new("testsuites")));
 
-        String::from_utf8(writer.into_inner().into_inner())
-            .unwrap_or_else(|_| raw_output.to_string())
+        String::from_utf8(writer.into_inner().into_inner()).map_err(|e| {
+            super::FrameworkError::ParseError(format!("Failed to encode JUnit XML as UTF-8: {}", e))
+        })
     }
 }
 
@@ -499,7 +491,7 @@ mod tests {
             }]
         }"#;
 
-        let junit = fw.process_results(json);
+        let junit = fw.process_results(json)?;
 
         // The file path in classname depends on CWD stripping; just check
         // that the line number suffix is present and the structure is correct.
@@ -552,7 +544,7 @@ mod tests {
             }]
         }"#;
 
-        let junit = fw.process_results(json);
+        let junit = fw.process_results(json)?;
 
         assert!(
             junit.contains("runs"),
@@ -597,7 +589,7 @@ mod tests {
             }]
         }"#;
 
-        let junit = fw.process_results(json);
+        let junit = fw.process_results(json)?;
 
         assert!(
             junit.contains("runs"),
@@ -614,14 +606,12 @@ mod tests {
     }
 
     #[test]
-    fn test_process_results_passthrough_xml() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_process_results_rejects_invalid_input() -> Result<(), Box<dyn std::error::Error>> {
         let config = VitestFrameworkConfig::default();
         let fw = VitestFramework::new(config)?;
 
-        // If input looks like XML (not JSON), it should attempt JSON parse, fail, and return as-is
-        let xml = r#"<?xml version="1.0"?><testsuites><testsuite name="s" tests="1" failures="0" errors="0" skipped="0" time="0"><testcase name="t" classname="c" time="0"/></testsuite></testsuites>"#;
-        let result = fw.process_results(xml);
-        assert_eq!(result, xml);
+        let result = fw.process_results("not json");
+        assert!(result.is_err());
 
         Ok(())
     }
@@ -653,15 +643,6 @@ mod tests {
             tests[0].id,
             "tests/math.test.ts:6 > math > add > adds two positive numbers"
         );
-        assert_eq!(tests[0].name, "math > add > adds two positive numbers");
-        assert_eq!(
-            tests[0]
-                .file
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string()),
-            Some("/project/tests/math.test.ts".to_string())
-        );
-        assert_eq!(tests[0].line, Some(6));
         assert_eq!(tests[0].group, "default");
 
         assert_eq!(

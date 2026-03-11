@@ -406,7 +406,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 );
 
                 // Convert raw output to JUnit XML (vitest produces JSON, others pass through)
-                let junit_xml = self.framework.process_results(&raw_content);
+                let junit_xml = self
+                    .framework
+                    .process_results(&raw_content)
+                    .map_err(|e| anyhow::anyhow!("Failed to process test results: {}", e))?;
 
                 // Count testcases in the processed JUnit XML
                 let processed_count = count_testcases_in_xml(&junit_xml);

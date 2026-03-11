@@ -903,7 +903,6 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                stream_output: false,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
             },
