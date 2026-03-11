@@ -20,6 +20,28 @@ use crate::connector::{Connector, ShellConnector};
 /// or a [`ProviderError`] describing what went wrong.
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// Tracks sandbox compute costs for billing visibility.
+///
+/// Used to display cost information after test runs, helping users
+/// understand the resource consumption of their test suite.
+#[derive(Clone, Debug, Default)]
+pub struct CostEstimate {
+    /// Total CPU seconds consumed across all sandboxes.
+    pub cpu_seconds: f64,
+    /// Estimated cost in USD based on provider pricing.
+    pub estimated_cost_usd: f64,
+}
+
+impl std::fmt::Display for CostEstimate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Estimated cost: ${:.4} ({:.1} CPU-seconds)",
+            self.estimated_cost_usd, self.cpu_seconds
+        )
+    }
+}
+
 /// Errors that can occur during provider operations.
 ///
 /// Errors are categorized to enable appropriate handling strategies:
