@@ -55,7 +55,6 @@ pub struct TestcaseXml {
     pub time: f64,
     pub failure: Option<FailureXml>,
     pub error: Option<FailureXml>,
-    pub skipped: bool,
 }
 
 /// Parsed failure/error element from JUnit XML.
@@ -295,7 +294,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
-                        skipped: false,
                     });
                 }
                 b"failure" => {
@@ -307,11 +305,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                     in_error = true;
                     error_message = get_attr(&e, b"message");
                     current_failure_content.clear();
-                }
-                b"skipped" => {
-                    if let Some(ref mut tc) = current_testcase {
-                        tc.skipped = true;
-                    }
                 }
                 _ => {}
             },
@@ -337,15 +330,9 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
-                        skipped: false,
                     };
                     if let Some(ref mut ts) = current_testsuite {
                         ts.testcases.push(tc);
-                    }
-                }
-                b"skipped" => {
-                    if let Some(ref mut tc) = current_testcase {
-                        tc.skipped = true;
                     }
                 }
                 _ => {}
@@ -398,21 +385,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
     }
 
     testsuites
-}
-
-/// Writes testsuites to a JUnit XML string, computing totals from the suites.
-pub fn write_testsuites_xml_from_suites(testsuites: &[TestsuiteXml]) -> String {
-    let total_tests: i32 = testsuites.iter().map(|s| s.tests).sum();
-    let total_failures: i32 = testsuites.iter().map(|s| s.failures).sum();
-    let total_errors: i32 = testsuites.iter().map(|s| s.errors).sum();
-    let total_time: f64 = testsuites.iter().map(|s| s.time).sum();
-    write_testsuites_xml(
-        testsuites,
-        total_tests,
-        total_failures,
-        total_errors,
-        total_time,
-    )
 }
 
 /// Writes testsuites to XML string using quick-xml Writer.
@@ -485,7 +457,7 @@ fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
     }
     elem.push_attribute(("time", format!("{:.3}", tc.time).as_str()));
 
-    let has_content = tc.failure.is_some() || tc.error.is_some() || tc.skipped;
+    let has_content = tc.failure.is_some() || tc.error.is_some();
 
     if has_content {
         let _ = writer.write_event(Event::Start(elem));
@@ -495,9 +467,6 @@ fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
         }
         if let Some(ref error) = tc.error {
             write_failure_or_error(writer, "error", error);
-        }
-        if tc.skipped {
-            let _ = writer.write_event(Event::Empty(BytesStart::new("skipped")));
         }
 
         let _ = writer.write_event(Event::End(BytesEnd::new("testcase")));

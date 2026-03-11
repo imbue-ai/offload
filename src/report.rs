@@ -7,7 +7,7 @@ pub mod junit;
 
 pub use junit::{
     FailureXml, MasterJunitReport, SharedJunitReport, TestStatus, TestcaseXml, TestsuiteXml,
-    load_test_durations, parse_all_testsuites_xml, write_testsuites_xml_from_suites,
+    load_test_durations, parse_all_testsuites_xml,
 };
 
 use crate::orchestrator::RunResult;
