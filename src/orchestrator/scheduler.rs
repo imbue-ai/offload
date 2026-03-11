@@ -164,19 +164,11 @@ impl Scheduler {
                 let duration = match durations.get(t.id()) {
                     Some(&d) => d,
                     None => {
-                        // Try stripping :line from the file portion for vitest compatibility.
-                        // ID format: "file:line > name" -> try "file > name"
-                        let normalized = strip_file_line_suffix(t.id());
-                        match durations.get(normalized.as_str()) {
-                            Some(&d) => d,
-                            None => {
-                                tracing::warn!(
-                                    "No historical duration for test '{}', using default",
-                                    t.id()
-                                );
-                                default_duration
-                            }
-                        }
+                        tracing::warn!(
+                            "No historical duration for test '{}', using default",
+                            t.id()
+                        );
+                        default_duration
                     }
                 };
                 (*t, duration)
@@ -216,23 +208,6 @@ impl Scheduler {
             .map(|b| b.tests)
             .collect()
     }
-}
-
-/// Strips a `:line` suffix from the file portion of a test ID.
-///
-/// Vitest test IDs include line numbers for execution targeting
-/// (e.g. `"tests/math.test.ts:6 > math > add"`), but JUnit XML
-/// does not include line numbers. This normalizes the ID for
-/// duration lookups against JUnit-derived IDs.
-fn strip_file_line_suffix(test_id: &str) -> String {
-    if let Some((file_part, rest)) = test_id.split_once(" > ")
-        && let Some((file, line)) = file_part.rsplit_once(':')
-        && !line.is_empty()
-        && line.chars().all(|c| c.is_ascii_digit())
-    {
-        return format!("{} > {}", file, rest);
-    }
-    test_id.to_string()
 }
 
 #[cfg(test)]
@@ -605,24 +580,5 @@ mod tests {
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 100);
-    }
-
-    #[test]
-    fn test_strip_file_line_suffix() {
-        assert_eq!(
-            strip_file_line_suffix("tests/math.test.ts:6 > math > add"),
-            "tests/math.test.ts > math > add"
-        );
-        assert_eq!(
-            strip_file_line_suffix("tests/math.test.ts > math > add"),
-            "tests/math.test.ts > math > add"
-        );
-        // Non-numeric after colon should not be stripped
-        assert_eq!(
-            strip_file_line_suffix("tests/math.test.ts:abc > math > add"),
-            "tests/math.test.ts:abc > math > add"
-        );
-        // No " > " separator
-        assert_eq!(strip_file_line_suffix("plain_test_id"), "plain_test_id");
     }
 }
