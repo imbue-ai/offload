@@ -178,6 +178,10 @@ pub struct ModalProviderConfig {
     /// making sandbox creation faster.
     #[serde(default)]
     pub copy_dirs: Vec<String>,
+
+    /// CPU cores per sandbox (default: 0.125).
+    #[serde(default = "default_modal_cpu_cores")]
+    pub cpu_cores: f64,
 }
 
 /// Configuration for custom remote execution provider.
@@ -272,10 +276,22 @@ pub struct DefaultProviderConfig {
     /// These are merged with (and override) the current environment.
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    /// CPU cores per sandbox (default: 1.0).
+    #[serde(default = "default_cpu_cores")]
+    pub cpu_cores: f64,
 }
 
 fn default_remote_timeout() -> u64 {
     3600 // 1 hour
+}
+
+fn default_cpu_cores() -> f64 {
+    1.0
+}
+
+fn default_modal_cpu_cores() -> f64 {
+    0.125
 }
 
 /// Configuration for a test group.

@@ -128,11 +128,21 @@ impl SandboxProvider for DefaultProvider {
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating default sandbox: {}", config.id);
 
-        // Build the create command, substituting {image_id} if available
+        let cpu_cores = self.config.cpu_cores;
+        let cpu_cores_str = cpu_cores.to_string();
+
+        // Build the create command, substituting {image_id} and {cpu_cores} if available
         // Note: copy_dirs are already baked into the image during prepare
         let create_command = match self.image_id.as_ref() {
-            Some(id) => self.config.create_command.replace("{image_id}", id),
-            None => self.config.create_command.clone(),
+            Some(id) => self
+                .config
+                .create_command
+                .replace("{image_id}", id)
+                .replace("{cpu_cores}", &cpu_cores_str),
+            None => self
+                .config
+                .create_command
+                .replace("{cpu_cores}", &cpu_cores_str),
         };
 
         debug!("{}", create_command);
@@ -161,14 +171,30 @@ impl SandboxProvider for DefaultProvider {
         let mut env = self.base_env();
         env.extend(config.env.iter().cloned());
 
+        // Apply {cpu_cores} placeholder to command templates
+        let exec_command = self
+            .config
+            .exec_command
+            .replace("{cpu_cores}", &cpu_cores_str);
+        let destroy_command = self
+            .config
+            .destroy_command
+            .replace("{cpu_cores}", &cpu_cores_str);
+        let download_command = self
+            .config
+            .download_command
+            .as_ref()
+            .map(|cmd| cmd.replace("{cpu_cores}", &cpu_cores_str));
+
         Ok(DefaultSandbox {
             id: remote_id,
             connector: self.connector.clone(),
-            exec_command: self.config.exec_command.clone(),
-            destroy_command: self.config.destroy_command.clone(),
-            download_command: self.config.download_command.clone(),
+            exec_command,
+            destroy_command,
+            download_command,
             env,
             created_at: Instant::now(),
+            cpu_cores,
         })
     }
 
@@ -218,6 +244,8 @@ pub struct DefaultSandbox {
     env: Vec<(String, String)>,
     /// When this sandbox was created (used for cost estimation).
     created_at: Instant,
+    /// CPU cores allocated to this sandbox.
+    cpu_cores: f64,
 }
 
 impl DefaultSandbox {
@@ -235,6 +263,8 @@ impl DefaultSandbox {
     /// * `download_command` - Optional command template with `{sandbox_id}` and `{paths}` placeholders
     /// * `env` - Environment variables to pass to commands
     /// * `created_at` - When this sandbox was created
+    /// * `cpu_cores` - CPU cores allocated to this sandbox
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         connector: Arc<ShellConnector>,
@@ -243,6 +273,7 @@ impl DefaultSandbox {
         download_command: Option<String>,
         env: Vec<(String, String)>,
         created_at: Instant,
+        cpu_cores: f64,
     ) -> Self {
         Self {
             id,
@@ -252,6 +283,7 @@ impl DefaultSandbox {
             download_command,
             env,
             created_at,
+            cpu_cores,
         }
     }
 
@@ -385,7 +417,8 @@ impl Sandbox for DefaultSandbox {
     }
 
     fn cost_estimate(&self) -> CostEstimate {
-        let cpu_seconds = self.created_at.elapsed().as_secs_f64();
+        let elapsed = self.created_at.elapsed().as_secs_f64();
+        let cpu_seconds = elapsed * self.cpu_cores;
         let estimated_cost_usd = cpu_seconds * MODAL_CPU_COST_PER_CORE_PER_SEC;
         CostEstimate {
             cpu_seconds,
@@ -408,6 +441,7 @@ mod tests {
             download_command: None,
             env,
             created_at: Instant::now(),
+            cpu_cores: 1.0,
         }
     }
 
@@ -701,6 +735,7 @@ mod tests {
             timeout_secs: 300,
             env: Default::default(),
             copy_dirs: vec![],
+            cpu_cores: 1.0,
         };
 
         let provider = DefaultProvider::from_config(config, &[], false, None, None).await?;

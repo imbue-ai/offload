@@ -41,6 +41,8 @@ pub struct ModalProvider {
     image_id: String,
     /// Environment variables from provider configuration.
     env: Vec<(String, String)>,
+    /// CPU cores per sandbox.
+    cpu_cores: f64,
 }
 
 impl ModalProvider {
@@ -125,10 +127,13 @@ impl ModalProvider {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        let cpu_cores = config.cpu_cores;
+
         Ok(Self {
             connector,
             image_id,
             env,
+            cpu_cores,
         })
     }
 }
@@ -141,7 +146,10 @@ impl SandboxProvider for ModalProvider {
         debug!("Creating Modal sandbox: {}", config.id);
 
         // Run create command to get sandbox_id
-        let create_command = format!("uv run @modal_sandbox.py create {}", self.image_id);
+        let create_command = format!(
+            "uv run @modal_sandbox.py create --cpu {} {}",
+            self.cpu_cores, self.image_id
+        );
         debug!("Running: {}", create_command);
 
         let result = self.connector.run(&create_command).await?;
@@ -180,6 +188,7 @@ impl SandboxProvider for ModalProvider {
             download_command,
             env,
             Instant::now(),
+            self.cpu_cores,
         ))
     }
 
@@ -221,6 +230,7 @@ mod tests {
             include_cwd: false,
             copy_dirs: vec![],
             env: Default::default(),
+            cpu_cores: 0.125,
         };
 
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -249,6 +259,7 @@ mod tests {
             include_cwd: true,
             copy_dirs: vec!["./src:/app/src".to_string()],
             env: Default::default(),
+            cpu_cores: 0.125,
         };
 
         let copy_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];

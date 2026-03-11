@@ -436,8 +436,17 @@ def run(command: str):
     multiple=True,
     help="Environment variable (format: KEY=VALUE)",
 )
+@click.option(
+    "--cpu",
+    type=float,
+    default=None,
+    help="CPU cores per sandbox",
+)
 def create_from_image(
-    image_id: str, copy_dirs: tuple[str, ...] = (), env_vars: tuple[str, ...] = ()
+    image_id: str,
+    copy_dirs: tuple[str, ...] = (),
+    env_vars: tuple[str, ...] = (),
+    cpu: float | None = None,
 ):
     """Create sandbox using existing image_id.
 
@@ -483,13 +492,16 @@ def create_from_image(
 
     logger.debug("[%.2fs] Creating sandbox...", time.time() - t0)
     try:
-        sandbox = modal.Sandbox.create(
+        create_kwargs = dict(
             app=app,
             image=image,
             workdir="/app",
             timeout=3600,
             secrets=secrets,
         )
+        if cpu is not None:
+            create_kwargs["cpu"] = cpu
+        sandbox = modal.Sandbox.create(**create_kwargs)
     except Exception as e:
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(

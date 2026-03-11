@@ -705,6 +705,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             timeout_secs: 3600,
             copy_dirs: vec![],
             env: HashMap::new(),
+            cpu_cores: 1.0,
         }),
         _ => {
             eprintln!("Unknown provider: {}. Use: local, default", provider);
