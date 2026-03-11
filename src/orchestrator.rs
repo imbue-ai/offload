@@ -112,6 +112,7 @@ pub struct Orchestrator<S, D> {
     framework: D,
     verbose: bool,
     tracer: crate::trace::Tracer,
+    show_cost: bool,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -128,12 +129,20 @@ where
     /// * `framework` - Test framework for running tests
     /// * `verbose` - Whether to show verbose output (streaming test output)
     /// * `tracer` - Performance tracer for emitting trace events
-    pub fn new(config: Config, framework: D, verbose: bool, tracer: crate::trace::Tracer) -> Self {
+    /// * `show_cost` - Whether to display cost estimate in summary
+    pub fn new(
+        config: Config,
+        framework: D,
+        verbose: bool,
+        tracer: crate::trace::Tracer,
+        show_cost: bool,
+    ) -> Self {
         Self {
             config,
             framework,
             verbose,
             tracer,
+            show_cost,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -471,7 +480,7 @@ where
             ..run_result
         };
 
-        print_summary(&run_result, false);
+        print_summary(&run_result, self.show_cost);
 
         Ok(run_result)
     }

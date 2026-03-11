@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
             env_vars,
             no_cache,
             trace,
-            show_estimated_cost: _,
+            show_estimated_cost,
         } => {
             run_tests(
                 &cli.config,
@@ -157,6 +157,7 @@ async fn main() -> Result<()> {
                 no_cache,
                 cli.verbose,
                 trace,
+                show_estimated_cost,
             )
             .await
         }
@@ -255,6 +256,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     copy_dirs: &[CopyDir],
     verbose: bool,
     tracer: &offload::trace::Tracer,
+    show_estimated_cost: bool,
 ) -> Result<i32> {
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
@@ -266,6 +268,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 copy_dirs,
                 verbose,
                 tracer,
+                show_estimated_cost,
             )
             .await
         }
@@ -278,6 +281,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 copy_dirs,
                 verbose,
                 tracer,
+                show_estimated_cost,
             )
             .await
         }
@@ -290,6 +294,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 copy_dirs,
                 verbose,
                 tracer,
+                show_estimated_cost,
             )
             .await
         }
@@ -302,6 +307,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 copy_dirs,
                 verbose,
                 tracer,
+                show_estimated_cost,
             )
             .await
         }
@@ -318,6 +324,7 @@ async fn run_tests(
     no_cache: bool,
     verbose: bool,
     trace: bool,
+    show_estimated_cost: bool,
 ) -> Result<()> {
     let tracer = if trace {
         offload::trace::Tracer::new()
@@ -443,6 +450,7 @@ async fn run_tests(
                 &copy_dirs,
                 verbose,
                 &tracer,
+                show_estimated_cost,
             )
             .await?
         }
@@ -473,7 +481,16 @@ async fn run_tests(
                 info!("No tests to run");
                 return Ok(());
             }
-            dispatch_framework(&config, &all_tests, provider, &copy_dirs, verbose, &tracer).await?
+            dispatch_framework(
+                &config,
+                &all_tests,
+                provider,
+                &copy_dirs,
+                verbose,
+                &tracer,
+                show_estimated_cost,
+            )
+            .await?
         }
         ProviderConfig::Modal(p_cfg) => {
             // Run discovery and image preparation concurrently
@@ -502,7 +519,16 @@ async fn run_tests(
                 info!("No tests to run");
                 return Ok(());
             }
-            dispatch_framework(&config, &all_tests, provider, &copy_dirs, verbose, &tracer).await?
+            dispatch_framework(
+                &config,
+                &all_tests,
+                provider,
+                &copy_dirs,
+                verbose,
+                &tracer,
+                show_estimated_cost,
+            )
+            .await?
         }
     };
 
@@ -523,6 +549,7 @@ async fn run_tests(
 
 /// Run all tests with a single orchestrator call.
 /// Returns the exit code (0 = success, 1 = failures/not run, 2 = flaky only).
+#[allow(clippy::too_many_arguments)]
 async fn run_all_tests<P, D>(
     config: &config::Config,
     tests: &[TestRecord],
@@ -531,6 +558,7 @@ async fn run_all_tests<P, D>(
     copy_dirs: &[CopyDir],
     verbose: bool,
     tracer: &offload::trace::Tracer,
+    show_estimated_cost: bool,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -573,7 +601,13 @@ where
         .context("Failed to create sandboxes")?;
     drop(_pool_span);
 
-    let orchestrator = Orchestrator::new(config.clone(), framework, verbose, tracer.clone());
+    let orchestrator = Orchestrator::new(
+        config.clone(),
+        framework,
+        verbose,
+        tracer.clone(),
+        show_estimated_cost,
+    );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
 
