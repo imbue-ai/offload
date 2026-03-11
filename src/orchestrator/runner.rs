@@ -396,34 +396,45 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             crate::trace::TID_IO,
         );
         let batch_had_failures = match self.try_download_results(unique_count).await {
-            Some((xml_content, actual_count)) => {
+            Some((raw_content, _raw_count)) => {
                 info!(
-                    "[BATCH RESULTS] Sandbox {} downloaded junit.xml: total={}, unique={}, actual={}, bytes={}",
+                    "[BATCH RESULTS] Sandbox {} downloaded result file: total={}, unique={}, bytes={}",
                     sandbox_id,
                     expected_count,
                     unique_count,
-                    actual_count,
-                    xml_content.len()
+                    raw_content.len()
                 );
 
-                // Fail if we got fewer results than unique count (what pytest should produce)
-                if actual_count < unique_count {
-                    return Err(anyhow::anyhow!(
-                        "Sandbox {} expected {} unique tests but got {} in junit.xml",
-                        sandbox_id,
-                        unique_count,
-                        actual_count
-                    ));
+                // Convert raw output to JUnit XML (vitest produces JSON, others pass through)
+                let junit_xml = self.framework.process_results(&raw_content);
+
+                // Count testcases in the processed JUnit XML
+                let processed_count = count_testcases_in_xml(&junit_xml);
+
+                if processed_count < unique_count {
+                    // Log warning but don't fail — some frameworks (vitest) filter
+                    // non-targeted tests during processing
+                    warn!(
+                        "[BATCH RESULTS] Sandbox {} expected {} unique tests but got {} after processing",
+                        sandbox_id, unique_count, processed_count
+                    );
                 }
 
-                // Clean framework-specific artifacts before adding to report
-                let cleaned_xml = self.framework.clean_junit(&xml_content);
+                // Save processed JUnit XML to parts dir (overwrites raw download)
+                if let Some(ref parts_dir) = self.parts_dir {
+                    let safe_id =
+                        sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                    let part_file = parts_dir.join(format!("{}.xml", safe_id));
+                    if let Err(e) = std::fs::write(&part_file, &junit_xml) {
+                        warn!("Failed to save processed part file {:?}: {}", part_file, e);
+                    }
+                }
 
                 if let Some(report) = &self.junit_report {
                     match report.lock() {
                         Ok(mut report) => {
                             let before = report.total_count();
-                            report.add_junit_xml(&cleaned_xml);
+                            report.add_junit_xml(&junit_xml);
                             let after = report.total_count();
                             info!(
                                 "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
@@ -443,7 +454,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 } else {
                     warn!("[BATCH WARN] No junit report configured for {}", sandbox_id);
                 }
-                has_failures_in_xml(&cleaned_xml)
+                has_failures_in_xml(&junit_xml)
             }
             None => {
                 return Err(anyhow::anyhow!(

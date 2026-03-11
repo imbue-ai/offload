@@ -272,15 +272,15 @@ pub trait TestFramework: Send + Sync {
     /// * `tests` - Tests to execute (borrowed from TestRecords)
     fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command;
 
-    /// Cleans JUnit XML content before adding to the master report.
+    /// Processes raw test result output into JUnit XML.
     ///
-    /// Frameworks can override this to filter out artifacts from their
-    /// JUnit output (e.g., vitest emits `<skipped/>` testcases for
-    /// non-targeted tests when using `file:line` execution).
+    /// Frameworks can override this to convert non-JUnit output formats
+    /// (e.g., vitest JSON) into JUnit XML, or to filter artifacts from
+    /// their JUnit output.
     ///
-    /// Default implementation returns the input unchanged.
-    fn clean_junit(&self, xml: &str) -> String {
-        xml.to_string()
+    /// Default implementation returns the input unchanged (assumes JUnit XML).
+    fn process_results(&self, raw_output: &str) -> String {
+        raw_output.to_string()
     }
 }
 
