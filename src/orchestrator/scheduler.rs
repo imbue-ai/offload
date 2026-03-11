@@ -83,36 +83,6 @@ impl Scheduler {
         }
     }
 
-    /// Schedules tests into batches using round-robin distribution.
-    ///
-    /// Tests are distributed evenly across up to `max_parallel` batches.
-    /// This is the default scheduling strategy that balances load across
-    /// sandboxes.
-    ///
-    /// # Returns
-    ///
-    /// A vector of batches. Each batch is a vector of tests that will
-    /// run sequentially in the same sandbox. Empty batches are removed.
-    pub fn schedule<'a>(&self, tests: &[TestInstance<'a>]) -> Vec<Vec<TestInstance<'a>>> {
-        if tests.is_empty() {
-            return Vec::new();
-        }
-
-        // Simple round-robin distribution
-        let mut batches: Vec<Vec<TestInstance<'a>>> =
-            (0..self.max_parallel).map(|_| Vec::new()).collect();
-
-        for (i, test) in tests.iter().enumerate() {
-            let batch_idx = i % self.max_parallel;
-            batches[batch_idx].push(*test);
-        }
-
-        // Remove empty batches
-        batches.retain(|b| !b.is_empty());
-
-        batches
-    }
-
     /// Schedules tests using Longest Processing Time First (LPT) algorithm.
     ///
     /// Uses historical test durations to minimize total execution time (makespan).
@@ -146,7 +116,7 @@ impl Scheduler {
     /// 4. Sort batches by total duration (descending) so heaviest starts first
     ///
     /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
-    pub fn schedule_lpt<'a>(
+    pub fn schedule<'a>(
         &self,
         tests: &[TestInstance<'a>],
         durations: &HashMap<String, Duration>,
@@ -213,21 +183,14 @@ mod tests {
     #[test]
     fn test_schedule_empty() {
         let scheduler = Scheduler::new(4);
-        let batches: Vec<Vec<TestInstance>> = scheduler.schedule(&[]);
-        assert!(batches.is_empty());
-    }
-
-    #[test]
-    fn test_schedule_lpt_empty() {
-        let scheduler = Scheduler::new(4);
         let durations = HashMap::new();
         let batches: Vec<Vec<TestInstance>> =
-            scheduler.schedule_lpt(&[], &durations, Duration::from_secs(1), None);
+            scheduler.schedule(&[], &durations, Duration::from_secs(1), None);
         assert!(batches.is_empty());
     }
 
     #[test]
-    fn test_schedule_lpt_balances_load() {
+    fn test_schedule_balances_load() {
         let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("slow_test", "test-group"),
@@ -241,7 +204,7 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         // With LPT:
         // 1. Assign slow_test (10s) to worker 0 -> loads: [10, 0]
@@ -257,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_heaviest_batch_first() {
+    fn test_schedule_heaviest_batch_first() {
         let scheduler = Scheduler::new(3);
         let records = [
             TestRecord::new("test_a", "test-group"),
@@ -271,7 +234,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         // Each test in its own batch (3 workers, 3 tests)
         // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
@@ -282,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_uses_default_for_unknown() {
+    fn test_schedule_uses_default_for_unknown() {
         let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("known_slow", "test-group"),
@@ -294,7 +257,7 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         assert_eq!(batches.len(), 2);
         // known_slow (10s) should be in heaviest batch
@@ -303,39 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_single() {
-        let scheduler = Scheduler::new(4);
-        let records = [TestRecord::new("test1", "test-group")];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-        let batches = scheduler.schedule(&tests);
-
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].len(), 1);
-    }
-
-    #[test]
-    fn test_schedule_round_robin() {
-        let scheduler = Scheduler::new(2);
-        let records = [
-            TestRecord::new("test1", "test-group"),
-            TestRecord::new("test2", "test-group"),
-            TestRecord::new("test3", "test-group"),
-            TestRecord::new("test4", "test-group"),
-        ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-        let batches = scheduler.schedule(&tests);
-
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].len(), 2);
-        assert_eq!(batches[1].len(), 2);
-        assert_eq!(batches[0][0].id(), "test1");
-        assert_eq!(batches[0][1].id(), "test3");
-        assert_eq!(batches[1][0].id(), "test2");
-        assert_eq!(batches[1][1].id(), "test4");
-    }
-
-    #[test]
-    fn test_schedule_lpt_duplicate_prevention() {
+    fn test_schedule_duplicate_prevention() {
         // Simulate retry scenario: same test appears multiple times
         let scheduler = Scheduler::new(3);
         let records = [
@@ -348,7 +279,7 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         // Each instance of test_a must be in a different batch
         assert_eq!(batches.len(), 3);
@@ -365,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_mixed_duplicates_and_unique() {
+    fn test_schedule_mixed_duplicates_and_unique() {
         // Mix of retried and unique tests
         let scheduler = Scheduler::new(3);
         let records = [
@@ -381,7 +312,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
@@ -399,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_creates_extra_batches_for_retries() {
+    fn test_schedule_creates_extra_batches_for_retries() {
         // 2 workers but 3 instances of same test — creates 3 batches (one per instance)
         let scheduler = Scheduler::new(2);
         let records = [
@@ -410,7 +341,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let batches = scheduler.schedule_lpt(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
 
         // Each instance must be in a separate batch
         assert_eq!(batches.len(), 3);
@@ -421,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_respects_max_batch_duration() {
+    fn test_schedule_respects_max_batch_duration() {
         let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("test_a", "test-group"),
@@ -438,7 +369,7 @@ mod tests {
         durations.insert("test_d".to_string(), Duration::from_secs(3));
 
         // With 10s cap: test_a (6s) + test_c (3s) = 9s OK, test_b (6s) + test_d (3s) = 9s OK
-        let batches = scheduler.schedule_lpt(
+        let batches = scheduler.schedule(
             &tests,
             &durations,
             Duration::from_secs(1),
@@ -464,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_long_test_gets_own_batch() -> anyhow::Result<()> {
+    fn test_schedule_long_test_gets_own_batch() -> anyhow::Result<()> {
         let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("slow_test", "test-group"),
@@ -477,7 +408,7 @@ mod tests {
         durations.insert("fast_test".to_string(), Duration::from_secs(2));
 
         // slow_test exceeds the cap on its own, but that's fine — single test in batch
-        let batches = scheduler.schedule_lpt(
+        let batches = scheduler.schedule(
             &tests,
             &durations,
             Duration::from_secs(1),
@@ -495,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_creates_extra_batches_for_duration_cap() {
+    fn test_schedule_creates_extra_batches_for_duration_cap() {
         // 5 tests of 3s each, max_parallel=2, cap=10s
         // Can fit 3 tests per batch (9s < 10s), so need at least 2 batches
         // But only 2 workers, so tests get split: batch 0 = 3 tests (9s), batch 1 = 2 tests (6s)
@@ -512,7 +443,7 @@ mod tests {
 
         // 7 tests * 4s = 28s total. Cap 10s means max 2 tests per batch (8s).
         // With 2 initial workers, need at least 4 batches (7 tests / 2 per batch)
-        let batches = scheduler.schedule_lpt(
+        let batches = scheduler.schedule(
             &tests,
             &durations,
             Duration::from_secs(1),
@@ -541,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_splits_on_command_length() {
+    fn test_schedule_splits_on_command_length() {
         let scheduler = Scheduler::new(1);
         // Create tests whose IDs together exceed MAX_BATCH_COMMAND_LEN
         let long_name = "a".repeat(MAX_BATCH_COMMAND_LEN / 2 + 1);
@@ -551,7 +482,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &HashMap::new(), Duration::from_secs(1), None);
 
         // Two tests that each use >half the command length budget must be in separate batches
         assert_eq!(batches.len(), 2);
@@ -560,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_lpt_groups_short_commands() {
+    fn test_schedule_groups_short_commands() {
         let scheduler = Scheduler::new(1);
         // Create many tests with short IDs that fit in one batch
         let records: Vec<_> = (0..100)
@@ -568,7 +499,7 @@ mod tests {
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule_lpt(&tests, &HashMap::new(), Duration::from_secs(0), None);
+        let batches = scheduler.schedule(&tests, &HashMap::new(), Duration::from_secs(0), None);
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);

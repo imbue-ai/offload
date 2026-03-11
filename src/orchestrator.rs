@@ -231,27 +231,26 @@ where
             crate::trace::TID_MAIN,
         );
         let scheduler = Scheduler::new(self.config.offload.max_parallel);
-        let batches = if durations.is_empty() {
+        if durations.is_empty() {
             warn!(
-                "No historical test durations found at {}. Falling back to round-robin scheduling. \
+                "No historical test durations found at {}. \
                  Run tests once to generate junit.xml for optimized LPT scheduling.",
                 junit_path.display()
             );
-            scheduler.schedule(&tests_to_run)
         } else {
             debug!(
                 "Using LPT scheduling with {} historical durations from {}",
                 durations.len(),
                 junit_path.display()
             );
-            // Default duration for unknown tests: 1 second (conservative estimate)
-            scheduler.schedule_lpt(
-                &tests_to_run,
-                &durations,
-                Duration::from_secs(1),
-                Some(MAX_BATCH_DURATION),
-            )
-        };
+        }
+        // Default duration for unknown tests: 1 second (conservative estimate)
+        let batches = scheduler.schedule(
+            &tests_to_run,
+            &durations,
+            Duration::from_secs(1),
+            Some(MAX_BATCH_DURATION),
+        );
         drop(_sched_span);
 
         // Take sandboxes from pool
