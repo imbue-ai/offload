@@ -385,19 +385,27 @@ where
             (0, 0, 0, 0)
         };
 
-        // Check for missing tests
-        let expected_unique_tests = tests.len();
-        if total_in_report < expected_unique_tests {
+        // Check for missing test IDs.
+        // Discovery may produce duplicate IDs (e.g. vitest describe.each),
+        // so compare unique IDs, not raw record count.
+        let expected_unique_ids: usize = {
+            let mut ids = std::collections::HashSet::new();
+            for t in tests {
+                ids.insert(&t.id);
+            }
+            ids.len()
+        };
+        if total_in_report < expected_unique_ids {
             error!(
-                "[ORCHESTRATOR MISMATCH] Expected {} unique tests but only {} in report! {} TESTS MISSING!",
-                expected_unique_tests,
+                "[ORCHESTRATOR MISMATCH] Expected {} unique test IDs but only {} in report! {} MISSING!",
+                expected_unique_ids,
                 total_in_report,
-                expected_unique_tests - total_in_report
+                expected_unique_ids - total_in_report
             );
         } else {
             info!(
-                "[ORCHESTRATOR] All {} expected tests accounted for in report",
-                expected_unique_tests
+                "[ORCHESTRATOR] All {} expected test IDs accounted for in report",
+                expected_unique_ids
             );
         }
 
@@ -416,13 +424,12 @@ where
         }
 
         // Use JUnit report as source of truth for all counts
-        let total_discovered = tests.len();
         let total_in_junit = if let Ok(report) = junit_report.lock() {
             report.total_count()
         } else {
             0
         };
-        let not_run = total_discovered.saturating_sub(total_in_junit);
+        let not_run = expected_unique_ids.saturating_sub(total_in_junit);
 
         // Use the JUnit total as the authoritative count (passed + failed + flaky = total)
         // This ensures passed can never exceed total

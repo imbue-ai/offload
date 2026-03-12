@@ -292,16 +292,6 @@ pub trait TestFramework: Send + Sync {
         Ok(raw_output.to_string())
     }
 
-    /// Whether early stopping is safe for this framework.
-    ///
-    /// Requires a 1:1 mapping between discovered test IDs and tests.
-    /// Vitest breaks this (`describe.each` produces multiple tests
-    /// sharing one ID), so it returns `false`.
-    ///
-    /// Default: `true`.
-    fn supports_early_stopping(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(test)]
