@@ -241,12 +241,6 @@ impl TestFramework for VitestFramework {
         "json"
     }
 
-    /// Vitest can discover duplicate test IDs from `describe.each` that the
-    /// JUnit report will deduplicate, so early stopping would miscount.
-    fn supports_early_stopping(&self) -> bool {
-        false
-    }
-
     fn xml_from_report(&self, raw_output: &str) -> super::FrameworkResult<String> {
         use quick_xml::Writer;
         use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -465,14 +459,6 @@ mod tests {
         assert!(cmd.args.contains(&"--includeTaskLocation".to_string()));
         assert!(cmd.args.contains(&"--no-coverage".to_string()));
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_early_stopping_disabled() -> Result<(), Box<dyn std::error::Error>> {
-        let config = VitestFrameworkConfig::default();
-        let fw = VitestFramework::new(config)?;
-        assert!(!fw.supports_early_stopping());
         Ok(())
     }
 
