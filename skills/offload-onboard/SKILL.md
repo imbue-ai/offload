@@ -260,12 +260,12 @@ Create `scripts/offload-tests.sh`:
 #!/usr/bin/env bash
 #
 # Run the project's test suite via Offload (parallel on Modal).
-# Requires: Offload (cargo install offload@0.5.0), Modal CLI + credentials
+# Requires: Offload (cargo install offload), Modal CLI + credentials
 #
 set -euo pipefail
 
 if ! command -v offload &> /dev/null; then
-    echo "Error: 'offload' not installed. Install with: cargo install offload@0.5.0"
+    echo "Error: 'offload' not installed. Install with: cargo install offload"
     exit 1
 fi
 
@@ -297,7 +297,7 @@ NOTE: `.offload-image-cache` should be checked in to git — it tracks the base 
 Install offload if not already present:
 
 ```bash
-cargo install offload@0.5.0
+cargo install offload
 ```
 
 Run the tests using the invocation script from Step 6:
@@ -347,7 +347,7 @@ Report the results as a table to the user and set the optimal values in `offload
 
 4. **If none of these files exist**, create a `CLAUDE.md` at the project root. It only needs the testing section — don't fabricate other content.
 
-5. **Amend or add** a testing section that is directive, not merely suggestive. The instruction must tell agents to use Offload as the way to run tests locally. Do not remove any existing test commands — keep them as a fallback — but make Offload the primary instruction. Example:
+5. **Amend or add** a testing section that is directive, not merely suggestive. The instruction must tell agents to use Offload as the way to run tests locally. Do not remove any existing test commands — keep them as a fallback — but make Offload the primary instruction. The section should also reference the `/offload` skill so agents activate it when running tests, reading logs, or debugging failures. Example:
 
    ````markdown
    ## Running tests
@@ -358,7 +358,8 @@ Report the results as a table to the user and set the optimal values in `offload
    ./scripts/offload-tests.sh
    ```
 
-   Prerequisites: Offload (`cargo install offload@0.5.0`) and Modal credentials (`modal token new`).
+   Prerequisites: Offload (`cargo install offload`) and Modal credentials (`modal token new`).
+   Activate the `/offload` skill for test execution, log reading, and failure debugging.
    ````
 
    Adapt the exact command to match what was configured in earlier steps (the script path, etc.).
@@ -420,12 +421,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/offload
-          key: cargo-offload-0.5.0-${{ runner.os }}
+          key: cargo-offload-${{ runner.os }}
 
       - name: Install offload
         run: |
           if ! command -v offload &> /dev/null; then
-            cargo install offload@0.5.0
+            cargo install offload
           fi
 
       - name: Install Modal CLI
