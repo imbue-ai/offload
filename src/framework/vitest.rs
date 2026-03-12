@@ -241,6 +241,12 @@ impl TestFramework for VitestFramework {
         "json"
     }
 
+    /// Vitest can discover duplicate test IDs from `describe.each` that the
+    /// JUnit report will deduplicate, so early stopping would miscount.
+    fn supports_early_stopping(&self) -> bool {
+        false
+    }
+
     fn xml_from_report(&self, raw_output: &str) -> super::FrameworkResult<String> {
         use quick_xml::Writer;
         use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -463,6 +469,14 @@ mod tests {
     }
 
     #[test]
+    fn test_early_stopping_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig::default();
+        let fw = VitestFramework::new(config)?;
+        assert!(!fw.supports_early_stopping());
+        Ok(())
+    }
+
+    #[test]
     fn test_xml_from_report_converts_json_with_lines() -> Result<(), Box<dyn std::error::Error>> {
         let config = VitestFrameworkConfig::default();
         let fw = VitestFramework::new(config)?;
@@ -493,8 +507,6 @@ mod tests {
 
         let junit = fw.xml_from_report(json)?;
 
-        // The file path in classname depends on CWD stripping; just check
-        // that the line number suffix is present and the structure is correct.
         assert!(
             junit.contains("math.test.ts:6\""),
             "classname should have :line for first test. Got: {}",

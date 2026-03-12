@@ -174,7 +174,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Handle outcome
         match &outcome {
             Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
-                if let Ok(report) = cfg.junit_report.lock()
+                if cfg.framework.supports_early_stopping()
+                    && let Ok(report) = cfg.junit_report.lock()
                     && report.all_passed()
                     && !cfg.all_passed.load(Ordering::SeqCst)
                 {
