@@ -646,7 +646,7 @@ mod tests {
         let mut report = MasterJunitReport::new(1);
         report.add_junit_xml(xml);
 
-        assert_eq!(report.total_count(), 1);   // 1 unique test ID
+        assert_eq!(report.total_count(), 1); // 1 unique test ID
         assert_eq!(report.passed_count(), 1);
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.testcase_count(), 3); // 3 raw testcases
@@ -669,7 +669,7 @@ mod tests {
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
-        assert_eq!(report.failed_count(), 1);  // any failure → ID fails
+        assert_eq!(report.failed_count(), 1); // any failure → ID fails
     }
 
     /// Flaky detection with one-to-many: fails in first batch, passes in second.

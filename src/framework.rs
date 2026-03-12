@@ -291,7 +291,6 @@ pub trait TestFramework: Send + Sync {
     fn xml_from_report(&self, raw_output: &str) -> FrameworkResult<String> {
         Ok(raw_output.to_string())
     }
-
 }
 
 #[cfg(test)]
