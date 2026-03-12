@@ -10,9 +10,13 @@ use crate::provider::Command;
 
 /// Test framework for JavaScript/TypeScript vitest projects.
 ///
-/// Uses `vitest list --json --includeTaskLocation` for test discovery and
-/// JSON output with `--reporter=json --includeTaskLocation` for results,
+/// Uses `vitest list --json` for test discovery and
+/// JSON output with `--reporter=json` for results,
 /// which are converted to JUnit XML via `xml_from_report`.
+///
+/// Test IDs use `{file} > {name}` format (no line numbers) so that
+/// discovery and execution work in browser mode where source maps
+/// shift line numbers after bundling.
 pub struct VitestFramework {
     config: VitestFrameworkConfig,
     /// The program to invoke (first token of `command`).
@@ -51,6 +55,7 @@ impl VitestFramework {
     /// Parse vitest JSON discovery output into test records.
     ///
     /// The `cwd` is used to make absolute file paths relative.
+    /// Test ID format: `{relative_file} > {name}` (no line numbers).
     fn parse_discovery_json(
         &self,
         json_str: &str,
@@ -69,14 +74,7 @@ impl VitestFramework {
                 .unwrap_or(&file_path)
                 .to_string_lossy();
 
-            // Bake file:line into the ID for execution targeting.
-            // Example: "tests/math.test.ts:6 > math > add > adds two positive numbers"
-            let line_suffix = item
-                .location
-                .as_ref()
-                .map_or(String::new(), |loc| format!(":{}", loc.line));
-            let test_id = format!("{}{} > {}", relative, line_suffix, item.name);
-
+            let test_id = format!("{} > {}", relative, item.name);
             tests.push(TestRecord::new(&test_id, group));
         }
 
@@ -89,16 +87,6 @@ impl VitestFramework {
 struct VitestListItem {
     name: String,
     file: String,
-    #[serde(default)]
-    location: Option<VitestLocation>,
-}
-
-/// Source location from vitest's JSON list output.
-#[derive(Debug, serde::Deserialize)]
-struct VitestLocation {
-    line: u32,
-    #[allow(dead_code)]
-    column: u32,
 }
 
 /// Vitest JSON report structure (top level).
@@ -127,14 +115,6 @@ struct VitestJsonAssertionResult {
     duration: Option<f64>,
     #[serde(default, rename = "failureMessages")]
     failure_messages: Vec<String>,
-    #[serde(default)]
-    location: Option<VitestJsonLocation>,
-}
-
-/// Source location from vitest JSON reporter output.
-#[derive(Debug, serde::Deserialize)]
-struct VitestJsonLocation {
-    line: u32,
 }
 
 #[async_trait]
@@ -149,7 +129,7 @@ impl TestFramework for VitestFramework {
         for arg in &self.prefix_args {
             cmd.arg(arg);
         }
-        cmd.arg("list").arg("--json").arg("--includeTaskLocation");
+        cmd.arg("list").arg("--json");
 
         if !filters.is_empty() {
             let args = shell_words::split(filters).map_err(|e| {
@@ -203,8 +183,8 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd.arg("run");
 
-        // Extract file:line selectors from test IDs.
-        // Test ID format: "{file}:{line} > {name}" -- extract the "file:line" part.
+        // Extract file selectors from test IDs.
+        // Test ID format: "{file} > {name}" -- extract the file part.
         let mut selectors: Vec<&str> = tests
             .iter()
             .filter_map(|t| t.id().split(" > ").next())
@@ -218,8 +198,7 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd
             .arg("--reporter=json")
-            .arg(format!("--outputFile={}", result_path))
-            .arg("--includeTaskLocation");
+            .arg(format!("--outputFile={}", result_path));
 
         if let Some(run_args) = &self.config.run_args {
             match shell_words::split(run_args) {
@@ -306,10 +285,7 @@ impl TestFramework for VitestFramework {
                     .collect::<Vec<_>>()
                     .join(" > ");
 
-                let classname = match ar.location.as_ref().map(|l| l.line) {
-                    Some(l) => format!("{}:{}", file, l),
-                    None => file.to_string(),
-                };
+                let classname = file.to_string();
 
                 let duration_secs = ar.duration.unwrap_or(0.0) / 1000.0;
                 let failed = ar.status == "failed";
@@ -430,14 +406,14 @@ mod tests {
         let fw = VitestFramework::new(config)?;
 
         let r1 = TestRecord::new(
-            "tests/math.test.ts:6 > math > add > adds two positive numbers",
+            "tests/math.test.ts > math > add > adds two positive numbers",
             "grp",
         );
         let r2 = TestRecord::new(
-            "tests/math.test.ts:20 > math > subtract > subtracts two numbers",
+            "tests/math.test.ts > math > subtract > subtracts two numbers",
             "grp",
         );
-        let r3 = TestRecord::new("tests/string.test.ts:14 > string utils > capitalize", "grp");
+        let r3 = TestRecord::new("tests/string.test.ts > string utils > capitalize", "grp");
         let tests = vec![
             TestInstance::new(&r1),
             TestInstance::new(&r2),
@@ -448,22 +424,22 @@ mod tests {
         assert_eq!(cmd.program, "npx");
         assert!(cmd.args.contains(&"vitest".to_string()));
         assert!(cmd.args.contains(&"run".to_string()));
-        assert!(cmd.args.contains(&"tests/math.test.ts:6".to_string()));
-        assert!(cmd.args.contains(&"tests/math.test.ts:20".to_string()));
-        assert!(cmd.args.contains(&"tests/string.test.ts:14".to_string()));
+        // File-only selectors (deduped: two tests from math.test.ts → one selector)
+        assert!(cmd.args.contains(&"tests/math.test.ts".to_string()));
+        assert!(cmd.args.contains(&"tests/string.test.ts".to_string()));
         assert!(cmd.args.contains(&"--reporter=json".to_string()));
         assert!(
             cmd.args
                 .contains(&"--outputFile=/tmp/junit.xml".to_string())
         );
-        assert!(cmd.args.contains(&"--includeTaskLocation".to_string()));
+        assert!(!cmd.args.contains(&"--includeTaskLocation".to_string()));
         assert!(cmd.args.contains(&"--no-coverage".to_string()));
 
         Ok(())
     }
 
     #[test]
-    fn test_xml_from_report_converts_json_with_lines() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_xml_from_report_converts_json() -> Result<(), Box<dyn std::error::Error>> {
         let config = VitestFrameworkConfig::default();
         let fw = VitestFramework::new(config)?;
 
@@ -476,16 +452,14 @@ mod tests {
                         "title": "adds two numbers",
                         "status": "passed",
                         "duration": 1.5,
-                        "failureMessages": [],
-                        "location": {"line": 6}
+                        "failureMessages": []
                     },
                     {
                         "ancestorTitles": ["math", "add"],
                         "title": "adds negative",
                         "status": "failed",
                         "duration": 2.0,
-                        "failureMessages": ["Expected 3 but got 2"],
-                        "location": {"line": 10}
+                        "failureMessages": ["Expected 3 but got 2"]
                     }
                 ]
             }]
@@ -493,14 +467,10 @@ mod tests {
 
         let junit = fw.xml_from_report(json)?;
 
+        // classname is file path only (no :line)
         assert!(
-            junit.contains("math.test.ts:6\""),
-            "classname should have :line for first test. Got: {}",
-            junit
-        );
-        assert!(
-            junit.contains("math.test.ts:10\""),
-            "classname should have :line for second test. Got: {}",
+            junit.contains("math.test.ts\""),
+            "classname should be file path. Got: {}",
             junit
         );
         assert!(
@@ -527,16 +497,14 @@ mod tests {
                         "title": "runs",
                         "status": "passed",
                         "duration": 1.0,
-                        "failureMessages": [],
-                        "location": {"line": 5}
+                        "failureMessages": []
                     },
                     {
                         "ancestorTitles": ["suite"],
                         "title": "is pending",
                         "status": "pending",
                         "duration": 0.0,
-                        "failureMessages": [],
-                        "location": {"line": 10}
+                        "failureMessages": []
                     }
                 ]
             }]
@@ -572,16 +540,14 @@ mod tests {
                         "title": "runs",
                         "status": "passed",
                         "duration": 1.0,
-                        "failureMessages": [],
-                        "location": {"line": 5}
+                        "failureMessages": []
                     },
                     {
                         "ancestorTitles": ["suite"],
                         "title": "is skipped",
                         "status": "skipped",
                         "duration": 0.0,
-                        "failureMessages": [],
-                        "location": {"line": 10}
+                        "failureMessages": []
                     }
                 ]
             }]
@@ -622,13 +588,11 @@ mod tests {
         let json = r#"[
             {
                 "name": "math > add > adds two positive numbers",
-                "file": "/project/tests/math.test.ts",
-                "location": { "line": 6, "column": 5 }
+                "file": "/project/tests/math.test.ts"
             },
             {
                 "name": "string utils > capitalize",
-                "file": "/project/tests/string.test.ts",
-                "location": { "line": 10, "column": 5 }
+                "file": "/project/tests/string.test.ts"
             }
         ]"#;
 
@@ -639,13 +603,13 @@ mod tests {
 
         assert_eq!(
             tests[0].id,
-            "tests/math.test.ts:6 > math > add > adds two positive numbers"
+            "tests/math.test.ts > math > add > adds two positive numbers"
         );
         assert_eq!(tests[0].group, "default");
 
         assert_eq!(
             tests[1].id,
-            "tests/string.test.ts:10 > string utils > capitalize"
+            "tests/string.test.ts > string utils > capitalize"
         );
 
         Ok(())
