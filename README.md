@@ -14,6 +14,44 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 - **Environment variable expansion** in config values (`${VAR}` and `${VAR:-default}`)
 - **Bundled script references** using `@filename.ext` syntax in commands
 
+## Benchmarks
+
+Speedups measured on Imbue projects using Offload with the Modal provider. All local baselines were run on a MacBook Pro with Apple M4 (10 cores: 4P + 6E), 16 GB RAM.
+
+### Sculptor Acceptance Tests
+
+| Run Kind | Time (s) | Time (%) | Speedup |
+|----------|----------|----------|---------|
+| pytest with xdist, n=3 (baseline) | <img src="docs/bar-local.svg" width="150" height="4"> 726.0 | 100.0% | 1.00x |
+| pytest with xdist, n=8 | <img src="docs/bar-local.svg" width="92" height="4"> 447.4 | 61.6% | 1.62x |
+| Offload (Modal, max 200) | <img src="docs/bar-offload.svg" width="25" height="4"> 120.1 | 16.5% | **6.04x** |
+
+<details>
+<summary><strong>Notes</strong></summary>
+
+345 Playwright integration tests (browser-based, each launching a full Sculptor instance).
+Individual tests are heavyweight (Chromium + backend server per worker), so the default xdist cap is n=3.
+Offload bypasses xdist entirely, fanning out across up to 200 isolated Modal sandboxes -- each running a single test against its own Sculptor instance. The high per-test cost makes Offload's per-sandbox overhead negligible, yielding a 6.04x speedup.
+
+</details>
+
+### Mng Acceptance Tests
+
+| Run Kind | Time (s) | Time (%) | Speedup |
+|----------|----------|----------|---------|
+| pytest with xdist, n=4 (baseline) | <img src="docs/bar-local.svg" width="150" height="4"> 345.8 | 100.0% | 1.00x |
+| pytest with xdist, n=8 | <img src="docs/bar-local.svg" width="116" height="4"> 266.9 | 77.2% | 1.30x |
+| Offload (Modal, max 200) | <img src="docs/bar-offload.svg" width="81" height="4"> 185.9 | 53.8% | **1.86x** |
+
+<details>
+<summary><strong>Notes</strong></summary>
+
+5,275 tests collected (unit + integration + acceptance, excluding release).
+Individual tests are lightweight and fast-running, so the default xdist cap is n=4.
+Offload bypasses xdist entirely, fanning out across up to 200 isolated Modal sandboxes. The low per-test cost makes Offload's per-sandbox overhead proportionally larger, yielding a more modest 1.86x speedup vs Sculptor's 6.04x.
+
+</details>
+
 ## Installation
 
 From crates.io:
