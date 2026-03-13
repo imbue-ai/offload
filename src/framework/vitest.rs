@@ -242,6 +242,7 @@ impl TestFramework for VitestFramework {
         }
 
         cmd = cmd
+            .arg("--reporter=verbose")
             .arg("--reporter=json")
             .arg(format!("--outputFile={}", result_path));
 
