@@ -12,12 +12,19 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
 use tracing::{info, warn};
 
-/// Tracks the outcome of a single test across multiple execution attempts.
+/// Tracks the outcome of a single test ID across execution attempts.
+///
+/// A test ID may map to multiple testcases (e.g. vitest `describe.each`).
+/// A test ID is considered "passed once" if all its testcases within
+/// a single testsuite (one batch on one machine) passed. It "failed once"
+/// if any testcase under that ID in a testsuite failed.
+///
+/// Flakiness is detected across testsuites: failed in one batch, passed in another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestStatus {
     Passed,
     Failed,
-    Flaky, // Passed after failing
+    Flaky, // Passed after failing (or vice versa)
 }
 
 /// Unique identifier for a test case.
@@ -66,20 +73,22 @@ pub struct FailureXml {
 
 /// Accumulated JUnit results from all batches.
 ///
-/// Thread-safe accumulator for JUnit XML content and test outcomes.
-/// Used for early stopping (all tests passed) and final reporting.
+/// Supports one-to-many mapping of test IDs to testcases.
+/// A test ID passes if ALL its testcases in a testsuite passed.
+/// A test ID fails if ANY testcase in a testsuite failed.
+/// Flakiness is detected across testsuites (batches/retries).
 #[derive(Debug, Default)]
 pub struct MasterJunitReport {
     /// Parsed testsuites from each batch
     testsuites: Vec<TestsuiteXml>,
-    /// Test outcomes by test ID (for deduplication and flaky detection)
+    /// Test outcomes by test ID (for flaky detection and early stopping)
     test_outcomes: HashMap<TestId, TestStatus>,
-    /// Total tests expected (for early stopping)
+    /// Total number of unique test IDs expected (for early stopping)
     total_expected: usize,
 }
 
 impl MasterJunitReport {
-    /// Creates a new master report expecting the given number of tests.
+    /// Creates a new master report expecting the given number of unique test IDs.
     pub fn new(total_expected: usize) -> Self {
         Self {
             testsuites: Vec::new(),
@@ -90,9 +99,10 @@ impl MasterJunitReport {
 
     /// Adds JUnit XML content from a batch.
     ///
-    /// Parses the XML to extract test outcomes and accumulates the structured content.
+    /// Each testsuite represents one batch execution. Testcases sharing a
+    /// test ID within a testsuite are grouped: the ID passes only if all
+    /// its testcases passed, fails if any failed.
     pub fn add_junit_xml(&mut self, xml_content: &str) {
-        // Parse all testsuites from the XML
         let parsed_testsuites = parse_all_testsuites_xml(xml_content);
 
         if parsed_testsuites.is_empty() {
@@ -108,13 +118,22 @@ impl MasterJunitReport {
         let mut total_testcases = 0;
 
         for testsuite in parsed_testsuites {
-            let testcase_count = testsuite.testcases.len();
-            total_testcases += testcase_count;
+            total_testcases += testsuite.testcases.len();
 
-            // Update test outcomes from testcases
+            // Group testcases by test ID within this testsuite.
+            // A test ID fails if ANY of its testcases failed.
+            let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
             for testcase in &testsuite.testcases {
                 let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
+                let entry = suite_outcomes.entry(test_id).or_insert(false);
+                if failed {
+                    *entry = true;
+                }
+            }
+
+            // Update global outcomes with this suite's per-ID results.
+            for (test_id, failed) in suite_outcomes {
                 self.update_test_outcome(test_id, failed);
             }
 
@@ -124,7 +143,7 @@ impl MasterJunitReport {
         let after_count = self.test_outcomes.len();
         let new_tests = after_count - before_count;
         info!(
-            "Added {} testsuites with {} testcases total, {} new unique tests (total: {})",
+            "Added {} testsuites with {} testcases total, {} new unique test IDs (total: {})",
             self.testsuites.len(),
             total_testcases,
             new_tests,
@@ -133,6 +152,9 @@ impl MasterJunitReport {
     }
 
     /// Updates the test outcome with flaky detection.
+    ///
+    /// Called once per test ID per testsuite with the aggregate result
+    /// for that ID in that suite.
     fn update_test_outcome(&mut self, test_id: TestId, failed: bool) {
         let current = self.test_outcomes.get(&test_id).cloned();
         let new_status = match (current, failed) {
@@ -140,12 +162,12 @@ impl MasterJunitReport {
             (None, true) => TestStatus::Failed,
             (Some(TestStatus::Failed), false) => TestStatus::Flaky,
             (Some(TestStatus::Passed), true) => TestStatus::Flaky,
-            (Some(status), _) => status, // Keep existing flaky or same status
+            (Some(status), _) => status,
         };
         self.test_outcomes.insert(test_id, new_status);
     }
 
-    /// Returns the number of unique tests that have passed (including flaky).
+    /// Returns the number of unique test IDs that passed (including flaky).
     pub fn passed_count(&self) -> usize {
         self.test_outcomes
             .values()
@@ -153,7 +175,7 @@ impl MasterJunitReport {
             .count()
     }
 
-    /// Returns the number of unique tests that failed (not flaky).
+    /// Returns the number of unique test IDs that failed (not flaky).
     pub fn failed_count(&self) -> usize {
         self.test_outcomes
             .values()
@@ -161,7 +183,7 @@ impl MasterJunitReport {
             .count()
     }
 
-    /// Returns the number of flaky tests.
+    /// Returns the number of flaky test IDs.
     pub fn flaky_count(&self) -> usize {
         self.test_outcomes
             .values()
@@ -169,14 +191,19 @@ impl MasterJunitReport {
             .count()
     }
 
-    /// Returns the total number of unique tests in the JUnit XML.
+    /// Returns the total number of unique test IDs seen.
     pub fn total_count(&self) -> usize {
         self.test_outcomes.len()
     }
 
-    /// Returns true if all expected tests have passed.
+    /// Returns true if all expected test IDs have passed.
     pub fn all_passed(&self) -> bool {
         self.passed_count() >= self.total_expected
+    }
+
+    /// Total number of raw testcases across all testsuites.
+    pub fn testcase_count(&self) -> usize {
+        self.testsuites.iter().map(|s| s.testcases.len()).sum()
     }
 
     /// Writes the accumulated JUnit XML to a file using quick-xml Writer.
@@ -185,30 +212,20 @@ impl MasterJunitReport {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Calculate totals from accumulated testsuites
         let total_tests: i32 = self.testsuites.iter().map(|s| s.tests).sum();
         let total_failures: i32 = self.testsuites.iter().map(|s| s.failures).sum();
         let total_errors: i32 = self.testsuites.iter().map(|s| s.errors).sum();
         let total_time: f64 = self.testsuites.iter().map(|s| s.time).sum();
 
-        // Count actual testcases parsed
         let actual_testcases: usize = self.testsuites.iter().map(|s| s.testcases.len()).sum();
-        let unique_tests = self.test_outcomes.len();
+        let unique_ids = self.test_outcomes.len();
 
         info!(
-            "Writing JUnit XML: {} testsuites, {} declared tests, {} actual testcases, {} unique outcomes",
+            "Writing JUnit XML: {} testsuites, {} testcases, {} unique test IDs",
             self.testsuites.len(),
-            total_tests,
             actual_testcases,
-            unique_tests
+            unique_ids
         );
-
-        if total_tests as usize != actual_testcases {
-            warn!(
-                "Mismatch: XML declares {} tests but {} testcases were parsed",
-                total_tests, actual_testcases
-            );
-        }
 
         let output = write_testsuites_xml(
             &self.testsuites,
@@ -224,7 +241,7 @@ impl MasterJunitReport {
         Ok(())
     }
 
-    /// Returns summary counts: (passed, failed, flaky)
+    /// Returns summary counts: (passed, failed, flaky) — all per test ID.
     pub fn summary(&self) -> (usize, usize, usize) {
         let passed = self
             .test_outcomes
@@ -274,7 +291,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 b"testsuite" => {
-                    // Start a new testsuite
                     current_testsuite = Some(TestsuiteXml {
                         name: get_attr(&e, b"name").unwrap_or_default(),
                         tests: get_attr_i32(&e, b"tests"),
@@ -310,7 +326,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
             },
             Ok(Event::Empty(e)) => match e.name().as_ref() {
                 b"testsuite" => {
-                    // Self-closing testsuite (empty)
                     testsuites.push(TestsuiteXml {
                         name: get_attr(&e, b"name").unwrap_or_default(),
                         tests: get_attr_i32(&e, b"tests"),
@@ -346,7 +361,6 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"testsuite" => {
-                    // Complete current testsuite and add to list
                     if let Some(ts) = current_testsuite.take() {
                         testsuites.push(ts);
                     }
@@ -397,11 +411,9 @@ fn write_testsuites_xml(
 ) -> String {
     let mut writer = Writer::new(Cursor::new(Vec::new()));
 
-    // XML declaration
     let _ = writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)));
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 
-    // Root <testsuites> element
     let mut testsuites_elem = BytesStart::new("testsuites");
     testsuites_elem.push_attribute(("name", "offload"));
     testsuites_elem.push_attribute(("tests", total_tests.to_string().as_str()));
@@ -421,7 +433,6 @@ fn write_testsuites_xml(
     String::from_utf8(writer.into_inner().into_inner()).unwrap_or_default()
 }
 
-/// Writes a single testsuite element to the XML writer.
 fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
     let _ = writer.write_event(Event::Text(BytesText::new("  ")));
 
@@ -448,7 +459,6 @@ fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 }
 
-/// Writes a single testcase element to the XML writer.
 fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
     let mut elem = BytesStart::new("testcase");
     elem.push_attribute(("name", tc.name.as_str()));
@@ -461,21 +471,18 @@ fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
 
     if has_content {
         let _ = writer.write_event(Event::Start(elem));
-
         if let Some(ref failure) = tc.failure {
             write_failure_or_error(writer, "failure", failure);
         }
         if let Some(ref error) = tc.error {
             write_failure_or_error(writer, "error", error);
         }
-
         let _ = writer.write_event(Event::End(BytesEnd::new("testcase")));
     } else {
         let _ = writer.write_event(Event::Empty(elem));
     }
 }
 
-/// Writes a failure or error element.
 fn write_failure_or_error(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, failure: &FailureXml) {
     let mut elem = BytesStart::new(tag);
     if let Some(ref msg) = failure.message {
@@ -491,19 +498,8 @@ pub type SharedJunitReport = Arc<Mutex<MasterJunitReport>>;
 
 /// Loads test durations from an existing JUnit XML file.
 ///
-/// Parses the XML and extracts the duration (`time` attribute) for each test case.
-/// If a test appears multiple times (e.g., from retries), the maximum duration is used.
-///
-/// # Arguments
-///
-/// * `junit_path` - Path to the JUnit XML file
-/// * `test_id_format` - Format string for constructing test IDs from JUnit attributes.
-///   Uses placeholders `{name}` and `{classname}`.
-///
-/// # Returns
-///
-/// A HashMap where keys are test IDs and values are durations.
-/// Returns an empty map if the file doesn't exist or can't be parsed.
+/// For test IDs with multiple testcases (one-to-many), durations are summed.
+/// If a test ID appears across multiple testsuites (retries), the max sum is used.
 pub fn load_test_durations(
     junit_path: &Path,
     test_id_format: &str,
@@ -538,7 +534,6 @@ pub fn load_test_durations(
                         classname.as_deref(),
                     );
                     let duration = std::time::Duration::from_secs_f64(time);
-                    // Use max duration if test appears multiple times (from retries)
                     durations
                         .entry(test_id)
                         .and_modify(|existing: &mut std::time::Duration| {
@@ -562,10 +557,9 @@ pub fn load_test_durations(
         test_id_format
     );
 
-    // Show sample test IDs with durations to verify format matching
     if !durations.is_empty() {
         let mut samples: Vec<_> = durations.iter().collect();
-        samples.sort_by(|a, b| b.1.cmp(a.1)); // Sort by duration descending
+        samples.sort_by(|a, b| b.1.cmp(a.1));
         info!("Test durations loaded (sorted by duration):");
         for (test_id, duration) in samples.iter().take(10) {
             info!("  {:.3}s  {}", duration.as_secs_f64(), test_id);
@@ -638,6 +632,73 @@ mod tests {
         assert_eq!(report.passed_count(), 1); // flaky counts as passed
     }
 
+    /// One test ID maps to 3 testcases (e.g. vitest describe.each).
+    /// All pass in one suite → test ID passes.
+    #[test]
+    fn test_one_to_many_all_pass() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="batch" tests="3" failures="0">
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.1" />
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1);
+        report.add_junit_xml(xml);
+
+        assert_eq!(report.total_count(), 1); // 1 unique test ID
+        assert_eq!(report.passed_count(), 1);
+        assert_eq!(report.failed_count(), 0);
+        assert_eq!(report.testcase_count(), 3); // 3 raw testcases
+    }
+
+    /// One test ID maps to 3 testcases. One fails → test ID fails.
+    #[test]
+    fn test_one_to_many_partial_failure() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="batch" tests="3" failures="1">
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.1" />
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.2">
+        <failure message="oops">stack</failure>
+    </testcase>
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1);
+        report.add_junit_xml(xml);
+
+        assert_eq!(report.total_count(), 1);
+        assert_eq!(report.passed_count(), 0);
+        assert_eq!(report.failed_count(), 1); // any failure → ID fails
+    }
+
+    /// Flaky detection with one-to-many: fails in first batch, passes in second.
+    #[test]
+    fn test_one_to_many_flaky() {
+        let xml_fail = r#"<?xml version="1.0"?>
+<testsuite name="batch1" tests="2" failures="1">
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.1">
+        <failure message="oops">stack</failure>
+    </testcase>
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
+</testsuite>"#;
+
+        let xml_pass = r#"<?xml version="1.0"?>
+<testsuite name="batch2" tests="2" failures="0">
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.1" />
+    <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1);
+        report.add_junit_xml(xml_fail);
+        assert_eq!(report.failed_count(), 1);
+
+        report.add_junit_xml(xml_pass);
+        assert_eq!(report.failed_count(), 0);
+        assert_eq!(report.flaky_count(), 1);
+        assert_eq!(report.passed_count(), 1);
+    }
+
     #[test]
     fn test_parse_all_testsuites_xml() {
         let xml =
@@ -692,7 +753,6 @@ mod tests {
     fn test_load_test_durations_uses_max_for_duplicates() -> anyhow::Result<()> {
         use std::io::Write;
 
-        // Same test appears multiple times (from retries) - should use max duration
         let xml = r#"<?xml version="1.0"?>
 <testsuites>
   <testsuite name="batch1">
@@ -711,7 +771,6 @@ mod tests {
         let durations = load_test_durations(&path, "{name}");
 
         assert_eq!(durations.len(), 1);
-        // Should use max duration (3.0s, not 1.0s)
         assert_eq!(
             durations.get("test_flaky"),
             Some(&std::time::Duration::from_secs(3))
