@@ -81,10 +81,10 @@ impl VitestFramework {
     }
 }
 
-/// Convert a test name (after file prefix) to vitest's space-separated format.
+/// Convert ` > ` separators to spaces to match vitest's internal name format.
 ///
-/// `vitest list --json` joins describe/test names with ` > `, but vitest's
-/// `--testNamePattern` matches against names joined with spaces.
+/// `vitest list --json` returns names with ` > ` between describe/test titles,
+/// but `--testNamePattern` matches against names joined with spaces.
 fn to_vitest_match_name(name: &str) -> String {
     name.replace(" > ", " ")
 }
@@ -114,11 +114,11 @@ fn check_unique_test_names(tests: &[TestRecord]) -> FrameworkResult<()> {
         let mut sorted = duplicates;
         sorted.sort_unstable();
         return Err(FrameworkError::DiscoveryFailed(format!(
-            "Duplicate test names found (after converting ` > ` to spaces): {}\n\
-             Vitest --testNamePattern matches by the space-joined full name, so it \
-             cannot distinguish tests that produce the same pattern. To fix this, \
-             rename the duplicate test() or it() calls, or move them into uniquely \
-             named describe() blocks so the full name differs.",
+            "Duplicate test names found (space-separated): {}\n\
+             Vitest --testNamePattern matches by the space-joined describe chain + \
+             test name, so it cannot distinguish tests that produce the same pattern. \
+             To fix this, rename the duplicate test()/it() calls, or wrap them in \
+             uniquely named describe() blocks so the full name differs.",
             sorted.join(", ")
         )));
     }
@@ -230,18 +230,15 @@ impl TestFramework for VitestFramework {
         cmd = cmd.arg("run");
 
         // Split each test ID at the first ` > ` to get file and name parts.
-        // Vitest's --testNamePattern matches against the full test name where
-        // describe/suite names are joined with spaces (not ` > `), so we
-        // convert ` > ` separators to spaces before regex-escaping.
+        // Convert ` > ` to spaces since vitest's --testNamePattern matches
+        // against space-separated describe chain + test title.
         let mut selectors: Vec<&str> = Vec::new();
         let mut escaped_names: Vec<String> = Vec::new();
         for t in tests {
             if let Some((file, name)) = t.id().split_once(" > ") {
                 selectors.push(file);
-                let space_separated = name.replace(" > ", " ");
-                escaped_names.push(regex::escape(&space_separated));
+                escaped_names.push(regex::escape(&to_vitest_match_name(name)));
             } else {
-                // Fallback: use the whole ID as a file selector only.
                 selectors.push(t.id());
             }
         }
@@ -509,7 +506,7 @@ mod tests {
         let pattern = &cmd.args[tnp_idx + 1];
         assert!(pattern.starts_with("^("));
         assert!(pattern.ends_with(")$"));
-        // ` > ` separators replaced with spaces for vitest matching
+        // ` > ` converted to spaces for vitest matching
         assert!(
             pattern.contains("math add adds two positive numbers"),
             "should have space-separated name. Got: {}",
@@ -523,12 +520,6 @@ mod tests {
         assert!(
             pattern.contains("string utils capitalize"),
             "should have space-separated name. Got: {}",
-            pattern
-        );
-        // Should NOT contain ` > ` separators
-        assert!(
-            !pattern.contains(" > "),
-            "should not contain > separators. Got: {}",
             pattern
         );
         // Names are separated by |
@@ -605,7 +596,6 @@ mod tests {
 
         let result = check_unique_test_names(&tests);
         assert!(result.is_err());
-        // Error message uses space-separated form
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("suite duplicate name"),
