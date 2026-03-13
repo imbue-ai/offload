@@ -81,48 +81,44 @@ impl VitestFramework {
     }
 }
 
-/// Extract the leaf test name from a test ID.
+/// Convert a test name (after file prefix) to vitest's space-separated format.
 ///
-/// Vitest `--testNamePattern` matches against the leaf `test()`/`it()` title,
-/// not the full describe chain. The leaf name is the last ` > `-separated
-/// segment after the file prefix.
-///
-/// Examples:
-/// - `file.ts > basic` → `basic`
-/// - `file.ts > suite > nested > leaf` → `leaf`
-/// - `file.ts` → `file.ts` (no ` > ` separator)
-fn leaf_test_name(test_id: &str) -> &str {
-    // Skip the file prefix (first segment before ` > `), then take the last segment.
-    test_id
-        .rsplit_once(" > ")
-        .map(|(_, leaf)| leaf)
-        .unwrap_or(test_id)
+/// `vitest list --json` joins describe/test names with ` > `, but vitest's
+/// `--testNamePattern` matches against names joined with spaces.
+fn to_vitest_match_name(name: &str) -> String {
+    name.replace(" > ", " ")
 }
 
-/// Check that no two test records share the same leaf test name.
-/// Vitest `--testNamePattern` matches by leaf name alone, so
-/// duplicates across files or describe blocks would cause over-selection.
+/// Check that no two test records produce the same space-separated name.
+/// Vitest `--testNamePattern` matches by the space-separated full name, so
+/// duplicates would cause over-selection.
 fn check_unique_test_names(tests: &[TestRecord]) -> FrameworkResult<()> {
     use std::collections::HashMap;
 
-    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     for t in tests {
-        let name = leaf_test_name(&t.id);
+        let name =
+            t.id.split_once(" > ")
+                .map(|(_, n)| to_vitest_match_name(n))
+                .unwrap_or_else(|| t.id.clone());
         *seen.entry(name).or_insert(0) += 1;
     }
 
     let duplicates: Vec<&str> = seen
         .iter()
         .filter(|(_, count)| **count > 1)
-        .map(|(&name, _)| name)
+        .map(|(name, _)| name.as_str())
         .collect();
 
     if !duplicates.is_empty() {
         let mut sorted = duplicates;
         sorted.sort_unstable();
         return Err(FrameworkError::DiscoveryFailed(format!(
-            "Duplicate test names found across files: {}. \
-             Vitest --testNamePattern cannot distinguish these.",
+            "Duplicate test names found (after converting ` > ` to spaces): {}\n\
+             Vitest --testNamePattern matches by the space-joined full name, so it \
+             cannot distinguish tests that produce the same pattern. To fix this, \
+             rename the duplicate test() or it() calls, or move them into uniquely \
+             named describe() blocks so the full name differs.",
             sorted.join(", ")
         )));
     }
@@ -233,16 +229,17 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd.arg("run");
 
-        // Split each test ID at the first ` > ` to get file selectors,
-        // and extract the leaf name (last ` > ` segment) for --testNamePattern.
-        // Vitest matches --testNamePattern against the leaf test()/it() title,
-        // not the full describe chain.
+        // Split each test ID at the first ` > ` to get file and name parts.
+        // Vitest's --testNamePattern matches against the full test name where
+        // describe/suite names are joined with spaces (not ` > `), so we
+        // convert ` > ` separators to spaces before regex-escaping.
         let mut selectors: Vec<&str> = Vec::new();
         let mut escaped_names: Vec<String> = Vec::new();
         for t in tests {
-            if let Some((file, _name)) = t.id().split_once(" > ") {
+            if let Some((file, name)) = t.id().split_once(" > ") {
                 selectors.push(file);
-                escaped_names.push(regex::escape(leaf_test_name(t.id())));
+                let space_separated = name.replace(" > ", " ");
+                escaped_names.push(regex::escape(&space_separated));
             } else {
                 // Fallback: use the whole ID as a file selector only.
                 selectors.push(t.id());
@@ -502,7 +499,7 @@ mod tests {
         assert!(!cmd.args.contains(&"--includeTaskLocation".to_string()));
         assert!(cmd.args.contains(&"--no-coverage".to_string()));
 
-        // --testNamePattern with leaf names (last > segment) escaped
+        // --testNamePattern with full names (after file prefix) escaped
         assert!(cmd.args.contains(&"--testNamePattern".to_string()));
         let tnp_idx = cmd
             .args
@@ -512,26 +509,26 @@ mod tests {
         let pattern = &cmd.args[tnp_idx + 1];
         assert!(pattern.starts_with("^("));
         assert!(pattern.ends_with(")$"));
-        // Leaf names only — not the full describe chain
+        // ` > ` separators replaced with spaces for vitest matching
         assert!(
-            pattern.contains("adds two positive numbers"),
-            "should contain leaf name. Got: {}",
+            pattern.contains("math add adds two positive numbers"),
+            "should have space-separated name. Got: {}",
             pattern
         );
         assert!(
-            pattern.contains("subtracts two numbers"),
-            "should contain leaf name. Got: {}",
+            pattern.contains("math subtract subtracts two numbers"),
+            "should have space-separated name. Got: {}",
             pattern
         );
         assert!(
-            pattern.contains("capitalize"),
-            "should contain leaf name. Got: {}",
+            pattern.contains("string utils capitalize"),
+            "should have space-separated name. Got: {}",
             pattern
         );
-        // Should NOT contain describe prefixes
+        // Should NOT contain ` > ` separators
         assert!(
-            !pattern.contains("math >"),
-            "should not contain describe chain. Got: {}",
+            !pattern.contains(" > "),
+            "should not contain > separators. Got: {}",
             pattern
         );
         // Names are separated by |
@@ -567,16 +564,30 @@ mod tests {
             .position(|a| a == "--testNamePattern")
             .unwrap();
         let pattern = &cmd.args[tnp_idx + 1];
-        // The leaf name "test.name+thing*" has dot, plus, star — all should be escaped
+        // Parentheses, dot, plus, star should be escaped
         assert!(
-            pattern.contains(r"test\.name\+thing\*"),
-            "leaf name metacharacters should be escaped. Got: {}",
+            pattern.contains(r"\("),
+            "( should be escaped. Got: {}",
             pattern
         );
-        // The describe "suite (group)" should NOT be in the pattern (only leaf names)
         assert!(
-            !pattern.contains("suite"),
-            "describe chain should not be in pattern. Got: {}",
+            pattern.contains(r"\)"),
+            ") should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\."),
+            ". should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\+"),
+            "+ should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\*"),
+            "* should be escaped. Got: {}",
             pattern
         );
 
@@ -584,37 +595,30 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_rejects_duplicate_leaf_names() -> Result<(), Box<dyn std::error::Error>> {
-        // Same leaf name "duplicate name" in different files/suites
+    fn test_discover_rejects_duplicate_names() -> Result<(), Box<dyn std::error::Error>> {
+        // Same space-separated name across files
         let tests = vec![
-            TestRecord::new("a.test.ts > suite1 > duplicate name", "grp"),
-            TestRecord::new("b.test.ts > suite2 > duplicate name", "grp"),
-            TestRecord::new("a.test.ts > suite1 > unique name", "grp"),
+            TestRecord::new("a.test.ts > suite > duplicate name", "grp"),
+            TestRecord::new("b.test.ts > suite > duplicate name", "grp"),
+            TestRecord::new("a.test.ts > suite > unique name", "grp"),
         ];
 
         let result = check_unique_test_names(&tests);
         assert!(result.is_err());
+        // Error message uses space-separated form
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("duplicate name"),
-            "Error should mention the duplicate leaf name. Got: {}",
+            msg.contains("suite duplicate name"),
+            "Error should mention the space-separated duplicate. Got: {}",
             msg
         );
 
-        // Different leaf names should pass (even with same describe prefix).
+        // No duplicates should pass.
         let unique_tests = vec![
-            TestRecord::new("a.test.ts > suite > name one", "grp"),
-            TestRecord::new("b.test.ts > suite > name two", "grp"),
+            TestRecord::new("a.test.ts > name one", "grp"),
+            TestRecord::new("b.test.ts > name two", "grp"),
         ];
         assert!(check_unique_test_names(&unique_tests).is_ok());
-
-        // Same leaf name under different describes should FAIL
-        // (vitest --testNamePattern can't distinguish them).
-        let same_leaf = vec![
-            TestRecord::new("a.test.ts > suite1 > shared", "grp"),
-            TestRecord::new("a.test.ts > suite2 > shared", "grp"),
-        ];
-        assert!(check_unique_test_names(&same_leaf).is_err());
 
         Ok(())
     }
