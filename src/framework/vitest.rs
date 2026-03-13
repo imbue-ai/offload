@@ -14,9 +14,8 @@ use crate::provider::Command;
 /// JSON output with `--reporter=json` for results,
 /// which are converted to JUnit XML via `xml_from_report`.
 ///
-/// Test IDs use `{file} > {name}` format (no line numbers) so that
-/// discovery and execution work in browser mode where source maps
-/// shift line numbers after bundling.
+/// Test IDs use `{file} > {name}` format, e.g.
+/// `tests/math.test.ts > math > add > adds two`.
 pub struct VitestFramework {
     config: VitestFrameworkConfig,
     /// The program to invoke (first token of `command`).
@@ -55,7 +54,7 @@ impl VitestFramework {
     /// Parse vitest JSON discovery output into test records.
     ///
     /// The `cwd` is used to make absolute file paths relative.
-    /// Test ID format: `{relative_file} > {name}` (no line numbers).
+    /// Test ID format: `{relative_file} > {name}`.
     fn parse_discovery_json(
         &self,
         json_str: &str,
@@ -80,6 +79,37 @@ impl VitestFramework {
 
         Ok(tests)
     }
+}
+
+/// Check that no two test records share the same name part (everything after
+/// the first ` > `). Vitest `--testNamePattern` matches by name alone, so
+/// duplicates across files would cause over-selection.
+fn check_unique_test_names(tests: &[TestRecord]) -> FrameworkResult<()> {
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for t in tests {
+        let name = t.id.split_once(" > ").map(|(_, n)| n).unwrap_or(&t.id);
+        *seen.entry(name).or_insert(0) += 1;
+    }
+
+    let duplicates: Vec<&str> = seen
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(&name, _)| name)
+        .collect();
+
+    if !duplicates.is_empty() {
+        let mut sorted = duplicates;
+        sorted.sort_unstable();
+        return Err(FrameworkError::DiscoveryFailed(format!(
+            "Duplicate test names found across files: {}. \
+             Vitest --testNamePattern cannot distinguish these.",
+            sorted.join(", ")
+        )));
+    }
+
+    Ok(())
 }
 
 /// A single test entry from vitest's JSON list output.
@@ -164,6 +194,8 @@ impl TestFramework for VitestFramework {
 
         let tests = self.parse_discovery_json(&stdout, &cwd, group)?;
 
+        check_unique_test_names(&tests)?;
+
         if tests.is_empty() {
             tracing::warn!(
                 "No tests discovered. stdout: {}, stderr: {}",
@@ -183,17 +215,30 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd.arg("run");
 
-        // Extract file selectors from test IDs.
-        // Test ID format: "{file} > {name}" -- extract the file part.
-        let mut selectors: Vec<&str> = tests
-            .iter()
-            .filter_map(|t| t.id().split(" > ").next())
-            .collect();
+        // Split each test ID at the first ` > ` to get file and name parts.
+        let mut selectors: Vec<&str> = Vec::new();
+        let mut escaped_names: Vec<String> = Vec::new();
+        for t in tests {
+            if let Some((file, name)) = t.id().split_once(" > ") {
+                selectors.push(file);
+                escaped_names.push(regex::escape(name));
+            } else {
+                // Fallback: use the whole ID as a file selector only.
+                selectors.push(t.id());
+            }
+        }
+
         selectors.sort_unstable();
         selectors.dedup();
+        for selector in &selectors {
+            cmd = cmd.arg(*selector);
+        }
 
-        for selector in selectors {
-            cmd = cmd.arg(selector);
+        escaped_names.sort_unstable();
+        escaped_names.dedup();
+        if !escaped_names.is_empty() {
+            let pattern = format!("^({})$", escaped_names.join("|"));
+            cmd = cmd.arg("--testNamePattern").arg(pattern);
         }
 
         cmd = cmd
@@ -435,6 +480,105 @@ mod tests {
         assert!(!cmd.args.contains(&"--includeTaskLocation".to_string()));
         assert!(cmd.args.contains(&"--no-coverage".to_string()));
 
+        // --testNamePattern with escaped names
+        assert!(cmd.args.contains(&"--testNamePattern".to_string()));
+        let tnp_idx = cmd
+            .args
+            .iter()
+            .position(|a| a == "--testNamePattern")
+            .unwrap();
+        let pattern = &cmd.args[tnp_idx + 1];
+        assert!(pattern.starts_with("^("));
+        assert!(pattern.ends_with(")$"));
+        assert!(pattern.contains("math > add > adds two positive numbers"));
+        assert!(pattern.contains("math > subtract > subtracts two numbers"));
+        assert!(pattern.contains("string utils > capitalize"));
+        // Names are separated by |
+        assert!(pattern.contains('|'));
+
+        // --testNamePattern comes before --reporter=json
+        let reporter_idx = cmd
+            .args
+            .iter()
+            .position(|a| a == "--reporter=json")
+            .unwrap();
+        assert!(tnp_idx < reporter_idx);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_escapes_regex_in_names() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+
+        let r1 = TestRecord::new("tests/a.test.ts > suite (group) > test.name+thing*", "grp");
+        let tests = vec![TestInstance::new(&r1)];
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json");
+
+        let tnp_idx = cmd
+            .args
+            .iter()
+            .position(|a| a == "--testNamePattern")
+            .unwrap();
+        let pattern = &cmd.args[tnp_idx + 1];
+        // Parentheses, dot, plus, star should be escaped
+        assert!(
+            pattern.contains(r"\("),
+            "( should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\)"),
+            ") should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\."),
+            ". should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\+"),
+            "+ should be escaped. Got: {}",
+            pattern
+        );
+        assert!(
+            pattern.contains(r"\*"),
+            "* should be escaped. Got: {}",
+            pattern
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_discover_rejects_duplicate_names() -> Result<(), Box<dyn std::error::Error>> {
+        let tests = vec![
+            TestRecord::new("a.test.ts > suite > duplicate name", "grp"),
+            TestRecord::new("b.test.ts > suite > duplicate name", "grp"),
+            TestRecord::new("a.test.ts > suite > unique name", "grp"),
+        ];
+
+        let result = check_unique_test_names(&tests);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("suite > duplicate name"),
+            "Error should mention the duplicate. Got: {}",
+            msg
+        );
+
+        // No duplicates should pass.
+        let unique_tests = vec![
+            TestRecord::new("a.test.ts > name one", "grp"),
+            TestRecord::new("b.test.ts > name two", "grp"),
+        ];
+        assert!(check_unique_test_names(&unique_tests).is_ok());
+
         Ok(())
     }
 
@@ -467,7 +611,6 @@ mod tests {
 
         let junit = fw.xml_from_report(json)?;
 
-        // classname is file path only (no :line)
         assert!(
             junit.contains("math.test.ts\""),
             "classname should be file path. Got: {}",
