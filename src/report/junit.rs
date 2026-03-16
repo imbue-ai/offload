@@ -14,11 +14,6 @@ use tracing::{info, warn};
 
 /// Tracks the outcome of a single test ID across execution attempts.
 ///
-/// A test ID may map to multiple testcases (e.g. vitest `describe.each`).
-/// A test ID is considered "passed once" if all its testcases within
-/// a single testsuite (one batch on one machine) passed. It "failed once"
-/// if any testcase under that ID in a testsuite failed.
-///
 /// Flakiness is detected across testsuites: failed in one batch, passed in another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestStatus {
@@ -73,10 +68,9 @@ pub struct FailureXml {
 
 /// Accumulated JUnit results from all batches.
 ///
-/// Supports one-to-many mapping of test IDs to testcases.
-/// A test ID passes if ALL its testcases in a testsuite passed.
-/// A test ID fails if ANY testcase in a testsuite failed.
-/// Flakiness is detected across testsuites (batches/retries).
+/// Each test ID maps 1:1 to a testcase. Flakiness is detected across
+/// testsuites (batches/retries): a test that fails in one batch and
+/// passes in another is marked flaky.
 #[derive(Debug, Default)]
 pub struct MasterJunitReport {
     /// Parsed testsuites from each batch
@@ -99,9 +93,8 @@ impl MasterJunitReport {
 
     /// Adds JUnit XML content from a batch.
     ///
-    /// Each testsuite represents one batch execution. Testcases sharing a
-    /// test ID within a testsuite are grouped: the ID passes only if all
-    /// its testcases passed, fails if any failed.
+    /// Each testsuite represents one batch execution. Test outcomes are
+    /// tracked per test ID for flaky detection across retries.
     pub fn add_junit_xml(&mut self, xml_content: &str) {
         let parsed_testsuites = parse_all_testsuites_xml(xml_content);
 
@@ -498,8 +491,8 @@ pub type SharedJunitReport = Arc<Mutex<MasterJunitReport>>;
 
 /// Loads test durations from an existing JUnit XML file.
 ///
-/// For test IDs with multiple testcases (one-to-many), durations are summed.
-/// If a test ID appears across multiple testsuites (retries), the max sum is used.
+/// If a test ID appears across multiple testsuites (retries), the max
+/// duration is kept for conservative scheduling estimates.
 pub fn load_test_durations(
     junit_path: &Path,
     test_id_format: &str,
