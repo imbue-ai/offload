@@ -228,24 +228,14 @@ impl TestFramework for VitestFramework {
 
         cmd = cmd.arg("run");
 
-        // Split each test ID at the first ` > ` to get file and name parts.
-        // Convert ` > ` to spaces since vitest's --testNamePattern matches
-        // against space-separated describe chain + test title.
-        let mut selectors: Vec<&str> = Vec::new();
+        // Build --testNamePattern from the name part of each test ID.
+        // Test IDs are `{file} > {name}`; we extract the name, convert
+        // ` > ` to spaces (vitest's internal matching format), and
+        // escape regex metacharacters.
         let mut escaped_names: Vec<String> = Vec::new();
         for t in tests {
-            if let Some((file, name)) = t.id().split_once(" > ") {
-                selectors.push(file);
-                escaped_names.push(regex::escape(&to_vitest_match_name(name)));
-            } else {
-                selectors.push(t.id());
-            }
-        }
-
-        selectors.sort_unstable();
-        selectors.dedup();
-        for selector in &selectors {
-            cmd = cmd.arg(*selector);
+            let name = t.id().split_once(" > ").map(|(_, n)| n).unwrap_or(t.id());
+            escaped_names.push(regex::escape(&to_vitest_match_name(name)));
         }
 
         escaped_names.sort_unstable();
@@ -484,9 +474,9 @@ mod tests {
         assert_eq!(cmd.program, "npx");
         assert!(cmd.args.contains(&"vitest".to_string()));
         assert!(cmd.args.contains(&"run".to_string()));
-        // File-only selectors (deduped: two tests from math.test.ts → one selector)
-        assert!(cmd.args.contains(&"tests/math.test.ts".to_string()));
-        assert!(cmd.args.contains(&"tests/string.test.ts".to_string()));
+        // No file selectors — test names are unique so --testNamePattern suffices
+        assert!(!cmd.args.contains(&"tests/math.test.ts".to_string()));
+        assert!(!cmd.args.contains(&"tests/string.test.ts".to_string()));
         assert!(cmd.args.contains(&"--reporter=json".to_string()));
         assert!(
             cmd.args
