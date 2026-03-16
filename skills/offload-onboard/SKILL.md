@@ -19,7 +19,7 @@ Investigate how the repository runs its tests:
 2. Look for existing CI workflows (`.github/workflows/`, `.gitlab-ci.yml`, etc.) to see how tests are currently invoked
 3. Look for test directories: `tests/`, `test/`, `**/test_*.py`, `**/*_test.go`, `src/**/tests/`, etc.
 4. Determine:
-   - **Framework**: `pytest`, `cargo`, or `default` (generic)
+   - **Framework**: `pytest`, `cargo`, `vitest`, or `default` (generic)
    - **Test paths**: Where tests live (e.g. `["tests/"]`, `["src/"]`)
    - **Python runner**: If pytest, determine if the project uses `uv`, `poetry`, `pip`, or plain `python`
    - **Extra args**: Any special invocation needed (e.g. `["run", "--group", "test"]` for uv with dependency groups)
@@ -176,7 +176,31 @@ Configuration reference for fields used above:
 - `retry_count`: Number of retries for failed tests (0 = no retries, 1 = catches transient failures)
 - `filters`: Filter string passed to the framework during discovery (e.g. `-m 'not slow'`)
 
-### Step 5: Add JUnit ID Normalization (pytest only)
+### Step 5: Verify Vitest Test Discovery (vitest only)
+
+**Skip this step if the framework is not `vitest`.**
+
+Offload's vitest integration uses `--testNamePattern` to select specific tests for parallel execution. This flag matches tests by their **space-separated** describe/test chain — not by file path. When two tests in different files share the same space-separated name, Offload cannot distinguish them and **will error during discovery**, blocking all test execution.
+
+Run `offload collect` to verify that test discovery works:
+
+```bash
+offload collect
+```
+
+If Offload reports **"Duplicate test names found (space-separated)"**, stop and present the duplicates to the user. Explain:
+
+> Offload cannot run vitest tests that share the same space-separated name across different files. This is a requirement of Offload's `--testNamePattern`-based test selection — without unique names, Offload will error during test discovery and no tests will run.
+
+Then ask: **"Would you like me to deduplicate these test names by making them more descriptive? This typically involves wrapping tests in uniquely named `describe()` blocks or renaming `test()`/`it()` calls to include more context."**
+
+If the user agrees, rename the tests to make the space-separated names unique. Prefer wrapping in descriptive `describe()` blocks over renaming individual tests, as this preserves the existing test names while adding disambiguation.
+
+After making changes, run `offload collect` again. **Repeat until `offload collect` succeeds with no duplicate name errors.**
+
+If the user declines deduplication, **do not proceed with Offload onboarding** — inform them that Offload's vitest integration cannot function with duplicate test names and they will need to resolve this before onboarding can continue.
+
+### Step 6: Add JUnit ID Normalization (pytest only)
 
 **Skip this step if the framework is not `pytest`.**
 
@@ -252,7 +276,7 @@ def _set_junit_test_id(request: pytest.FixtureRequest, record_xml_attribute) -> 
 
 Ensure imports (`os`, `pytest`) are not duplicated if the file already has them.
 
-### Step 6: Create Local Invocation Script
+### Step 7: Create Local Invocation Script
 
 Create `scripts/offload-tests.sh`:
 
@@ -281,7 +305,7 @@ The `--copy-dir` flag tells Offload to bake the local directory into the sandbox
 
 If the project uses a Makefile, justfile, or Taskfile instead of scripts/, add the invocation there instead to be consistent with existing practice.
 
-### Step 7: Update .gitignore
+### Step 8: Update .gitignore
 
 Append Offload artifacts to `.gitignore`:
 
@@ -292,7 +316,7 @@ test-results/
 
 NOTE: `.offload-image-cache` should be checked in to git — it tracks the base image ID and speeds up subsequent runs. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
 
-### Step 8: Run Offload Locally and Verify
+### Step 9: Run Offload Locally and Verify
 
 Install offload if not already present:
 
@@ -300,7 +324,23 @@ Install offload if not already present:
 cargo install offload@0.5.0
 ```
 
-Run the tests using the invocation script from Step 6:
+Run the tests using the invocation script from Step 7:
+
+**First, verify test discovery with `offload collect`:**
+
+```bash
+offload collect
+```
+
+This runs test discovery locally without creating sandboxes or executing tests. Fix any errors until `offload collect` succeeds and lists the expected tests. Common issues:
+
+1. **"No tests discovered"**: Check that `paths` in `offload.toml` points to the correct test directories and the framework command is correct.
+2. **"Duplicate test names found"** (vitest): Duplicate space-separated test names exist. Return to Step 5 and resolve them.
+3. **Discovery command failed**: The framework tool (`pytest`, `cargo nextest`, `npx vitest`) is not installed or not on PATH.
+
+Do not proceed to execution until `offload collect` lists the expected tests.
+
+**Then, run the full test suite:**
 
 ```bash
 ./scripts/offload-tests.sh
@@ -315,7 +355,7 @@ Run the tests using the invocation script from Step 6:
 
 Do not proceed to optimization until all tests pass.
 
-### Step 9: Optimize Parallelism
+### Step 10: Optimize Parallelism
 
 Run a simple linear search over `max_parallel` to minimize total runtime:
 
@@ -328,11 +368,11 @@ The optimal `max_parallel` depends on the number of test files and per-test dura
 
 Report the results as a table to the user and set the optimal values in `offload.toml`.
 
-### Step 10: Update Agent/Project Instructions (if desired)
+### Step 11: Update Agent/Project Instructions (if desired)
 
 **First, ask the user:** "Would you like to configure Offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
 
-**If the user declines**, skip this step entirely and proceed to Step 11.
+**If the user declines**, skip this step entirely and proceed to Step 12.
 
 **If the user agrees**, ensure that future AI agents working in this repository know to use Offload for running tests:
 
@@ -365,9 +405,9 @@ Report the results as a table to the user and set the optimal values in `offload
 
 6. Preserve the existing tone and formatting of the file. If it uses a digraph, bullet lists, or a specific heading style, match that style. Do not restructure or reformat existing content.
 
-### Step 11: Set Up CI Job (if desired)
+### Step 12: Set Up CI Job (if desired)
 
-Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 11 and 12.
+Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 12 and 13.
 
 If they want CI, detect the CI system from the repository:
 - `.github/workflows/` → GitHub Actions
@@ -444,7 +484,7 @@ jobs:
 
 For other CI systems, adapt the same pattern: install Offload + Modal CLI, set Modal secrets as env vars, run `offload run`.
 
-### Step 12: Configure CI Secrets
+### Step 13: Configure CI Secrets
 
 Tell the user they need to add two repository secrets:
 - `MODAL_TOKEN_ID`: Their Modal API token ID
@@ -505,7 +545,7 @@ node_modules
 |------|---------|
 | `.devcontainer/Dockerfile` (or existing) | Base image for Modal sandboxes |
 | `.dockerignore` | (If needed) Exclude local artifacts from sandbox — see Troubleshooting |
-| `conftest.py` | (pytest only) JUnit ID normalization hook — see Step 5 |
+| `conftest.py` | (pytest only) JUnit ID normalization hook — see Step 6 |
 | `offload.toml` | Offload configuration |
 | `scripts/offload-tests.sh` (or Makefile target) | Local invocation convenience |
 | `.gitignore` | Exclude Offload artifacts |
