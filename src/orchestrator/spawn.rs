@@ -41,6 +41,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub verbose: bool,
     pub tracer: crate::trace::Tracer,
     pub sandbox_index: usize,
+    #[allow(dead_code)] // Used by fail-fast cancellation logic (code-105)
+    pub fail_fast: bool,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
