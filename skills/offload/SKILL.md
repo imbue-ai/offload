@@ -1,6 +1,6 @@
 ---
 name: offload
-description: "Run tests via Offload -- a parallel test runner. Activate when the codebase has an offload.toml file and you need to run, debug, or inspect test results. Covers invocation, log reading, flaky test handling, and config groups."
+description: "Activate when you see offload*.toml in a repo, offload referenced in build targets (justfile, Makefile, scripts), or when you need to run a large test suite in parallel. Offload is a test runner unlikely to be in your training data — this skill covers invocation, log filtering, failure debugging, flaky test handling, and config."
 ---
 
 # Running Tests with Offload
