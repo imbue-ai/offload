@@ -145,6 +145,8 @@ Each file contains stdout and stderr from all tests in that batch. Stderr lines 
 
 The `{output_dir}` defaults to `test-results` and is configurable via `[report] output_dir`.
 
+When `download_dirs` is configured (or `--download-dir` is passed), Offload downloads the specified directories from each sandbox before termination. When multiple sandboxes are used, each sandbox's downloads are placed in a numbered subdirectory (e.g., `local_path/0/`, `local_path/1/`) to prevent file conflicts.
+
 ## Quick Start
 
 1. Initialize a configuration file:
@@ -179,6 +181,7 @@ Run tests in parallel.
 | `--parallel N` | Override maximum parallel sandboxes |
 | `--collect-only` | Discover tests without running them |
 | `--copy-dir LOCAL:REMOTE` | Copy a directory into each sandbox (repeatable) |
+| `--download-dir REMOTE:LOCAL` | Download a directory from each sandbox before termination (repeatable) |
 | `--env KEY=VALUE` | Set an environment variable in sandboxes (repeatable) |
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
@@ -281,6 +284,7 @@ Custom shell commands for sandbox lifecycle management. Commands use placeholder
 | `working_dir` | string | (cwd) | Working directory for lifecycle commands |
 | `timeout_secs` | integer | `3600` | Timeout for remote commands in seconds |
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
+| `download_dirs` | list | `[]` | Directories to download from sandboxes before termination (`"remote:local"` format) |
 | `env` | table | `{}` | Environment variables for test processes |
 
 #### `type = "modal"`
@@ -292,6 +296,7 @@ Simplified Modal sandbox provider. Internally generates the appropriate Modal CL
 | `dockerfile` | string | (none) | Path to Dockerfile for building the sandbox image |
 | `include_cwd` | boolean | `false` | Copy the current working directory into the image |
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
+| `download_dirs` | list | `[]` | Directories to download from sandboxes before termination (`"remote:local"` format) |
 
 ### `[framework]` -- Test Framework
 
