@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.2, pytest-9.0.2, pluggy-1.6.0 -- /opt/homebrew/Cellar/pytest/9.0.2/libexec/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/jacobkirmayer/imbue/offload/.claude/worktrees/fail-fast
+configfile: pytest.ini
+collecting ... collected 3 items
+
+examples/tests_fail/test_always_fail.py::test_fail_immediately FAILED    [ 33%]

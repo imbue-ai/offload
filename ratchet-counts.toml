@@ -97,6 +97,7 @@
 [no-time-sleep]
 "." = 0
 "examples/tests" = 5
+"examples/tests_fail" = 9
 
 [no-todo-comments]
 "." = 1
