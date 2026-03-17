@@ -70,6 +70,7 @@ pub struct TestRunner<'a, S, D> {
     parts_dir: Option<std::path::PathBuf>,
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
+    fail_fast: bool,
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -97,6 +98,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             parts_dir: None,
             tracer,
             sandbox_pid,
+            fail_fast: false,
         }
     }
 
@@ -107,6 +109,15 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// individual batch results.
     pub fn with_parts_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.parts_dir = Some(dir);
+        self
+    }
+
+    /// Sets the fail-fast flag for the test framework execution command.
+    ///
+    /// When true, the framework-specific stop-on-first-failure flag is passed
+    /// to the test runner (e.g. `-x` for pytest, `--fail-fast` for nextest).
+    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
+        self.fail_fast = fail_fast;
         self
     }
 
@@ -345,9 +356,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let result_path = format!("/tmp/{}.{}", sandbox_id, self.framework.report_format());
 
         // Generate the run command for all tests
-        let mut cmd = self
-            .framework
-            .produce_test_execution_command(tests, &result_path);
+        let mut cmd =
+            self.framework
+                .produce_test_execution_command(tests, &result_path, self.fail_fast);
         cmd = cmd.timeout(self.timeout.as_secs());
 
         info!(

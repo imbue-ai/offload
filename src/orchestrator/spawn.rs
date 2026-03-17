@@ -115,6 +115,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             cfg.tracer.clone(),
             sandbox_pid,
         )
+        .with_fail_fast(cfg.fail_fast)
         .with_cancellation_token(cfg.cancellation_token.clone())
         .with_junit_report(Arc::clone(&cfg.junit_report))
         .with_parts_dir(parts_dir);

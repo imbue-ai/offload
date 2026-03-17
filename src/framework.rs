@@ -274,7 +274,12 @@ pub trait TestFramework: Send + Sync {
     /// # Arguments
     ///
     /// * `tests` - Tests to execute (borrowed from TestRecords)
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command;
+    fn produce_test_execution_command(
+        &self,
+        tests: &[TestInstance],
+        result_path: &str,
+        fail_fast: bool,
+    ) -> Command;
 
     /// File format for the test result file produced by the framework.
     ///

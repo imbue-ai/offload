@@ -144,7 +144,12 @@ impl TestFramework for PytestFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(
+        &self,
+        tests: &[TestInstance],
+        result_path: &str,
+        fail_fast: bool,
+    ) -> Command {
         let mut cmd = Command::new(&self.program);
         for arg in &self.prefix_args {
             cmd = cmd.arg(arg);
@@ -154,6 +159,10 @@ impl TestFramework for PytestFramework {
             .arg("-v")
             .arg("--tb=short")
             .arg(format!("--junitxml={}", result_path));
+
+        if fail_fast {
+            cmd = cmd.arg("-x");
+        }
 
         // Append run_args for test execution only (not discovery)
         if let Some(run_args) = &self.config.run_args {
@@ -236,7 +245,7 @@ mod tests {
         let fw = PytestFramework::new(config)?;
         let record = TestRecord::new("tests/test_a.py::test_one", "test-group");
         let tests = vec![TestInstance::new(&record)];
-        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml");
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
         assert_eq!(cmd.program, "uv");
         assert!(cmd.args.contains(&"--no-cov".to_string()));
         assert!(cmd.args.contains(&"--timeout=30".to_string()));

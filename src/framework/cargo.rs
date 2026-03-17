@@ -168,17 +168,28 @@ impl TestFramework for CargoFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(
+        &self,
+        tests: &[TestInstance],
+        result_path: &str,
+        fail_fast: bool,
+    ) -> Command {
         // Nextest configures JUnit output via config file, not CLI flags.
         // Write a temporary config that sets the JUnit path, then run nextest
         // with --config-file pointing to it. This ensures each sandbox writes
         // to a unique path, avoiding collisions with the local provider.
         let config_path = format!("{}.nextest.toml", result_path);
 
+        let fail_fast_flag = if fail_fast {
+            "--fail-fast"
+        } else {
+            "--no-fail-fast"
+        };
+
         let mut args = vec![
             "nextest".to_string(),
             "run".to_string(),
-            "--no-fail-fast".to_string(),
+            fail_fast_flag.to_string(),
             "--config-file".to_string(),
             config_path.clone(),
         ];
