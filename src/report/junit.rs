@@ -194,6 +194,13 @@ impl MasterJunitReport {
         self.passed_count() >= self.total_expected
     }
 
+    /// Returns true if any test ID has failed (not flaky, just failed).
+    pub fn has_any_failures(&self) -> bool {
+        self.test_outcomes
+            .values()
+            .any(|s| *s == TestStatus::Failed)
+    }
+
     /// Total number of raw testcases across all testsuites.
     pub fn testcase_count(&self) -> usize {
         self.testsuites.iter().map(|s| s.testcases.len()).sum()
