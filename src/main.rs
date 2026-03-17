@@ -28,6 +28,13 @@ pub struct CopyDir {
     pub remote: PathBuf,
 }
 
+/// A directory download directive: sandbox path -> local path
+#[derive(Debug, Clone)]
+pub struct DownloadDir {
+    pub remote: PathBuf,
+    pub local: PathBuf,
+}
+
 #[derive(Parser)]
 #[command(name = "offload")]
 #[command(about = "Flexible parallel test runner", long_about = None)]
@@ -60,6 +67,10 @@ enum Commands {
         /// Directories to copy to sandbox (format: /local/path:/sandbox/path)
         #[arg(long, value_name = "LOCAL:REMOTE")]
         copy_dir: Vec<String>,
+
+        /// Directories to download from sandboxes before termination (format: /sandbox/path:/local/path)
+        #[arg(long, value_name = "REMOTE:LOCAL")]
+        download_dir: Vec<String>,
 
         /// Environment variables to set in sandboxes (format: KEY=VALUE)
         #[arg(long = "env", value_name = "KEY=VALUE")]
@@ -143,6 +154,7 @@ async fn main() -> Result<()> {
             parallel,
             collect_only,
             copy_dir,
+            download_dir,
             env_vars,
             no_cache,
             trace,
@@ -153,6 +165,7 @@ async fn main() -> Result<()> {
                 parallel,
                 collect_only,
                 copy_dir,
+                download_dir,
                 env_vars,
                 no_cache,
                 cli.verbose,
@@ -249,11 +262,13 @@ async fn discover_with_signal(
 }
 
 /// Dispatch test execution to the appropriate framework, using the given provider.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     config: &Config,
     all_tests: &[TestRecord],
     provider: P,
     copy_dirs: &[CopyDir],
+    download_dirs: &[DownloadDir],
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
@@ -266,6 +281,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 provider,
                 PytestFramework::new(f_cfg.clone())?,
                 copy_dirs,
+                download_dirs,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -279,6 +295,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 provider,
                 CargoFramework::new(f_cfg.clone()),
                 copy_dirs,
+                download_dirs,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -292,6 +309,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 provider,
                 DefaultFramework::new(f_cfg.clone()),
                 copy_dirs,
+                download_dirs,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -305,6 +323,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 provider,
                 VitestFramework::new(f_cfg.clone())?,
                 copy_dirs,
+                download_dirs,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -314,12 +333,33 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
+/// Parse download_dir specs from TOML or CLI strings in "remote:local" format.
+fn parse_download_dir_specs(specs: &[String]) -> Result<Vec<DownloadDir>> {
+    specs
+        .iter()
+        .map(|arg| {
+            let parts: Vec<&str> = arg.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Err(anyhow!(
+                    "Invalid download-dir format: '{}'. Expected: remote_path:local_path",
+                    arg
+                ));
+            }
+            Ok(DownloadDir {
+                remote: PathBuf::from(parts[0]),
+                local: PathBuf::from(parts[1]),
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tests(
     config_path: &Path,
     parallel_override: Option<usize>,
     collect_only: bool,
     copy_dir_args: Vec<String>,
+    download_dir_args: Vec<String>,
     env_vars: Vec<String>,
     no_cache: bool,
     verbose: bool,
@@ -371,6 +411,18 @@ async fn run_tests(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // Parse CLI download_dir arguments
+    let download_dirs: Vec<DownloadDir> = parse_download_dir_specs(&download_dir_args)?;
+
+    // Merge TOML download_dirs with CLI download_dirs
+    let toml_download_dirs = match &config.provider {
+        ProviderConfig::Default(p) => parse_download_dir_specs(&p.download_dirs)?,
+        ProviderConfig::Modal(p) => parse_download_dir_specs(&p.download_dirs)?,
+        ProviderConfig::Local(_) => Vec::new(),
+    };
+    let mut all_download_dirs = toml_download_dirs;
+    all_download_dirs.extend(download_dirs);
 
     // Parse CLI env vars and merge into provider config (CLI overrides config)
     let cli_env: HashMap<String, String> = env_vars
@@ -448,6 +500,7 @@ async fn run_tests(
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 &copy_dirs,
+                &all_download_dirs,
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -486,6 +539,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 &copy_dirs,
+                &all_download_dirs,
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -524,6 +578,7 @@ async fn run_tests(
                 &all_tests,
                 provider,
                 &copy_dirs,
+                &all_download_dirs,
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -556,6 +611,7 @@ async fn run_all_tests<P, D>(
     provider: P,
     framework: D,
     copy_dirs: &[CopyDir],
+    download_dirs: &[DownloadDir],
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
@@ -568,6 +624,12 @@ where
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
         .iter()
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
+        .collect();
+
+    // Convert DownloadDir to tuples
+    let download_dir_tuples: Vec<(PathBuf, PathBuf)> = download_dirs
+        .iter()
+        .map(|dd| (dd.remote.clone(), dd.local.clone()))
         .collect();
 
     // Pre-populate sandbox pool
@@ -607,6 +669,7 @@ where
         verbose,
         tracer.clone(),
         show_estimated_cost,
+        download_dir_tuples,
     );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;

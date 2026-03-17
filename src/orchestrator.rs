@@ -113,6 +113,7 @@ pub struct Orchestrator<S, D> {
     verbose: bool,
     tracer: crate::trace::Tracer,
     show_cost: bool,
+    download_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -130,12 +131,14 @@ where
     /// * `verbose` - Whether to show verbose output (streaming test output)
     /// * `tracer` - Performance tracer for emitting trace events
     /// * `show_cost` - Whether to display cost estimate in summary
+    /// * `download_dirs` - Directories to download from sandboxes before termination (remote, local)
     pub fn new(
         config: Config,
         framework: D,
         verbose: bool,
         tracer: crate::trace::Tracer,
         show_cost: bool,
+        download_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     ) -> Self {
         Self {
             config,
@@ -143,6 +146,7 @@ where
             verbose,
             tracer,
             show_cost,
+            download_dirs,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -472,6 +476,46 @@ where
                 acc.estimated_cost_usd += cost.estimated_cost_usd;
                 acc
             });
+
+        // Download configured directories from all sandboxes before termination
+        if !self.download_dirs.is_empty() {
+            let download_futures: Vec<_> = sandboxes
+                .iter()
+                .enumerate()
+                .map(|(idx, sandbox)| {
+                    let paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = self
+                        .download_dirs
+                        .iter()
+                        .map(|(remote, local)| {
+                            // Per-sandbox subdirectory to prevent clobbering
+                            let sandbox_local = local.join(idx.to_string());
+                            (remote.clone(), sandbox_local)
+                        })
+                        .collect();
+                    async move {
+                        // Create local directories
+                        for (_, local) in &paths {
+                            if let Some(parent) = local.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            std::fs::create_dir_all(local).ok();
+                        }
+                        let path_refs: Vec<(&std::path::Path, &std::path::Path)> = paths
+                            .iter()
+                            .map(|(r, l)| (r.as_path(), l.as_path()))
+                            .collect();
+                        if let Err(e) = sandbox.download(&path_refs).await {
+                            warn!(
+                                "Failed to download dirs from sandbox {}: {}",
+                                sandbox.id(),
+                                e
+                            );
+                        }
+                    }
+                })
+                .collect();
+            futures::future::join_all(download_futures).await;
+        }
 
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
             if let Err(e) = sandbox.terminate().await {
