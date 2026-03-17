@@ -100,8 +100,9 @@ impl Scheduler {
     ///
     /// * `tests` - Tests to schedule
     /// * `durations` - Historical test durations from previous runs.
-    ///   Tests not in the map use `default_duration`.
-    /// * `default_duration` - Duration to use for tests without historical data.
+    ///   Tests not in the map use the per-group average from `group_defaults`.
+    /// * `group_defaults` - Per-group average duration for tests without historical data.
+    ///   Falls back to 1 second if the group has no entry.
     /// * `max_batch_duration` - Optional cap on the total duration of each batch.
     ///   A single test that exceeds the cap is still placed alone in its own batch.
     ///
@@ -120,7 +121,7 @@ impl Scheduler {
         &self,
         tests: &[TestInstance<'a>],
         durations: &HashMap<String, Duration>,
-        default_duration: Duration,
+        group_defaults: &HashMap<String, Duration>,
         max_batch_duration: Option<Duration>,
     ) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
@@ -134,11 +135,17 @@ impl Scheduler {
                 let duration = match durations.get(t.id()) {
                     Some(&d) => d,
                     None => {
+                        let fallback = group_defaults
+                            .get(t.group())
+                            .copied()
+                            .unwrap_or(Duration::from_secs(1));
                         tracing::warn!(
-                            "No historical duration for test '{}', using default",
-                            t.id()
+                            "No historical duration for test '{}', using group '{}' default {:?}",
+                            t.id(),
+                            t.group(),
+                            fallback,
                         );
-                        default_duration
+                        fallback
                     }
                 };
                 (*t, duration)
@@ -192,7 +199,7 @@ mod tests {
         let scheduler = Scheduler::new(4);
         let durations = HashMap::new();
         let batches: Vec<Vec<TestInstance>> =
-            scheduler.schedule(&[], &durations, Duration::from_secs(1), None);
+            scheduler.schedule(&[], &durations, &HashMap::new(), None);
         assert!(batches.is_empty());
     }
 
@@ -211,7 +218,7 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         // With LPT:
         // 1. Assign slow_test (10s) to worker 0 -> loads: [10, 0]
@@ -241,7 +248,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         // Each test in its own batch (3 workers, 3 tests)
         // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
@@ -264,7 +271,7 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         assert_eq!(batches.len(), 2);
         // known_slow (10s) should be in heaviest batch
@@ -286,7 +293,7 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         // Each instance of test_a must be in a different batch
         assert_eq!(batches.len(), 3);
@@ -319,7 +326,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
@@ -348,7 +355,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let batches = scheduler.schedule(&tests, &durations, Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
 
         // Each instance must be in a separate batch
         assert_eq!(batches.len(), 3);
@@ -379,7 +386,7 @@ mod tests {
         let batches = scheduler.schedule(
             &tests,
             &durations,
-            Duration::from_secs(1),
+            &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
 
@@ -418,7 +425,7 @@ mod tests {
         let batches = scheduler.schedule(
             &tests,
             &durations,
-            Duration::from_secs(1),
+            &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
 
@@ -453,7 +460,7 @@ mod tests {
         let batches = scheduler.schedule(
             &tests,
             &durations,
-            Duration::from_secs(1),
+            &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
 
@@ -489,7 +496,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule(&tests, &HashMap::new(), Duration::from_secs(1), None);
+        let batches = scheduler.schedule(&tests, &HashMap::new(), &HashMap::new(), None);
 
         // Two tests that each use >half the command length budget must be in separate batches
         assert_eq!(batches.len(), 2);
@@ -506,7 +513,7 @@ mod tests {
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule(&tests, &HashMap::new(), Duration::from_secs(0), None);
+        let batches = scheduler.schedule(&tests, &HashMap::new(), &HashMap::new(), None);
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);

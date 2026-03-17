@@ -4,7 +4,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod spawn;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -257,11 +257,27 @@ where
                 junit_path.display()
             );
         }
-        // Default duration for unknown tests: 1 second (conservative estimate)
+        // Compute per-group average durations for tests without historical data
+        let group_defaults = {
+            let mut group_totals: HashMap<String, (Duration, usize)> = HashMap::new();
+            for test in &tests_to_run {
+                if let Some(&d) = durations.get(test.id()) {
+                    let entry = group_totals
+                        .entry(test.group().to_string())
+                        .or_insert((Duration::ZERO, 0));
+                    entry.0 += d;
+                    entry.1 += 1;
+                }
+            }
+            group_totals
+                .into_iter()
+                .map(|(group, (total, count))| (group, total / count as u32))
+                .collect::<HashMap<String, Duration>>()
+        };
         let batches = scheduler.schedule(
             &tests_to_run,
             &durations,
-            Duration::from_secs(1),
+            &group_defaults,
             Some(MAX_BATCH_DURATION),
         );
         drop(_sched_span);

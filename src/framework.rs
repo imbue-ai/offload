@@ -121,6 +121,10 @@ impl<'a> TestInstance<'a> {
     pub fn id(&self) -> &str {
         &self.record.id
     }
+
+    pub fn group(&self) -> &str {
+        &self.record.group
+    }
 }
 
 /// The result of executing a single test.
