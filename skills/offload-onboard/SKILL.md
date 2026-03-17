@@ -200,6 +200,12 @@ After making changes, run `offload collect` again. **Repeat until `offload colle
 
 If the user declines deduplication, **do not proceed with Offload onboarding** — inform them that Offload's vitest integration cannot function with duplicate test names and they will need to resolve this before onboarding can continue.
 
+**Additional check: tests with literal `>` in their names.**
+
+After `offload collect` passes, run `npx vitest list --json` and check for test names where a ` > `-separated segment itself contains `>` (e.g. `describe('parse') > it('attribute value with >')`). Offload uses ` > ` as the separator between the file path and the describe/test chain in test IDs, so a literal `>` in a test name creates ambiguity that causes "Not Run" results.
+
+If any are found, present them to the user and recommend renaming the affected `test()`/`it()`/`describe()` calls to avoid `>` characters. For example, rename `'attribute value with >'` to `'attribute value with greater-than'`. This is not a blocking error — `offload collect` will still pass — but affected tests will be reported as "Not Run" after execution because Offload cannot match their results back to discovered IDs.
+
 ### Step 6: Add JUnit ID Normalization (pytest only)
 
 **Skip this step if the framework is not `pytest`.**
