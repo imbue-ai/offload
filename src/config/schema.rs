@@ -179,6 +179,12 @@ pub struct ModalProviderConfig {
     #[serde(default)]
     pub copy_dirs: Vec<String>,
 
+    /// Directories to download from sandbox to local before termination.
+    ///
+    /// Each entry is a string in the format "remote_path:local_path".
+    #[serde(default)]
+    pub download_dirs: Vec<String>,
+
     /// CPU cores per sandbox (default: 0.125).
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
@@ -270,6 +276,12 @@ pub struct DefaultProviderConfig {
     /// making sandbox creation faster.
     #[serde(default)]
     pub copy_dirs: Vec<String>,
+
+    /// Directories to download from sandbox to local before termination.
+    ///
+    /// Each entry is a string in the format "remote_path:local_path".
+    #[serde(default)]
+    pub download_dirs: Vec<String>,
 
     /// Environment variables to set for all test processes.
     ///
@@ -822,6 +834,68 @@ mod tests {
             round_tripped.offload.sandbox_init_cmd.as_deref(),
             Some("git apply /offload-upload/patch --allow-empty && uv sync --all-packages")
         );
+
+        Ok(())
+    }
+
+    /// Test that `download_dirs` deserializes from TOML for both provider types.
+    #[test]
+    fn test_download_dirs_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "default"
+            create_command = "create"
+            exec_command = "exec {sandbox_id} {command}"
+            destroy_command = "destroy {sandbox_id}"
+            download_dirs = ["/remote/artifacts:/local/artifacts"]
+
+            [framework]
+            type = "cargo"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        if let ProviderConfig::Default(ref p) = config.provider {
+            assert_eq!(p.download_dirs, vec!["/remote/artifacts:/local/artifacts"]);
+        } else {
+            return Err("Expected Default provider".into());
+        }
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        if let ProviderConfig::Default(ref p) = round_tripped.provider {
+            assert_eq!(p.download_dirs, vec!["/remote/artifacts:/local/artifacts"]);
+        } else {
+            return Err("Expected Default provider after round-trip".into());
+        }
+
+        // Also verify modal provider
+        let modal_toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+            download_dirs = ["/sandbox/out:/local/out"]
+
+            [framework]
+            type = "cargo"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let modal_config: Config = toml::from_str(modal_toml)?;
+        if let ProviderConfig::Modal(ref p) = modal_config.provider {
+            assert_eq!(p.download_dirs, vec!["/sandbox/out:/local/out"]);
+        } else {
+            return Err("Expected Modal provider".into());
+        }
 
         Ok(())
     }

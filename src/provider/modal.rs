@@ -229,6 +229,7 @@ mod tests {
             dockerfile: Some("./Dockerfile".to_string()),
             include_cwd: false,
             copy_dirs: vec![],
+            download_dirs: vec![],
             env: Default::default(),
             cpu_cores: 0.125,
         };
@@ -258,6 +259,7 @@ mod tests {
             dockerfile: Some("./Dockerfile.test".to_string()),
             include_cwd: true,
             copy_dirs: vec!["./src:/app/src".to_string()],
+            download_dirs: vec![],
             env: Default::default(),
             cpu_cores: 0.125,
         };

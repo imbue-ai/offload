@@ -792,6 +792,7 @@ mod tests {
             timeout_secs: 300,
             env: Default::default(),
             copy_dirs: vec![],
+            download_dirs: vec![],
             cpu_cores: 1.0,
         };
 

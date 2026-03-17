@@ -704,6 +704,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             working_dir: None,
             timeout_secs: 3600,
             copy_dirs: vec![],
+            download_dirs: vec![],
             env: HashMap::new(),
             cpu_cores: 1.0,
         }),
