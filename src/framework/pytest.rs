@@ -252,4 +252,23 @@ mod tests {
         assert!(cmd.args.contains(&"tests/test_a.py::test_one".to_string()));
         Ok(())
     }
+
+    #[test]
+    fn test_execution_command_fail_fast() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", true);
+        assert!(cmd.args.contains(&"-x".to_string()));
+
+        let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+        assert!(!cmd_no.args.contains(&"-x".to_string()));
+
+        Ok(())
+    }
 }

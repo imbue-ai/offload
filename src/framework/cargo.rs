@@ -250,3 +250,39 @@ impl TestFramework for CargoFramework {
         Command::new("sh").arg("-c").arg(&shell_cmd)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::framework::{TestInstance, TestRecord};
+
+    #[test]
+    fn test_execution_command_fail_fast() {
+        let config = CargoFrameworkConfig::default();
+        let fw = CargoFramework::new(config);
+        let record = TestRecord::new("my-bin test::foo", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", true);
+        // cargo produces a sh -c command; check the shell string in args[1]
+        let shell_str = &cmd.args[1];
+        assert!(
+            shell_str.contains("--fail-fast"),
+            "fail_fast=true should produce --fail-fast. Got: {}",
+            shell_str
+        );
+        assert!(
+            !shell_str.contains("--no-fail-fast"),
+            "fail_fast=true should not produce --no-fail-fast. Got: {}",
+            shell_str
+        );
+
+        let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+        let shell_str_no = &cmd_no.args[1];
+        assert!(
+            shell_str_no.contains("--no-fail-fast"),
+            "fail_fast=false should produce --no-fail-fast. Got: {}",
+            shell_str_no
+        );
+    }
+}

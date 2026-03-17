@@ -786,4 +786,31 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_execution_command_fail_fast() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", true);
+        assert!(
+            cmd.args.contains(&"--bail".to_string()),
+            "fail_fast=true should add --bail. Args: {:?}",
+            cmd.args
+        );
+
+        let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+        assert!(
+            !cmd_no.args.contains(&"--bail".to_string()),
+            "fail_fast=false should not add --bail. Args: {:?}",
+            cmd_no.args
+        );
+
+        Ok(())
+    }
 }
