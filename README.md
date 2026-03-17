@@ -18,7 +18,7 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 
 Speedups measured on Imbue projects using Offload with the Modal provider. All local baselines were run on a MacBook Pro with Apple M4 (10 cores: 4P + 6E), 16 GB RAM.
 
-### Sculptor Acceptance Tests
+### Sculptor Integration Tests
 
 | Run Kind | Time (s) | Time (%) | Speedup |
 |----------|----------|----------|---------|
@@ -35,7 +35,7 @@ Offload bypasses xdist entirely, fanning out across up to 200 isolated Modal san
 
 </details>
 
-### Mng Acceptance Tests
+### Mng Integration Tests
 
 | Run Kind | Time (s) | Time (%) | Speedup |
 |----------|----------|----------|---------|
