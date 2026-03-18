@@ -57,7 +57,7 @@ Offload bypasses xdist entirely, fanning out across up to 200 isolated Modal san
 From crates.io:
 
 ```bash
-cargo install offload@0.5.0
+cargo install offload
 ```
 
 From source:

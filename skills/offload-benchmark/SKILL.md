@@ -9,7 +9,7 @@ Run local and Offload test suites for **mng** and **sculptor**, collect timing d
 
 ## Prerequisites
 
-1. Offload must be installed: `cargo install offload@0.5.0` (or built from source in the offload repo).
+1. Offload must be installed: `cargo install offload` (or built from source in the offload repo).
 2. Modal must be authenticated: `modal token new` (if credentials are expired).
 3. Both repos must exist locally:
    - **mng**: `~/imbue/mng` (or wherever the monorepo is checked out)
