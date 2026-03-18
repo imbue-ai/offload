@@ -168,17 +168,28 @@ impl TestFramework for CargoFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(
+        &self,
+        tests: &[TestInstance],
+        result_path: &str,
+        fail_fast: bool,
+    ) -> Command {
         // Nextest configures JUnit output via config file, not CLI flags.
         // Write a temporary config that sets the JUnit path, then run nextest
         // with --config-file pointing to it. This ensures each sandbox writes
         // to a unique path, avoiding collisions with the local provider.
         let config_path = format!("{}.nextest.toml", result_path);
 
+        let fail_fast_flag = if fail_fast {
+            "--fail-fast"
+        } else {
+            "--no-fail-fast"
+        };
+
         let mut args = vec![
             "nextest".to_string(),
             "run".to_string(),
-            "--no-fail-fast".to_string(),
+            fail_fast_flag.to_string(),
             "--config-file".to_string(),
             config_path.clone(),
         ];
@@ -237,5 +248,41 @@ impl TestFramework for CargoFramework {
         );
 
         Command::new("sh").arg("-c").arg(&shell_cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::framework::{TestInstance, TestRecord};
+
+    #[test]
+    fn test_execution_command_fail_fast() {
+        let config = CargoFrameworkConfig::default();
+        let fw = CargoFramework::new(config);
+        let record = TestRecord::new("my-bin test::foo", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", true);
+        // cargo produces a sh -c command; check the shell string in args[1]
+        let shell_str = &cmd.args[1];
+        assert!(
+            shell_str.contains("--fail-fast"),
+            "fail_fast=true should produce --fail-fast. Got: {}",
+            shell_str
+        );
+        assert!(
+            !shell_str.contains("--no-fail-fast"),
+            "fail_fast=true should not produce --no-fail-fast. Got: {}",
+            shell_str
+        );
+
+        let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+        let shell_str_no = &cmd_no.args[1];
+        assert!(
+            shell_str_no.contains("--no-fail-fast"),
+            "fail_fast=false should produce --no-fail-fast. Got: {}",
+            shell_str_no
+        );
     }
 }

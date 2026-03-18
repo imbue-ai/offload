@@ -182,6 +182,7 @@ Run tests in parallel.
 | `--env KEY=VALUE` | Set an environment variable in sandboxes (repeatable) |
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
+| `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
 
 ### `offload collect`
 

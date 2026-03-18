@@ -220,13 +220,22 @@ impl TestFramework for VitestFramework {
         Ok(tests)
     }
 
-    fn produce_test_execution_command(&self, tests: &[TestInstance], result_path: &str) -> Command {
+    fn produce_test_execution_command(
+        &self,
+        tests: &[TestInstance],
+        result_path: &str,
+        fail_fast: bool,
+    ) -> Command {
         let mut cmd = Command::new(&self.program);
         for arg in &self.prefix_args {
             cmd = cmd.arg(arg);
         }
 
         cmd = cmd.arg("run");
+
+        if fail_fast {
+            cmd = cmd.arg("--bail");
+        }
 
         // Build --testNamePattern from the name part of each test ID.
         // Test IDs are `{file} > {name}`; we extract the name, convert
@@ -469,7 +478,7 @@ mod tests {
             TestInstance::new(&r2),
             TestInstance::new(&r3),
         ];
-        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml");
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
 
         assert_eq!(cmd.program, "npx");
         assert!(cmd.args.contains(&"vitest".to_string()));
@@ -536,7 +545,7 @@ mod tests {
         // Name part contains regex metacharacters that should be escaped
         let r1 = TestRecord::new("tests/a.test.ts > suite (group) > test.name+thing*", "grp");
         let tests = vec![TestInstance::new(&r1)];
-        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json");
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
 
         let tnp_idx = cmd
             .args
@@ -773,6 +782,33 @@ mod tests {
         assert_eq!(
             tests[1].id,
             "tests/string.test.ts > string utils > capitalize"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_fail_fast() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", true);
+        assert!(
+            cmd.args.contains(&"--bail".to_string()),
+            "fail_fast=true should add --bail. Args: {:?}",
+            cmd.args
+        );
+
+        let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+        assert!(
+            !cmd_no.args.contains(&"--bail".to_string()),
+            "fail_fast=false should not add --bail. Args: {:?}",
+            cmd_no.args
         );
 
         Ok(())

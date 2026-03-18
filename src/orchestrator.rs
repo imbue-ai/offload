@@ -113,6 +113,7 @@ pub struct Orchestrator<S, D> {
     verbose: bool,
     tracer: crate::trace::Tracer,
     show_cost: bool,
+    fail_fast: bool,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -130,12 +131,14 @@ where
     /// * `verbose` - Whether to show verbose output (streaming test output)
     /// * `tracer` - Performance tracer for emitting trace events
     /// * `show_cost` - Whether to display cost estimate in summary
+    /// * `fail_fast` - Whether to stop on first test failure
     pub fn new(
         config: Config,
         framework: D,
         verbose: bool,
         tracer: crate::trace::Tracer,
         show_cost: bool,
+        fail_fast: bool,
     ) -> Self {
         Self {
             config,
@@ -143,6 +146,7 @@ where
             verbose,
             tracer,
             show_cost,
+            fail_fast,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -373,6 +377,7 @@ where
                     verbose: self.verbose,
                     tracer: self.tracer.clone(),
                     sandbox_index,
+                    fail_fast: self.fail_fast,
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }

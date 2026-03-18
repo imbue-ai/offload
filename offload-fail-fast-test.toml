@@ -1,0 +1,22 @@
+# Config for testing --fail-fast with an all-failing test suite.
+# Usage: offload -c offload-fail-fast-test.toml run --fail-fast
+
+[offload]
+max_parallel = 4
+test_timeout_secs = 60
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+
+[framework]
+type = "pytest"
+paths = ["examples/tests_fail"]
+command = "uv run --with=pytest pytest"
+
+[groups.all]
+retry_count = 0
+filters = ""
+
+[report]
+output_dir = "test-results"

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use tracing::{Level, info};
+use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use offload::config::{
@@ -79,6 +79,10 @@ enum Commands {
         /// may not reflect actual billing, discounts, or pricing adjustments.
         #[arg(long)]
         show_estimated_cost: bool,
+
+        /// Stop immediately when a test failure is detected
+        #[arg(long)]
+        fail_fast: bool,
     },
 
     /// Discover tests without running them
@@ -147,6 +151,7 @@ async fn main() -> Result<()> {
             no_cache,
             trace,
             show_estimated_cost,
+            fail_fast,
         } => {
             run_tests(
                 &cli.config,
@@ -158,6 +163,7 @@ async fn main() -> Result<()> {
                 cli.verbose,
                 trace,
                 show_estimated_cost,
+                fail_fast,
             )
             .await
         }
@@ -249,6 +255,7 @@ async fn discover_with_signal(
 }
 
 /// Dispatch test execution to the appropriate framework, using the given provider.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     config: &Config,
     all_tests: &[TestRecord],
@@ -257,6 +264,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
+    fail_fast: bool,
 ) -> Result<i32> {
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
@@ -269,6 +277,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 verbose,
                 tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await
         }
@@ -282,10 +291,16 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 verbose,
                 tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await
         }
         FrameworkConfig::Default(f_cfg) => {
+            if fail_fast {
+                warn!(
+                    "--fail-fast: the default framework does not pass a stop flag to the test runner. Batches will still be cancelled on failure, but tests within a running batch will not stop early."
+                );
+            }
             run_all_tests(
                 config,
                 all_tests,
@@ -295,6 +310,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 verbose,
                 tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await
         }
@@ -308,6 +324,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 verbose,
                 tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await
         }
@@ -325,6 +342,7 @@ async fn run_tests(
     verbose: bool,
     trace: bool,
     show_estimated_cost: bool,
+    fail_fast: bool,
 ) -> Result<()> {
     let tracer = if trace {
         offload::trace::Tracer::new()
@@ -451,6 +469,7 @@ async fn run_tests(
                 verbose,
                 &tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await?
         }
@@ -489,6 +508,7 @@ async fn run_tests(
                 verbose,
                 &tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await?
         }
@@ -527,6 +547,7 @@ async fn run_tests(
                 verbose,
                 &tracer,
                 show_estimated_cost,
+                fail_fast,
             )
             .await?
         }
@@ -559,6 +580,7 @@ async fn run_all_tests<P, D>(
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
+    fail_fast: bool,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -607,6 +629,7 @@ where
         verbose,
         tracer.clone(),
         show_estimated_cost,
+        fail_fast,
     );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;

@@ -41,6 +41,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub verbose: bool,
     pub tracer: crate::trace::Tracer,
     pub sandbox_index: usize,
+    pub fail_fast: bool,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -63,11 +64,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         let batch_idx = cfg.batch_counter.fetch_add(1, Ordering::SeqCst);
 
-        // Early exit if all tests have already passed
-        if cfg.all_passed.load(Ordering::SeqCst) {
+        // Early exit if all tests have already passed or fail-fast triggered
+        if cfg.all_passed.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
             let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
             info!(
-                "EARLY STOP: Skipping batch {} ({} tests) - all tests already passed",
+                "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
                 batch_idx,
                 batch.len()
             );
@@ -114,6 +115,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             cfg.tracer.clone(),
             sandbox_pid,
         )
+        .with_fail_fast(cfg.fail_fast)
         .with_cancellation_token(cfg.cancellation_token.clone())
         .with_junit_report(Arc::clone(&cfg.junit_report))
         .with_parts_dir(parts_dir);
@@ -174,6 +176,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Handle outcome
         match &outcome {
             Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
+                // Early stop: all tests passed
                 if let Ok(report) = cfg.junit_report.lock()
                     && report.all_passed()
                     && !cfg.all_passed.load(Ordering::SeqCst)
@@ -183,6 +186,17 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                         cfg.total_tests_to_run, batch_idx
                     );
                     cfg.all_passed.store(true, Ordering::SeqCst);
+                    cfg.cancellation_token.cancel();
+                }
+                // Fail-fast: cancel on first failure
+                if cfg.fail_fast
+                    && matches!(&outcome, Ok(BatchOutcome::Failure))
+                    && !cfg.cancellation_token.is_cancelled()
+                {
+                    info!(
+                        "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
+                        batch_idx
+                    );
                     cfg.cancellation_token.cancel();
                 }
             }
