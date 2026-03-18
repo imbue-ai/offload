@@ -19,4 +19,4 @@ retry_count = 0
 filters = ""
 
 [report]
-output_dir = "test-results-fail-fast"
+output_dir = "test-results"
