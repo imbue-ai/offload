@@ -100,8 +100,8 @@ impl Scheduler {
     ///
     /// * `tests` - Tests to schedule
     /// * `durations` - Historical test durations from previous runs.
-    ///   Tests not in the map use the per-group average from `group_defaults`.
-    /// * `group_defaults` - Per-group average duration for tests without historical data.
+    ///   Tests not in the map use the per-group average from `group_to_default_duration`.
+    /// * `group_to_default_duration` - Per-group average duration for tests without historical data.
     ///   Falls back to 1 second if the group has no entry.
     /// * `max_batch_duration` - Optional cap on the total duration of each batch.
     ///   A single test that exceeds the cap is still placed alone in its own batch.
@@ -121,7 +121,7 @@ impl Scheduler {
         &self,
         tests: &[TestInstance<'a>],
         durations: &HashMap<String, Duration>,
-        group_defaults: &HashMap<String, Duration>,
+        group_to_default_duration: &HashMap<String, Duration>,
         max_batch_duration: Option<Duration>,
     ) -> Vec<Vec<TestInstance<'a>>> {
         if tests.is_empty() {
@@ -135,7 +135,7 @@ impl Scheduler {
                 let duration = match durations.get(t.id()) {
                     Some(&d) => d,
                     None => {
-                        let fallback = group_defaults
+                        let fallback = group_to_default_duration
                             .get(t.group())
                             .copied()
                             .unwrap_or(Duration::from_secs(1));

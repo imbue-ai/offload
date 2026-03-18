@@ -258,7 +258,7 @@ where
             );
         }
         // Compute per-group average durations for tests without historical data
-        let group_defaults = {
+        let group_to_default_duration = {
             let mut group_totals: HashMap<String, (Duration, usize)> = HashMap::new();
             for test in &tests_to_run {
                 if let Some(&d) = durations.get(test.id()) {
@@ -277,7 +277,7 @@ where
         let batches = scheduler.schedule(
             &tests_to_run,
             &durations,
-            &group_defaults,
+            &group_to_default_duration,
             Some(MAX_BATCH_DURATION),
         );
         drop(_sched_span);
