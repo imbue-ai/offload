@@ -39,7 +39,7 @@ jobs:
         tool: just
 
     - name: Install uv (Python package manager)
-      uses: astral-sh/setup-uv@v4
+      uses: astral-sh/setup-uv@v7
 
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
