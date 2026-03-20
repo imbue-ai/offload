@@ -1,6 +1,6 @@
 # Offload
 
-A flexible parallel test runner written in Rust with pluggable execution providers. By [Imbue AI](https://github.com/imbue-ai).
+A flexible parallel test runner written in Rust with pluggable execution providers. By [Imbue](https://github.com/imbue-ai).
 
 ## Features
 
