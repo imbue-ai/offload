@@ -1,0 +1,22 @@
+# Offload configuration for testing artifact download (download_globs)
+
+[offload]
+max_parallel = 2
+test_timeout_secs = 60
+sandbox_project_root = "."
+
+[provider]
+type = "local"
+
+[framework]
+type = "pytest"
+paths = ["examples/tests"]
+command = "uv run --with=pytest pytest"
+
+[groups.artifacts]
+retry_count = 0
+filters = "-k 'test_produces'"
+
+[report]
+output_dir = "test-results-artifacts"
+download_globs = ["artifact-output/**"]
