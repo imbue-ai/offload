@@ -71,6 +71,38 @@ pub struct TestRunner<'a, S, D> {
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
     fail_fast: bool,
+    /// Index of the current batch (for artifact download directory naming).
+    batch_idx: Option<usize>,
+    /// Glob patterns for files to download after batch execution.
+    download_globs: Vec<String>,
+    /// Output directory for downloaded artifacts.
+    output_dir: Option<std::path::PathBuf>,
+}
+
+/// Build a `find` command string from glob patterns.
+///
+/// Converts glob patterns into a `find -path` command. Each pattern is
+/// prefixed with `./` if it doesn't already start with `./` or `/`.
+fn build_find_command(globs: &[String]) -> String {
+    let path_predicates: Vec<String> = globs
+        .iter()
+        .map(|g| {
+            let pattern = if g.starts_with("./") || g.starts_with('/') {
+                g.clone()
+            } else {
+                format!("./{}", g)
+            };
+            format!("-path '{}'", pattern)
+        })
+        .collect();
+
+    let find_expr = if path_predicates.len() == 1 {
+        path_predicates[0].clone()
+    } else {
+        format!("\\( {} \\)", path_predicates.join(" -o "))
+    };
+
+    format!("find . -type f {}", find_expr)
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
@@ -99,6 +131,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             tracer,
             sandbox_pid,
             fail_fast: false,
+            batch_idx: None,
+            download_globs: Vec::new(),
+            output_dir: None,
         }
     }
 
@@ -151,6 +186,24 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// * `callback` - Function called for each line of output
     pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
         self.output_callback = Some(callback);
+        self
+    }
+
+    /// Sets the batch index for artifact download directory naming.
+    pub fn with_batch_idx(mut self, idx: usize) -> Self {
+        self.batch_idx = Some(idx);
+        self
+    }
+
+    /// Sets glob patterns for downloading artifacts after batch execution.
+    pub fn with_download_globs(mut self, globs: Vec<String>) -> Self {
+        self.download_globs = globs;
+        self
+    }
+
+    /// Sets the output directory for downloaded artifacts.
+    pub fn with_output_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.output_dir = Some(dir);
         self
     }
 
@@ -480,6 +533,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         };
         drop(_io_span);
 
+        // Download artifacts matching configured glob patterns
+        if let Some(output_dir) = self.output_dir.clone() {
+            self.try_download_artifacts(&output_dir).await;
+        }
+
         if batch_had_failures {
             Ok(BatchOutcome::Failure)
         } else {
@@ -574,6 +632,106 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         Some((content, actual_count))
     }
+
+    /// Download artifacts matching configured glob patterns from the sandbox.
+    ///
+    /// Runs `find` in the sandbox to resolve glob patterns, then downloads
+    /// all matched files in a single call. Files are stored under
+    /// `{output_dir}/{sandbox_id}/{batch_idx}/` preserving relative paths.
+    ///
+    /// Best-effort: failures are logged as warnings, never fail the batch.
+    async fn try_download_artifacts(&mut self, output_dir: &std::path::Path) {
+        if self.download_globs.is_empty() {
+            return;
+        }
+        let Some(batch_idx) = self.batch_idx else {
+            return;
+        };
+
+        let sandbox_id = self.sandbox.id().to_string();
+        let find_cmd_str = build_find_command(&self.download_globs);
+
+        debug!(
+            "[ARTIFACTS] Sandbox {} running: {}",
+            sandbox_id, find_cmd_str
+        );
+
+        let find_cmd = crate::provider::Command::new("sh")
+            .arg("-c")
+            .arg(&find_cmd_str);
+
+        // Use exec_with_streaming to handle the JSON protocol (DefaultSandbox/Modal
+        // wrap exec output in JSON; exec_with_streaming decodes it transparently).
+        let file_list: Vec<String> = match self.exec_with_streaming(&find_cmd, "artifacts").await {
+            Ok(Some(result)) => result
+                .stdout
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+            Ok(None) => {
+                // Cancelled
+                debug!("[ARTIFACTS] Sandbox {} find cancelled", sandbox_id);
+                return;
+            }
+            Err(e) => {
+                warn!("[ARTIFACTS] Sandbox {} find failed: {}", sandbox_id, e);
+                return;
+            }
+        };
+
+        if file_list.is_empty() {
+            debug!(
+                "[ARTIFACTS] Sandbox {} no files matched globs {:?}",
+                sandbox_id, self.download_globs
+            );
+            return;
+        }
+
+        info!(
+            "[ARTIFACTS] Sandbox {} found {} files to download",
+            sandbox_id,
+            file_list.len()
+        );
+
+        let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        let dest_base = output_dir.join(&safe_id).join(batch_idx.to_string());
+
+        // Build (remote, local) path pairs
+        let mut path_pairs: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        for remote_rel in &file_list {
+            let rel = remote_rel.strip_prefix("./").unwrap_or(remote_rel);
+            let local_path = dest_base.join(rel);
+
+            if let Some(parent) = local_path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                warn!("[ARTIFACTS] Failed to create dir {:?}: {}", parent, e);
+                continue;
+            }
+
+            path_pairs.push((std::path::PathBuf::from(remote_rel), local_path));
+        }
+
+        let ref_pairs: Vec<(&std::path::Path, &std::path::Path)> = path_pairs
+            .iter()
+            .map(|(r, l)| (r.as_path(), l.as_path()))
+            .collect();
+
+        match self.sandbox.download(&ref_pairs).await {
+            Ok(()) => {
+                info!(
+                    "[ARTIFACTS] Sandbox {} downloaded {} files to {:?}",
+                    sandbox_id,
+                    ref_pairs.len(),
+                    dest_base
+                );
+            }
+            Err(e) => {
+                warn!("[ARTIFACTS] Sandbox {} download failed: {}", sandbox_id, e);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -596,5 +754,36 @@ mod tests {
     fn test_has_failures_in_xml_with_error() {
         let xml = r#"<testsuite><testcase name="t1"><error message="boom">trace</error></testcase></testsuite>"#;
         assert!(has_failures_in_xml(xml));
+    }
+
+    #[test]
+    fn test_build_find_command_single_glob() {
+        let cmd = build_find_command(&["*.xml".to_string()]);
+        assert_eq!(cmd, "find . -type f -path './*.xml'");
+    }
+
+    #[test]
+    fn test_build_find_command_multiple_globs() {
+        let cmd = build_find_command(&[
+            "*.xml".to_string(),
+            "*.png".to_string(),
+            "coverage/*".to_string(),
+        ]);
+        assert_eq!(
+            cmd,
+            "find . -type f \\( -path './*.xml' -o -path './*.png' -o -path './coverage/*' \\)"
+        );
+    }
+
+    #[test]
+    fn test_build_find_command_preserves_leading_dot_slash() {
+        let cmd = build_find_command(&["./output/*.log".to_string()]);
+        assert_eq!(cmd, "find . -type f -path './output/*.log'");
+    }
+
+    #[test]
+    fn test_build_find_command_preserves_absolute_path() {
+        let cmd = build_find_command(&["/tmp/*.dat".to_string()]);
+        assert_eq!(cmd, "find . -type f -path '/tmp/*.dat'");
     }
 }

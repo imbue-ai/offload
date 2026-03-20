@@ -118,7 +118,10 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         .with_fail_fast(cfg.fail_fast)
         .with_cancellation_token(cfg.cancellation_token.clone())
         .with_junit_report(Arc::clone(&cfg.junit_report))
-        .with_parts_dir(parts_dir);
+        .with_parts_dir(parts_dir)
+        .with_batch_idx(batch_idx)
+        .with_download_globs(cfg.config.report.download_globs.clone())
+        .with_output_dir(cfg.config.report.output_dir.clone());
 
         // Per-runner log file
         {
