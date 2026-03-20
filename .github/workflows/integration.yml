@@ -18,12 +18,12 @@ jobs:
 
     steps:
     - name: Checkout offload
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: offload
 
     - name: Checkout mng
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: imbue-ai/mng
         ref: ${{ env.MNG_REF }}
