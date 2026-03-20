@@ -1,0 +1,1540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offload Image Build Flow</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #484f58;
+    --blue: #58a6ff;
+    --blue-bg: rgba(56,139,253,0.1);
+    --blue-border: rgba(56,139,253,0.4);
+    --orange: #d29922;
+    --orange-bg: rgba(210,153,34,0.1);
+    --orange-border: rgba(210,153,34,0.4);
+    --green: #3fb950;
+    --green-bg: rgba(63,185,80,0.1);
+    --green-border: rgba(63,185,80,0.4);
+    --red: #f85149;
+    --red-bg: rgba(248,81,73,0.1);
+    --purple: #bc8cff;
+    --purple-bg: rgba(188,140,255,0.1);
+    --purple-border: rgba(188,140,255,0.4);
+    --yellow: #e3b341;
+    --cyan: #39d2c0;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  h2 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+  }
+
+  .subtitle {
+    color: var(--text-muted);
+    font-size: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+
+  .tab {
+    padding: 0.75rem 1.25rem;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    transition: all 0.15s;
+    position: relative;
+    bottom: -1px;
+    user-select: none;
+  }
+
+  .tab:hover {
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  .tab.active {
+    color: var(--text);
+    background: var(--surface);
+    border-color: var(--border);
+  }
+
+  .tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+  }
+
+  .tab[data-tab="simple"] { border-top: 2px solid var(--blue); }
+  .tab[data-tab="simple"].active::after { background: var(--blue); }
+  .tab[data-tab="keyframe"] { border-top: 2px solid var(--orange); }
+  .tab[data-tab="keyframe"].active::after { background: var(--orange); }
+  .tab[data-tab="default"] { border-top: 2px solid var(--green); }
+  .tab[data-tab="default"].active::after { background: var(--green); }
+  .tab[data-tab="expiry"] { border-top: 2px solid var(--red); }
+  .tab[data-tab="expiry"].active::after { background: var(--red); }
+  .tab[data-tab="compare"] { border-top: 2px solid var(--purple); }
+  .tab[data-tab="compare"].active::after { background: var(--purple); }
+  .tab[data-tab="files"] { border-top: 2px solid var(--cyan); }
+  .tab[data-tab="files"].active::after { background: var(--cyan); }
+
+  .tab-panel {
+    display: none;
+  }
+
+  .tab-panel.active {
+    display: block;
+  }
+
+  /* Flow steps */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: relative;
+  }
+
+  .flow-step {
+    position: relative;
+    padding-left: 3rem;
+    padding-bottom: 0;
+  }
+
+  .flow-step::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 28px;
+    bottom: 0;
+    width: 2px;
+  }
+
+  .flow-step:last-child::before {
+    display: none;
+  }
+
+  .flow-step.blue::before { background: var(--blue-border); }
+  .flow-step.orange::before { background: var(--orange-border); }
+  .flow-step.green::before { background: var(--green-border); }
+
+  .step-marker {
+    position: absolute;
+    left: 6px;
+    top: 14px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--bg);
+    z-index: 1;
+  }
+
+  .blue .step-marker { background: var(--blue); }
+  .orange .step-marker { background: var(--orange); }
+  .green .step-marker { background: var(--green); }
+
+  .step-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .step-box:hover {
+    border-color: var(--text-dim);
+  }
+
+  .step-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .step-title .chevron {
+    font-size: 0.7rem;
+    transition: transform 0.2s;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .step-box.expanded .step-title .chevron {
+    transform: rotate(90deg);
+  }
+
+  .step-summary {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+  }
+
+  .step-detail {
+    display: none;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.875rem;
+    line-height: 1.7;
+  }
+
+  .step-box.expanded .step-detail {
+    display: block;
+  }
+
+  .step-detail ul {
+    padding-left: 1.25rem;
+  }
+
+  .step-detail li {
+    margin-bottom: 0.35rem;
+  }
+
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+    font-size: 0.825em;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+  }
+
+  .code-block {
+    display: block;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0;
+    overflow-x: auto;
+    font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15em 0.5em;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .tag-cached {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green-border);
+  }
+
+  .tag-every-run {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid rgba(248,81,73,0.4);
+  }
+
+  .tag-manual {
+    background: var(--orange-bg);
+    color: var(--orange);
+    border: 1px solid var(--orange-border);
+  }
+
+  .tag-once {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid var(--blue-border);
+  }
+
+  .tag-parallel {
+    background: var(--purple-bg);
+    color: var(--purple);
+    border: 1px solid var(--purple-border);
+  }
+
+  /* Layer diagram */
+  .layer-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 1rem 0;
+    max-width: 600px;
+  }
+
+  .layer {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    position: relative;
+  }
+
+  .layer-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .layer-dockerfile {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .layer-source {
+    border: 1px solid var(--blue-border);
+    background: var(--blue-bg);
+  }
+
+  .layer-init {
+    border: 1px solid var(--purple-border);
+    background: var(--purple-bg);
+  }
+
+  .layer-final {
+    border: 1px solid var(--green-border);
+    background: var(--green-bg);
+  }
+
+  .layer-patch {
+    border: 1px solid var(--orange-border);
+    background: var(--orange-bg);
+  }
+
+  /* Comparison table */
+  .compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin: 1rem 0;
+  }
+
+  .compare-table th,
+  .compare-table td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border: 1px solid var(--border);
+  }
+
+  .compare-table th {
+    background: var(--surface-2);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+  }
+
+  .compare-table td {
+    background: var(--surface);
+  }
+
+  .compare-table th:nth-child(2) { color: var(--blue); }
+  .compare-table th:nth-child(3) { color: var(--orange); }
+  .compare-table th:nth-child(4) { color: var(--green); }
+
+  .compare-table tr:hover td {
+    background: var(--surface-2);
+  }
+
+  /* Callout */
+  .callout {
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-size: 0.875rem;
+  }
+
+  .callout-title {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .callout-warn {
+    background: var(--orange-bg);
+    border: 1px solid var(--orange-border);
+  }
+
+  .callout-warn .callout-title {
+    color: var(--orange);
+  }
+
+  .callout-info {
+    background: var(--blue-bg);
+    border: 1px solid var(--blue-border);
+  }
+
+  .callout-info .callout-title {
+    color: var(--blue);
+  }
+
+  .callout-danger {
+    background: var(--red-bg);
+    border: 1px solid rgba(248,81,73,0.4);
+  }
+
+  .callout-danger .callout-title {
+    color: var(--red);
+  }
+
+  .callout-purple {
+    background: var(--purple-bg);
+    border: 1px solid var(--purple-border);
+  }
+
+  .callout-purple .callout-title {
+    color: var(--purple);
+  }
+
+  /* File reference cards */
+  .file-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+
+  .file-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .file-card:hover {
+    border-color: var(--text-dim);
+  }
+
+  .file-card .file-name {
+    font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--blue);
+  }
+
+  .file-card .file-desc {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .file-card .file-detail {
+    display: none;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    line-height: 1.6;
+  }
+
+  .file-card.expanded .file-detail {
+    display: block;
+  }
+
+  /* Timing diagram */
+  .timing {
+    margin: 1.5rem 0;
+    font-size: 0.8rem;
+  }
+
+  .timing-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .timing-label {
+    width: 160px;
+    text-align: right;
+    padding-right: 1rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    flex-shrink: 0;
+  }
+
+  .timing-bar-container {
+    flex: 1;
+    position: relative;
+    height: 28px;
+  }
+
+  .timing-bar {
+    position: absolute;
+    height: 24px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--bg);
+    top: 2px;
+  }
+
+  .timing-bar.blue { background: var(--blue); }
+  .timing-bar.orange { background: var(--orange); }
+  .timing-bar.green { background: var(--green); }
+  .timing-bar.purple { background: var(--purple); }
+  .timing-bar.red { background: var(--red); }
+
+  .timing-axis {
+    display: flex;
+    margin-top: 0.5rem;
+    padding-left: 160px;
+  }
+
+  .timing-axis span {
+    flex: 1;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+  }
+
+  /* Expiry flow */
+  .expiry-scenario {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+  }
+
+  .expiry-scenario h4 {
+    margin-bottom: 0.5rem;
+    font-size: 0.95rem;
+  }
+
+  .expiry-scenario ol {
+    padding-left: 1.25rem;
+    font-size: 0.85rem;
+  }
+
+  .expiry-scenario li {
+    margin-bottom: 0.3rem;
+  }
+
+  /* Section spacing */
+  .section {
+    margin-bottom: 2.5rem;
+  }
+
+  /* Pattern header badge */
+  .pattern-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+  }
+
+  .pattern-badge-a {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid var(--blue-border);
+  }
+
+  .pattern-badge-b {
+    background: var(--orange-bg);
+    color: var(--orange);
+    border: 1px solid var(--orange-border);
+  }
+
+  .pattern-badge-c {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green-border);
+  }
+
+  .config-line {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+  }
+
+  .hot-path-legend {
+    display: flex;
+    gap: 1.5rem;
+    margin: 1rem 0;
+    font-size: 0.8rem;
+    flex-wrap: wrap;
+  }
+
+  .hot-path-legend .item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .arrow-down {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 1.2rem;
+    margin: -0.25rem 0;
+    padding-left: 3rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Offload Image Build Flow</h1>
+<p class="subtitle">How Offload currently builds sandbox images across three patterns. Interactive reference for the checkpoint-images design.</p>
+
+<div class="tabs" id="main-tabs">
+  <div class="tab active" data-tab="simple">Pattern A: Simple</div>
+  <div class="tab" data-tab="keyframe">Pattern B: Keyframe</div>
+  <div class="tab" data-tab="default">Pattern C: Default</div>
+  <div class="tab" data-tab="expiry">Image Expiry</div>
+  <div class="tab" data-tab="compare">Comparison</div>
+  <div class="tab" data-tab="files">File Map</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PATTERN A: SIMPLE -->
+<!-- ============================================================ -->
+<div class="tab-panel active" id="panel-simple">
+  <div class="section">
+    <h2><span class="pattern-badge pattern-badge-a">A</span> Simple Pattern</h2>
+    <p class="config-line">Config: <code>include_cwd = true</code>, no keyframe system. Uses <code>offload.toml</code> directly.</p>
+    <p class="config-line">Example: sculptor unit tests, Offload self-tests (<code>offload-cargo-modal.toml</code>)</p>
+
+    <div class="hot-path-legend">
+      <div class="item"><span class="tag tag-cached">cached</span> Runs once, reused across runs</div>
+      <div class="item"><span class="tag tag-every-run">every run</span> Rebuilt on every <code>offload run</code></div>
+      <div class="item"><span class="tag tag-parallel">parallel</span> Concurrent with other operations</div>
+    </div>
+  </div>
+
+  <h3>Image Layer Stack</h3>
+  <div class="layer-stack">
+    <div class="layer layer-final">
+      <div class="layer-label">Final Image (not cached)</div>
+      base + source overlay + sandbox_init_cmd = sandbox-ready image
+    </div>
+    <div class="layer layer-init">
+      <div class="layer-label">sandbox_init_cmd layer</div>
+      e.g. <code>uv sync --all-packages</code> -- baked in at build time
+    </div>
+    <div class="layer layer-source">
+      <div class="layer-label">Source overlay (every run)</div>
+      <code>add_local_dir(".", "/app")</code> -- entire working directory
+    </div>
+    <div class="layer layer-dockerfile">
+      <div class="layer-label">Base Dockerfile image (cached in .offload-image-cache)</div>
+      System deps, toolchain, language runtimes
+    </div>
+  </div>
+
+  <h3>Flow Steps</h3>
+  <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:1rem;">Click any step to expand details.</p>
+
+  <div class="flow">
+    <div class="flow-step blue">
+      <div class="step-marker">1</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>offload run</code> <span class="tag tag-once">once</span>
+        </div>
+        <div class="step-summary">Rust CLI loads config, dispatches to Modal provider</div>
+        <div class="step-detail">
+          <ul>
+            <li>Loads <code>offload.toml</code> (or <code>-c &lt;path&gt;</code>)</li>
+            <li>Reads <code>[provider] type = "modal"</code> with <code>dockerfile = ".devcontainer/Dockerfile"</code> and <code>include_cwd = true</code></li>
+            <li>Dispatches to <code>ModalProvider::from_config()</code></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step blue">
+      <div class="step-marker">2</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>ModalProvider::from_config()</code> <span class="tag tag-once">once</span>
+        </div>
+        <div class="step-summary">Rust builds the prepare command string for Python</div>
+        <div class="step-detail">
+          Constructs the shell command:
+          <div class="code-block">uv run @modal_sandbox.py prepare .devcontainer/Dockerfile --include-cwd --cached</div>
+          <ul>
+            <li>Appends <code>--sandbox-init-cmd=&lt;quoted cmd&gt;</code> if <code>offload.sandbox_init_cmd</code> is set</li>
+            <li>Appends any <code>--copy-dir=local:remote</code> pairs from config or CLI</li>
+            <li>The <code>@modal_sandbox.py</code> reference is resolved to the bundled script cache</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step blue">
+      <div class="step-marker">3</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          Python <code>prepare</code> command <span class="tag tag-every-run">every run</span>
+        </div>
+        <div class="step-summary">Builds the full image: base + source + init. This is the expensive step.</div>
+        <div class="step-detail">
+          <p><strong>Base image (cached):</strong></p>
+          <ul>
+            <li>Reads <code>.offload-image-cache</code> for cached base image ID</li>
+            <li><strong>Cache hit:</strong> <code>modal.Image.from_id(cached_id)</code> -- skips Dockerfile rebuild</li>
+            <li><strong>Cache miss:</strong> <code>modal.Image.from_dockerfile(path, context_dir=".")</code> then <code>.build(app)</code>, creates temp sandbox to materialize, writes ID to <code>.offload-image-cache</code></li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>Source overlay (NOT cached -- runs every time):</strong></p>
+          <ul>
+            <li><code>add_local_dir(".", "/app")</code> -- uploads entire working directory</li>
+            <li>Respects <code>.dockerignore</code> patterns for filtering</li>
+            <li>This is where current source code enters the image</li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>Extra directories:</strong></p>
+          <ul>
+            <li>Any <code>--copy-dir</code> directories added via <code>add_local_dir(local, remote)</code></li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>Init command:</strong></p>
+          <ul>
+            <li><code>sandbox_init_cmd</code> runs via <code>run_commands()</code> (e.g. <code>uv sync --all-packages</code>)</li>
+            <li>This is baked into the image layer, NOT run at sandbox creation time</li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>Expired image handling:</strong></p>
+          <ul>
+            <li>If cached base image was GC'd by Modal: catches exception, clears <code>.offload-image-cache</code>, rebuilds from scratch</li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>Output:</strong> prints final <code>image_id</code> to stdout</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step blue">
+      <div class="step-marker">4</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          Rust captures <code>image_id</code> <span class="tag tag-once">once</span>
+        </div>
+        <div class="step-summary">Stores in ModalProvider.image_id for sandbox creation</div>
+        <div class="step-detail">
+          <ul>
+            <li>Reads last line of stdout from the Python process</li>
+            <li>Stores as <code>ModalProvider.image_id</code></li>
+            <li>All subsequent sandbox creation uses this single image ID</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step blue">
+      <div class="step-marker">5</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>create_sandbox()</code> called N times <span class="tag tag-parallel">parallel</span>
+        </div>
+        <div class="step-summary">Each sandbox is an isolated instance of the image</div>
+        <div class="step-detail">
+          <div class="code-block">uv run @modal_sandbox.py create --cpu 0.125 &lt;image_id&gt;</div>
+          <ul>
+            <li>Returns a <code>sandbox_id</code> for each sandbox created</li>
+            <li>Sandboxes are pooled up to <code>max_parallel</code></li>
+            <li>Each sandbox gets an identical copy of the final image</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step blue">
+      <div class="step-marker">6</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          Tests execute on sandboxes <span class="tag tag-parallel">parallel</span>
+        </div>
+        <div class="step-summary">Exec commands sent to sandboxes, JUnit XML collected</div>
+        <div class="step-detail">
+          <ul>
+            <li>Batches of tests distributed via LPT scheduling (or round-robin)</li>
+            <li>Each batch runs in its own sandbox via <code>exec_command</code></li>
+            <li>JUnit XML results downloaded from each sandbox</li>
+            <li>Results aggregated, retries dispatched for failures</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout callout-warn" style="margin-top:2rem">
+    <div class="callout-title">Key Observation</div>
+    <p>Source code is re-uploaded on <strong>every single run</strong> via <code>add_local_dir(".", "/app")</code>. The base Dockerfile image is cached, but the final image (with source + sandbox_init_cmd) is rebuilt every run. This is the primary bottleneck that the checkpoint-images feature aims to address.</p>
+  </div>
+
+  <h3 style="margin-top:1.5rem">Timing (Approximate)</h3>
+  <div class="timing">
+    <div class="timing-row">
+      <div class="timing-label">Config load</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar blue" style="left:0; width:3%;">~0.1s</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Test discovery</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar purple" style="left:3%; width:15%;">~2-5s (parallel with prepare)</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Image prepare</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar orange" style="left:3%; width:50%;">~15-60s (upload + build)</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Sandbox pool</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar green" style="left:53%; width:12%;">~3-5s</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Test execution</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar blue" style="left:65%; width:35%;">varies</div>
+      </div>
+    </div>
+    <div class="timing-axis">
+      <span>0s</span><span></span><span></span><span></span><span>time --></span>
+    </div>
+  </div>
+  <p style="font-size:0.8rem; color:var(--text-muted);">Test discovery runs in parallel with image prepare. Sandbox pool creation waits for prepare to finish.</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PATTERN B: KEYFRAME -->
+<!-- ============================================================ -->
+<div class="tab-panel" id="panel-keyframe">
+  <div class="section">
+    <h2><span class="pattern-badge pattern-badge-b">B</span> Keyframe Pattern</h2>
+    <p class="config-line">Config: <code>include_cwd</code> NOT set. Uses <code>.offload-base-commit</code> + justfile orchestration.</p>
+    <p class="config-line">Example: mng tests, sculptor integration tests</p>
+
+    <div class="hot-path-legend">
+      <div class="item"><span class="tag tag-cached">cached</span> Baked into Dockerfile layer</div>
+      <div class="item"><span class="tag tag-every-run">every run</span> Rebuilt on every run</div>
+      <div class="item"><span class="tag tag-manual">manual</span> Requires human intervention to update</div>
+    </div>
+  </div>
+
+  <h3>Image Layer Stack</h3>
+  <div class="layer-stack">
+    <div class="layer layer-final">
+      <div class="layer-label">Final Image (rebuilt each run)</div>
+      Dockerfile layers + patch applied + deps re-synced
+    </div>
+    <div class="layer layer-init">
+      <div class="layer-label">sandbox_init_cmd (every run)</div>
+      <code>git apply /offload-upload/patch --allow-empty && uv sync --all-packages</code>
+    </div>
+    <div class="layer layer-patch">
+      <div class="layer-label">Patch layer (every run, small)</div>
+      <code>--copy-dir="/tmp/&lt;uuid&gt;:/offload-upload"</code> -- just the git diff
+    </div>
+    <div class="layer layer-source">
+      <div class="layer-label">Source at pinned SHA (in Dockerfile, cached)</div>
+      <code>COPY . /code/</code> + <code>RUN tar -xzf current.tar.gz</code> + <code>RUN uv sync</code>
+    </div>
+    <div class="layer layer-dockerfile">
+      <div class="layer-label">Base Dockerfile (cached)</div>
+      System deps, toolchain, uv, claude code
+    </div>
+  </div>
+
+  <h3>Flow Steps</h3>
+  <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:1rem;">Click any step to expand details.</p>
+
+  <div class="flow">
+    <div class="flow-step orange">
+      <div class="step-marker">1</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          justfile target <code>test-offload</code> <span class="tag tag-every-run">every run</span>
+        </div>
+        <div class="step-summary">Orchestrates tarball creation, patch generation, and offload invocation</div>
+        <div class="step-detail">
+          <p><strong>1a. Read pinned SHA</strong></p>
+          <ul>
+            <li>Reads <code>.offload-base-commit</code> file (contains a git SHA like <code>73ce8f3cc81924aba41ecf000524975b18979f6a</code>)</li>
+            <li>This file is checked into the repo and manually updated by a developer</li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>1b. Create tarball</strong> <span class="tag tag-manual">manual sha</span></p>
+          <ul>
+            <li>Runs <code>make_tar_of_repo.sh &lt;sha&gt; &lt;tmpdir&gt;</code></li>
+            <li>Clones current repo to temp dir</li>
+            <li>Checks out the pinned SHA</li>
+            <li>Creates <code>current.tar.gz</code> tarball of repo at that commit</li>
+            <li>Copies tarball to CWD (where Dockerfile can see it)</li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>1c. Generate patch</strong> <span class="tag tag-every-run">every run</span></p>
+          <ul>
+            <li>Runs <code>generate_patch_for_offload.sh &lt;sha&gt;</code></li>
+            <li>Executes <code>git diff &lt;sha&gt;</code> (against working tree -- uncommitted changes included)</li>
+            <li>Outputs patch to <code>/tmp/&lt;uuid&gt;/patch</code></li>
+          </ul>
+          <p style="margin-top:0.75rem"><strong>1d. Invoke Offload</strong></p>
+          <div class="code-block">offload -c offload-modal.toml run --copy-dir="/tmp/&lt;uuid&gt;:/offload-upload"</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step orange">
+      <div class="step-marker">2</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          Dockerfile builds base image <span class="tag tag-cached">cached</span>
+        </div>
+        <div class="step-summary">Dockerfile contains pinned-SHA source code and all dependencies</div>
+        <div class="step-detail">
+          <p>The Dockerfile (e.g. <code>libs/mng/imbue/mng/resources/Dockerfile</code>) does heavy lifting:</p>
+          <ul>
+            <li>Installs system deps (git, curl, build tools, etc.)</li>
+            <li>Installs uv, claude code</li>
+            <li><code>COPY . /code/</code> -- copies the tarball and Dockerfile context into image</li>
+            <li><code>RUN tar -xzf /code/current.tar.gz -C /code/mng/</code> -- extracts pinned-SHA repo</li>
+            <li><code>RUN uv sync --all-packages</code> -- installs Python deps (BAKED INTO IMAGE)</li>
+          </ul>
+          <p style="margin-top:0.75rem">Source code at the pinned SHA + all deps are in this Docker layer. This is the "keyframe" -- a known-good state.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step orange">
+      <div class="step-marker">3</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>modal_sandbox.py prepare</code> <span class="tag tag-every-run">every run</span>
+        </div>
+        <div class="step-summary">Same as Pattern A but WITHOUT add_local_dir. Source is already in Dockerfile.</div>
+        <div class="step-detail">
+          <ul>
+            <li><code>include_cwd</code> is false, so NO <code>add_local_dir(".", "/app")</code></li>
+            <li>Source code is already in the Dockerfile layer from step 2</li>
+            <li>The patch is passed via <code>--copy-dir="/tmp/&lt;uuid&gt;:/offload-upload"</code></li>
+            <li><code>sandbox_init_cmd</code> applies the patch:</li>
+          </ul>
+          <div class="code-block">git apply /offload-upload/patch --allow-empty && uv sync --all-packages</div>
+          <ul>
+            <li>The <code>uv sync</code> re-runs to pick up any dependency changes in the patch</li>
+            <li>Only the git diff patch is transferred, not the whole repo</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step orange">
+      <div class="step-marker">4</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          Sandbox creation and test execution <span class="tag tag-parallel">parallel</span>
+        </div>
+        <div class="step-summary">Same as Pattern A from here on</div>
+        <div class="step-detail">
+          <ul>
+            <li>Rust captures <code>image_id</code> from prepare stdout</li>
+            <li>Creates N sandboxes from the image</li>
+            <li>Distributes test batches, collects results</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout callout-warn" style="margin-top:2rem">
+    <div class="callout-title">The Keyframe System is Entirely Manual</div>
+    <ul style="margin-top:0.5rem; padding-left:1.25rem; font-size:0.875rem;">
+      <li><code>.offload-base-commit</code> is a checked-in file that someone manually updates</li>
+      <li><code>make_tar_of_repo.sh</code> is a repo-specific script</li>
+      <li><code>generate_patch_for_offload.sh</code> is a repo-specific script</li>
+      <li>The justfile recipe orchestrates all of this</li>
+      <li>When the base commit drifts too far, someone must update the SHA and rebuild the Docker image</li>
+    </ul>
+  </div>
+
+  <div class="callout callout-info" style="margin-top:1rem">
+    <div class="callout-title">Why This Exists</div>
+    <p>The keyframe pattern trades manual maintenance for speed. Instead of uploading the entire repo every run (Pattern A), only a small <code>git diff</code> patch is transferred. For large repos with many dependencies, this saves significant time during the <code>prepare</code> step. The checkpoint-images feature aims to automate this pattern.</p>
+  </div>
+
+  <h3 style="margin-top:1.5rem">Timing (Approximate)</h3>
+  <div class="timing">
+    <div class="timing-row">
+      <div class="timing-label">Justfile setup</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar orange" style="left:0; width:20%;">~5-10s (tarball + patch)</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Test discovery</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar purple" style="left:20%; width:10%;">~2-5s (parallel)</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Image prepare</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar orange" style="left:20%; width:25%;">~5-15s (patch only)</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Sandbox pool</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar green" style="left:45%; width:10%;">~3-5s</div>
+      </div>
+    </div>
+    <div class="timing-row">
+      <div class="timing-label">Test execution</div>
+      <div class="timing-bar-container">
+        <div class="timing-bar blue" style="left:55%; width:45%;">varies</div>
+      </div>
+    </div>
+    <div class="timing-axis">
+      <span>0s</span><span></span><span></span><span></span><span>time --></span>
+    </div>
+  </div>
+  <p style="font-size:0.8rem; color:var(--text-muted);">Image prepare is faster because only a small patch is applied on top of the cached Dockerfile layers.</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- PATTERN C: DEFAULT PROVIDER -->
+<!-- ============================================================ -->
+<div class="tab-panel" id="panel-default">
+  <div class="section">
+    <h2><span class="pattern-badge pattern-badge-c">C</span> Default Provider Pattern</h2>
+    <p class="config-line">Config: <code>[provider] type = "default"</code> with custom <code>prepare_command</code>, <code>create_command</code>, etc.</p>
+    <p class="config-line">Provider-agnostic: the shell commands can do anything.</p>
+  </div>
+
+  <h3>Flow Steps</h3>
+  <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:1rem;">Same structure as Pattern A but fully configurable. Click to expand.</p>
+
+  <div class="flow">
+    <div class="flow-step green">
+      <div class="step-marker">1</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>offload run</code> loads config <span class="tag tag-once">once</span>
+        </div>
+        <div class="step-summary">Reads <code>[provider] type = "default"</code> and dispatches to DefaultProvider</div>
+        <div class="step-detail">
+          <ul>
+            <li>Uses <code>DefaultProvider::from_config()</code> instead of <code>ModalProvider::from_config()</code></li>
+            <li>All lifecycle commands are user-defined strings with placeholder variables</li>
+          </ul>
+          <p style="margin-top:0.75rem">Example config:</p>
+          <div class="code-block">prepare_command = "uv run @modal_sandbox.py prepare --include-cwd examples/Dockerfile"
+create_command = "uv run @modal_sandbox.py create {image_id}"
+exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
+destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
+download_command = "uv run @modal_sandbox.py download {sandbox_id} {paths}"</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step green">
+      <div class="step-marker">2</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>prepare_command</code> executes <span class="tag tag-every-run">every run</span>
+        </div>
+        <div class="step-summary">User-defined command with flags appended by Rust</div>
+        <div class="step-detail">
+          <p>Rust appends standard flags to the user's <code>prepare_command</code>:</p>
+          <ul>
+            <li><code>--cached</code> (unless <code>--no-cache</code> was passed)</li>
+            <li><code>--copy-dir=local:remote</code> for each configured/CLI copy directory</li>
+            <li><code>--sandbox-init-cmd=&lt;quoted cmd&gt;</code> if set</li>
+          </ul>
+          <p style="margin-top:0.75rem">The command must print an <strong>image ID</strong> as its last line of stdout.</p>
+          <p style="margin-top:0.5rem">Currently, all default-provider configs in use still point to <code>@modal_sandbox.py</code>, so the actual image build logic is the same as Pattern A. But the default provider is designed to be completely provider-agnostic.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step green">
+      <div class="step-marker">3</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>create_command</code> with <code>{image_id}</code> substitution <span class="tag tag-parallel">parallel</span>
+        </div>
+        <div class="step-summary">Placeholder {image_id} replaced with prepare output</div>
+        <div class="step-detail">
+          <ul>
+            <li><code>{image_id}</code> is replaced with the string from prepare's stdout</li>
+            <li>Command must print a <strong>sandbox ID</strong> to stdout</li>
+            <li>Called N times to create the sandbox pool</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down">&#8595;</div>
+
+    <div class="flow-step green">
+      <div class="step-marker">4</div>
+      <div class="step-box" onclick="toggleStep(this)">
+        <div class="step-title">
+          <span class="chevron">&#9654;</span>
+          <code>exec_command</code> / <code>download_command</code> / <code>destroy_command</code>
+        </div>
+        <div class="step-summary">Standard lifecycle: run tests, collect results, tear down</div>
+        <div class="step-detail">
+          <ul>
+            <li><code>exec_command</code>: <code>{sandbox_id}</code> + <code>{command}</code> replaced</li>
+            <li><code>download_command</code>: <code>{sandbox_id}</code> + <code>{paths}</code> replaced (for JUnit XML)</li>
+            <li><code>destroy_command</code>: <code>{sandbox_id}</code> replaced</li>
+          </ul>
+          <p style="margin-top:0.75rem">All placeholders are simple string substitution at runtime. No templating engine.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout callout-info" style="margin-top:2rem">
+    <div class="callout-title">Design Intent</div>
+    <p>The default provider is the escape hatch. It allows Offload to work with any sandbox backend -- not just Modal. The commands are opaque shell strings; Offload does not interpret them. Image IDs and sandbox IDs are opaque strings.</p>
+  </div>
+
+  <div class="callout callout-purple" style="margin-top:1rem">
+    <div class="callout-title">Provider-Agnosticism Note</div>
+    <p>The checkpoint-images feature must work across all providers:</p>
+    <ul style="margin-top:0.5rem; padding-left:1.25rem; font-size:0.875rem; line-height:1.7;">
+      <li><strong>Modal provider:</strong> <code>modal.Image.from_id()</code>, <code>modal.Image.from_dockerfile()</code>, <code>add_local_dir()</code>, image IDs like <code>im-XXXXXXXXX</code></li>
+      <li><strong>Default provider:</strong> user-defined shell commands, image IDs are opaque strings</li>
+      <li><strong>Local provider:</strong> no image concept at all</li>
+      <li>Any solution must not assume Modal-specific APIs at the Rust level</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- IMAGE EXPIRY -->
+<!-- ============================================================ -->
+<div class="tab-panel" id="panel-expiry">
+  <div class="section">
+    <h2>Image ID Expiry and Garbage Collection</h2>
+    <p class="config-line">How Modal image garbage collection interacts with the current caching system.</p>
+  </div>
+
+  <h3>Cache File</h3>
+  <div class="expiry-scenario">
+    <h4><code>.offload-image-cache</code></h4>
+    <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.5rem;">Stores a bare image ID string (e.g. <code>im-XXXXXXXXX</code>) representing the base Dockerfile image.</p>
+    <div class="code-block">im-rlXozWoN3Q9TWD8I6fnxm5</div>
+    <p style="font-size:0.85rem; margin-top:0.5rem;">This caches only the Dockerfile layer. The final image (with source + sandbox_init_cmd) is NOT cached.</p>
+  </div>
+
+  <h3 style="margin-top:1.5rem">Failure Scenarios</h3>
+
+  <div class="expiry-scenario">
+    <h4 style="color:var(--orange)">Scenario 1: Base image expired during prepare</h4>
+    <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.5rem;">The cached base image ID in <code>.offload-image-cache</code> was garbage-collected by Modal.</p>
+    <ol>
+      <li><code>_build_final_image()</code> calls <code>modal.Image.from_id(cached_id)</code></li>
+      <li>Modal returns an error -- image no longer exists</li>
+      <li>Python catches the exception</li>
+      <li>Clears <code>.offload-image-cache</code></li>
+      <li>Rebuilds from scratch: <code>modal.Image.from_dockerfile()</code></li>
+      <li>Writes new image ID to <code>.offload-image-cache</code></li>
+      <li>Continues normally (one run is slower, subsequent runs are cached again)</li>
+    </ol>
+  </div>
+
+  <div class="expiry-scenario">
+    <h4 style="color:var(--red)">Scenario 2: Final image expired during sandbox creation</h4>
+    <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.5rem;">The final image (output of prepare) was garbage-collected between prepare and create_sandbox.</p>
+    <ol>
+      <li><code>create_from_image(image_id)</code> fails</li>
+      <li>Logs error telling user to delete <code>.offload-image-cache</code> and re-run <code>prepare</code></li>
+      <li>This is a manual recovery -- there is NO automatic retry at this level</li>
+      <li>In practice this is rare because the final image was just built seconds ago</li>
+    </ol>
+  </div>
+
+  <div class="expiry-scenario">
+    <h4 style="color:var(--green)">Scenario 3: Keyframe pattern (Pattern B) resilience</h4>
+    <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.5rem;">The keyframe pattern is implicitly more resilient to GC.</p>
+    <ol>
+      <li>The tarball is baked into the Dockerfile, so the base image is always rebuildable</li>
+      <li>Even if Modal GC's the cached image, rebuilding from the Dockerfile recreates it deterministically</li>
+      <li>The trade-off is that the Dockerfile build is heavier (includes source + deps)</li>
+    </ol>
+  </div>
+
+  <div class="callout callout-danger" style="margin-top:1.5rem">
+    <div class="callout-title">No Automatic Expiry Detection</div>
+    <p>There is no proactive expiry check. Failures surface only at runtime when a cached image ID is used. The system recovers gracefully for base images (Scenario 1) but requires manual intervention for final images (Scenario 2).</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- COMPARISON TABLE -->
+<!-- ============================================================ -->
+<div class="tab-panel" id="panel-compare">
+  <div class="section">
+    <h2>Pattern Comparison</h2>
+    <p class="config-line">Side-by-side comparison of the three image build patterns.</p>
+  </div>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th style="width:22%">Dimension</th>
+        <th style="width:26%">Pattern A: Simple</th>
+        <th style="width:26%">Pattern B: Keyframe</th>
+        <th style="width:26%">Pattern C: Default</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Source code transfer</strong></td>
+        <td>Entire working directory uploaded every run via <code>add_local_dir(".", "/app")</code></td>
+        <td>Only a <code>git diff</code> patch transferred. Full source baked into Dockerfile at pinned SHA.</td>
+        <td>Depends on user's <code>prepare_command</code>. Typically same as A or B.</td>
+      </tr>
+      <tr>
+        <td><strong>Dependencies installed</strong></td>
+        <td>Every run (via <code>sandbox_init_cmd</code> as image layer)</td>
+        <td>Baked into Dockerfile. Re-run via <code>sandbox_init_cmd</code> only if patch changes deps.</td>
+        <td>Depends on user's commands</td>
+      </tr>
+      <tr>
+        <td><strong>Cache strategy</strong></td>
+        <td>Base Dockerfile image cached in <code>.offload-image-cache</code>. Final image NOT cached.</td>
+        <td>Dockerfile layers cached by Modal (including source + deps). Patch layer rebuilt each run.</td>
+        <td>Same as A if backed by <code>modal_sandbox.py</code></td>
+      </tr>
+      <tr>
+        <td><strong>Manual steps required</strong></td>
+        <td>None. Fully automatic.</td>
+        <td>Must maintain <code>.offload-base-commit</code>, <code>make_tar_of_repo.sh</code>, <code>generate_patch_for_offload.sh</code>, and justfile recipe.</td>
+        <td>Must write all lifecycle commands. No built-in logic.</td>
+      </tr>
+      <tr>
+        <td><strong>Typical prepare time</strong></td>
+        <td>15-60s (source upload + build)</td>
+        <td>5-15s (small patch + apply)</td>
+        <td>Varies by implementation</td>
+      </tr>
+      <tr>
+        <td><strong>Config complexity</strong></td>
+        <td>Low: just <code>dockerfile</code> and <code>include_cwd = true</code></td>
+        <td>High: multiple scripts, justfile, checked-in SHA file</td>
+        <td>Medium: 5 command templates with placeholders</td>
+      </tr>
+      <tr>
+        <td><strong>When to use</strong></td>
+        <td>Small repos, quick iteration, getting started</td>
+        <td>Large repos with heavy deps where prepare time dominates</td>
+        <td>Non-Modal backends, or custom infrastructure</td>
+      </tr>
+      <tr>
+        <td><strong>GC resilience</strong></td>
+        <td>Auto-recovery for base image. Manual recovery for final image.</td>
+        <td>More resilient: Dockerfile is self-contained and always rebuildable.</td>
+        <td>Depends on user's implementation</td>
+      </tr>
+      <tr>
+        <td><strong>Provider</strong></td>
+        <td><code>type = "modal"</code></td>
+        <td><code>type = "default"</code> (backed by modal_sandbox.py)</td>
+        <td><code>type = "default"</code></td>
+      </tr>
+      <tr>
+        <td><strong>Rust code path</strong></td>
+        <td><code>ModalProvider::from_config()</code></td>
+        <td><code>DefaultProvider::from_config()</code></td>
+        <td><code>DefaultProvider::from_config()</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-purple" style="margin-top:2rem">
+    <div class="callout-title">What Checkpoint Images Unify</div>
+    <p>The checkpoint-images feature makes Pattern B's optimization (small diff instead of full upload) available as a first-class Offload capability. Instead of manual scripts and pinned SHAs, <code>offload checkpoint</code> creates the keyframe and <code>offload run</code> automatically uses a thin diff layer. This eliminates the manual maintenance while preserving the performance benefit.</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- FILE MAP -->
+<!-- ============================================================ -->
+<div class="tab-panel" id="panel-files">
+  <div class="section">
+    <h2>File Map</h2>
+    <p class="config-line">Key files involved in image building. Click each card for details.</p>
+  </div>
+
+  <h3>Configuration Files</h3>
+  <div class="file-grid">
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">offload.toml</div>
+      <div class="file-desc">Primary config file for Offload. Defines provider, framework, groups, and report settings.</div>
+      <div class="file-detail">
+        <p>Loaded by <code>offload run</code> (or <code>-c &lt;path&gt;</code> for alternate configs).</p>
+        <p style="margin-top:0.5rem">Key fields for image building:</p>
+        <ul style="padding-left:1.25rem; margin-top:0.5rem;">
+          <li><code>[provider] type</code> -- selects provider implementation</li>
+          <li><code>[provider] dockerfile</code> -- path to Dockerfile (modal)</li>
+          <li><code>[provider] include_cwd</code> -- upload working dir (modal)</li>
+          <li><code>[offload] sandbox_init_cmd</code> -- command baked into image</li>
+          <li><code>[provider] copy_dirs</code> -- extra directories to include</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">.offload-image-cache</div>
+      <div class="file-desc">Caches the base Dockerfile image ID. Delete to force rebuild.</div>
+      <div class="file-detail">
+        <p>Contains a bare image ID string, e.g.:</p>
+        <div class="code-block">im-rlXozWoN3Q9TWD8I6fnxm5</div>
+        <p style="margin-top:0.5rem">Written by <code>modal_sandbox.py prepare</code>. Read on subsequent runs to skip Dockerfile rebuild. Auto-cleared if image is GC'd.</p>
+        <p style="margin-top:0.5rem">Should be in <code>.gitignore</code>.</p>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">.offload-base-commit</div>
+      <div class="file-desc">Pattern B only. Contains pinned git SHA for the keyframe. Checked into repo.</div>
+      <div class="file-detail">
+        <p>Contains a bare git SHA, e.g.:</p>
+        <div class="code-block">73ce8f3cc81924aba41ecf000524975b18979f6a</div>
+        <p style="margin-top:0.5rem">Manually maintained by developers. When updated, the Dockerfile must be rebuilt to include source at the new SHA.</p>
+        <p style="margin-top:0.5rem">Read by justfile recipe to generate tarball and patch.</p>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">.offload/checkpoint-cache</div>
+      <div class="file-desc">Future: checkpoint-images feature cache file. JSON with SHA and image ID.</div>
+      <div class="file-detail">
+        <p>Planned format:</p>
+        <div class="code-block">{
+  "version": 1,
+  "sha": "abc123def",
+  "image_id": "im-XXXXXXXXX"
+}</div>
+        <p style="margin-top:0.5rem">Managed by <code>offload checkpoint</code> (create) and <code>offload checkpoint --delete</code> (remove).</p>
+        <p style="margin-top:0.5rem">When present, <code>offload run</code> uses diff-based image building instead of full rebuild.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:1.5rem">Source Code</h3>
+  <div class="file-grid">
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">scripts/modal_sandbox.py</div>
+      <div class="file-desc">Bundled Python script for Modal sandbox lifecycle. Invoked via <code>uv run @modal_sandbox.py</code>.</div>
+      <div class="file-detail">
+        <p>CLI commands:</p>
+        <ul style="padding-left:1.25rem; margin-top:0.5rem;">
+          <li><code>prepare &lt;dockerfile&gt;</code> -- build image, return image_id</li>
+          <li><code>create &lt;image_id&gt;</code> -- create sandbox, return sandbox_id</li>
+          <li><code>exec &lt;sandbox_id&gt; &lt;command&gt;</code> -- run command in sandbox</li>
+          <li><code>destroy &lt;sandbox_id&gt;</code> -- tear down sandbox</li>
+          <li><code>download &lt;sandbox_id&gt; &lt;paths&gt;</code> -- download files from sandbox</li>
+        </ul>
+        <p style="margin-top:0.5rem">Key functions: <code>_build_base_image()</code>, <code>_build_final_image()</code>, <code>_read_image_cache()</code>, <code>_write_image_cache()</code></p>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">src/provider/modal.rs</div>
+      <div class="file-desc">Rust Modal provider implementation. Builds prepare command string, captures image_id.</div>
+      <div class="file-detail">
+        <ul style="padding-left:1.25rem;">
+          <li><code>ModalProvider::from_config()</code> -- constructs the prepare command</li>
+          <li>Appends <code>--include-cwd</code>, <code>--cached</code>, <code>--copy-dir</code>, <code>--sandbox-init-cmd</code></li>
+          <li>Captures image_id from stdout</li>
+          <li>Generates create/exec/destroy/download commands using the bundled script</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">src/provider/default.rs</div>
+      <div class="file-desc">Rust default provider. Runs user-defined shell commands with placeholder substitution.</div>
+      <div class="file-detail">
+        <ul style="padding-left:1.25rem;">
+          <li><code>DefaultProvider::from_config()</code> -- reads command templates</li>
+          <li>Appends <code>--cached</code>, <code>--copy-dir</code>, <code>--sandbox-init-cmd</code> to prepare_command</li>
+          <li>Performs <code>{image_id}</code>, <code>{sandbox_id}</code>, <code>{command}</code>, <code>{paths}</code> substitution at runtime</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">src/provider.rs</div>
+      <div class="file-desc">SandboxProvider trait definition. Defines the provider interface.</div>
+      <div class="file-detail">
+        <p>Trait methods:</p>
+        <ul style="padding-left:1.25rem; margin-top:0.5rem;">
+          <li><code>prepare()</code> -- build/load image, return image_id</li>
+          <li><code>create_sandbox()</code> -- create sandbox from image</li>
+          <li><code>exec_in_sandbox()</code> -- run command in sandbox</li>
+          <li><code>destroy_sandbox()</code> -- tear down sandbox</li>
+          <li><code>download_from_sandbox()</code> -- download files</li>
+        </ul>
+        <p style="margin-top:0.5rem">Checkpoint feature will add <code>build_checkpoint()</code> method.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:1.5rem">Pattern B Scripts (Repo-Specific)</h3>
+  <div class="file-grid">
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">make_tar_of_repo.sh</div>
+      <div class="file-desc">Clones repo, checks out pinned SHA, creates tarball. Used by keyframe pattern.</div>
+      <div class="file-detail">
+        <p>Arguments: <code>&lt;sha&gt; &lt;tmpdir&gt;</code></p>
+        <ul style="padding-left:1.25rem; margin-top:0.5rem;">
+          <li>Clones current repo to temp directory</li>
+          <li>Checks out the specified SHA</li>
+          <li>Creates <code>current.tar.gz</code></li>
+          <li>Copies tarball to CWD for Dockerfile <code>COPY</code></li>
+        </ul>
+        <p style="margin-top:0.5rem">This is a repo-specific script, not part of Offload itself.</p>
+      </div>
+    </div>
+
+    <div class="file-card" onclick="toggleFileCard(this)">
+      <div class="file-name">generate_patch_for_offload.sh</div>
+      <div class="file-desc">Generates git diff against pinned SHA. Includes uncommitted changes.</div>
+      <div class="file-detail">
+        <p>Arguments: <code>&lt;sha&gt;</code></p>
+        <ul style="padding-left:1.25rem; margin-top:0.5rem;">
+          <li>Runs <code>git diff &lt;sha&gt;</code> against working tree</li>
+          <li>Includes uncommitted changes</li>
+          <li>Outputs patch to <code>/tmp/&lt;uuid&gt;/patch</code></li>
+        </ul>
+        <p style="margin-top:0.5rem">The patch file is passed to Offload via <code>--copy-dir</code> and applied by <code>sandbox_init_cmd</code>.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const tabId = tab.dataset.tab;
+
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+
+    tab.classList.add('active');
+    document.getElementById('panel-' + tabId).classList.add('active');
+  });
+});
+
+// Expand/collapse flow steps
+function toggleStep(el) {
+  el.classList.toggle('expanded');
+}
+
+// Expand/collapse file cards
+function toggleFileCard(el) {
+  el.classList.toggle('expanded');
+}
+</script>
+
+</body>
+</html>

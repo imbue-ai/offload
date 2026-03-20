@@ -1,7 +1,34 @@
 # Checkpoint Image Feature for Offload
 
+<Human Problem Specification>
+
 ## Problem
-Modal image builds are slow. Every `offload run` rebuilds: base image + source overlay + dependency install. The sculptor repo works around this with a manual keyframe system. This feature builds that pattern into Offload as a first-class, provider-agnostic capability.
+Modal image builds are slow, so we want to run them as infrequently as possible, and cache as many steps as we can.
+
+Every `offload run` rebuilds: base image + source overlay + dependency install. The sculptor repo works around this with a manual "keyframe" system. This feature builds that pattern into Offload as a first-class, provider-agnostic capability.
+
+At the same time, existing offload repositories may be small, and do not necessarily need this pattern to achieve significant speed-up.
+
+## Parts of the Design we understand so far
+
+1. Every Offload project maintains a Dockerfile which is used to create the Modal Image. Ideally, this Docker file could
+   be agnostic of how the source is uploaded into the image. That is, the same Dockerfile works for checkpointing or direct-copy workflows.
+
+2. The Dockerfile is used to create the base image: OS, programming language dependencies, etc. We want to cache the base image id.
+
+3. For some, small and simple projects, 2 might be sufficient. We could just include the source directories at this point, and then generate the final image.
+
+4. For large projects, we want to put a checkpoint of project source into a checkpoint image. The checkpoint image is also cached.
+
+5. When restoring from a checkpoint image, we have to generate a source diff, place that into the final image, and create the final image by applying the diff.
+
+7. Observation: If we have no checkpoint image, that is homologous to having a checkpoint at no source. There are two ways we can model having no checkpoint image: "The up-to-date source is in the base image" or "The up-to-date source will be loaded later in the diff." No decision has yet been made.
+
+8. How offload handles caching must be robust to expiry at every oint. Modal image caches can expire, and at that point the expired images will need to be rebuilt.
+
+9. We will persist all cache ids in the file system.
+
+</Human Problem Specification>
 
 ## Design Summary
 
@@ -12,28 +39,38 @@ Modal image builds are slow. Every `offload run` rebuilds: base image + source o
 - **Provider-agnostic** -- Modal provider has built-in support; Default provider uses a `checkpoint_command` field; future providers can implement or error
 - **Agent skills** updated to know when to call `offload checkpoint`
 
-## Three-Layer Image Architecture
+## Image Architecture
+
+Whether to use checkpoint is determined when `.offload/checkpoint-cache` exists.
+
+### If we are using the checkpoint cache
+
+We deploy a two-layer image architecture:
 
 ```
-Layer 1: Base image       (from Dockerfile, cached in .offload-image-cache)
-Layer 2: Checkpoint image (base + source + sandbox_init_cmd, cached in .offload/checkpoint-cache)
-Layer 3: Run image        (checkpoint + git diff, built fresh each run)
+Layer 1: Checkpoint image (base + source + dev + sandbox_init_cmd, cached in .offload/checkpoint-cache)
+Layer 2: Run image        (adds a git diff, built fresh each run, cached in .offload-image-cache)
 ```
-
 - `sandbox_init_cmd` runs ONLY during checkpoint build (not on every run)
-- When no checkpoint exists, current behavior is preserved (layers 1+3 collapse to existing flow)
+
+### If there is no checkpoint cache:
+
+We have the following image architecture:
+
+```
+Layer 1: Cached Image (base + source + dev + sandbox_init_cmd, cached in .offload-image-cache)
+```
 
 ## Cache File: `.offload/checkpoint-cache`
 
 JSON format:
 ```json
 {
-  "version": 1,
   "sha": "abc123def",
   "image_id": "im-XXXXXXXXX"
 }
 ```
-- `sha`: git commit SHA at time of checkpoint creation
+- `sha`: git commit SHA at time of checkpoint creation (immutable once set; only changes via `offload checkpoint`)
 - `image_id`: Modal/provider image ID for the checkpoint
 - File presence = checkpointing enabled for `offload run`
 - `.offload/` directory should be in `.gitignore`
@@ -57,6 +94,7 @@ offload checkpoint --no-cache   # Force fresh base image rebuild too
 4. Build/load cached base image (Dockerfile)
 5. Build checkpoint image: base + `include_cwd` + `copy_dirs` + `sandbox_init_cmd`
 6. Write `{"sha": "<sha>", "image_id": "<id>"}` to `.offload/checkpoint-cache`
+7. Ensure `.offload/` is in `.gitignore`; create the directory if needed
 
 **`--delete` flag:** removes `.offload/checkpoint-cache` and exits.
 
@@ -65,20 +103,25 @@ offload checkpoint --no-cache   # Force fresh base image rebuild too
 When `.offload/checkpoint-cache` exists:
 1. Load checkpoint cache (sha + image_id)
 2. Load checkpoint image from provider (`modal.Image.from_id(image_id)`)
-3. Generate `git diff <checkpoint-sha> --binary` to capture tracked file changes since checkpoint
-4. Collect untracked files via `git ls-files --others --exclude-standard` and include them (git diff alone misses new files not yet `git add`'d)
+3. Generate working-tree diff: `git diff <checkpoint-sha> --binary` (no `HEAD` — diffs against the working tree, so uncommitted changes are included, matching the pattern used by sculptor/mng)
+4. Collect untracked files via `git ls-files --others --exclude-standard` and package them into a tarball (git diff only captures changes to tracked files; new files that haven't been `git add`'d must be transferred separately)
 5. If diff is empty AND no untracked files → use checkpoint image directly (zero overhead)
-6. If changes exist → write diff to temp file, `add_local_file` for diff + any untracked files, `git apply` + copy untracked files, return run image
+6. If changes exist → write diff + untracked tarball to temp files, `add_local_file` both into the image, run `git apply` for the diff + extract untracked tarball into `sandbox_project_root`, return run image
 7. Skip `include_cwd`, `copy_dirs`, and `sandbox_init_cmd` (all baked into checkpoint)
 
 When `.offload/checkpoint-cache` does NOT exist:
 - Existing behavior, completely unchanged
 
-When cached image has expired on Modal:
-- Catch exception, warn user visibly, fall back to full build, and UPDATE the cache with the newly built image (so subsequent runs benefit without manual intervention)
+When checkpoint image has expired on Modal:
+- Catch exception, warn user visibly
+- Rebuild the checkpoint image from the **same SHA** (re-run the checkpoint build: base + source-at-SHA + sandbox_init_cmd)
+- Update only the `image_id` in `.offload/checkpoint-cache`; the `sha` is unchanged
+- Continue with diff-based run using the newly rebuilt checkpoint
 
 When `--no-cache` is passed to `offload run`:
-- Ignore checkpoint cache, do full build (existing behavior)
+- Ignore **all** caches: both `.offload/checkpoint-cache` and `.offload-image-cache` (base image cache)
+- Full rebuild from scratch: Dockerfile → base image → source overlay → sandbox_init_cmd
+- Neither cache file is deleted; they are simply not read. Subsequent runs without `--no-cache` will still use them.
 
 ## Files to Modify
 
@@ -134,14 +177,16 @@ uv run @modal_sandbox.py checkpoint [dockerfile] [--include-cwd] [--copy-dir=...
 
 When `--from-checkpoint` is set:
 1. Load checkpoint image via `modal.Image.from_id(image_id)`
-2. Run `git diff <checkpoint-sha> --binary`
-3. If empty → return checkpoint image_id
-4. Write diff to temp file → `add_local_file` → `git apply` → return run image_id
-5. Skip `--include-cwd`, `--copy-dir`, `--sandbox-init-cmd` (baked into checkpoint)
+2. Generate working-tree diff: `git diff <checkpoint-sha> --binary` (includes uncommitted changes)
+3. Collect untracked files: `git ls-files --others --exclude-standard`, package into tarball
+4. If diff is empty AND no untracked files → return checkpoint image_id (zero overhead)
+5. Write diff + untracked tarball to temp files → `add_local_file` both → `git apply` diff + extract tarball into project root → return run image_id
+6. Skip `--include-cwd`, `--copy-dir`, `--sandbox-init-cmd` (baked into checkpoint)
 
 **New functions:**
-- `_generate_git_diff(sha)` -- runs `git diff <sha> --binary`, returns string or None
-- `_build_run_image_from_checkpoint(app, checkpoint_img, checkpoint_img_id, diff, project_root)` -- applies diff via `add_local_file` + `git apply`
+- `_generate_git_diff(sha)` -- runs `git diff <sha> --binary` (working-tree diff), returns string or None
+- `_collect_untracked_files()` -- runs `git ls-files --others --exclude-standard`, packages results into tarball, returns path or None
+- `_build_run_image_from_checkpoint(app, checkpoint_img, checkpoint_img_id, diff, untracked_tar, project_root)` -- applies diff via `git apply` + extracts untracked tarball
 
 **Cache management stays in Rust** (not Python) -- the `.offload/checkpoint-cache` file is read/written by the Rust CLI, not by modal_sandbox.py. This keeps the Python script stateless.
 
@@ -165,9 +210,9 @@ Add section on checkpointing:
 |------|----------|
 | First run, no checkpoint | Current behavior unchanged |
 | After `offload checkpoint` | `offload run` uses thin diff layer |
-| Checkpoint image expired on Modal | Warn user, fall back to full build, update cache with new image |
+| Checkpoint image expired on Modal | Warn user, rebuild checkpoint from same SHA, update image_id only |
 | New untracked files since checkpoint | Detected via `git ls-files --others --exclude-standard`, included alongside diff |
-| `offload run --no-cache` | Ignore checkpoint cache, full build |
+| `offload run --no-cache` | Ignore all caches (checkpoint + base image), full rebuild from scratch |
 | Empty diff (no changes since checkpoint) | Return checkpoint image_id directly (zero overhead) |
 | Binary files in diff | `git diff --binary` + `git apply` handles them |
 | Large diff | `add_local_file` avoids shell argument limits |
