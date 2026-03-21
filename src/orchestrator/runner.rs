@@ -79,6 +79,14 @@ pub struct TestRunner<'a, S, D> {
     output_dir: Option<std::path::PathBuf>,
 }
 
+/// Escape a string for use inside a `printf` format string wrapped in single quotes.
+///
+/// Escapes both single quotes (for the shell) and `%` characters (which
+/// `printf` would otherwise interpret as format specifiers).
+fn escape_for_printf(s: &str) -> String {
+    s.replace('\'', "'\\''").replace('%', "%%")
+}
+
 /// Build a `find` command string from glob patterns.
 ///
 /// Converts glob patterns into a `find -path` command. Each pattern is
@@ -697,38 +705,94 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         let dest_base = output_dir.join(&safe_id).join(batch_idx.to_string());
 
-        // Build (remote, local) path pairs
-        let mut path_pairs: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
-        for remote_rel in &file_list {
-            let rel = remote_rel.strip_prefix("./").unwrap_or(remote_rel);
-            let local_path = dest_base.join(rel);
+        // Create tar archive on the sandbox containing all matched files.
+        // Use printf to pipe file list via stdin to avoid command-line length limits.
+        let printf_args = file_list
+            .iter()
+            .map(|f| escape_for_printf(f))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        let tar_remote_path = format!("/tmp/offload-artifacts-{}-{}.tar.gz", safe_id, batch_idx);
+        let tar_cmd_str = format!(
+            "printf '{}' | tar czf {} -T -",
+            printf_args, tar_remote_path
+        );
+        let tar_cmd = crate::provider::Command::new("sh")
+            .arg("-c")
+            .arg(&tar_cmd_str);
 
-            if let Some(parent) = local_path.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                warn!("[ARTIFACTS] Failed to create dir {:?}: {}", parent, e);
-                continue;
-            }
+        debug!(
+            "[ARTIFACTS] Sandbox {} creating tar archive with {} files",
+            sandbox_id,
+            file_list.len()
+        );
 
-            path_pairs.push((std::path::PathBuf::from(remote_rel), local_path));
+        if let Err(e) = self.exec_with_streaming(&tar_cmd, "artifacts-tar").await {
+            warn!(
+                "[ARTIFACTS] Sandbox {} tar creation failed: {}",
+                sandbox_id, e
+            );
+            return;
         }
 
-        let ref_pairs: Vec<(&std::path::Path, &std::path::Path)> = path_pairs
-            .iter()
-            .map(|(r, l)| (r.as_path(), l.as_path()))
-            .collect();
+        // Download the single tar archive
+        let temp_tar = match tempfile::NamedTempFile::new() {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("[ARTIFACTS] Failed to create temp file: {}", e);
+                return;
+            }
+        };
 
-        match self.sandbox.download(&ref_pairs).await {
-            Ok(()) => {
+        let tar_remote = std::path::Path::new(&tar_remote_path);
+        let download_pairs = [(tar_remote, temp_tar.path() as &std::path::Path)];
+
+        if let Err(e) = self.sandbox.download(&download_pairs).await {
+            warn!(
+                "[ARTIFACTS] Sandbox {} tar download failed: {}",
+                sandbox_id, e
+            );
+            return;
+        }
+
+        // Extract tar archive locally
+        if let Err(e) = std::fs::create_dir_all(&dest_base) {
+            warn!(
+                "[ARTIFACTS] Failed to create destination dir {:?}: {}",
+                dest_base, e
+            );
+            return;
+        }
+
+        let tar_extract = std::process::Command::new("tar")
+            .arg("xzf")
+            .arg(temp_tar.path())
+            .arg("-C")
+            .arg(&dest_base)
+            .output();
+
+        match tar_extract {
+            Ok(output) if output.status.success() => {
                 info!(
-                    "[ARTIFACTS] Sandbox {} downloaded {} files to {:?}",
+                    "[ARTIFACTS] Sandbox {} downloaded {} files ({}) to {:?}",
                     sandbox_id,
-                    ref_pairs.len(),
+                    file_list.len(),
+                    tar_remote_path,
                     dest_base
                 );
             }
+            Ok(output) => {
+                warn!(
+                    "[ARTIFACTS] Sandbox {} tar extraction failed: {}",
+                    sandbox_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
             Err(e) => {
-                warn!("[ARTIFACTS] Sandbox {} download failed: {}", sandbox_id, e);
+                warn!(
+                    "[ARTIFACTS] Sandbox {} tar extraction error: {}",
+                    sandbox_id, e
+                );
             }
         }
     }
