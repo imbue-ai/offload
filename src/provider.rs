@@ -225,16 +225,7 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// An isolated execution environment for running commands.
 ///
 /// A sandbox represents a single execution context where test commands can
-/// be run. It provides methods for:
-///
-/// - **Command execution**: Run commands with [`exec`](Self::exec) or
-///   [`exec_stream`](Self::exec_stream)
-/// - **File download**: Copy files from the sandbox with
-///   [`download`](Self::download)
-/// - **Lifecycle management**: Check [`status`](Self::status) and
-///   [`terminate`](Self::terminate) when done
-///
-/// # Thread Safety
+/// be run. It provides methods for: **Command execution**, **File download, **Lifecycle management
 ///
 /// Sandboxes must be `Send` to allow passing between async tasks.
 /// Most implementations are also safe to share (`Sync`), but this is
@@ -372,12 +363,6 @@ fn shell_escape(s: &str) -> String {
 /// and is responsible for creating [`Sandbox`] instances on demand. The
 /// provider manages the pool of sandboxes and tracks their lifecycle.
 ///
-/// # Lifecycle
-///
-/// Construction follows a two-phase pattern:
-/// 1. `from_config()` (on concrete type) -- lightweight, stores config only
-/// 2. `prepare()` -- runs any heavy I/O such as image builds
-///
 /// # Thread Safety
 ///
 /// Providers must be both `Send` and `Sync` to allow sharing across
@@ -396,14 +381,6 @@ pub trait SandboxProvider: Send + Sync {
     /// this runs the prepare command and caches the resulting image ID.
     /// For providers that do not build images (Local, Default without
     /// `prepare_command`), this is a no-op returning an empty string.
-    ///
-    /// # Arguments
-    ///
-    /// * `copy_dirs` - Additional directories to copy into the image
-    /// * `no_cache` - If true, forces a fresh image build
-    /// * `sandbox_init_cmd` - Optional command to run during image build
-    /// * `discovery_done` - Signal indicating test discovery has completed,
-    ///   used to gate prepare output buffering
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],

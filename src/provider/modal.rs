@@ -34,15 +34,11 @@ use crate::connector::{Connector, ShellConnector};
 /// 3. **Download**: Retrieves files from the sandbox
 /// 4. **Destroy**: Terminates and cleans up the sandbox
 pub struct ModalProvider {
-    /// Connector for running shell commands locally.
     connector: Arc<ShellConnector>,
-    /// Modal provider configuration.
     config: ModalProviderConfig,
-    /// Cached image ID from the prepare command (set during `prepare()`).
+    /// Set during `prepare()`.
     image_id: String,
-    /// Environment variables from provider configuration.
     env: Vec<(String, String)>,
-    /// CPU cores per sandbox.
     cpu_cores: f64,
 }
 
@@ -84,31 +80,25 @@ impl SandboxProvider for ModalProvider {
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<String> {
-        // Build prepare command
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
 
-        // Add dockerfile if specified
         if let Some(dockerfile) = &self.config.dockerfile {
             prepare_cmd.push(' ');
             prepare_cmd.push_str(dockerfile);
         }
 
-        // Add --include-cwd flag if configured
         if self.config.include_cwd {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        // Add --cached flag unless no_cache is set
         if !no_cache {
             prepare_cmd.push_str(" --cached");
         }
 
-        // Add copy_dirs from config
         for copy_spec in &self.config.copy_dirs {
             prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
         }
 
-        // Add copy_dirs from parameter
         for (local, remote) in copy_dirs {
             prepare_cmd.push_str(&format!(
                 " --copy-dir={}:{}",

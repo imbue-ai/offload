@@ -37,7 +37,7 @@ use crate::connector::{Connector, ShellConnector};
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
-    /// Cached image ID from prepare command (set during `prepare()`).
+    /// Set during `prepare()`.
     image_id: Option<String>,
 }
 
@@ -75,12 +75,9 @@ impl SandboxProvider for DefaultProvider {
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<String> {
-        // Run prepare command if configured
         let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
-            // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
             let mut full_prepare_cmd = prepare_cmd.clone();
 
-            // Append --cached flag unless no_cache is set
             if !no_cache {
                 full_prepare_cmd.push_str(" --cached");
             }
@@ -226,40 +223,19 @@ impl SandboxProvider for DefaultProvider {
 /// results. If the last line of output is valid JSON with `exit_code`,
 /// `stdout`, and `stderr` fields, those are used as the result.
 pub struct DefaultSandbox {
-    /// Sandbox ID from create command (e.g., Modal's sb-xyz123)
     id: String,
-    /// The connector for running commands
     connector: Arc<ShellConnector>,
-    /// Command template for execution
     exec_command: String,
-    /// Command template for destruction
     destroy_command: String,
-    /// Optional command template for downloading files
     download_command: Option<String>,
-    /// Environment variables to pass to commands
     env: Vec<(String, String)>,
-    /// When this sandbox was created (used for cost estimation).
     created_at: Instant,
-    /// CPU cores allocated to this sandbox.
     cpu_cores: f64,
 }
 
 impl DefaultSandbox {
-    /// Creates a new DefaultSandbox with the given configuration.
-    ///
-    /// This constructor is primarily used by providers that want to create
+    /// Creates a new DefaultSandbox. Used by providers that create
     /// sandboxes with custom command templates (e.g., ModalProvider).
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - Unique identifier for this sandbox instance
-    /// * `connector` - Shell connector for running commands
-    /// * `exec_command` - Command template with `{sandbox_id}` and `{command}` placeholders
-    /// * `destroy_command` - Command template with `{sandbox_id}` placeholder
-    /// * `download_command` - Optional command template with `{sandbox_id}` and `{paths}` placeholders
-    /// * `env` - Environment variables to pass to commands
-    /// * `created_at` - When this sandbox was created
-    /// * `cpu_cores` - CPU cores allocated to this sandbox
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
@@ -327,10 +303,6 @@ impl DefaultSandbox {
     }
 
     /// Build the download command with substitutions.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - Vector of (remote_path, local_path) tuples
     fn build_download_command(&self, paths: &[(String, String)]) -> Option<String> {
         self.download_command.as_ref().map(|cmd| {
             // Build paths string: "remote1:local1" "remote2:local2" ...
