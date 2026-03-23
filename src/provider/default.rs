@@ -31,43 +31,23 @@ use crate::connector::{Connector, ShellConnector};
 ///
 /// # Image Preparation
 ///
-/// If `prepare_command` is configured, it runs once during provider creation
-/// via `from_config` and returns an image ID. This image ID is then substituted
-/// into `create_command` via the `{image_id}` placeholder.
+/// If `prepare_command` is configured, calling `prepare()` runs it and
+/// stores the resulting image ID. This image ID is then substituted into
+/// `create_command` via the `{image_id}` placeholder.
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
-    /// Cached image ID from prepare command (set during from_config).
+    /// Cached image ID from prepare command (set during `prepare()`).
     image_id: Option<String>,
 }
 
 impl DefaultProvider {
     /// Creates a new provider from the given configuration.
     ///
-    /// The configuration specifies the shell commands used for sandbox
-    /// lifecycle management: create, exec, and destroy.
-    ///
-    /// If `prepare_command` is configured, it runs during this method and
-    /// the resulting image ID is stored for use in subsequent `create_sandbox` calls.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Remote provider configuration with command templates
-    /// * `copy_dirs` - Directories to copy into the image (local_path, remote_path).
-    ///   These are baked into the image during prepare, making sandbox creation faster.
-    /// * `no_cache` - If true, skips appending `--cached` to the prepare command,
-    ///   forcing a fresh image build.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError::ExecFailed` if the prepare command fails.
-    pub async fn from_config(
-        config: DefaultProviderConfig,
-        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        no_cache: bool,
-        sandbox_init_cmd: Option<&str>,
-        discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<Self> {
+    /// This is a lightweight constructor that stores the config and creates
+    /// the shell connector. No I/O is performed. Call
+    /// [`prepare()`](SandboxProvider::prepare) to run the image build.
+    pub fn from_config(config: DefaultProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
@@ -76,8 +56,27 @@ impl DefaultProvider {
 
         let connector = Arc::new(connector);
 
+        Self {
+            connector,
+            config,
+            image_id: None,
+        }
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for DefaultProvider {
+    type Sandbox = DefaultSandbox;
+
+    async fn prepare(
+        &mut self,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<String> {
         // Run prepare command if configured
-        let image_id = if let Some(prepare_cmd) = &config.prepare_command {
+        let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
             // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
             let mut full_prepare_cmd = prepare_cmd.clone();
 
@@ -86,7 +85,7 @@ impl DefaultProvider {
                 full_prepare_cmd.push_str(" --cached");
             }
 
-            for copy_spec in &config.copy_dirs {
+            for copy_spec in &self.config.copy_dirs {
                 full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
             }
             for (local, remote) in copy_dirs {
@@ -104,26 +103,23 @@ impl DefaultProvider {
                 ));
             }
 
-            let image_id =
-                run_prepare_command(&connector, &full_prepare_cmd, "Default", discovery_done)
-                    .await?;
+            let image_id = run_prepare_command(
+                &self.connector,
+                &full_prepare_cmd,
+                "Default",
+                discovery_done,
+            )
+            .await?;
 
             Some(image_id)
         } else {
             None
         };
 
-        Ok(Self {
-            connector,
-            config,
-            image_id,
-        })
+        let result = image_id.clone().unwrap_or_default();
+        self.image_id = image_id;
+        Ok(result)
     }
-}
-
-#[async_trait]
-impl SandboxProvider for DefaultProvider {
-    type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating default sandbox: {}", config.id);
@@ -795,7 +791,8 @@ mod tests {
             cpu_cores: 1.0,
         };
 
-        let provider = DefaultProvider::from_config(config, &[], false, None, None).await?;
+        let mut provider = DefaultProvider::from_config(config);
+        provider.prepare(&[], false, None, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

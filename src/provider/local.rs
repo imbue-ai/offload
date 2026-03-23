@@ -42,6 +42,17 @@ impl LocalProvider {
 impl SandboxProvider for LocalProvider {
     type Sandbox = LocalSandbox;
 
+    async fn prepare(
+        &mut self,
+        _copy_dirs: &[(PathBuf, PathBuf)],
+        _no_cache: bool,
+        _sandbox_init_cmd: Option<&str>,
+        _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ProviderResult<String> {
+        // Local provider has no image preparation step.
+        Ok(String::new())
+    }
+
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<LocalSandbox> {
         let working_dir = config
             .working_dir

@@ -4,7 +4,7 @@ pub mod default;
 pub mod local;
 pub mod modal;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -372,6 +372,12 @@ fn shell_escape(s: &str) -> String {
 /// and is responsible for creating [`Sandbox`] instances on demand. The
 /// provider manages the pool of sandboxes and tracks their lifecycle.
 ///
+/// # Lifecycle
+///
+/// Construction follows a two-phase pattern:
+/// 1. `from_config()` (on concrete type) -- lightweight, stores config only
+/// 2. `prepare()` -- runs any heavy I/O such as image builds
+///
 /// # Thread Safety
 ///
 /// Providers must be both `Send` and `Sync` to allow sharing across
@@ -383,6 +389,28 @@ pub trait SandboxProvider: Send + Sync {
     ///
     /// Each provider creates a specific sandbox implementation
     type Sandbox: Sandbox;
+
+    /// Runs provider preparation (e.g. image build) and returns an image ID.
+    ///
+    /// For providers that build images (Modal, Default with `prepare_command`),
+    /// this runs the prepare command and caches the resulting image ID.
+    /// For providers that do not build images (Local, Default without
+    /// `prepare_command`), this is a no-op returning an empty string.
+    ///
+    /// # Arguments
+    ///
+    /// * `copy_dirs` - Additional directories to copy into the image
+    /// * `no_cache` - If true, forces a fresh image build
+    /// * `sandbox_init_cmd` - Optional command to run during image build
+    /// * `discovery_done` - Signal indicating test discovery has completed,
+    ///   used to gate prepare output buffering
+    async fn prepare(
+        &mut self,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<String>;
 
     /// Creates a new sandbox with the given configuration.
     ///
