@@ -48,9 +48,9 @@ impl SandboxProvider for LocalProvider {
         _no_cache: bool,
         _sandbox_init_cmd: Option<&str>,
         _discovery_done: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ProviderResult<String> {
+    ) -> ProviderResult<Option<String>> {
         // Local provider has no image preparation step.
-        Ok(String::new())
+        Ok(None)
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<LocalSandbox> {

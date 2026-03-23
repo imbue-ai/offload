@@ -74,7 +74,7 @@ impl SandboxProvider for DefaultProvider {
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<String> {
+    ) -> ProviderResult<Option<String>> {
         let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
             let mut full_prepare_cmd = prepare_cmd.clone();
 
@@ -113,9 +113,8 @@ impl SandboxProvider for DefaultProvider {
             None
         };
 
-        let result = image_id.clone().unwrap_or_default();
-        self.image_id = image_id;
-        Ok(result)
+        self.image_id = image_id.clone();
+        Ok(image_id)
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {

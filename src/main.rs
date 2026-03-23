@@ -479,7 +479,7 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = DefaultProvider::from_config(p_cfg.clone());
-            let (all_tests, _image_id): (Vec<TestRecord>, String) = tokio::try_join!(
+            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(
@@ -519,7 +519,7 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = ModalProvider::from_config(p_cfg.clone());
-            let (all_tests, _image_id): (Vec<TestRecord>, String) = tokio::try_join!(
+            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(

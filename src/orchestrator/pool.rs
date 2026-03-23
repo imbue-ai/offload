@@ -113,8 +113,8 @@ mod tests {
             _no_cache: bool,
             _sandbox_init_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
-        ) -> ProviderResult<String> {
-            Ok(String::new())
+        ) -> ProviderResult<Option<String>> {
+            Ok(None)
         }
 
         async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<FakeSandbox> {

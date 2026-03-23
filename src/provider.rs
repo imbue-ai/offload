@@ -380,14 +380,14 @@ pub trait SandboxProvider: Send + Sync {
     /// For providers that build images (Modal, Default with `prepare_command`),
     /// this runs the prepare command and caches the resulting image ID.
     /// For providers that do not build images (Local, Default without
-    /// `prepare_command`), this is a no-op returning an empty string.
+    /// `prepare_command`), this is a no-op returning `None`.
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<String>;
+    ) -> ProviderResult<Option<String>>;
 
     /// Creates a new sandbox with the given configuration.
     ///

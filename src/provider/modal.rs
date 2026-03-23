@@ -37,7 +37,7 @@ pub struct ModalProvider {
     connector: Arc<ShellConnector>,
     config: ModalProviderConfig,
     /// Set during `prepare()`.
-    image_id: String,
+    image_id: Option<String>,
     env: Vec<(String, String)>,
     cpu_cores: f64,
 }
@@ -62,7 +62,7 @@ impl ModalProvider {
         Self {
             connector,
             config,
-            image_id: String::new(),
+            image_id: None,
             env,
             cpu_cores,
         }
@@ -79,7 +79,7 @@ impl SandboxProvider for ModalProvider {
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<String> {
+    ) -> ProviderResult<Option<String>> {
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
 
         if let Some(dockerfile) = &self.config.dockerfile {
@@ -121,17 +121,22 @@ impl SandboxProvider for ModalProvider {
 
         debug!("Modal image prepared with ID: {}", image_id);
 
-        self.image_id = image_id.clone();
-        Ok(image_id)
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating Modal sandbox: {}", config.id);
 
         // Run create command to get sandbox_id
+        let image_id = self.image_id.as_deref().ok_or_else(|| {
+            ProviderError::ExecFailed(
+                "Modal image ID not set; call prepare() before create_sandbox()".to_string(),
+            )
+        })?;
         let create_command = format!(
             "uv run @modal_sandbox.py create --cpu {} {}",
-            self.cpu_cores, self.image_id
+            self.cpu_cores, image_id
         );
         debug!("Running: {}", create_command);
 
