@@ -94,14 +94,6 @@ pub struct TestRunner<'a, S, D> {
     artifact_config: ArtifactConfig,
 }
 
-/// Escape a string for use inside a `printf` format string wrapped in single quotes.
-///
-/// Escapes both single quotes (for the shell) and `%` characters (which
-/// `printf` would otherwise interpret as format specifiers).
-fn escape_for_printf(s: &str) -> String {
-    s.replace('\'', "'\\''").replace('%', "%%")
-}
-
 /// Build a `find` command string from glob patterns.
 ///
 /// Converts glob patterns into a `find -path` command. Each pattern is
@@ -487,9 +479,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         drop(_io_span);
 
         // Download artifacts matching configured glob patterns
-        if !self.artifact_config.globs.is_empty() {
-            self.try_download_artifacts().await;
-        }
+        self.try_download_artifacts().await;
 
         if batch_had_failures {
             Ok(BatchOutcome::Failure)
@@ -588,8 +578,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
     /// Download artifacts matching configured glob patterns from the sandbox.
     ///
-    /// Runs `find` in the sandbox to resolve glob patterns, then downloads
-    /// all matched files in a single call. Files are stored under
+    /// Combines `find -print0` and `tar --null -T -` into a single pipeline
+    /// exec to avoid ARG_MAX limits and safely handle filenames with newlines
+    /// or special characters. Files are stored under
     /// `{output_dir}/{sandbox_id}/{batch_idx}/` preserving relative paths.
     ///
     /// Best-effort: failures are logged as warnings, never fail the batch.
@@ -600,86 +591,32 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let batch_idx = self.batch_idx;
         let sandbox_id = self.sandbox.id().to_string();
-        let find_cmd_str = build_find_command(&self.artifact_config.globs);
+        let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        let tar_remote_path = format!("/tmp/offload-artifacts-{}-{}.tar.gz", safe_id, batch_idx);
 
-        debug!(
-            "[ARTIFACTS] Sandbox {} running: {}",
-            sandbox_id, find_cmd_str
+        // Build a single find+tar pipeline. Uses -print0/--null for safe handling
+        // of filenames with newlines or special characters. The pipeline avoids
+        // ARG_MAX limits since filenames flow through a pipe, not command args.
+        let find_expr = build_find_command(&self.artifact_config.globs);
+        let pipeline = format!(
+            "{} -print0 | tar czf {} --null -T - 2>/dev/null",
+            find_expr, tar_remote_path
         );
 
-        let find_cmd = crate::provider::Command::new("sh")
-            .arg("-c")
-            .arg(&find_cmd_str);
+        debug!("[ARTIFACTS] Sandbox {} running: {}", sandbox_id, pipeline);
 
-        // Use exec_with_streaming to handle the JSON protocol (DefaultSandbox/Modal
-        // wrap exec output in JSON; exec_with_streaming decodes it transparently).
-        let file_list: Vec<String> = match self.exec_with_streaming(&find_cmd, "artifacts").await {
-            Ok(Some(result)) => result
-                .stdout
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect(),
+        let tar_cmd = crate::provider::Command::new("sh").arg("-c").arg(&pipeline);
+
+        match self.exec_with_streaming(&tar_cmd, "artifacts").await {
+            Ok(Some(_)) => {}
             Ok(None) => {
-                // Cancelled
-                debug!("[ARTIFACTS] Sandbox {} find cancelled", sandbox_id);
+                debug!("[ARTIFACTS] Sandbox {} cancelled", sandbox_id);
                 return;
             }
             Err(e) => {
-                warn!("[ARTIFACTS] Sandbox {} find failed: {}", sandbox_id, e);
+                warn!("[ARTIFACTS] Sandbox {} find+tar failed: {}", sandbox_id, e);
                 return;
             }
-        };
-
-        if file_list.is_empty() {
-            debug!(
-                "[ARTIFACTS] Sandbox {} no files matched globs {:?}",
-                sandbox_id, self.artifact_config.globs
-            );
-            return;
-        }
-
-        info!(
-            "[ARTIFACTS] Sandbox {} found {} files to download",
-            sandbox_id,
-            file_list.len()
-        );
-
-        let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        let dest_base = self
-            .artifact_config
-            .output_dir
-            .join(&safe_id)
-            .join(batch_idx.to_string());
-
-        // Create tar archive on the sandbox containing all matched files.
-        // Use printf to pipe file list via stdin to avoid command-line length limits.
-        let printf_args = file_list
-            .iter()
-            .map(|f| escape_for_printf(f))
-            .collect::<Vec<_>>()
-            .join("\\n");
-        let tar_remote_path = format!("/tmp/offload-artifacts-{}-{}.tar.gz", safe_id, batch_idx);
-        let tar_cmd_str = format!(
-            "printf '{}' | tar czf {} -T -",
-            printf_args, tar_remote_path
-        );
-        let tar_cmd = crate::provider::Command::new("sh")
-            .arg("-c")
-            .arg(&tar_cmd_str);
-
-        debug!(
-            "[ARTIFACTS] Sandbox {} creating tar archive with {} files",
-            sandbox_id,
-            file_list.len()
-        );
-
-        if let Err(e) = self.exec_with_streaming(&tar_cmd, "artifacts-tar").await {
-            warn!(
-                "[ARTIFACTS] Sandbox {} tar creation failed: {}",
-                sandbox_id, e
-            );
-            return;
         }
 
         // Download the single tar archive
@@ -695,12 +632,31 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let download_pairs = [(tar_remote, temp_tar.path() as &std::path::Path)];
 
         if let Err(e) = self.sandbox.download(&download_pairs).await {
-            warn!(
-                "[ARTIFACTS] Sandbox {} tar download failed: {}",
+            // Download failure likely means no files matched (tar wasn't created)
+            debug!(
+                "[ARTIFACTS] Sandbox {} tar download failed (no artifacts?): {}",
                 sandbox_id, e
             );
             return;
         }
+
+        // Check if the downloaded file is empty (no matches)
+        let tar_size = std::fs::metadata(temp_tar.path())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if tar_size == 0 {
+            debug!(
+                "[ARTIFACTS] Sandbox {} no files matched globs {:?}",
+                sandbox_id, self.artifact_config.globs
+            );
+            return;
+        }
+
+        let dest_base = self
+            .artifact_config
+            .output_dir
+            .join(&safe_id)
+            .join(batch_idx.to_string());
 
         // Extract tar archive locally
         if let Err(e) = std::fs::create_dir_all(&dest_base) {
@@ -721,11 +677,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         match tar_extract {
             Ok(output) if output.status.success() => {
                 info!(
-                    "[ARTIFACTS] Sandbox {} downloaded {} files ({}) to {:?}",
-                    sandbox_id,
-                    file_list.len(),
-                    tar_remote_path,
-                    dest_base
+                    "[ARTIFACTS] Sandbox {} downloaded artifacts ({} bytes) to {:?}",
+                    sandbox_id, tar_size, dest_base
                 );
             }
             Ok(output) => {
