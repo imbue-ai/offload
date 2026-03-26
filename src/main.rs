@@ -19,7 +19,9 @@ use offload::framework::{
     pytest::PytestFramework, vitest::VitestFramework,
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
-use offload::provider::{default::DefaultProvider, local::LocalProvider, modal::ModalProvider};
+use offload::provider::{
+    SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
+};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -476,7 +478,8 @@ async fn run_tests(
         ProviderConfig::Default(p_cfg) => {
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
-            let (all_tests, provider) = tokio::try_join!(
+            let mut provider = DefaultProvider::from_config(p_cfg.clone());
+            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(
@@ -485,15 +488,15 @@ async fn run_tests(
                         offload::trace::PID_LOCAL,
                         offload::trace::TID_MAIN,
                     );
-                    DefaultProvider::from_config(
-                        p_cfg.clone(),
-                        &copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                    )
-                    .await
-                    .context("Failed to create Default provider")
+                    provider
+                        .prepare(
+                            &copy_dir_tuples,
+                            no_cache,
+                            config.offload.sandbox_init_cmd.as_deref(),
+                            Some(&discovery_done),
+                        )
+                        .await
+                        .context("Failed to prepare Default provider")
                 }
             )?;
             if all_tests.is_empty() {
@@ -515,7 +518,8 @@ async fn run_tests(
         ProviderConfig::Modal(p_cfg) => {
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
-            let (all_tests, provider) = tokio::try_join!(
+            let mut provider = ModalProvider::from_config(p_cfg.clone());
+            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(
@@ -524,15 +528,15 @@ async fn run_tests(
                         offload::trace::PID_LOCAL,
                         offload::trace::TID_MAIN,
                     );
-                    ModalProvider::from_config(
-                        p_cfg.clone(),
-                        &copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                    )
-                    .await
-                    .context("Failed to create Modal provider")
+                    provider
+                        .prepare(
+                            &copy_dir_tuples,
+                            no_cache,
+                            config.offload.sandbox_init_cmd.as_deref(),
+                            Some(&discovery_done),
+                        )
+                        .await
+                        .context("Failed to prepare Modal provider")
                 }
             )?;
             if all_tests.is_empty() {

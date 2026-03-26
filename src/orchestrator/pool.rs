@@ -72,7 +72,8 @@ mod tests {
     use super::*;
     use crate::provider::{CostEstimate, OutputStream, ProviderResult};
     use async_trait::async_trait;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
 
     struct FakeSandbox {
         id: String,
@@ -105,6 +106,17 @@ mod tests {
     #[async_trait]
     impl SandboxProvider for FakeProvider {
         type Sandbox = FakeSandbox;
+
+        async fn prepare(
+            &mut self,
+            _copy_dirs: &[(PathBuf, PathBuf)],
+            _no_cache: bool,
+            _sandbox_init_cmd: Option<&str>,
+            _discovery_done: Option<&AtomicBool>,
+        ) -> ProviderResult<Option<String>> {
+            Ok(None)
+        }
+
         async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<FakeSandbox> {
             Ok(FakeSandbox {
                 id: config.id.clone(),

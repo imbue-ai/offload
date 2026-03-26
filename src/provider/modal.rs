@@ -19,11 +19,10 @@ use crate::connector::{Connector, ShellConnector};
 /// explicit command strings, this provider generates the Modal commands
 /// automatically from high-level configuration options.
 ///
-/// # Image Preparation
+/// # Lifecycle
 ///
-/// The `from_config` method runs the prepare command to build and cache
-/// a Modal image. The resulting image ID is stored and used when creating
-/// sandboxes.
+/// 1. `from_config()` — lightweight construction, stores config only
+/// 2. `prepare()` — runs the image build, stores the resulting image ID
 ///
 /// # Sandbox Lifecycle
 ///
@@ -35,70 +34,71 @@ use crate::connector::{Connector, ShellConnector};
 /// 3. **Download**: Retrieves files from the sandbox
 /// 4. **Destroy**: Terminates and cleans up the sandbox
 pub struct ModalProvider {
-    /// Connector for running shell commands locally.
     connector: Arc<ShellConnector>,
-    /// Cached image ID from the prepare command.
-    image_id: String,
-    /// Environment variables from provider configuration.
+    config: ModalProviderConfig,
+    /// Set during `prepare()`.
+    image_id: Option<String>,
     env: Vec<(String, String)>,
-    /// CPU cores per sandbox.
     cpu_cores: f64,
 }
 
 impl ModalProvider {
     /// Creates a new Modal provider from the given configuration.
     ///
-    /// This method runs the prepare command to build a Modal image with the
-    /// specified configuration. The image is cached (unless `no_cache` is true)
-    /// for faster subsequent runs.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Modal provider configuration with image settings
-    /// * `copy_dirs` - Additional directories to copy into the image (local_path, remote_path).
-    ///   These are combined with directories specified in the config.
-    /// * `no_cache` - If true, skips the `--cached` flag, forcing a fresh image build.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError::ExecFailed` if:
-    /// - The prepare command fails (non-zero exit code)
-    /// - The prepare command returns an empty image ID
-    ///
-    pub async fn from_config(
-        config: ModalProviderConfig,
+    /// This is a lightweight constructor that stores the config without
+    /// performing any I/O. Call [`prepare()`](SandboxProvider::prepare) to
+    /// run the image build.
+    pub fn from_config(config: ModalProviderConfig) -> Self {
+        let connector = Arc::new(ShellConnector::new());
+
+        let env: Vec<(String, String)> = config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let cpu_cores = config.cpu_cores;
+
+        Self {
+            connector,
+            config,
+            image_id: None,
+            env,
+            cpu_cores,
+        }
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for ModalProvider {
+    type Sandbox = DefaultSandbox;
+
+    async fn prepare(
+        &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<Self> {
-        let connector = Arc::new(ShellConnector::new());
-
-        // Build prepare command
+    ) -> ProviderResult<Option<String>> {
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
 
-        // Add dockerfile if specified
-        if let Some(dockerfile) = &config.dockerfile {
+        if let Some(dockerfile) = &self.config.dockerfile {
             prepare_cmd.push(' ');
             prepare_cmd.push_str(dockerfile);
         }
 
-        // Add --include-cwd flag if configured
-        if config.include_cwd {
+        if self.config.include_cwd {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        // Add --cached flag unless no_cache is set
         if !no_cache {
             prepare_cmd.push_str(" --cached");
         }
 
-        // Add copy_dirs from config
-        for copy_spec in &config.copy_dirs {
+        for copy_spec in &self.config.copy_dirs {
             prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
         }
 
-        // Add copy_dirs from parameter
         for (local, remote) in copy_dirs {
             prepare_cmd.push_str(&format!(
                 " --copy-dir={}:{}",
@@ -117,38 +117,26 @@ impl ModalProvider {
         debug!("Running prepare command: {}", prepare_cmd);
 
         let image_id =
-            run_prepare_command(&connector, &prepare_cmd, "Modal", discovery_done).await?;
+            run_prepare_command(&self.connector, &prepare_cmd, "Modal", discovery_done).await?;
 
         debug!("Modal image prepared with ID: {}", image_id);
 
-        let env: Vec<(String, String)> = config
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        let cpu_cores = config.cpu_cores;
-
-        Ok(Self {
-            connector,
-            image_id,
-            env,
-            cpu_cores,
-        })
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
     }
-}
-
-#[async_trait]
-impl SandboxProvider for ModalProvider {
-    type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating Modal sandbox: {}", config.id);
 
         // Run create command to get sandbox_id
+        let image_id = self.image_id.as_deref().ok_or_else(|| {
+            ProviderError::ExecFailed(
+                "Modal image ID not set; call prepare() before create_sandbox()".to_string(),
+            )
+        })?;
         let create_command = format!(
             "uv run @modal_sandbox.py create --cpu {} {}",
-            self.cpu_cores, self.image_id
+            self.cpu_cores, image_id
         );
         debug!("Running: {}", create_command);
 

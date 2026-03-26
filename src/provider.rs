@@ -4,7 +4,7 @@ pub mod default;
 pub mod local;
 pub mod modal;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -225,16 +225,7 @@ pub type OutputStream = Pin<Box<dyn Stream<Item = OutputLine> + Send>>;
 /// An isolated execution environment for running commands.
 ///
 /// A sandbox represents a single execution context where test commands can
-/// be run. It provides methods for:
-///
-/// - **Command execution**: Run commands with [`exec`](Self::exec) or
-///   [`exec_stream`](Self::exec_stream)
-/// - **File download**: Copy files from the sandbox with
-///   [`download`](Self::download)
-/// - **Lifecycle management**: Check [`status`](Self::status) and
-///   [`terminate`](Self::terminate) when done
-///
-/// # Thread Safety
+/// be run. It provides methods for: **Command execution**, **File download, **Lifecycle management
 ///
 /// Sandboxes must be `Send` to allow passing between async tasks.
 /// Most implementations are also safe to share (`Sync`), but this is
@@ -383,6 +374,20 @@ pub trait SandboxProvider: Send + Sync {
     ///
     /// Each provider creates a specific sandbox implementation
     type Sandbox: Sandbox;
+
+    /// Runs provider preparation (e.g. image build) and returns an image ID.
+    ///
+    /// For providers that build images (Modal, Default with `prepare_command`),
+    /// this runs the prepare command and caches the resulting image ID.
+    /// For providers that do not build images (Local, Default without
+    /// `prepare_command`), this is a no-op returning `None`.
+    async fn prepare(
+        &mut self,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>>;
 
     /// Creates a new sandbox with the given configuration.
     ///

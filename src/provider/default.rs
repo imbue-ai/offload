@@ -31,43 +31,23 @@ use crate::connector::{Connector, ShellConnector};
 ///
 /// # Image Preparation
 ///
-/// If `prepare_command` is configured, it runs once during provider creation
-/// via `from_config` and returns an image ID. This image ID is then substituted
-/// into `create_command` via the `{image_id}` placeholder.
+/// If `prepare_command` is configured, calling `prepare()` runs it and
+/// stores the resulting image ID. This image ID is then substituted into
+/// `create_command` via the `{image_id}` placeholder.
 pub struct DefaultProvider {
     connector: Arc<ShellConnector>,
     config: DefaultProviderConfig,
-    /// Cached image ID from prepare command (set during from_config).
+    /// Set during `prepare()`.
     image_id: Option<String>,
 }
 
 impl DefaultProvider {
     /// Creates a new provider from the given configuration.
     ///
-    /// The configuration specifies the shell commands used for sandbox
-    /// lifecycle management: create, exec, and destroy.
-    ///
-    /// If `prepare_command` is configured, it runs during this method and
-    /// the resulting image ID is stored for use in subsequent `create_sandbox` calls.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Remote provider configuration with command templates
-    /// * `copy_dirs` - Directories to copy into the image (local_path, remote_path).
-    ///   These are baked into the image during prepare, making sandbox creation faster.
-    /// * `no_cache` - If true, skips appending `--cached` to the prepare command,
-    ///   forcing a fresh image build.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError::ExecFailed` if the prepare command fails.
-    pub async fn from_config(
-        config: DefaultProviderConfig,
-        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        no_cache: bool,
-        sandbox_init_cmd: Option<&str>,
-        discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<Self> {
+    /// This is a lightweight constructor that stores the config and creates
+    /// the shell connector. No I/O is performed. Call
+    /// [`prepare()`](SandboxProvider::prepare) to run the image build.
+    pub fn from_config(config: DefaultProviderConfig) -> Self {
         let mut connector = ShellConnector::new().with_timeout(config.timeout_secs);
 
         if let Some(dir) = &config.working_dir {
@@ -76,17 +56,33 @@ impl DefaultProvider {
 
         let connector = Arc::new(connector);
 
-        // Run prepare command if configured
-        let image_id = if let Some(prepare_cmd) = &config.prepare_command {
-            // Build prepare command with copy_dirs (both TOML-configured and CLI-provided)
+        Self {
+            connector,
+            config,
+            image_id: None,
+        }
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for DefaultProvider {
+    type Sandbox = DefaultSandbox;
+
+    async fn prepare(
+        &mut self,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        no_cache: bool,
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
             let mut full_prepare_cmd = prepare_cmd.clone();
 
-            // Append --cached flag unless no_cache is set
             if !no_cache {
                 full_prepare_cmd.push_str(" --cached");
             }
 
-            for copy_spec in &config.copy_dirs {
+            for copy_spec in &self.config.copy_dirs {
                 full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
             }
             for (local, remote) in copy_dirs {
@@ -104,26 +100,22 @@ impl DefaultProvider {
                 ));
             }
 
-            let image_id =
-                run_prepare_command(&connector, &full_prepare_cmd, "Default", discovery_done)
-                    .await?;
+            let image_id = run_prepare_command(
+                &self.connector,
+                &full_prepare_cmd,
+                "Default",
+                discovery_done,
+            )
+            .await?;
 
             Some(image_id)
         } else {
             None
         };
 
-        Ok(Self {
-            connector,
-            config,
-            image_id,
-        })
+        self.image_id = image_id.clone();
+        Ok(image_id)
     }
-}
-
-#[async_trait]
-impl SandboxProvider for DefaultProvider {
-    type Sandbox = DefaultSandbox;
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
         debug!("Creating default sandbox: {}", config.id);
@@ -230,40 +222,19 @@ impl SandboxProvider for DefaultProvider {
 /// results. If the last line of output is valid JSON with `exit_code`,
 /// `stdout`, and `stderr` fields, those are used as the result.
 pub struct DefaultSandbox {
-    /// Sandbox ID from create command (e.g., Modal's sb-xyz123)
     id: String,
-    /// The connector for running commands
     connector: Arc<ShellConnector>,
-    /// Command template for execution
     exec_command: String,
-    /// Command template for destruction
     destroy_command: String,
-    /// Optional command template for downloading files
     download_command: Option<String>,
-    /// Environment variables to pass to commands
     env: Vec<(String, String)>,
-    /// When this sandbox was created (used for cost estimation).
     created_at: Instant,
-    /// CPU cores allocated to this sandbox.
     cpu_cores: f64,
 }
 
 impl DefaultSandbox {
-    /// Creates a new DefaultSandbox with the given configuration.
-    ///
-    /// This constructor is primarily used by providers that want to create
+    /// Creates a new DefaultSandbox. Used by providers that create
     /// sandboxes with custom command templates (e.g., ModalProvider).
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - Unique identifier for this sandbox instance
-    /// * `connector` - Shell connector for running commands
-    /// * `exec_command` - Command template with `{sandbox_id}` and `{command}` placeholders
-    /// * `destroy_command` - Command template with `{sandbox_id}` placeholder
-    /// * `download_command` - Optional command template with `{sandbox_id}` and `{paths}` placeholders
-    /// * `env` - Environment variables to pass to commands
-    /// * `created_at` - When this sandbox was created
-    /// * `cpu_cores` - CPU cores allocated to this sandbox
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
@@ -331,10 +302,6 @@ impl DefaultSandbox {
     }
 
     /// Build the download command with substitutions.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - Vector of (remote_path, local_path) tuples
     fn build_download_command(&self, paths: &[(String, String)]) -> Option<String> {
         self.download_command.as_ref().map(|cmd| {
             // Build paths string: "remote1:local1" "remote2:local2" ...
@@ -795,7 +762,8 @@ mod tests {
             cpu_cores: 1.0,
         };
 
-        let provider = DefaultProvider::from_config(config, &[], false, None, None).await?;
+        let mut provider = DefaultProvider::from_config(config);
+        provider.prepare(&[], false, None, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {
