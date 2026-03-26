@@ -48,6 +48,23 @@ pub enum BatchOutcome {
     Cancelled,
 }
 
+/// Configuration for downloading artifacts from sandboxes after test execution.
+pub struct ArtifactConfig {
+    /// Glob patterns for files to download. Empty means no downloads.
+    pub globs: Vec<String>,
+    /// Base output directory for downloaded artifacts.
+    pub output_dir: std::path::PathBuf,
+}
+
+/// Configuration shared across all runners in a single Offload run.
+pub struct RunnerConfig {
+    pub fail_fast: bool,
+    pub parts_dir: Option<std::path::PathBuf>,
+    pub junit_report: Option<SharedJunitReport>,
+    pub cancellation_token: Option<CancellationToken>,
+    pub artifacts: ArtifactConfig,
+}
+
 /// Executes tests within a single sandbox.
 ///
 /// The runner handles command generation, execution, output capture,
@@ -72,11 +89,9 @@ pub struct TestRunner<'a, S, D> {
     sandbox_pid: u32,
     fail_fast: bool,
     /// Index of the current batch (for artifact download directory naming).
-    batch_idx: Option<usize>,
-    /// Glob patterns for files to download after batch execution.
-    download_globs: Vec<String>,
-    /// Output directory for downloaded artifacts.
-    output_dir: Option<std::path::PathBuf>,
+    batch_idx: usize,
+    /// Configuration for downloading artifacts after batch execution.
+    artifact_config: ArtifactConfig,
 }
 
 /// Escape a string for use inside a `printf` format string wrapped in single quotes.
@@ -115,104 +130,34 @@ fn build_find_command(globs: &[String]) -> String {
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Creates a new test runner for the given sandbox.
-    ///
-    /// # Arguments
-    ///
-    /// * `sandbox` - The sandbox to execute tests in
-    /// * `framework` - The framework for command generation and result parsing
-    /// * `timeout` - Maximum time for test execution
     pub fn new(
         sandbox: S,
         framework: &'a D,
         timeout: Duration,
         tracer: crate::trace::Tracer,
         sandbox_pid: u32,
+        batch_idx: usize,
+        config: RunnerConfig,
     ) -> Self {
         Self {
             sandbox,
             framework,
             timeout,
             output_callback: None,
-            cancellation_token: None,
-            junit_report: None,
-            parts_dir: None,
+            cancellation_token: config.cancellation_token,
+            junit_report: config.junit_report,
+            parts_dir: config.parts_dir,
             tracer,
             sandbox_pid,
-            fail_fast: false,
-            batch_idx: None,
-            download_globs: Vec::new(),
-            output_dir: None,
+            batch_idx,
+            fail_fast: config.fail_fast,
+            artifact_config: config.artifacts,
         }
     }
 
-    /// Sets the directory for saving JUnit XMLs for debugging.
-    ///
-    /// When set, each sandbox's junit.xml is saved to `parts_dir/{sandbox_id}.xml`
-    /// before being added to the shared report. This allows inspection of
-    /// individual batch results.
-    pub fn with_parts_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.parts_dir = Some(dir);
-        self
-    }
-
-    /// Sets the fail-fast flag for the test framework execution command.
-    ///
-    /// When true, the framework-specific stop-on-first-failure flag is passed
-    /// to the test runner (e.g. `-x` for pytest, `--fail-fast` for nextest).
-    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
-        self.fail_fast = fail_fast;
-        self
-    }
-
-    /// Sets the shared JUnit report for accumulating results.
-    ///
-    /// # Arguments
-    ///
-    /// * `report` - Shared report for accumulating JUnit results across batches
-    pub fn with_junit_report(mut self, report: SharedJunitReport) -> Self {
-        self.junit_report = Some(report);
-        self
-    }
-
-    /// Sets a cancellation token for early termination.
-    ///
-    /// When the token is cancelled, the runner will stop waiting for
-    /// test output and return early. Used for early stopping when
-    /// all tests have passed.
-    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
-        self.cancellation_token = Some(token);
-        self
-    }
-
-    /// Sets a callback for test output.
-    ///
-    /// When set, test output is sent to the callback as it occurs.
-    /// This is useful for real-time output display.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function called for each line of output
-    pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
+    /// Sets a callback for streaming test output (per-batch, after construction).
+    pub fn set_output_callback(&mut self, callback: OutputCallback) {
         self.output_callback = Some(callback);
-        self
-    }
-
-    /// Sets the batch index for artifact download directory naming.
-    pub fn with_batch_idx(mut self, idx: usize) -> Self {
-        self.batch_idx = Some(idx);
-        self
-    }
-
-    /// Sets glob patterns for downloading artifacts after batch execution.
-    pub fn with_download_globs(mut self, globs: Vec<String>) -> Self {
-        self.download_globs = globs;
-        self
-    }
-
-    /// Sets the output directory for downloaded artifacts.
-    pub fn with_output_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.output_dir = Some(dir);
-        self
     }
 
     /// Consumes the runner and returns the owned sandbox.
@@ -542,8 +487,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         drop(_io_span);
 
         // Download artifacts matching configured glob patterns
-        if let Some(output_dir) = self.output_dir.clone() {
-            self.try_download_artifacts(&output_dir).await;
+        if !self.artifact_config.globs.is_empty() {
+            self.try_download_artifacts().await;
         }
 
         if batch_had_failures {
@@ -648,16 +593,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// `{output_dir}/{sandbox_id}/{batch_idx}/` preserving relative paths.
     ///
     /// Best-effort: failures are logged as warnings, never fail the batch.
-    async fn try_download_artifacts(&mut self, output_dir: &std::path::Path) {
-        if self.download_globs.is_empty() {
+    async fn try_download_artifacts(&mut self) {
+        if self.artifact_config.globs.is_empty() {
             return;
         }
-        let Some(batch_idx) = self.batch_idx else {
-            return;
-        };
 
+        let batch_idx = self.batch_idx;
         let sandbox_id = self.sandbox.id().to_string();
-        let find_cmd_str = build_find_command(&self.download_globs);
+        let find_cmd_str = build_find_command(&self.artifact_config.globs);
 
         debug!(
             "[ARTIFACTS] Sandbox {} running: {}",
@@ -691,7 +634,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         if file_list.is_empty() {
             debug!(
                 "[ARTIFACTS] Sandbox {} no files matched globs {:?}",
-                sandbox_id, self.download_globs
+                sandbox_id, self.artifact_config.globs
             );
             return;
         }
@@ -703,7 +646,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         );
 
         let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        let dest_base = output_dir.join(&safe_id).join(batch_idx.to_string());
+        let dest_base = self
+            .artifact_config
+            .output_dir
+            .join(&safe_id)
+            .join(batch_idx.to_string());
 
         // Create tar archive on the sandbox containing all matched files.
         // Use printf to pipe file list via stdin to avoid command-line length limits.

@@ -19,7 +19,7 @@ use crate::framework::{TestFramework, TestInstance};
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
-use super::runner::{BatchOutcome, OutputCallback, TestRunner};
+use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 
 /// Configuration for a queue-based spawn worker.
 ///
@@ -108,20 +108,25 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Set up runner
         let parts_dir = cfg.config.report.output_dir.join("junit-parts");
+        let runner_config = RunnerConfig {
+            fail_fast: cfg.fail_fast,
+            parts_dir: Some(parts_dir),
+            junit_report: Some(Arc::clone(&cfg.junit_report)),
+            cancellation_token: Some(cfg.cancellation_token.clone()),
+            artifacts: ArtifactConfig {
+                globs: cfg.config.report.download_globs.clone(),
+                output_dir: cfg.config.report.output_dir.clone(),
+            },
+        };
         let mut runner = TestRunner::new(
             sandbox,
             cfg.framework,
             Duration::from_secs(cfg.config.offload.test_timeout_secs),
             cfg.tracer.clone(),
             sandbox_pid,
-        )
-        .with_fail_fast(cfg.fail_fast)
-        .with_cancellation_token(cfg.cancellation_token.clone())
-        .with_junit_report(Arc::clone(&cfg.junit_report))
-        .with_parts_dir(parts_dir)
-        .with_batch_idx(batch_idx)
-        .with_download_globs(cfg.config.report.download_globs.clone())
-        .with_output_dir(cfg.config.report.output_dir.clone());
+            batch_idx,
+            runner_config,
+        );
 
         // Per-runner log file
         {
@@ -141,7 +146,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                             warn!("Failed to write to batch log: {}", e);
                         }
                     });
-                    runner = runner.with_output_callback(callback);
+                    runner.set_output_callback(callback);
                 }
                 Err(e) => {
                     warn!("Failed to create batch log {}: {}", log_path.display(), e);
