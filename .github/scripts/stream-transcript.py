@@ -63,7 +63,8 @@ def main():
                     content = str(content)
 
                     # Compact file reads
-                    fr = (msg.get("tool_use_result") or {}).get("file", {})
+                    tur = msg.get("tool_use_result") or {}
+                    fr = tur.get("file", {}) if isinstance(tur, dict) else {}
                     if fr:
                         path = fr.get("filePath", "")
                         lines = fr.get("totalLines", "?")
