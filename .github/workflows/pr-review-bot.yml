@@ -90,8 +90,8 @@ jobs:
           ## Triage rules
 
           Classify the comment as one of:
-          - **APPLY**: Small, clear code change suggestion (≤5 net lines changed). You understand exactly what to change and are confident it's correct.
-          - **FLAG**: Actionable suggestion but too large (>5 lines), ambiguous, or you're not confident in the fix.
+          - **APPLY**: Small to moderate code change suggestion (<40 net lines changed). You understand exactly what to change and are confident it's correct.
+          - **FLAG**: Actionable suggestion but too large (≥40 lines), ambiguous, or you're not confident in the fix.
           - **SKIP**: Not actionable — question, praise, discussion, or already addressed.
 
           Be conservative. If unsure, FLAG rather than APPLY.
@@ -114,7 +114,44 @@ jobs:
 
           Write a JSON file to $CLAUDE_STATUS_FILE: {"action": "SKIPPED", "summary": "<brief reason>"}
           PROMPT
-          )" --dangerously-skip-permissions --max-turns 25 --verbose
+          )" --dangerously-skip-permissions --max-turns 25 --verbose --output-format stream-json 2>&1 | tee /tmp/claude-transcript.jsonl
+
+      - name: Show Claude Code transcript
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import json
+          for line in open("/tmp/claude-transcript.jsonl"):
+              line = line.strip()
+              if not line:
+                  continue
+              try:
+                  msg = json.loads(line)
+              except (json.JSONDecodeError, ValueError):
+                  print(line)
+                  continue
+              t = msg.get("type", "")
+              if t == "assistant":
+                  for block in msg.get("content", []):
+                      if block.get("type") == "tool_use":
+                          name = block["name"]
+                          inp = block.get("input", {})
+                          print(f"\n{'='*60}")
+                          print(f"TOOL: {name}")
+                          if name == "Bash":
+                              print(f"  $ {inp.get('command', '')[:500]}")
+                          elif name in ("Read", "Write", "Edit", "Glob", "Grep"):
+                              for k, v in inp.items():
+                                  print(f"  {k}: {str(v)[:300]}")
+                          else:
+                              print(f"  {json.dumps(inp)[:500]}")
+                      elif block.get("type") == "text":
+                          print(f"\nCLAUDE: {block['text'][:500]}")
+              elif t == "tool_result":
+                  content = str(msg.get("content", ""))[:500]
+                  if content:
+                      print(f"  → {content}")
+          PYEOF
 
       - name: Reply to PR comment
         if: always()
