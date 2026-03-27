@@ -1,0 +1,166 @@
+name: PR Review Bot
+
+on:
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  handle-review-comment:
+    if: >-
+      !endsWith(github.event.comment.user.login, '[bot]') &&
+      github.event.comment.user.login != 'github-actions'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    concurrency:
+      group: pr-review-bot-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Run project-specific setup if it exists (toolchains, test deps, etc.)
+      - name: Project setup
+        run: |
+          if [ -x .github/review-bot-setup.sh ]; then
+            echo "Running project-specific setup..."
+            ./.github/review-bot-setup.sh
+          else
+            echo "No .github/review-bot-setup.sh found, skipping project setup"
+          fi
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Notify in-progress
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          gh api "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}/reactions" \
+            -f content="eyes"
+
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$(cat <<EOF
+          {"blocks":[{"type":"section","text":{"type":"mrkdwn","text":":hourglass_flowing_sand: *Review bot working*\n*PR:* <${{ github.event.pull_request.html_url }}|${{ github.event.pull_request.title }}>\n*Comment by:* @${{ github.event.comment.user.login }} on \`${{ github.event.comment.path }}:${{ github.event.comment.line }}\`\n<${{ github.event.comment.html_url }}|View comment>"}}]}
+          EOF
+          )"
+          fi
+
+      - name: Run Claude Code
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_STATUS_FILE: /tmp/review-bot-status.json
+        run: |
+          claude -p "$(cat <<'PROMPT'
+          You are a PR review bot.
+
+          ## Context
+
+          A reviewer left this comment on PR #${{ github.event.pull_request.number }}:
+
+          **Comment by @${{ github.event.comment.user.login }}** on file `${{ github.event.comment.path }}` line ${{ github.event.comment.line }}:
+          > ${{ github.event.comment.body }}
+
+          Diff context:
+          ```
+          ${{ github.event.comment.diff_hunk }}
+          ```
+
+          ## Triage rules
+
+          Classify the comment as one of:
+          - **APPLY**: Small, clear code change suggestion (≤5 net lines changed). You understand exactly what to change and are confident it's correct.
+          - **FLAG**: Actionable suggestion but too large (>5 lines), ambiguous, or you're not confident in the fix.
+          - **SKIP**: Not actionable — question, praise, discussion, or already addressed.
+
+          Be conservative. If unsure, FLAG rather than APPLY.
+
+          ## If APPLY
+
+          1. Read the relevant file(s) and understand the surrounding code
+          2. Make the suggested change
+          3. Read `.github/workflows/ci.yml` and run every check/test command listed there, in order. This ensures exact CI parity. Fix any failures (up to 3 attempts per check).
+          4. Once all checks pass, commit with message: `address review: <one-line summary>`
+          5. Push the commit
+          6. Write a JSON file to the path in $CLAUDE_STATUS_FILE: {"action": "APPLIED", "summary": "<what you changed>"}
+
+          ## If FLAG
+
+          Do NOT make any code changes.
+          Write a JSON file to $CLAUDE_STATUS_FILE: {"action": "FLAGGED", "summary": "<what the reviewer wants>", "reasoning": "<why you flagged>"}
+
+          ## If SKIP
+
+          Write a JSON file to $CLAUDE_STATUS_FILE: {"action": "SKIPPED", "summary": "<brief reason>"}
+          PROMPT
+          )" --dangerously-skip-permissions --max-turns 25
+
+      - name: Reply to PR comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS_FILE="/tmp/review-bot-status.json"
+          if [ ! -f "$STATUS_FILE" ]; then
+            echo "No status file found, Claude may have failed"
+            gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="confused"
+            exit 0
+          fi
+
+          ACTION=$(python3 -c "import json; print(json.load(open('$STATUS_FILE'))['action'])")
+          SUMMARY=$(python3 -c "import json; print(json.load(open('$STATUS_FILE'))['summary'])")
+
+          if [ "$ACTION" = "APPLIED" ]; then
+            SHA=$(git rev-parse --short HEAD)
+            BODY="Applied this suggestion in $SHA. All CI checks passed locally."
+            gh api "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="rocket"
+          elif [ "$ACTION" = "FLAGGED" ]; then
+            REASONING=$(python3 -c "import json; print(json.load(open('$STATUS_FILE')).get('reasoning', 'N/A'))")
+            BODY="Flagged for manual review.\n\n**Summary:** $SUMMARY\n**Reason:** $REASONING"
+          else
+            echo "Action is SKIPPED, no reply needed"
+            gh api "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="+1"
+            exit 0
+          fi
+
+          gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments/${{ github.event.comment.id }}/replies" \
+            -f body="$BODY"
+
+      - name: Post-process (Slack + wait for CI + re-request review)
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_PATH: ${{ github.event.comment.path }}
+          COMMENT_LINE: ${{ github.event.comment.line }}
+          REPO: ${{ github.repository }}
+          STATUS_FILE: /tmp/review-bot-status.json
+        run: python3 .github/scripts/post-process.py
