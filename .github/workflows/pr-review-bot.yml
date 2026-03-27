@@ -114,43 +114,78 @@ jobs:
 
           Write a JSON file to $CLAUDE_STATUS_FILE: {"action": "SKIPPED", "summary": "<brief reason>"}
           PROMPT
-          )" --dangerously-skip-permissions --max-turns 25 --verbose --output-format stream-json 2>&1 | tee /tmp/claude-transcript.jsonl
+          )" --dangerously-skip-permissions --max-turns 25 --verbose --output-format stream-json > /tmp/claude-transcript.jsonl 2>&1
 
-      - name: Show Claude Code transcript
+      - name: Claude Code transcript
         if: always()
         run: |
           python3 << 'PYEOF'
-          import json
+          import json, textwrap
+
+          def fmt(text, indent=2, limit=2000):
+              text = str(text)[:limit]
+              return textwrap.indent(text, " " * indent)
+
           for line in open("/tmp/claude-transcript.jsonl"):
               line = line.strip()
               if not line:
                   continue
               try:
                   msg = json.loads(line)
-              except (json.JSONDecodeError, ValueError):
-                  print(line)
+              except Exception:
                   continue
+
               t = msg.get("type", "")
+
+              # Claude's messages
               if t == "assistant":
-                  for block in msg.get("content", []):
-                      if block.get("type") == "tool_use":
+                  for block in msg.get("message", msg).get("content", []):
+                      if block.get("type") == "text":
+                          print(f"\n💬 Claude: {block['text']}")
+                      elif block.get("type") == "tool_use":
                           name = block["name"]
                           inp = block.get("input", {})
-                          print(f"\n{'='*60}")
-                          print(f"TOOL: {name}")
+                          print(f"\n🔧 {name}")
                           if name == "Bash":
-                              print(f"  $ {inp.get('command', '')[:500]}")
-                          elif name in ("Read", "Write", "Edit", "Glob", "Grep"):
-                              for k, v in inp.items():
-                                  print(f"  {k}: {str(v)[:300]}")
+                              print(f"  $ {inp.get('command', '')}")
+                          elif name == "Read":
+                              print(f"  📄 {inp.get('file_path', '')}")
+                          elif name == "Edit":
+                              print(f"  ✏️  {inp.get('file_path', '')}")
+                              old = inp.get("old_string", "")
+                              new = inp.get("new_string", "")
+                              if old:
+                                  print(f"  - {old[:300]}")
+                              if new:
+                                  print(f"  + {new[:300]}")
+                          elif name == "Write":
+                              print(f"  📝 {inp.get('file_path', '')}")
+                          elif name == "Glob":
+                              print(f"  🔍 {inp.get('pattern', '')}")
+                          elif name == "Grep":
+                              print(f"  🔍 {inp.get('pattern', '')} in {inp.get('path', '.')}")
                           else:
-                              print(f"  {json.dumps(inp)[:500]}")
-                      elif block.get("type") == "text":
-                          print(f"\nCLAUDE: {block['text'][:500]}")
-              elif t == "tool_result":
-                  content = str(msg.get("content", ""))[:500]
-                  if content:
-                      print(f"  → {content}")
+                              for k, v in inp.items():
+                                  print(f"  {k}: {str(v)[:200]}")
+
+              # Tool results
+              elif t == "user":
+                  for block in msg.get("message", msg).get("content", []):
+                      if block.get("type") == "tool_result":
+                          content = block.get("content", "")
+                          if isinstance(content, list):
+                              content = "\n".join(b.get("text", str(b)) for b in content)
+                          content = str(content)
+                          # Show file reads compactly
+                          fr = (msg.get("tool_use_result") or {}).get("file", {})
+                          if fr:
+                              path = fr.get("filePath", "")
+                              lines = fr.get("totalLines", "?")
+                              print(f"  → {path} ({lines} lines)")
+                          elif len(content) > 500:
+                              print(fmt(content[:500] + "\n  ... (truncated)"))
+                          elif content:
+                              print(fmt(content))
           PYEOF
 
       - name: Reply to PR comment
