@@ -55,11 +55,13 @@ jobs:
           gh api "repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}/reactions" \
             -f content="eyes"
 
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
           if [ -n "$SLACK_WEBHOOK_URL" ]; then
             curl -s -X POST "$SLACK_WEBHOOK_URL" \
               -H "Content-Type: application/json" \
               -d "$(cat <<EOF
-          {"blocks":[{"type":"section","text":{"type":"mrkdwn","text":":hourglass_flowing_sand: *Review bot working*\n*PR:* <${{ github.event.pull_request.html_url }}|${{ github.event.pull_request.title }}>\n*Comment by:* @${{ github.event.comment.user.login }} on \`${{ github.event.comment.path }}:${{ github.event.comment.line }}\`\n<${{ github.event.comment.html_url }}|View comment>"}}]}
+          {"blocks":[{"type":"section","text":{"type":"mrkdwn","text":":hourglass_flowing_sand: *Review bot working*\n*PR:* <${{ github.event.pull_request.html_url }}|${{ github.event.pull_request.title }}>\n*Comment by:* @${{ github.event.comment.user.login }} on \`${{ github.event.comment.path }}:${{ github.event.comment.line }}\`\n<${{ github.event.comment.html_url }}|View comment> · <${RUN_URL}|View logs>"}}]}
           EOF
           )"
           fi
@@ -112,7 +114,7 @@ jobs:
 
           Write a JSON file to $CLAUDE_STATUS_FILE: {"action": "SKIPPED", "summary": "<brief reason>"}
           PROMPT
-          )" --dangerously-skip-permissions --max-turns 25
+          )" --dangerously-skip-permissions --max-turns 25 --verbose
 
       - name: Reply to PR comment
         if: always()
