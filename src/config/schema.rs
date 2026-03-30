@@ -562,6 +562,17 @@ pub struct ReportConfig {
     /// Default: `"junit.xml"`
     #[serde(default = "default_junit_file")]
     pub junit_file: String,
+
+    /// Glob patterns for files to download from sandboxes after each batch.
+    ///
+    /// Patterns are matched using `find -path` inside the sandbox working
+    /// directory. Downloaded files are stored under
+    /// `{output_dir}/{sandbox_id}/{batch_id}/` preserving relative directory
+    /// structure.
+    ///
+    /// Default: `[]` (no additional downloads)
+    #[serde(default)]
+    pub download_globs: Vec<String>,
 }
 
 fn default_report_dir() -> PathBuf {
@@ -961,6 +972,64 @@ mod tests {
         } else {
             return Err("Expected Vitest framework".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_download_globs_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+
+            [report]
+            download_globs = ["*.xml", "*.png", "coverage/*"]
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.report.download_globs,
+            vec!["*.xml", "*.png", "coverage/*"]
+        );
+
+        // Round-trip through serialization
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        assert_eq!(
+            round_tripped.report.download_globs,
+            config.report.download_globs
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_download_globs_defaults_to_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(config.report.download_globs.is_empty());
+
         Ok(())
     }
 }

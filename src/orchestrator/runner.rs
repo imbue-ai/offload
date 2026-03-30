@@ -48,6 +48,23 @@ pub enum BatchOutcome {
     Cancelled,
 }
 
+/// Configuration for downloading artifacts from sandboxes after test execution.
+pub struct ArtifactConfig {
+    /// Glob patterns for files to download. Empty means no downloads.
+    pub globs: Vec<String>,
+    /// Base output directory for downloaded artifacts.
+    pub output_dir: std::path::PathBuf,
+}
+
+/// Configuration shared across all runners in a single Offload run.
+pub struct RunnerConfig {
+    pub fail_fast: bool,
+    pub parts_dir: Option<std::path::PathBuf>,
+    pub junit_report: Option<SharedJunitReport>,
+    pub cancellation_token: Option<CancellationToken>,
+    pub artifacts: ArtifactConfig,
+}
+
 /// Executes tests within a single sandbox.
 ///
 /// The runner handles command generation, execution, output capture,
@@ -71,87 +88,68 @@ pub struct TestRunner<'a, S, D> {
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
     fail_fast: bool,
+    /// Index of the current batch (for artifact download directory naming).
+    batch_idx: usize,
+    /// Configuration for downloading artifacts after batch execution.
+    artifact_config: ArtifactConfig,
+}
+
+/// Build a `find` command string from glob patterns.
+///
+/// Converts glob patterns into a `find -path` command. Each pattern is
+/// prefixed with `./` if it doesn't already start with `./` or `/`.
+fn build_find_command(globs: &[String]) -> String {
+    let path_predicates: Vec<String> = globs
+        .iter()
+        .map(|g| {
+            let pattern = if g.starts_with("./") || g.starts_with('/') {
+                g.clone()
+            } else {
+                format!("./{}", g)
+            };
+            format!("-path '{}'", pattern)
+        })
+        .collect();
+
+    let find_expr = if path_predicates.len() == 1 {
+        path_predicates[0].clone()
+    } else {
+        format!("\\( {} \\)", path_predicates.join(" -o "))
+    };
+
+    format!("find . -type f {}", find_expr)
 }
 
 impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Creates a new test runner for the given sandbox.
-    ///
-    /// # Arguments
-    ///
-    /// * `sandbox` - The sandbox to execute tests in
-    /// * `framework` - The framework for command generation and result parsing
-    /// * `timeout` - Maximum time for test execution
     pub fn new(
         sandbox: S,
         framework: &'a D,
         timeout: Duration,
         tracer: crate::trace::Tracer,
         sandbox_pid: u32,
+        batch_idx: usize,
+        config: RunnerConfig,
     ) -> Self {
         Self {
             sandbox,
             framework,
             timeout,
             output_callback: None,
-            cancellation_token: None,
-            junit_report: None,
-            parts_dir: None,
+            cancellation_token: config.cancellation_token,
+            junit_report: config.junit_report,
+            parts_dir: config.parts_dir,
             tracer,
             sandbox_pid,
-            fail_fast: false,
+            batch_idx,
+            fail_fast: config.fail_fast,
+            artifact_config: config.artifacts,
         }
     }
 
-    /// Sets the directory for saving JUnit XMLs for debugging.
-    ///
-    /// When set, each sandbox's junit.xml is saved to `parts_dir/{sandbox_id}.xml`
-    /// before being added to the shared report. This allows inspection of
-    /// individual batch results.
-    pub fn with_parts_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.parts_dir = Some(dir);
-        self
-    }
-
-    /// Sets the fail-fast flag for the test framework execution command.
-    ///
-    /// When true, the framework-specific stop-on-first-failure flag is passed
-    /// to the test runner (e.g. `-x` for pytest, `--fail-fast` for nextest).
-    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
-        self.fail_fast = fail_fast;
-        self
-    }
-
-    /// Sets the shared JUnit report for accumulating results.
-    ///
-    /// # Arguments
-    ///
-    /// * `report` - Shared report for accumulating JUnit results across batches
-    pub fn with_junit_report(mut self, report: SharedJunitReport) -> Self {
-        self.junit_report = Some(report);
-        self
-    }
-
-    /// Sets a cancellation token for early termination.
-    ///
-    /// When the token is cancelled, the runner will stop waiting for
-    /// test output and return early. Used for early stopping when
-    /// all tests have passed.
-    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
-        self.cancellation_token = Some(token);
-        self
-    }
-
-    /// Sets a callback for test output.
-    ///
-    /// When set, test output is sent to the callback as it occurs.
-    /// This is useful for real-time output display.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function called for each line of output
-    pub fn with_output_callback(mut self, callback: OutputCallback) -> Self {
+    /// Sets a callback for streaming test output (per-batch, after construction).
+    pub fn set_output_callback(&mut self, callback: OutputCallback) {
         self.output_callback = Some(callback);
-        self
     }
 
     /// Consumes the runner and returns the owned sandbox.
@@ -480,6 +478,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         };
         drop(_io_span);
 
+        // Download artifacts matching configured glob patterns
+        self.try_download_artifacts().await;
+
         if batch_had_failures {
             Ok(BatchOutcome::Failure)
         } else {
@@ -574,6 +575,127 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         Some((content, actual_count))
     }
+
+    /// Download artifacts matching configured glob patterns from the sandbox.
+    ///
+    /// Combines `find -print0` and `tar --null -T -` into a single pipeline
+    /// exec to avoid ARG_MAX limits and safely handle filenames with newlines
+    /// or special characters. Files are stored under
+    /// `{output_dir}/{sandbox_id}/{batch_idx}/` preserving relative paths.
+    ///
+    /// Best-effort: failures are logged as warnings, never fail the batch.
+    async fn try_download_artifacts(&mut self) {
+        if self.artifact_config.globs.is_empty() {
+            return;
+        }
+
+        let batch_idx = self.batch_idx;
+        let sandbox_id = self.sandbox.id().to_string();
+        let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        let tar_remote_path = format!("/tmp/offload-artifacts-{}-{}.tar.gz", safe_id, batch_idx);
+
+        // Build a single find+tar pipeline. Uses -print0/--null for safe handling
+        // of filenames with newlines or special characters. The pipeline avoids
+        // ARG_MAX limits since filenames flow through a pipe, not command args.
+        let find_expr = build_find_command(&self.artifact_config.globs);
+        let pipeline = format!(
+            "{} -print0 | tar czf {} --null -T - 2>/dev/null",
+            find_expr, tar_remote_path
+        );
+
+        debug!("[ARTIFACTS] Sandbox {} running: {}", sandbox_id, pipeline);
+
+        let tar_cmd = crate::provider::Command::new("sh").arg("-c").arg(&pipeline);
+
+        match self.exec_with_streaming(&tar_cmd, "artifacts").await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                debug!("[ARTIFACTS] Sandbox {} cancelled", sandbox_id);
+                return;
+            }
+            Err(e) => {
+                warn!("[ARTIFACTS] Sandbox {} find+tar failed: {}", sandbox_id, e);
+                return;
+            }
+        }
+
+        // Download the single tar archive
+        let temp_tar = match tempfile::NamedTempFile::new() {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("[ARTIFACTS] Failed to create temp file: {}", e);
+                return;
+            }
+        };
+
+        let tar_remote = std::path::Path::new(&tar_remote_path);
+        let download_pairs = [(tar_remote, temp_tar.path() as &std::path::Path)];
+
+        if let Err(e) = self.sandbox.download(&download_pairs).await {
+            // Download failure likely means no files matched (tar wasn't created)
+            debug!(
+                "[ARTIFACTS] Sandbox {} tar download failed (no artifacts?): {}",
+                sandbox_id, e
+            );
+            return;
+        }
+
+        // Check if the downloaded file is empty (no matches)
+        let tar_size = std::fs::metadata(temp_tar.path())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if tar_size == 0 {
+            debug!(
+                "[ARTIFACTS] Sandbox {} no files matched globs {:?}",
+                sandbox_id, self.artifact_config.globs
+            );
+            return;
+        }
+
+        let dest_base = self
+            .artifact_config
+            .output_dir
+            .join(&safe_id)
+            .join(batch_idx.to_string());
+
+        // Extract tar archive locally
+        if let Err(e) = std::fs::create_dir_all(&dest_base) {
+            warn!(
+                "[ARTIFACTS] Failed to create destination dir {:?}: {}",
+                dest_base, e
+            );
+            return;
+        }
+
+        let tar_extract = std::process::Command::new("tar")
+            .arg("xzf")
+            .arg(temp_tar.path())
+            .arg("-C")
+            .arg(&dest_base)
+            .output();
+
+        match tar_extract {
+            Ok(output) if output.status.success() => {
+                info!(
+                    "[ARTIFACTS] Sandbox {} downloaded artifacts ({} bytes) to {:?}",
+                    sandbox_id, tar_size, dest_base
+                );
+            }
+            Ok(output) => {
+                warn!(
+                    "[ARTIFACTS] Sandbox {} tar extraction failed: {}",
+                    sandbox_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "[ARTIFACTS] Sandbox {} tar extraction error: {}",
+                    sandbox_id, e
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -596,5 +718,36 @@ mod tests {
     fn test_has_failures_in_xml_with_error() {
         let xml = r#"<testsuite><testcase name="t1"><error message="boom">trace</error></testcase></testsuite>"#;
         assert!(has_failures_in_xml(xml));
+    }
+
+    #[test]
+    fn test_build_find_command_single_glob() {
+        let cmd = build_find_command(&["*.xml".to_string()]);
+        assert_eq!(cmd, "find . -type f -path './*.xml'");
+    }
+
+    #[test]
+    fn test_build_find_command_multiple_globs() {
+        let cmd = build_find_command(&[
+            "*.xml".to_string(),
+            "*.png".to_string(),
+            "coverage/*".to_string(),
+        ]);
+        assert_eq!(
+            cmd,
+            "find . -type f \\( -path './*.xml' -o -path './*.png' -o -path './coverage/*' \\)"
+        );
+    }
+
+    #[test]
+    fn test_build_find_command_preserves_leading_dot_slash() {
+        let cmd = build_find_command(&["./output/*.log".to_string()]);
+        assert_eq!(cmd, "find . -type f -path './output/*.log'");
+    }
+
+    #[test]
+    fn test_build_find_command_preserves_absolute_path() {
+        let cmd = build_find_command(&["/tmp/*.dat".to_string()]);
+        assert_eq!(cmd, "find . -type f -path '/tmp/*.dat'");
     }
 }

@@ -33,6 +33,7 @@ fn write_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
             output_dir: PathBuf::from(output_dir),
             junit: true,
             junit_file: "junit.xml".to_string(),
+            download_globs: vec![],
         },
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
@@ -407,6 +408,7 @@ fn write_cargo_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
             output_dir: PathBuf::from(output_dir),
             junit: true,
             junit_file: "junit.xml".to_string(),
+            download_globs: vec![],
         },
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
