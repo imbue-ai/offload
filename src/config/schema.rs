@@ -27,6 +27,10 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
+
+    /// Optional git patch configuration for automatic diff generation.
+    #[serde(default)]
+    pub git_patch: Option<GitPatchConfig>,
 }
 
 /// Core offload execution settings.
@@ -587,6 +591,27 @@ fn default_junit_file() -> String {
     "junit.xml".to_string()
 }
 
+/// Configuration toggle for automatic git patch generation.
+///
+/// When present, Offload generates a snapshot tarball and git diff
+/// from a base commit, uploads the patch to the sandbox, and prepends
+/// `git apply` to the sandbox init command.
+///
+/// The base commit is read from `.offload-base-commit` (auto-created
+/// with HEAD if missing). The patch is uploaded to `/offload-patch`.
+///
+/// ## Dockerfile requirement
+///
+/// Your Dockerfile must copy and extract the snapshot tarball.
+/// The extraction path should match `sandbox_project_root`:
+///
+/// ```dockerfile
+/// COPY current.tar.gz /code/current.tar.gz
+/// RUN mkdir -p <sandbox_project_root> && tar xzf /code/current.tar.gz -C <sandbox_project_root> && rm /code/current.tar.gz
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct GitPatchConfig {}
+
 fn default_retry_count() -> usize {
     0
 }
@@ -706,6 +731,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            git_patch: None,
         }
     }
 
@@ -734,6 +760,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            git_patch: None,
         }
     }
 
@@ -765,6 +792,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            git_patch: None,
         }
     }
 
@@ -935,6 +963,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            git_patch: None,
         }
     }
 
@@ -1029,6 +1058,55 @@ mod tests {
 
         let config: Config = toml::from_str(toml_str)?;
         assert!(config.report.download_globs.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_git_patch_config_present() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+
+            [git_patch]
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(
+            config.git_patch.is_some(),
+            "Expected git_patch to be Some when [git_patch] section is present"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_git_patch_config_absent() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(config.git_patch.is_none());
 
         Ok(())
     }

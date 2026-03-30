@@ -374,8 +374,22 @@ async fn run_tests(
         config.offload.max_parallel = parallel;
     }
 
+    // Git patch preparation (generates diff, creates snapshot tarball)
+    let git_patch_artifact = if config.git_patch.is_some() {
+        let dockerfile = match &config.provider {
+            ProviderConfig::Modal(cfg) => cfg.dockerfile.as_deref(),
+            _ => None,
+        };
+        Some(
+            offload::git_patch::prepare(dockerfile, &config.offload.sandbox_project_root)
+                .context("git patch preparation failed")?,
+        )
+    } else {
+        None
+    };
+
     // Parse copy_dir arguments
-    let copy_dirs: Vec<CopyDir> = copy_dir_args
+    let mut copy_dirs: Vec<CopyDir> = copy_dir_args
         .iter()
         .map(|arg| {
             let parts: Vec<&str> = arg.splitn(2, ':').collect();
@@ -391,6 +405,23 @@ async fn run_tests(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // Inject git patch copy_dir and prepend apply command to sandbox_init_cmd
+    if let Some(ref artifact) = git_patch_artifact {
+        if let Some((ref local, ref remote)) = artifact.copy_dir {
+            copy_dirs.push(CopyDir {
+                local: local.clone(),
+                remote: remote.clone(),
+            });
+        }
+        if let Some(ref apply_cmd) = artifact.apply_cmd {
+            let existing = config.offload.sandbox_init_cmd.take();
+            config.offload.sandbox_init_cmd = Some(match existing {
+                Some(cmd) => format!("{} && {}", apply_cmd, cmd),
+                None => apply_cmd.clone(),
+            });
+        }
+    }
 
     // Parse CLI env vars and merge into provider config (CLI overrides config)
     let cli_env: HashMap<String, String> = env_vars
@@ -790,6 +821,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             },
         )]),
         report: ReportConfig::default(),
+        git_patch: None,
     };
 
     let toml_content = toml::to_string_pretty(&config)?;

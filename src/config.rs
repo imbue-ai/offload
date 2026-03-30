@@ -103,6 +103,11 @@ fn validate_config(config: &Config) -> Result<()> {
             cfg.discover_command
         );
     }
+
+    if config.git_patch.is_some() && matches!(config.provider, ProviderConfig::Local(_)) {
+        anyhow::bail!("[git_patch] is not supported with the local provider");
+    }
+
     Ok(())
 }
 
@@ -429,5 +434,36 @@ mod tests {
         let result = expand_env_value("${_OFFLOAD_TEST_MISSING:-}")?;
         assert_eq!(result, "");
         Ok(())
+    }
+
+    #[test]
+    fn test_git_patch_local_provider_returns_error() {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+
+            [git_patch]
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error for [git_patch] with local provider"
+        );
+        let err_msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            err_msg.contains("local provider"),
+            "Error should mention 'local provider', got: {err_msg}"
+        );
     }
 }
