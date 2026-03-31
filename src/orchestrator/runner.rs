@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
+use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
 
@@ -503,7 +504,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             sandbox_id, result_path
         );
         let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
-        match self.sandbox.download(&path_pairs).await {
+        match with_retry!(self.sandbox.download(&path_pairs)) {
             Ok(_) => debug!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
             Err(e) => {
                 error!(

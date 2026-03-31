@@ -67,40 +67,19 @@ The helper functions `backoff_iter()` and `is_retryable()` must be `pub` (not `p
 
 ### Why a macro, not a function
 
-> **Warning:** Do not implement this as a generic async function. `async fn with_retry<F, Fut>(f: F)` where `F: FnMut() -> Fut` works for `&self` methods but **not** for `&mut self` methods. The returned future would borrow from the closure's captured `&mut self`, but `FnMut`'s associated output type cannot express a lifetime tied to `&mut self` — this is the lending-closure gap in stable Rust. This will cause compilation errors at the `prepare()` call sites.
+A generic `async fn with_retry<F, Fut>(f: F)` where `F: FnMut() -> Fut` works for `&self` methods but not for `&mut self` methods (`prepare()`). The returned future borrows from the closure's captured `&mut self`, but `FnMut::Output` cannot express a lifetime tied to `&mut self` — this is the lending-closure gap in stable Rust. A macro sidesteps this because it expands a retry loop in the caller's scope, where `&mut self` is reborrowed naturally each iteration.
 
-> **Warning:** Do not use backon's `RetryableWithContext` to work around this. It requires passing ownership of the provider through each retry attempt, which unnecessarily complicates call sites and forces restructuring of the `tokio::try_join!` blocks in `main.rs`. A plain retry loop reborrows `&mut self` each iteration, which is simpler and correct.
+### Macro implementation: two options
 
-A macro sidesteps both problems: it expands a retry loop in the caller's scope, where `&mut self` is reborrowed naturally each iteration. One mechanism covers both `&self` and `&mut self` methods uniformly.
+The implementer should present both options to the human and let them choose.
 
-### Module contents
+#### Option A: Self-contained loop (uniform, minimal API surface)
+
+A single-arm macro with a manual retry loop. Uses backon only for its `ExponentialBuilder` to generate backoff durations. All retry logic is visible in the loop body. The same syntax works for both `&self` and `&mut self` methods.
+
+**Tradeoff:** Does not use backon's `Retryable` / `RetryableWithContext` traits. The loop duplicates what those traits do, but is self-contained — only `backoff_iter()` and `is_retryable()` need to be `#[doc(hidden)] pub`. No backon types appear in the macro expansion.
 
 ```rust
-use std::time::Duration;
-use backon::ExponentialBuilder;
-use super::ProviderError;
-
-const PROVIDER_RETRIES: usize = 2;
-const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
-
-fn backoff() -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(RETRY_BASE_DELAY)
-        .with_max_times(PROVIDER_RETRIES)
-}
-
-#[doc(hidden)]
-pub fn is_retryable(e: &ProviderError) -> bool {
-    matches!(e,
-        ProviderError::Timeout(_)
-        | ProviderError::Connection(_)
-        | ProviderError::SandboxExhausted(_)
-        | ProviderError::ExecFailed(_)
-        | ProviderError::DownloadFailed(_)
-        | ProviderError::Io(_)
-    )
-}
-
 #[doc(hidden)]
 pub fn backoff_iter() -> impl Iterator<Item = Duration> {
     use backon::BackoffBuilder;
@@ -129,29 +108,103 @@ macro_rules! with_retry {
 pub use with_retry;
 ```
 
-Note: `backoff_iter()` and `is_retryable()` must be `pub` so the macro can reference them when expanded in external crates. They are annotated `#[doc(hidden)]` to signal they are internal — the macro is the only entry point callers should use. `#[macro_export]` places the macro at the crate root; the `pub use with_retry;` creates a re-export path at `offload::provider::retry::with_retry` for convenience.
-
-### Call site pattern
-
-All call sites — library crate and binary crate alike — use the macro uniformly:
+Call sites (all identical syntax):
 
 ```rust
-// Library crate (pool.rs, runner.rs)
-use crate::provider::retry::with_retry;
-
 with_retry!(provider.create_sandbox(&cfg))?;
-with_retry!(sandbox.download(&file_pairs))?;
-
-// Binary crate (main.rs)
-use offload::with_retry;
-
+with_retry!(self.sandbox.download(&path_pairs))?;
 with_retry!(provider.prepare(&dirs, no_cache, init, done))
     .context("Failed to prepare")?;
 ```
 
-No backon imports, no backoff configuration, no retryability checks at any call site.
+#### Option B: Two-arm macro using backon traits (idiomatic, larger API surface)
 
-> **Warning:** Do not write manual retry loops at call sites. Do not import `backoff_iter()` or `is_retryable()` directly. Do not write wrapper functions or trait methods for retry — use the `with_retry!` macro everywhere.
+Two macro arms: the default arm uses backon's `Retryable` trait for `&self` methods; a `mut ctx =>` arm uses `RetryableWithContext` for `&mut self` methods, passing ownership through each retry and reassigning the binding afterward.
+
+**Tradeoff:** Uses backon idiomatically, but leaks `backon::Retryable` and `backon::RetryableWithContext` into the macro expansion. These must be re-exported as `#[doc(hidden)] pub` from the retry module so the macro compiles at external call sites. The `&mut self` call sites have a different invocation syntax (`mut provider =>`).
+
+```rust
+// Re-exports required for macro expansion at external call sites
+#[doc(hidden)]
+pub use backon::Retryable as __Retryable;
+#[doc(hidden)]
+pub use backon::RetryableWithContext as __RetryableWithContext;
+
+#[macro_export]
+macro_rules! with_retry {
+    // &self methods — Retryable
+    ($expr:expr) => {{
+        use $crate::provider::retry::{__Retryable, __backoff, is_retryable};
+        (|| $expr)
+            .retry(__backoff())
+            .when(|e| is_retryable(e))
+            .await
+    }};
+
+    // &mut self methods — RetryableWithContext (pass ownership through)
+    (mut $ctx:ident => $expr:expr) => {{
+        use $crate::provider::retry::{__RetryableWithContext, __backoff, is_retryable};
+        let (ctx, result) = (|mut $ctx| async move {
+            let r = $expr.await;
+            ($ctx, r)
+        })
+        .retry(__backoff())
+        .when(|e| is_retryable(e))
+        .context($ctx)
+        .await;
+        $ctx = ctx;
+        result
+    }};
+}
+pub use with_retry;
+```
+
+Call sites:
+
+```rust
+// &self — same as Option A
+with_retry!(provider.create_sandbox(&cfg))?;
+with_retry!(self.sandbox.download(&path_pairs))?;
+
+// &mut self — caller names the context binding
+with_retry!(mut provider => provider.prepare(&dirs, no_cache, init, done))
+    .context("Failed to prepare")?;
+```
+
+### Shared module contents (both options)
+
+Regardless of which macro option is chosen, the module contains these common definitions:
+
+```rust
+use std::time::Duration;
+use backon::ExponentialBuilder;
+use super::ProviderError;
+
+const PROVIDER_RETRIES: usize = 2;
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+
+fn backoff() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(RETRY_BASE_DELAY)
+        .with_max_times(PROVIDER_RETRIES)
+}
+
+#[doc(hidden)]
+pub fn is_retryable(e: &ProviderError) -> bool {
+    matches!(e,
+        ProviderError::Timeout(_)
+        | ProviderError::Connection(_)
+        | ProviderError::SandboxExhausted(_)
+        | ProviderError::ExecFailed(_)
+        | ProviderError::DownloadFailed(_)
+        | ProviderError::Io(_)
+    )
+}
+```
+
+`#[macro_export]` places the macro at the crate root (`offload::with_retry`); `pub use with_retry;` creates a secondary path at `offload::provider::retry::with_retry`. All `#[doc(hidden)] pub` items are required for macro expansion at external call sites and are not part of the intended API.
+
+> **Warning:** Do not write manual retry loops at call sites. Do not import helpers directly. Do not write wrapper functions or trait methods for retry — use the `with_retry!` macro everywhere.
 
 ## Retry scope
 

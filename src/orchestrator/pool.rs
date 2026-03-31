@@ -4,6 +4,7 @@
 //! test run and retry attempts, avoiding the overhead of creating new sandboxes.
 
 use crate::config::SandboxConfig;
+use crate::provider::retry::with_retry;
 use crate::provider::{ProviderError, Sandbox, SandboxProvider};
 
 /// A pool of reusable sandboxes.
@@ -43,7 +44,7 @@ impl<S: Sandbox> SandboxPool<S> {
             .map(|i| {
                 let mut cfg = config.clone();
                 cfg.id = format!("{}-{}", config.id, i);
-                async move { provider.create_sandbox(&cfg).await }
+                async move { with_retry!(provider.create_sandbox(&cfg)) }
             })
             .collect();
 
