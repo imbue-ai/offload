@@ -6,7 +6,7 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 
 - **Parallel execution** across multiple sandboxes (local processes or remote environments)
 - **Pluggable providers**: local, default (custom shell commands), and Modal
-- **Multiple test frameworks**: pytest, cargo test, or any custom runner
+- **Multiple test frameworks**: pytest, cargo nextest, vitest, or any custom runner
 - **Automatic retry** with flaky test detection
 - **JUnit XML** reporting
 - **LPT scheduling** when historical timing data is available, with round-robin fallback
@@ -80,8 +80,11 @@ cargo install --path .
 - Python and pytest installed locally — Offload runs `pytest --collect-only` on the local machine to discover tests
 - The configured `command` (e.g. `uv run pytest`, `python -m pytest`) must be on PATH
 
-**For the cargo framework:**
+**For the nextest framework:**
 - [cargo-nextest](https://nexte.st/) — Offload runs `cargo nextest list` for test discovery. Install with `cargo install cargo-nextest`
+
+**For the vitest framework:**
+- Node.js and npm (or equivalent package manager) — Offload runs `npx vitest --reporter=json` for test discovery
 
 **For the default framework:**
 - Whatever tools your `discover_command` and `run_command` invoke
@@ -95,16 +98,18 @@ Offload relies on a stable relationship between test discovery, execution, and r
 Each group triggers its own discovery call. The discovered test IDs become the canonical identifiers for the entire run.
 
 - **pytest**: Runs `{command} --collect-only -q` locally and parses one test ID per line from stdout. Output format: `path/to/test.py::TestClass::test_method`. Group `filters` are appended as extra pytest args (e.g. `-m 'not slow'`).
-- **cargo**: Runs `cargo nextest list --message-format json` locally and parses test IDs from the JSON output. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
+- **nextest** (`type = "nextest"`): Runs `cargo nextest list --message-format json` locally and parses test IDs from the JSON output. Test IDs are formatted as `{binary_id} {test_name}`. Group `filters` are appended as extra nextest args.
 - **default**: Runs `discover_command` through `sh -c` and reads one test ID per line from stdout. The `{filters}` placeholder is replaced with the group's filter string (or empty string). Lines starting with `#` are ignored.
+- **vitest** (`type = "vitest"`): Runs `{command} --reporter=json` locally and parses test IDs from the JSON output. Group `filters` are appended as extra vitest args.
 
 ### Test ID Matching
 
 Offload matches discovered test IDs to JUnit XML results using a `test_id_format` string that controls how JUnit XML `name` and `classname` attributes are combined into a test ID. For example, `"{name}"` uses just the name attribute; `"{classname} {name}"` joins them with a space. This is the most common source of "Not Run" errors.
 
 - The JUnit attributes produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, Offload reports the test as "Not Run".
-- **pytest**: The format is fixed internally as `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Users do not configure this field.
-- **cargo**: The format is fixed internally as `"{classname} {name}"` where classname is the binary ID and name is the test function. Users do not configure this field.
+- **pytest**: The format defaults to `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Configurable via `test_id_format`.
+- **nextest**: The format defaults to `"{classname} {name}"` where classname is the binary ID and name is the test function. Configurable via `test_id_format`.
+- **vitest**: The format defaults to `"{classname} > {name}"`, configurable via `test_id_format`.
 - **default**: The `test_id_format` field is a required configuration option. Set it to match how your test runner populates the JUnit XML `name` and `classname` attributes.
 
 ### Result Reporting
@@ -183,6 +188,7 @@ Run tests in parallel.
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
 | `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
+| `--show-estimated-cost` | Show estimated sandbox cost after run (client-side estimate, may not reflect actual billing) |
 
 ### `offload collect`
 
@@ -203,7 +209,7 @@ Generate a new `offload.toml` configuration file.
 | Flag | Description |
 |------|-------------|
 | `-p, --provider TYPE` | Provider type: `local`, `default` (default: `local`) |
-| `-f, --framework TYPE` | Framework type: `pytest`, `cargo`, `default` (default: `pytest`) |
+| `-f, --framework TYPE` | Framework type: `pytest`, `nextest`, `vitest`, `default` (default: `pytest`) |
 
 ### `offload logs`
 
@@ -283,6 +289,7 @@ Custom shell commands for sandbox lifecycle management. Commands use placeholder
 | `timeout_secs` | integer | `3600` | Timeout for remote commands in seconds |
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
 | `env` | table | `{}` | Environment variables for test processes |
+| `cpu_cores` | float | `1.0` | CPU cores per sandbox |
 
 #### `type = "modal"`
 
@@ -293,10 +300,12 @@ Simplified Modal sandbox provider. Internally generates the appropriate Modal CL
 | `dockerfile` | string | (none) | Path to Dockerfile for building the sandbox image |
 | `include_cwd` | boolean | `false` | Copy the current working directory into the image |
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
+| `env` | table | `{}` | Environment variables for test processes |
+| `cpu_cores` | float | `0.125` | CPU cores per sandbox |
 
 ### `[framework]` -- Test Framework
 
-The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
+The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `default`.
 
 #### `type = "pytest"`
 
@@ -305,10 +314,19 @@ The `type` field selects the framework. One of: `pytest`, `cargo`, `default`.
 | `paths` | list | `["tests"]` | Directories to search for tests |
 | `command` | string | `"python -m pytest"` | Full command prefix for pytest invocation (e.g. `"uv run pytest"`) |
 | `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
+| `test_id_format` | string | `"{name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
 
-#### `type = "cargo"`
+#### `type = "nextest"`
 
-No additional configuration. Requires [cargo-nextest](https://nexte.st/).
+Requires [cargo-nextest](https://nexte.st/).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `package` | string | (none) | Package to test in a Cargo workspace (`cargo test -p <package>`) |
+| `features` | list | `[]` | Cargo features to enable during testing |
+| `bin` | string | (none) | Specific binary to test (`cargo test --bin <name>`) |
+| `include_ignored` | boolean | `false` | Include tests marked with `#[ignore]` |
+| `test_id_format` | string | `"{classname} {name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
 
 #### `type = "default"`
 
@@ -321,6 +339,14 @@ Custom shell commands for test discovery and execution.
 | `result_file` | string | (none) | Path to JUnit XML result file produced by the test runner |
 | `working_dir` | string | (cwd) | Working directory for test commands |
 | `test_id_format` | string | required | Format for test IDs from JUnit XML (`{name}`, `{classname}`) |
+
+#### `type = "vitest"`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | `"npx vitest"` | Full command prefix for vitest invocation |
+| `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
+| `test_id_format` | string | `"{classname} > {name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
 
 ### `[groups.NAME]` -- Test Groups
 
@@ -376,7 +402,7 @@ type = "local"
 working_dir = "."
 
 [framework]
-type = "cargo"
+type = "nextest"
 
 [groups.all]
 retry_count = 0
@@ -437,7 +463,7 @@ dockerfile = ".devcontainer/Dockerfile"
 include_cwd = true
 
 [framework]
-type = "cargo"
+type = "nextest"
 
 [groups.all]
 retry_count = 1
