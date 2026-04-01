@@ -20,7 +20,8 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
-    SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
+    SandboxProvider, azure_orbital::AzureOrbitalProvider, default::DefaultProvider,
+    local::LocalProvider, modal::ModalProvider,
 };
 use offload::with_retry;
 
@@ -555,8 +556,44 @@ async fn run_tests(
             )
             .await?
         }
-        ProviderConfig::AzureOrbital(_) => {
-            anyhow::bail!("Azure Orbital provider is not yet implemented");
+        ProviderConfig::AzureOrbital(p_cfg) => {
+            // Run discovery and image preparation concurrently
+            let discovery_done = AtomicBool::new(false);
+            let mut provider = AzureOrbitalProvider::from_config(p_cfg.clone());
+            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
+                discover_with_signal(&config.framework, &config.groups, &discovery_done),
+                async {
+                    let _span = tracer.span(
+                        "image_prepare",
+                        "local",
+                        offload::trace::PID_LOCAL,
+                        offload::trace::TID_MAIN,
+                    );
+                    let image_id = with_retry!(provider.prepare(
+                        &copy_dir_tuples,
+                        no_cache,
+                        config.offload.sandbox_init_cmd.as_deref(),
+                        Some(&discovery_done),
+                    ))
+                    .context("Failed to prepare Azure Orbital provider")?;
+                    Ok(image_id)
+                }
+            )?;
+            if all_tests.is_empty() {
+                info!("No tests to run");
+                return Ok(());
+            }
+            dispatch_framework(
+                &config,
+                &all_tests,
+                provider,
+                &copy_dirs,
+                verbose,
+                &tracer,
+                show_estimated_cost,
+                fail_fast,
+            )
+            .await?
         }
     };
 
