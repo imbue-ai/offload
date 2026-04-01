@@ -1038,4 +1038,79 @@ mod tests {
 
         Ok(())
     }
+
+    /// Test that `experimental_options` deserializes from TOML and survives a round-trip.
+    #[test]
+    fn test_experimental_options_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+            dockerfile = ".devcontainer/Dockerfile"
+
+            [provider.experimental_options]
+            enable_docker = true
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = config.provider {
+            assert_eq!(
+                modal_config.experimental_options.get("enable_docker"),
+                Some(&toml::Value::Boolean(true))
+            );
+        } else {
+            return Err("Expected Modal provider".into());
+        }
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = round_tripped.provider {
+            assert_eq!(
+                modal_config.experimental_options.get("enable_docker"),
+                Some(&toml::Value::Boolean(true))
+            );
+        } else {
+            return Err("Expected Modal provider after round-trip".into());
+        }
+
+        Ok(())
+    }
+
+    /// Test that `experimental_options` defaults to empty when not specified.
+    #[test]
+    fn test_experimental_options_defaults_to_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = config.provider {
+            assert!(modal_config.experimental_options.is_empty());
+        } else {
+            return Err("Expected Modal provider".into());
+        }
+
+        Ok(())
+    }
 }
