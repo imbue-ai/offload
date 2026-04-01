@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#     "modal==1.2.5",
+#     "modal==1.4.1",
 #     "click>=8.0",
 # ]
 # ///
