@@ -134,10 +134,21 @@ impl SandboxProvider for ModalProvider {
                 "Modal image ID not set; call prepare() before create_sandbox()".to_string(),
             )
         })?;
-        let create_command = format!(
+        let mut create_command = format!(
             "uv run @modal_sandbox.py create --cpu {} {}",
             self.cpu_cores, image_id
         );
+
+        if !self.config.experimental_options.is_empty() {
+            let json = serde_json::to_string(&self.config.experimental_options).map_err(|e| {
+                ProviderError::ExecFailed(format!("Failed to serialize experimental_options: {e}"))
+            })?;
+            create_command.push_str(&format!(
+                " --experimental-options {}",
+                shell_words::quote(&json)
+            ));
+        }
+
         debug!("Running: {}", create_command);
 
         let result = self.connector.run(&create_command).await?;
@@ -219,6 +230,7 @@ mod tests {
             copy_dirs: vec![],
             env: Default::default(),
             cpu_cores: 0.125,
+            experimental_options: Default::default(),
         };
 
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -248,6 +260,7 @@ mod tests {
             copy_dirs: vec!["./src:/app/src".to_string()],
             env: Default::default(),
             cpu_cores: 0.125,
+            experimental_options: Default::default(),
         };
 
         let copy_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
@@ -282,5 +295,66 @@ mod tests {
             prepare_cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile.test --include-cwd --copy-dir=./src:/app/src --copy-dir=./tests:/app/tests"
         );
+    }
+
+    #[test]
+    fn test_create_command_without_experimental_options() {
+        let config = ModalProviderConfig {
+            experimental_options: Default::default(),
+            cpu_cores: 0.125,
+            ..Default::default()
+        };
+
+        let image_id = "im-abc123";
+        let create_command = format!(
+            "uv run @modal_sandbox.py create --cpu {} {}",
+            config.cpu_cores, image_id
+        );
+        // experimental_options is empty, so --experimental-options should NOT appear
+        assert!(
+            !create_command.contains("--experimental-options"),
+            "Empty experimental_options should not add --experimental-options flag"
+        );
+    }
+
+    #[test]
+    fn test_create_command_with_experimental_options() -> Result<(), Box<dyn std::error::Error>> {
+        let mut experimental_options = std::collections::HashMap::new();
+        experimental_options.insert("enable_docker".to_string(), toml::Value::Boolean(true));
+
+        let config = ModalProviderConfig {
+            experimental_options,
+            cpu_cores: 0.125,
+            ..Default::default()
+        };
+
+        let image_id = "im-abc123";
+        let mut create_command = format!(
+            "uv run @modal_sandbox.py create --cpu {} {}",
+            config.cpu_cores, image_id
+        );
+
+        if !config.experimental_options.is_empty() {
+            let json = serde_json::to_string(&config.experimental_options)?;
+            create_command.push_str(&format!(
+                " --experimental-options {}",
+                shell_words::quote(&json)
+            ));
+        }
+
+        assert!(
+            create_command.contains("--experimental-options"),
+            "Non-empty experimental_options should add --experimental-options flag"
+        );
+        assert!(
+            create_command.contains("enable_docker"),
+            "Command should contain the experimental option key"
+        );
+        assert!(
+            create_command.contains("true"),
+            "Command should contain the experimental option value"
+        );
+
+        Ok(())
     }
 }

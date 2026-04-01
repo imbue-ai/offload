@@ -182,6 +182,12 @@ pub struct ModalProviderConfig {
     /// CPU cores per sandbox (default: 0.125).
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
+
+    /// Experimental options passed through to the sandbox create command as JSON.
+    ///
+    /// These are forwarded as `--experimental-options '{json}'` when non-empty.
+    #[serde(default)]
+    pub experimental_options: HashMap<String, toml::Value>,
 }
 
 /// Configuration for custom remote execution provider.
