@@ -1,5 +1,6 @@
 //! Provider traits and implementations for sandbox execution environments.
 
+pub mod azure_orbital;
 pub mod default;
 pub mod local;
 pub mod modal;
