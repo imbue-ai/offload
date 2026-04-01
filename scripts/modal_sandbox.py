@@ -442,11 +442,18 @@ def run(command: str):
     default=None,
     help="CPU cores per sandbox",
 )
+@click.option(
+    "--experimental-options",
+    "experimental_options",
+    default=None,
+    help="JSON string of experimental options to pass to Sandbox.create()",
+)
 def create_from_image(
     image_id: str,
     copy_dirs: tuple[str, ...] = (),
     env_vars: tuple[str, ...] = (),
     cpu: float | None = None,
+    experimental_options: str | None = None,
 ):
     """Create sandbox using existing image_id.
 
@@ -501,6 +508,10 @@ def create_from_image(
         )
         if cpu is not None:
             create_kwargs["cpu"] = cpu
+        if experimental_options is not None:
+            exp_opts = json.loads(experimental_options)
+            create_kwargs["experimental_options"] = exp_opts
+            logger.debug("[%.2fs]   experimental_options: %s", time.time() - t0, experimental_options)
         sandbox = modal.Sandbox.create(**create_kwargs)
     except Exception as e:
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
