@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import tarfile
+import threading
 import time
 
 import click
@@ -362,6 +363,13 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
     logger.info("Download complete")
 
 
+def stream_output(source, dest):
+    """Stream lines from source to dest, flushing after each line."""
+    for line in source:
+        dest.write(line)
+        dest.flush()
+
+
 @cli.command("exec")
 @click.argument("sandbox_id")
 @click.argument("command")
@@ -372,20 +380,16 @@ def exec_command(sandbox_id: str, command: str):
     # Execute command
     process = sandbox.exec("bash", "-c", command)
 
-    # Collect output
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
-    process.wait()
-    exit_code = process.returncode
+    # Stream stdout and stderr concurrently using threads
+    stdout_thread = threading.Thread(target=stream_output, args=(process.stdout, sys.stdout))
+    stderr_thread = threading.Thread(target=stream_output, args=(process.stderr, sys.stderr))
+    stdout_thread.start()
+    stderr_thread.start()
+    stdout_thread.join()
+    stderr_thread.join()
 
-    # Output JSON result
-    result = {
-        "exit_code": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-    print(json.dumps(result))
-    sys.exit(exit_code)
+    process.wait()
+    sys.exit(process.returncode)
 
 
 # App and function for the 'run' subcommand

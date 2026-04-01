@@ -74,12 +74,15 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             );
             debug!("Skipped tests: {:?}", test_ids);
 
-            // Rename log to .cancelled if it exists
-            let log_src = cfg.logs_dir.join(format!("batch-{}.log", batch_idx));
-            if log_src.exists() {
-                let log_dst = cfg.logs_dir.join(format!("batch-{}.cancelled", batch_idx));
-                if let Err(e) = std::fs::rename(&log_src, &log_dst) {
-                    warn!("Failed to rename batch log: {}", e);
+            for suffix in ["stdout", "stderr"] {
+                let log_src = cfg.logs_dir.join(format!("batch-{}.{}", batch_idx, suffix));
+                if log_src.exists() {
+                    let log_dst = cfg
+                        .logs_dir
+                        .join(format!("batch-{}.{}.cancelled", batch_idx, suffix));
+                    if let Err(e) = std::fs::rename(&log_src, &log_dst) {
+                        warn!("Failed to rename batch log: {}", e);
+                    }
                 }
             }
 
@@ -128,19 +131,24 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             runner_config,
         );
 
-        // Per-runner log file
+        // Per-runner log files (separate stdout and stderr)
         {
-            let log_path = cfg.logs_dir.join(format!("batch-{}.log", batch_idx));
-            match std::fs::File::create(&log_path) {
-                Ok(file) => {
-                    let log_file = Arc::new(std::sync::Mutex::new(file));
+            let stdout_path = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
+            let stderr_path = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
+            match (
+                std::fs::File::create(&stdout_path),
+                std::fs::File::create(&stderr_path),
+            ) {
+                (Ok(stdout_file), Ok(stderr_file)) => {
+                    let stdout_log = Arc::new(std::sync::Mutex::new(stdout_file));
+                    let stderr_log = Arc::new(std::sync::Mutex::new(stderr_file));
                     let callback: OutputCallback = Arc::new(move |_test_id, line| {
-                        let msg = match line {
-                            OutputLine::Stdout(s) => format!("{}\n", s),
-                            OutputLine::Stderr(s) => format!("[stderr] {}\n", s),
+                        let (file, msg) = match line {
+                            OutputLine::Stdout(s) => (&stdout_log, format!("{}\n", s)),
+                            OutputLine::Stderr(s) => (&stderr_log, format!("{}\n", s)),
                             OutputLine::ExitCode(_) => return,
                         };
-                        if let Ok(mut f) = log_file.lock()
+                        if let Ok(mut f) = file.lock()
                             && let Err(e) = f.write_all(msg.as_bytes())
                         {
                             warn!("Failed to write to batch log: {}", e);
@@ -148,8 +156,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                     });
                     runner.set_output_callback(callback);
                 }
-                Err(e) => {
-                    warn!("Failed to create batch log {}: {}", log_path.display(), e);
+                (Err(e), _) | (_, Err(e)) => {
+                    warn!("Failed to create batch log files: {}", e);
                 }
             }
         }
@@ -162,22 +170,27 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         }
 
         // Run tests
-        let log_src = cfg.logs_dir.join(format!("batch-{}.log", batch_idx));
+        let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
+        let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
         let outcome = runner.run_tests(&batch).await;
 
-        // Rename log file based on outcome
+        // Rename log files based on outcome
         let extension = match &outcome {
             Ok(BatchOutcome::Success) => "success",
             Ok(BatchOutcome::Failure) => "failure",
             Ok(BatchOutcome::Cancelled) => "cancelled",
             Err(_) => "error",
         };
-        if log_src.exists() {
-            let log_dst = cfg
-                .logs_dir
-                .join(format!("batch-{}.{}", batch_idx, extension));
-            if let Err(e) = std::fs::rename(&log_src, &log_dst) {
-                warn!("Failed to rename batch log: {}", e);
+        for src in [&stdout_src, &stderr_src] {
+            if src.exists() {
+                let dst = cfg.logs_dir.join(format!(
+                    "{}.{}",
+                    src.file_name().unwrap_or_default().to_string_lossy(),
+                    extension
+                ));
+                if let Err(e) = std::fs::rename(src, &dst) {
+                    warn!("Failed to rename batch log: {}", e);
+                }
             }
         }
 

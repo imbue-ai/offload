@@ -216,11 +216,6 @@ impl SandboxProvider for DefaultProvider {
 /// Files should be included in the execution environment at build time
 /// (e.g., baked into a container image).
 ///
-/// # JSON Protocol
-///
-/// The exec command can optionally return JSON on stdout for structured
-/// results. If the last line of output is valid JSON with `exit_code`,
-/// `stdout`, and `stderr` fields, those are used as the result.
 pub struct DefaultSandbox {
     id: String,
     connector: Arc<ShellConnector>,
