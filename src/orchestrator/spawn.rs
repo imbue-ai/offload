@@ -139,18 +139,14 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 std::fs::File::create(&stdout_path),
                 std::fs::File::create(&stderr_path),
             ) {
-                (Ok(stdout_file), Ok(stderr_file)) => {
-                    let stdout_log = Arc::new(std::sync::Mutex::new(stdout_file));
-                    let stderr_log = Arc::new(std::sync::Mutex::new(stderr_file));
-                    let callback: OutputCallback = Arc::new(move |_test_id, line| {
-                        let (file, msg) = match line {
-                            OutputLine::Stdout(s) => (&stdout_log, format!("{}\n", s)),
-                            OutputLine::Stderr(s) => (&stderr_log, format!("{}\n", s)),
+                (Ok(mut stdout_file), Ok(mut stderr_file)) => {
+                    let callback: OutputCallback = Box::new(move |_test_id, line| {
+                        let (file, msg): (&mut std::fs::File, _) = match line {
+                            OutputLine::Stdout(s) => (&mut stdout_file, format!("{}\n", s)),
+                            OutputLine::Stderr(s) => (&mut stderr_file, format!("{}\n", s)),
                             OutputLine::ExitCode(_) => return,
                         };
-                        if let Ok(mut f) = file.lock()
-                            && let Err(e) = f.write_all(msg.as_bytes())
-                        {
+                        if let Err(e) = file.write_all(msg.as_bytes()) {
                             warn!("Failed to write to batch log: {}", e);
                         }
                     });

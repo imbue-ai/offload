@@ -1,6 +1,5 @@
 //! Test runner — executes test batches within a single sandbox.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -28,7 +27,7 @@ fn has_failures_in_xml(xml: &str) -> bool {
 ///
 /// Called for each line of output during streaming execution. The callback
 /// receives the test ID and the output line.
-pub type OutputCallback = Arc<dyn Fn(&str, &OutputLine) + Send + Sync>;
+pub type OutputCallback = Box<dyn FnMut(&str, &OutputLine) + Send>;
 
 /// Outcome of executing a single batch of tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +157,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         output_id: &str,
         stdout: &mut String,
         stderr: &mut String,
-        callback: &Option<OutputCallback>,
+        callback: &mut Option<OutputCallback>,
     ) {
         match line {
             OutputLine::Stdout(s) => {
@@ -214,7 +213,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                                     output_id,
                                     &mut stdout,
                                     &mut stderr,
-                                    &self.output_callback,
+                                    &mut self.output_callback,
                                 );
                             }
                             None => break, // Stream ended
@@ -233,7 +232,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     output_id,
                     &mut stdout,
                     &mut stderr,
-                    &self.output_callback,
+                    &mut self.output_callback,
                 );
             }
         }
