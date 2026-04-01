@@ -5,7 +5,7 @@ A flexible parallel test runner written in Rust with pluggable execution provide
 ## Features
 
 - **Parallel execution** across multiple sandboxes (local processes or remote environments)
-- **Pluggable providers**: local, default (custom shell commands), and Modal
+- **Pluggable providers**: local, default (custom shell commands), Modal, and Azure Orbital
 - **Multiple test frameworks**: pytest, cargo nextest, vitest, or any custom runner
 - **Automatic retry** with flaky test detection
 - **JUnit XML** reporting
@@ -75,6 +75,11 @@ cargo install --path .
 - [uv](https://docs.astral.sh/uv/) — the bundled `modal_sandbox.py` is invoked via `uv run`, which auto-installs its dependencies (`modal`, `click`)
 - Python >= 3.10
 - A Modal account — authenticate with `modal token new`
+
+**For Azure Orbital providers** (`type = "azure_orbital"`):
+- [Azure Orbital Space SDK](https://github.com/microsoft/azure-orbital-space-sdk) Python client (`microsoftazurespacefx`)
+- Access to an Azure Orbital Space SDK environment
+- Python >= 3.10
 
 **For the pytest framework** (local test discovery):
 - Python and pytest installed locally — Offload runs `pytest --collect-only` on the local machine to discover tests
@@ -262,7 +267,7 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 
 ### `[provider]` -- Execution Provider
 
-The `type` field selects the provider. One of: `local`, `default`, `modal`.
+The `type` field selects the provider. One of: `local`, `default`, `modal`, `azure_orbital`.
 
 #### `type = "local"`
 
@@ -294,6 +299,18 @@ Custom shell commands for sandbox lifecycle management. Commands use placeholder
 #### `type = "modal"`
 
 Simplified Modal sandbox provider. Internally generates the appropriate Modal CLI commands.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dockerfile` | string | (none) | Path to Dockerfile for building the sandbox image |
+| `include_cwd` | boolean | `false` | Copy the current working directory into the image |
+| `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
+| `env` | table | `{}` | Environment variables for test processes |
+| `cpu_cores` | float | `0.125` | CPU cores per sandbox |
+
+#### `type = "azure_orbital"`
+
+Azure Orbital Space SDK provider for running tests on space-qualified containers.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -464,6 +481,30 @@ include_cwd = true
 
 [framework]
 type = "nextest"
+
+[groups.all]
+retry_count = 1
+
+[report]
+output_dir = "test-results"
+```
+
+### Pytest on Azure Orbital (`offload-pytest-azure-orbital.toml`)
+
+```toml
+[offload]
+max_parallel = 4
+test_timeout_secs = 600
+sandbox_project_root = "/app"
+
+[provider]
+type = "azure_orbital"
+dockerfile = ".devcontainer/Dockerfile"
+include_cwd = true
+
+[framework]
+type = "pytest"
+paths = ["tests"]
 
 [groups.all]
 retry_count = 1
