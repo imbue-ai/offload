@@ -201,6 +201,7 @@ fn expand_provider_env(provider: &mut ProviderConfig) -> Result<()> {
         ProviderConfig::Local(config) => expand_env_hashmap(&mut config.env),
         ProviderConfig::Default(config) => expand_env_hashmap(&mut config.env),
         ProviderConfig::Modal(config) => expand_env_hashmap(&mut config.env),
+        ProviderConfig::AzureOrbital(config) => expand_env_hashmap(&mut config.env),
     }
 }
 

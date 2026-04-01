@@ -414,6 +414,7 @@ async fn run_tests(
             ProviderConfig::Local(cfg) => cfg.env.extend(cli_env),
             ProviderConfig::Default(cfg) => cfg.env.extend(cli_env),
             ProviderConfig::Modal(cfg) => cfg.env.extend(cli_env),
+            ProviderConfig::AzureOrbital(cfg) => cfg.env.extend(cli_env),
         }
     }
 
@@ -554,6 +555,9 @@ async fn run_tests(
             )
             .await?
         }
+        ProviderConfig::AzureOrbital(_) => {
+            anyhow::bail!("Azure Orbital provider is not yet implemented");
+        }
     };
 
     // Write trace file if tracing was enabled
@@ -687,6 +691,7 @@ fn validate_config(config_path: &Path) -> Result<()> {
                 ProviderConfig::Local(_) => "local",
                 ProviderConfig::Default(_) => "default",
                 ProviderConfig::Modal(_) => "modal",
+                ProviderConfig::AzureOrbital(_) => "azure_orbital",
             };
             println!("  Provider: {}", provider_name);
 

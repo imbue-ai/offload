@@ -89,8 +89,9 @@ fn default_test_timeout() -> u64 {
 /// | `local` | Local processes | Development, CI without containers |
 /// | `default` | Custom shell commands | Cloud providers (Modal, Lambda, etc.) |
 /// | `modal` | Modal sandboxes | Modal cloud execution with simplified config |
+/// | `azure_orbital` | Azure Orbital sandboxes | Azure Orbital cloud execution |
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderConfig {
     /// Run tests as local processes.
     ///
@@ -110,6 +111,11 @@ pub enum ProviderConfig {
     /// Uses the DefaultSandbox implementation internally but exposes
     /// high-level configuration options instead of raw command strings.
     Modal(ModalProviderConfig),
+
+    /// Run tests on Azure Orbital sandboxes with simplified configuration.
+    ///
+    /// Similar to Modal provider but configured for Azure Orbital execution.
+    AzureOrbital(AzureOrbitalProviderConfig),
 }
 
 /// Configuration for the local process provider.
@@ -181,6 +187,48 @@ pub struct ModalProviderConfig {
 
     /// CPU cores per sandbox (default: 0.125).
     #[serde(default = "default_modal_cpu_cores")]
+    pub cpu_cores: f64,
+}
+
+/// Configuration for Azure Orbital sandbox provider.
+///
+/// This provider runs tests on Azure Orbital sandboxes using a simplified
+/// configuration. Similar to the Modal provider, you provide high-level options
+/// and the provider generates the appropriate Azure Orbital commands internally.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AzureOrbitalProviderConfig {
+    /// Path to a Dockerfile for building the sandbox image.
+    ///
+    /// If provided, Azure Orbital will build an image from this Dockerfile.
+    /// If not specified, a default image is used.
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+
+    /// Whether to include the current working directory in the image.
+    ///
+    /// When enabled, the entire current working directory is copied
+    /// into the sandbox image during preparation.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub include_cwd: bool,
+
+    /// Directories to copy into the sandbox image.
+    ///
+    /// Each entry is a string in the format "local_path:remote_path".
+    /// These directories are baked into the image during preparation,
+    /// making sandbox creation faster.
+    #[serde(default)]
+    pub copy_dirs: Vec<String>,
+
+    /// Environment variables to set for all test processes.
+    ///
+    /// These are merged with (and override) the current environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    /// CPU cores per sandbox (default: 0.125).
+    #[serde(default = "default_azure_orbital_cpu_cores")]
     pub cpu_cores: f64,
 }
 
@@ -291,6 +339,10 @@ fn default_cpu_cores() -> f64 {
 }
 
 fn default_modal_cpu_cores() -> f64 {
+    0.125
+}
+
+fn default_azure_orbital_cpu_cores() -> f64 {
     0.125
 }
 
@@ -1029,6 +1081,141 @@ mod tests {
 
         let config: Config = toml::from_str(toml_str)?;
         assert!(config.report.download_globs.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_azure_orbital_provider_with_dockerfile() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "azure_orbital"
+            dockerfile = ".devcontainer/Dockerfile"
+            include_cwd = true
+            copy_dirs = ["/local/path:/remote/path"]
+            cpu_cores = 0.25
+
+            [provider.env]
+            MY_VAR = "my_value"
+
+            [framework]
+            type = "pytest"
+            test_id_format = "{classname}::{name}"
+
+            [groups.all]
+            retry_count = 1
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+
+        assert!(
+            matches!(&config.provider, ProviderConfig::AzureOrbital(_)),
+            "Expected AzureOrbital provider"
+        );
+
+        if let ProviderConfig::AzureOrbital(azure_config) = &config.provider {
+            assert_eq!(
+                azure_config.dockerfile.as_deref(),
+                Some(".devcontainer/Dockerfile")
+            );
+            assert!(azure_config.include_cwd);
+            assert_eq!(azure_config.copy_dirs, vec!["/local/path:/remote/path"]);
+            assert_eq!(
+                azure_config.env.get("MY_VAR").map(String::as_str),
+                Some("my_value")
+            );
+            assert!((azure_config.cpu_cores - 0.25).abs() < f64::EPSILON);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_azure_orbital_provider_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "azure_orbital"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+
+        if let ProviderConfig::AzureOrbital(azure_config) = &config.provider {
+            assert!(azure_config.dockerfile.is_none());
+            assert!(!azure_config.include_cwd);
+            assert!(azure_config.copy_dirs.is_empty());
+            assert!(azure_config.env.is_empty());
+            assert!((azure_config.cpu_cores - 0.125).abs() < f64::EPSILON);
+        } else {
+            return Err("Expected AzureOrbital provider".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_azure_orbital_provider_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            offload: OffloadConfig {
+                max_parallel: 10,
+                test_timeout_secs: 900,
+                working_dir: None,
+                sandbox_project_root: "/app".to_string(),
+                sandbox_init_cmd: None,
+            },
+            provider: ProviderConfig::AzureOrbital(AzureOrbitalProviderConfig {
+                dockerfile: Some(".devcontainer/Dockerfile".to_string()),
+                include_cwd: true,
+                copy_dirs: vec!["/local:/remote".to_string()],
+                env: HashMap::from([("TEST_VAR".to_string(), "test_value".to_string())]),
+                cpu_cores: 0.5,
+            }),
+            framework: FrameworkConfig::Pytest(PytestFrameworkConfig {
+                paths: vec![PathBuf::from("tests")],
+                command: "python -m pytest".into(),
+                test_id_format: "{name}".into(),
+                ..Default::default()
+            }),
+            groups: HashMap::from([(
+                "default".to_string(),
+                GroupConfig {
+                    retry_count: 0,
+                    filters: String::new(),
+                },
+            )]),
+            report: ReportConfig::default(),
+        };
+
+        let toml_str = toml::to_string_pretty(&config)?;
+        let deserialized: Config = toml::from_str(&toml_str)?;
+
+        if let ProviderConfig::AzureOrbital(azure_config) = &deserialized.provider {
+            assert_eq!(
+                azure_config.dockerfile.as_deref(),
+                Some(".devcontainer/Dockerfile")
+            );
+            assert!(azure_config.include_cwd);
+            assert_eq!(azure_config.copy_dirs, vec!["/local:/remote"]);
+            assert_eq!(
+                azure_config.env.get("TEST_VAR").map(String::as_str),
+                Some("test_value")
+            );
+            assert!((azure_config.cpu_cores - 0.5).abs() < f64::EPSILON);
+        } else {
+            return Err("Expected AzureOrbital provider after round-trip".into());
+        }
 
         Ok(())
     }
