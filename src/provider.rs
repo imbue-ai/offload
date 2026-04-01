@@ -3,6 +3,7 @@
 pub mod default;
 pub mod local;
 pub mod modal;
+pub mod retry;
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

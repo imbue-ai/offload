@@ -22,6 +22,7 @@ use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
     SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
 };
+use offload::with_retry;
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -488,15 +489,14 @@ async fn run_tests(
                         offload::trace::PID_LOCAL,
                         offload::trace::TID_MAIN,
                     );
-                    provider
-                        .prepare(
-                            &copy_dir_tuples,
-                            no_cache,
-                            config.offload.sandbox_init_cmd.as_deref(),
-                            Some(&discovery_done),
-                        )
-                        .await
-                        .context("Failed to prepare Default provider")
+                    let image_id = with_retry!(provider.prepare(
+                        &copy_dir_tuples,
+                        no_cache,
+                        config.offload.sandbox_init_cmd.as_deref(),
+                        Some(&discovery_done),
+                    ))
+                    .context("Failed to prepare Default provider")?;
+                    Ok(image_id)
                 }
             )?;
             if all_tests.is_empty() {
@@ -528,15 +528,14 @@ async fn run_tests(
                         offload::trace::PID_LOCAL,
                         offload::trace::TID_MAIN,
                     );
-                    provider
-                        .prepare(
-                            &copy_dir_tuples,
-                            no_cache,
-                            config.offload.sandbox_init_cmd.as_deref(),
-                            Some(&discovery_done),
-                        )
-                        .await
-                        .context("Failed to prepare Modal provider")
+                    let image_id = with_retry!(provider.prepare(
+                        &copy_dir_tuples,
+                        no_cache,
+                        config.offload.sandbox_init_cmd.as_deref(),
+                        Some(&discovery_done),
+                    ))
+                    .context("Failed to prepare Modal provider")?;
+                    Ok(image_id)
                 }
             )?;
             if all_tests.is_empty() {
