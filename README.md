@@ -357,6 +357,7 @@ At least one group is required. Each group runs its own test discovery with its 
 |-------|------|---------|-------------|
 | `retry_count` | integer | `0` | Number of times to retry failed tests |
 | `filters` | string | `""` | Filter string passed to the framework during discovery. For pytest: pytest args (e.g. `-m 'not slow'`). For cargo: nextest list args. For default: substituted into `{filters}` placeholder in `discover_command` |
+| `is_slow` | boolean | `false` | When true, each test in this group is scheduled in its own batch (batch size 1). Use for heavyweight tests that should not share a sandbox with other tests |
 
 Failed tests that pass on retry are marked as "flaky" (exit code 2).
 
@@ -441,6 +442,7 @@ filters = "-m 'not slow' -k 'not test_flaky'"
 [groups.slow]
 retry_count = 3
 filters = "-m 'slow'"
+is_slow = true
 
 [groups.flaky]
 retry_count = 5
