@@ -128,8 +128,20 @@ impl Scheduler {
             return Vec::new();
         }
 
+        // Partition: slow tests get their own batches, normal tests go through LPT
+        let (slow_tests, normal_tests): (Vec<_>, Vec<_>) =
+            tests.iter().copied().partition(|t| t.is_slow());
+
+        // Build slow batches (one test per batch)
+        let slow_batches: Vec<Vec<TestInstance<'a>>> =
+            slow_tests.into_iter().map(|t| vec![t]).collect();
+
+        if normal_tests.is_empty() {
+            return slow_batches;
+        }
+
         // Look up durations for each test, sorted longest-first
-        let mut tests_with_duration: Vec<_> = tests
+        let mut tests_with_duration: Vec<_> = normal_tests
             .iter()
             .map(|t| {
                 let duration = match durations.get(t.id()) {
@@ -154,7 +166,7 @@ impl Scheduler {
         tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Initialize batches
-        let num_batches = self.max_parallel.min(tests.len());
+        let num_batches = self.max_parallel.min(normal_tests.len());
         let mut batches: Vec<Batch<'a>> = (0..num_batches).map(|_| Batch::new()).collect();
 
         // LPT assignment: assign each test to the lightest eligible batch
@@ -179,11 +191,15 @@ impl Scheduler {
         // Sort by load descending (heaviest first) for optimal Modal scheduling
         batches.sort_by(|a, b| b.load.cmp(&a.load));
 
-        batches
-            .into_iter()
-            .filter(|b| !b.is_empty())
-            .map(|b| b.tests)
-            .collect()
+        // Prepend slow batches before LPT batches
+        let mut result = slow_batches;
+        result.extend(
+            batches
+                .into_iter()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.tests),
+        );
+        result
     }
 }
 
@@ -518,5 +534,59 @@ mod tests {
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 100);
+    }
+
+    #[test]
+    fn test_schedule_slow_tests_get_own_batch() {
+        let scheduler = Scheduler::new(2);
+        let mut records = [
+            TestRecord::new("fast_1", "fast-group"),
+            TestRecord::new("fast_2", "fast-group"),
+            TestRecord::new("slow_1", "slow-group"),
+            TestRecord::new("slow_2", "slow-group"),
+        ];
+        records[2].is_slow = true;
+        records[3].is_slow = true;
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Each slow test must be alone in its batch
+        for batch in &batches {
+            let has_slow = batch.iter().any(|t| t.is_slow());
+            if has_slow {
+                assert_eq!(batch.len(), 1, "Slow test must be alone in its batch");
+            }
+        }
+        // All 4 tests should be scheduled
+        let total: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn test_schedule_slow_tests_at_front() {
+        let scheduler = Scheduler::new(4);
+        let mut records = [
+            TestRecord::new("fast_1", "fast-group"),
+            TestRecord::new("slow_1", "slow-group"),
+            TestRecord::new("fast_2", "fast-group"),
+        ];
+        records[1].is_slow = true;
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Slow batches come first
+        assert!(
+            batches[0].iter().any(|t| t.is_slow()),
+            "First batch should contain slow test"
+        );
+        assert_eq!(batches[0].len(), 1);
+
+        // Total tests scheduled
+        let total: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(total, 3);
     }
 }
