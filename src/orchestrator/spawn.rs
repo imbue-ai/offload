@@ -232,7 +232,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             let flaky = report.flaky_count();
             let awaiting = cfg.total_tests_to_run.saturating_sub(report.total_count());
             cfg.progress.set_message(format!(
-                "\x1b[32mpassed: {passed}\x1b[0m | \x1b[31mfailed: {failed}\x1b[0m | \x1b[33mflaky: {flaky}\x1b[0m | \x1b[2mawaiting: {awaiting}\x1b[0m"
+                "passed: {passed} | failed: {failed} | flaky: {flaky} | awaiting: {awaiting}"
             ));
         }
         drop(_batch_span);
