@@ -222,12 +222,11 @@ where
         // Set up progress bar
         let total_instances: usize = tests.iter().map(|t| t.retry_count + 1).sum();
         let progress = indicatif::ProgressBar::new(total_instances as u64);
-        if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-        ) {
+        if let Ok(style) = indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+        {
             progress.set_style(style.progress_chars("#>-"));
         }
-        progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
