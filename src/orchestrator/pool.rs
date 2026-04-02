@@ -48,6 +48,7 @@ impl<S: Sandbox> SandboxPool<S> {
         ) {
             progress.set_style(style.progress_chars("#>-"));
         }
+        progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let futs: FuturesUnordered<_> = (0..count)
             .map(|i| {

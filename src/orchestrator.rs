@@ -227,6 +227,7 @@ where
         {
             progress.set_style(style.progress_chars("#>-"));
         }
+        progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
