@@ -69,6 +69,9 @@ pub struct TestRecord {
 
     /// Group name this test belongs to (for JUnit testsuite grouping).
     pub group: String,
+
+    /// Whether this test is slow and should run in its own batch.
+    pub is_slow: bool,
 }
 
 impl TestRecord {
@@ -86,12 +89,19 @@ impl TestRecord {
             file: None,
             retry_count: 0,
             group: group.into(),
+            is_slow: false,
         }
     }
 
     /// Sets the retry count for this test.
     pub fn with_retry_count(mut self, count: usize) -> Self {
         self.retry_count = count;
+        self
+    }
+
+    /// Marks this test as slow (should run in its own batch).
+    pub fn with_slow(mut self, is_slow: bool) -> Self {
+        self.is_slow = is_slow;
         self
     }
 
@@ -124,6 +134,10 @@ impl<'a> TestInstance<'a> {
 
     pub fn group(&self) -> &str {
         &self.record.group
+    }
+
+    pub fn is_slow(&self) -> bool {
+        self.record.is_slow
     }
 }
 

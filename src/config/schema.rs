@@ -324,6 +324,16 @@ pub struct GroupConfig {
     /// An empty string means no filtering.
     #[serde(default)]
     pub filters: String,
+
+    /// Whether tests in this group are slow and should run one-per-batch.
+    ///
+    /// When true, the scheduler places each test from this group into its
+    /// own batch (batch size 1), preventing them from being combined with
+    /// other tests.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub is_slow: bool,
 }
 
 /// Test framework configuration specifying how tests are found and run.
@@ -709,6 +719,7 @@ mod tests {
                 GroupConfig {
                     retry_count: 0,
                     filters: String::new(),
+                    ..Default::default()
                 },
             )]),
             report: ReportConfig::default(),
@@ -737,6 +748,7 @@ mod tests {
                 GroupConfig {
                     retry_count: 0,
                     filters: String::new(),
+                    ..Default::default()
                 },
             )]),
             report: ReportConfig::default(),
@@ -768,6 +780,7 @@ mod tests {
                 GroupConfig {
                     retry_count: 0,
                     filters: String::new(),
+                    ..Default::default()
                 },
             )]),
             report: ReportConfig::default(),
@@ -938,6 +951,7 @@ mod tests {
                 GroupConfig {
                     retry_count: 0,
                     filters: String::new(),
+                    ..Default::default()
                 },
             )]),
             report: ReportConfig::default(),
