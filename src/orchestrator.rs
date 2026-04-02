@@ -228,6 +228,13 @@ where
             progress.set_style(style.progress_chars("#>-"));
         }
         progress.enable_steady_tick(std::time::Duration::from_millis(100));
+        progress.set_message(format!(
+            "{} | {} | {} | {}",
+            console::style("passed: 0").green(),
+            console::style("failed: 0").red(),
+            console::style("flaky: 0").yellow(),
+            console::style(format!("awaiting: {}", tests.len())).dim(),
+        ));
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel

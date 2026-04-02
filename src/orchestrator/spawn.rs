@@ -232,7 +232,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             let flaky = report.flaky_count();
             let awaiting = cfg.total_tests_to_run.saturating_sub(report.total_count());
             cfg.progress.set_message(format!(
-                "passed: {passed} | failed: {failed} | flaky: {flaky} | awaiting: {awaiting}"
+                "{} | {} | {} | {}",
+                console::style(format!("passed: {passed}")).green(),
+                console::style(format!("failed: {failed}")).red(),
+                console::style(format!("flaky: {flaky}")).yellow(),
+                console::style(format!("awaiting: {awaiting}")).dim(),
             ));
         }
         drop(_batch_span);
