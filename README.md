@@ -141,12 +141,10 @@ After a test run, Offload writes per-batch log files to `{output_dir}/logs/`:
 
 | File | Meaning |
 |------|---------|
-| `batch-{N}.success` | All tests in batch N passed |
-| `batch-{N}.failure` | One or more tests in batch N failed |
-| `batch-{N}.error` | Infrastructure error (e.g., sandbox failure, JUnit download failure) |
-| `batch-{N}.cancelled` | Batch was cancelled before completion (e.g., early stopping) |
+| `batch-{N}.stdout.{outcome}` | Standard output from batch N |
+| `batch-{N}.stderr.{outcome}` | Standard error from batch N |
 
-Each file contains stdout and stderr from all tests in that batch. Stderr lines are prefixed with `[stderr]`.
+Where `{outcome}` is one of: `success` (all tests passed), `failure` (one or more tests failed), `error` (infrastructure error), or `cancelled` (batch cancelled before completion).
 
 The `{output_dir}` defaults to `test-results` and is configurable via `[report] output_dir`.
 
