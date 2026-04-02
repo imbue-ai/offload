@@ -223,7 +223,7 @@ where
         let total_instances: usize = tests.iter().map(|t| t.retry_count + 1).sum();
         let progress = indicatif::ProgressBar::new(total_instances as u64);
         if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
-            "{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}",
+            "{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%",
         ) {
             progress.set_style(style.progress_chars("#>-"));
         }
