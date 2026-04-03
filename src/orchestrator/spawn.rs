@@ -94,6 +94,20 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
+        // Skip singleton retry batches when the test has already passed
+        if batch.len() == 1
+            && let Ok(report) = cfg.junit_report.lock()
+            && report.has_test_passed(batch[0].id())
+        {
+            info!(
+                "SKIP: Batch {} test '{}' already passed, skipping retry",
+                batch_idx,
+                batch[0].id()
+            );
+            cfg.progress.inc(1);
+            continue;
+        }
+
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
         let _batch_span = cfg
             .tracer

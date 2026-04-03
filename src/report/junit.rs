@@ -194,6 +194,13 @@ impl MasterJunitReport {
         self.passed_count() >= self.total_expected
     }
 
+    /// Returns true if a test with the given name has already passed or is flaky.
+    pub fn has_test_passed(&self, name: &str) -> bool {
+        self.test_outcomes.iter().any(|(id, status)| {
+            id.name == name && (*status == TestStatus::Passed || *status == TestStatus::Flaky)
+        })
+    }
+
     /// Total number of raw testcases across all testsuites.
     pub fn testcase_count(&self) -> usize {
         self.testsuites.iter().map(|s| s.testcases.len()).sum()
