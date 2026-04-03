@@ -711,6 +711,105 @@ mod tests {
     }
 
     #[test]
+    fn test_has_test_passed_name_only_format() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="0">
+    <testcase classname="foo.bar" name="test_alpha" time="0.1" />
+    <testcase classname="foo.bar" name="test_beta" time="0.2" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(2, "{name}");
+        report.add_junit_xml(xml);
+
+        assert!(report.has_test_passed("test_alpha"));
+        assert!(report.has_test_passed("test_beta"));
+        assert!(!report.has_test_passed("test_gamma")); // unknown
+        assert!(!report.has_test_passed("foo.bar")); // classname, not name
+    }
+
+    #[test]
+    fn test_has_test_passed_classname_space_name_format() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase classname="my_binary" name="tests::test_something" time="0.5" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1, "{classname} {name}");
+        report.add_junit_xml(xml);
+
+        assert!(report.has_test_passed("my_binary tests::test_something"));
+        assert!(!report.has_test_passed("tests::test_something")); // name alone
+        assert!(!report.has_test_passed("my_binary")); // classname alone
+    }
+
+    #[test]
+    fn test_has_test_passed_classname_separator_name_format() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase classname="com.example" name="testFoo" time="0.1" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
+        report.add_junit_xml(xml);
+
+        assert!(report.has_test_passed("com.example::testFoo"));
+        assert!(!report.has_test_passed("testFoo"));
+        assert!(!report.has_test_passed("com.example"));
+    }
+
+    #[test]
+    fn test_has_test_passed_failed_test_returns_false() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo" name="test_fail" time="0.1">
+        <failure message="oops">stack trace</failure>
+    </testcase>
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1, "{name}");
+        report.add_junit_xml(xml);
+
+        assert!(!report.has_test_passed("test_fail"));
+    }
+
+    #[test]
+    fn test_has_test_passed_flaky_test_returns_true() {
+        let xml_fail = r#"<?xml version="1.0"?>
+<testsuite name="batch1" tests="1" failures="1">
+    <testcase classname="foo" name="test_flaky" time="0.1">
+        <failure message="oops">stack</failure>
+    </testcase>
+</testsuite>"#;
+
+        let xml_pass = r#"<?xml version="1.0"?>
+<testsuite name="batch2" tests="1" failures="0">
+    <testcase classname="foo" name="test_flaky" time="0.1" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(1, "{name}");
+        report.add_junit_xml(xml_fail);
+        assert!(!report.has_test_passed("test_flaky"));
+
+        report.add_junit_xml(xml_pass);
+        assert!(report.has_test_passed("test_flaky")); // flaky counts as passed
+    }
+
+    #[test]
+    fn test_has_test_passed_no_classname_in_xml() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase name="test_solo" time="0.1" />
+</testsuite>"#;
+
+        // With {classname}::{name} format but no classname in XML
+        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
+        report.add_junit_xml(xml);
+
+        assert!(report.has_test_passed("::test_solo")); // classname is empty
+        assert!(!report.has_test_passed("test_solo")); // no match without ::
+    }
+
+    #[test]
     fn test_parse_all_testsuites_xml() {
         let xml =
             r#"<testsuite name="test" tests="5" failures="1" errors="2" time="1.23"></testsuite>"#;
