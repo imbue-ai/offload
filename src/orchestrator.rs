@@ -344,6 +344,7 @@ where
         let total_tests_to_run = tests.len();
         let junit_report = Arc::new(std::sync::Mutex::new(MasterJunitReport::new(
             total_tests_to_run,
+            self.config.framework.test_id_format(),
         )));
         let all_passed = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();

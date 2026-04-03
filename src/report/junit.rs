@@ -79,15 +79,18 @@ pub struct MasterJunitReport {
     test_outcomes: HashMap<TestId, TestStatus>,
     /// Total number of unique test IDs expected (for early stopping)
     total_expected: usize,
+    /// Format string for constructing test IDs from JUnit XML attributes.
+    test_id_format: String,
 }
 
 impl MasterJunitReport {
     /// Creates a new master report expecting the given number of unique test IDs.
-    pub fn new(total_expected: usize) -> Self {
+    pub fn new(total_expected: usize, test_id_format: &str) -> Self {
         Self {
             testsuites: Vec::new(),
             test_outcomes: HashMap::new(),
             total_expected,
+            test_id_format: test_id_format.to_string(),
         }
     }
 
@@ -194,10 +197,18 @@ impl MasterJunitReport {
         self.passed_count() >= self.total_expected
     }
 
-    /// Returns true if a test with the given name has already passed or is flaky.
-    pub fn has_test_passed(&self, name: &str) -> bool {
+    /// Returns true if the test with the given full ID has already passed or is flaky.
+    ///
+    /// Reconstructs the full test ID from JUnit XML classname/name attributes
+    /// using the configured `test_id_format` before comparing.
+    pub fn has_test_passed(&self, test_id: &str) -> bool {
         self.test_outcomes.iter().any(|(id, status)| {
-            id.name == name && (*status == TestStatus::Passed || *status == TestStatus::Flaky)
+            let full_id = crate::config::format_test_id(
+                &self.test_id_format,
+                &id.name,
+                id.classname.as_deref(),
+            );
+            full_id == test_id && (*status == TestStatus::Passed || *status == TestStatus::Flaky)
         })
     }
 
@@ -583,7 +594,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_something" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -600,7 +611,7 @@ mod tests {
     </testcase>
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -622,7 +633,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_flaky" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml_fail);
         assert_eq!(report.failed_count(), 1);
 
@@ -643,7 +654,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1); // 1 unique test ID
@@ -664,7 +675,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -689,7 +700,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1);
+        let mut report = MasterJunitReport::new(1, "{name}");
         report.add_junit_xml(xml_fail);
         assert_eq!(report.failed_count(), 1);
 
