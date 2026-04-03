@@ -304,6 +304,8 @@ Simplified Modal sandbox provider. Internally generates the appropriate Modal CL
 | `cpu_cores` | float | `0.125` | CPU cores per sandbox |
 | `experimental_options` | table | `{}` | Experimental options passed as JSON to `Sandbox.create()` (e.g. `enable_docker = true`) |
 
+Use `experimental_options` to pass feature flags to Modal's `Sandbox.create()` (e.g. `[provider.experimental_options]\nenable_docker = true`). These options may change on Modal's side without notice.
+
 ### `[framework]` -- Test Framework
 
 The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `default`.
