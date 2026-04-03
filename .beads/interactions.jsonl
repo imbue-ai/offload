@@ -1,6 +1,0 @@
-{"id":"int-77ca231d","kind":"field_change","created_at":"2026-04-02T20:42:52.900089Z","actor":"jsk11235","issue_id":"improved-reporting-ov6","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
-{"id":"int-07a77dbe","kind":"field_change","created_at":"2026-04-02T20:46:35.360857Z","actor":"jsk11235","issue_id":"improved-reporting-ov6","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
-{"id":"int-c2985109","kind":"field_change","created_at":"2026-04-02T20:46:36.541903Z","actor":"jsk11235","issue_id":"improved-reporting-06a","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
-{"id":"int-ecdbdd0c","kind":"field_change","created_at":"2026-04-02T20:57:03.429428Z","actor":"jsk11235","issue_id":"improved-reporting-06a","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
-{"id":"int-44be791a","kind":"field_change","created_at":"2026-04-02T20:57:04.651244Z","actor":"jsk11235","issue_id":"improved-reporting-zps","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
-{"id":"int-be301873","kind":"field_change","created_at":"2026-04-02T21:55:32.868006Z","actor":"jsk11235","issue_id":"improved-reporting-zps","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
