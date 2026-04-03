@@ -94,17 +94,18 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip singleton retry batches when the test has already passed
-        if batch.len() == 1
-            && let Ok(report) = cfg.junit_report.lock()
-            && report.has_test_passed(batch[0].id())
+        // Skip batches where all tests have already passed
+        if let Ok(report) = cfg.junit_report.lock()
+            && batch.iter().all(|t| report.has_test_passed(t.id()))
         {
+            let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
             info!(
-                "SKIP: Batch {} test '{}' already passed, skipping retry",
+                "SKIP: Batch {} ({} tests) all already passed, skipping",
                 batch_idx,
-                batch[0].id()
+                batch.len()
             );
-            cfg.progress.inc(1);
+            debug!("Skipped tests: {:?}", test_ids);
+            cfg.progress.inc(batch.len() as u64);
             continue;
         }
 
