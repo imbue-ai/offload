@@ -565,6 +565,36 @@ mod tests {
     }
 
     #[test]
+    fn test_schedule_slow_tests_preserves_interleaved_order() {
+        let scheduler = Scheduler::new(4);
+        // Simulate already-interleaved slow instances (as orchestrator would produce)
+        let mut records = vec![
+            TestRecord::new("slow_a", "slow-group"),
+            TestRecord::new("slow_b", "slow-group"),
+            TestRecord::new("slow_a", "slow-group"),
+            TestRecord::new("slow_b", "slow-group"),
+            TestRecord::new("slow_a", "slow-group"),
+        ];
+        for r in &mut records {
+            r.is_slow = true;
+        }
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Each slow test in its own batch, order preserved
+        let ids: Vec<&str> = batches
+            .iter()
+            .map(|b| {
+                assert_eq!(b.len(), 1);
+                b[0].id()
+            })
+            .collect();
+        assert_eq!(ids, vec!["slow_a", "slow_b", "slow_a", "slow_b", "slow_a"]);
+    }
+
+    #[test]
     fn test_schedule_slow_tests_at_front() {
         let scheduler = Scheduler::new(4);
         let mut records = [

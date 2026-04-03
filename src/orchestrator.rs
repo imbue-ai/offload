@@ -238,13 +238,40 @@ where
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
-        let tests_to_run: Vec<TestInstance<'_>> = tests
+        let (slow_tests, normal_tests): (Vec<_>, Vec<_>) = tests.iter().partition(|t| t.is_slow);
+
+        // Normal tests: flat_map as before
+        let normal_instances: Vec<TestInstance<'_>> = normal_tests
             .iter()
             .flat_map(|t| {
-                let count = t.retry_count + 1; // 1 original + retry_count retries
+                let count = t.retry_count + 1;
                 (0..count).map(move |_| t.test())
             })
             .collect();
+
+        // Slow tests: round-robin interleave instances across unique tests
+        // Produces [A, B, C, A, B, C, A] instead of [A, A, A, B, B, C]
+        // so the scheduler sees them already interleaved and preserves order.
+        let slow_instances: Vec<TestInstance<'_>> = {
+            let max_count = slow_tests
+                .iter()
+                .map(|t| t.retry_count + 1)
+                .max()
+                .unwrap_or(0);
+            let mut instances = Vec::new();
+            for round in 0..max_count {
+                for test in &slow_tests {
+                    if round < test.retry_count + 1 {
+                        instances.push(test.test());
+                    }
+                }
+            }
+            instances
+        };
+
+        // Slow instances come first so the scheduler sees them first
+        let mut tests_to_run = slow_instances;
+        tests_to_run.extend(normal_instances);
 
         // Schedule tests using LPT (Longest Processing Time First) if we have durations,
         // otherwise fall back to round-robin with a warning.
