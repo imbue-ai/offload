@@ -6,6 +6,8 @@
 use crate::config::SandboxConfig;
 use crate::provider::retry::with_retry;
 use crate::provider::{ProviderError, Sandbox, SandboxProvider};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 
 /// A pool of reusable sandboxes.
 ///
@@ -40,7 +42,15 @@ impl<S: Sandbox> SandboxPool<S> {
     where
         P: SandboxProvider<Sandbox = S>,
     {
-        let futures: Vec<_> = (0..count)
+        let progress = indicatif::ProgressBar::new(count as u64);
+        if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Creating sandboxes...",
+        ) {
+            progress.set_style(style.progress_chars("#>-"));
+        }
+        progress.enable_steady_tick(std::time::Duration::from_millis(100));
+
+        let futs: FuturesUnordered<_> = (0..count)
             .map(|i| {
                 let mut cfg = config.clone();
                 cfg.id = format!("{}-{}", config.id, i);
@@ -48,8 +58,20 @@ impl<S: Sandbox> SandboxPool<S> {
             })
             .collect();
 
-        let sandboxes = futures::future::try_join_all(futures).await?;
-        self.sandboxes.extend(sandboxes);
+        futures::pin_mut!(futs);
+        while let Some(result) = futs.next().await {
+            match result {
+                Ok(sandbox) => {
+                    self.sandboxes.push(sandbox);
+                    progress.inc(1);
+                }
+                Err(e) => {
+                    progress.finish_and_clear();
+                    return Err(e);
+                }
+            }
+        }
+        progress.finish_and_clear();
         Ok(())
     }
 
