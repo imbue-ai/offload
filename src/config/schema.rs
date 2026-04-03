@@ -182,6 +182,12 @@ pub struct ModalProviderConfig {
     /// CPU cores per sandbox (default: 0.125).
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
+
+    /// Experimental options passed through to the sandbox create command as JSON.
+    ///
+    /// These are forwarded as `--experimental-options '{json}'` when non-empty.
+    #[serde(default)]
+    pub experimental_options: HashMap<String, toml::Value>,
 }
 
 /// Configuration for custom remote execution provider.
@@ -1029,6 +1035,81 @@ mod tests {
 
         let config: Config = toml::from_str(toml_str)?;
         assert!(config.report.download_globs.is_empty());
+
+        Ok(())
+    }
+
+    /// Test that `experimental_options` deserializes from TOML and survives a round-trip.
+    #[test]
+    fn test_experimental_options_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+            dockerfile = ".devcontainer/Dockerfile"
+
+            [provider.experimental_options]
+            enable_docker = true
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = config.provider {
+            assert_eq!(
+                modal_config.experimental_options.get("enable_docker"),
+                Some(&toml::Value::Boolean(true))
+            );
+        } else {
+            return Err("Expected Modal provider".into());
+        }
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = round_tripped.provider {
+            assert_eq!(
+                modal_config.experimental_options.get("enable_docker"),
+                Some(&toml::Value::Boolean(true))
+            );
+        } else {
+            return Err("Expected Modal provider after round-trip".into());
+        }
+
+        Ok(())
+    }
+
+    /// Test that `experimental_options` defaults to empty when not specified.
+    #[test]
+    fn test_experimental_options_defaults_to_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+
+        if let ProviderConfig::Modal(ref modal_config) = config.provider {
+            assert!(modal_config.experimental_options.is_empty());
+        } else {
+            return Err("Expected Modal provider".into());
+        }
 
         Ok(())
     }
