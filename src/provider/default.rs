@@ -13,8 +13,36 @@ use super::{
     run_prepare_command,
 };
 
-/// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
+/// Modal Sandbox pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
+
+/// Modal GPU pricing per GPU per second (non-preemptible).
+/// Source: https://modal.com/pricing (retrieved 2026-04-04).
+fn modal_gpu_cost_per_sec(gpu: &str) -> f64 {
+    // Normalize: strip count suffix (e.g. "A100:2" -> "A100") and uppercase.
+    let base = gpu.split(':').next().unwrap_or(gpu);
+    let upper = base.to_uppercase();
+    match upper.as_str() {
+        "T4" => 0.000164,
+        "L4" => 0.000222,
+        "A10G" | "A10" => 0.000306,
+        "L40S" => 0.000542,
+        "A100-40GB" | "A100" => 0.000583,
+        "A100-80GB" => 0.000694,
+        "H100" => 0.001097,
+        "H200" => 0.001261,
+        "B200" => 0.001736,
+        _ => 0.0,
+    }
+}
+
+/// Parse the GPU count from a spec like "A100:2" -> 2, "T4" -> 1.
+fn gpu_count(gpu: &str) -> f64 {
+    gpu.split(':')
+        .nth(1)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(1.0)
+}
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
@@ -187,6 +215,7 @@ impl SandboxProvider for DefaultProvider {
             env,
             created_at: Instant::now(),
             cpu_cores,
+            gpu: None,
         })
     }
 
@@ -225,6 +254,7 @@ pub struct DefaultSandbox {
     env: Vec<(String, String)>,
     created_at: Instant,
     cpu_cores: f64,
+    gpu: Option<String>,
 }
 
 impl DefaultSandbox {
@@ -240,6 +270,7 @@ impl DefaultSandbox {
         env: Vec<(String, String)>,
         created_at: Instant,
         cpu_cores: f64,
+        gpu: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -250,6 +281,7 @@ impl DefaultSandbox {
             env,
             created_at,
             cpu_cores,
+            gpu,
         }
     }
 
@@ -381,10 +413,22 @@ impl Sandbox for DefaultSandbox {
     fn cost_estimate(&self) -> CostEstimate {
         let elapsed = self.created_at.elapsed().as_secs_f64();
         let cpu_seconds = elapsed * self.cpu_cores;
-        let estimated_cost_usd = cpu_seconds * MODAL_CPU_COST_PER_CORE_PER_SEC;
+        let cpu_cost = cpu_seconds * MODAL_CPU_COST_PER_CORE_PER_SEC;
+
+        let (gpu_seconds, gpu_cost) = match &self.gpu {
+            Some(gpu_spec) => {
+                let count = gpu_count(gpu_spec);
+                let secs = elapsed * count;
+                let cost = secs * modal_gpu_cost_per_sec(gpu_spec);
+                (secs, cost)
+            }
+            None => (0.0, 0.0),
+        };
+
         CostEstimate {
             cpu_seconds,
-            estimated_cost_usd,
+            gpu_seconds,
+            estimated_cost_usd: cpu_cost + gpu_cost,
         }
     }
 }
@@ -404,6 +448,7 @@ mod tests {
             env,
             created_at: Instant::now(),
             cpu_cores: 1.0,
+            gpu: None,
         }
     }
 
@@ -672,6 +717,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 2.0,
+            gpu: None,
         };
 
         let cost = sandbox.cost_estimate();
@@ -701,6 +747,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 0.125,
+            gpu: None,
         };
 
         let cost = sandbox.cost_estimate();
@@ -714,6 +761,89 @@ mod tests {
             cost.estimated_cost_usd > 0.0,
             "cost should be positive for remote sandboxes"
         );
+    }
+
+    #[test]
+    fn cost_estimate_includes_gpu_cost() {
+        use crate::provider::Sandbox;
+
+        let sandbox = DefaultSandbox {
+            id: "sb-cost-gpu".to_string(),
+            connector: Arc::new(ShellConnector::new()),
+            exec_command: String::new(),
+            destroy_command: String::new(),
+            download_command: None,
+            env: vec![],
+            created_at: Instant::now() - std::time::Duration::from_secs(100),
+            cpu_cores: 0.125,
+            gpu: Some("T4".to_string()),
+        };
+
+        let cost = sandbox.cost_estimate();
+        // GPU: 100s * 1 GPU = ~100 GPU-seconds
+        assert!(
+            cost.gpu_seconds >= 99.0 && cost.gpu_seconds <= 101.0,
+            "gpu_seconds should be ~100: {}",
+            cost.gpu_seconds
+        );
+        // GPU cost: 100s * $0.000164/s = ~$0.0164
+        let expected_gpu_cost = cost.gpu_seconds * 0.000164;
+        let expected_cpu_cost = cost.cpu_seconds * MODAL_CPU_COST_PER_CORE_PER_SEC;
+        let expected_total = expected_gpu_cost + expected_cpu_cost;
+        assert!(
+            (cost.estimated_cost_usd - expected_total).abs() < 0.0001,
+            "total cost should include both CPU and GPU: got {}, expected {}",
+            cost.estimated_cost_usd,
+            expected_total
+        );
+        // GPU cost should dominate over the tiny CPU cost
+        assert!(
+            cost.estimated_cost_usd > expected_cpu_cost * 2.0,
+            "GPU cost should be significant"
+        );
+    }
+
+    #[test]
+    fn cost_estimate_gpu_with_count() {
+        use crate::provider::Sandbox;
+
+        let sandbox = DefaultSandbox {
+            id: "sb-cost-gpu2".to_string(),
+            connector: Arc::new(ShellConnector::new()),
+            exec_command: String::new(),
+            destroy_command: String::new(),
+            download_command: None,
+            env: vec![],
+            created_at: Instant::now() - std::time::Duration::from_secs(100),
+            cpu_cores: 1.0,
+            gpu: Some("A100:2".to_string()),
+        };
+
+        let cost = sandbox.cost_estimate();
+        // GPU: 100s * 2 GPUs = ~200 GPU-seconds
+        assert!(
+            cost.gpu_seconds >= 199.0 && cost.gpu_seconds <= 201.0,
+            "gpu_seconds should be ~200 for 2 GPUs: {}",
+            cost.gpu_seconds
+        );
+    }
+
+    #[test]
+    fn gpu_pricing_known_types() {
+        assert!((modal_gpu_cost_per_sec("T4") - 0.000164).abs() < f64::EPSILON);
+        assert!((modal_gpu_cost_per_sec("A100") - 0.000583).abs() < f64::EPSILON);
+        assert!((modal_gpu_cost_per_sec("H100") - 0.001097).abs() < f64::EPSILON);
+        // With count suffix
+        assert!((modal_gpu_cost_per_sec("A100:2") - 0.000583).abs() < f64::EPSILON);
+        // Unknown GPU type
+        assert_eq!(modal_gpu_cost_per_sec("UNKNOWN"), 0.0);
+    }
+
+    #[test]
+    fn gpu_count_parsing() {
+        assert_eq!(gpu_count("T4"), 1.0);
+        assert_eq!(gpu_count("A100:2"), 2.0);
+        assert_eq!(gpu_count("H100:4"), 4.0);
     }
 
     /// Integration test for Modal sandbox download functionality via DefaultProvider.

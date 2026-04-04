@@ -83,6 +83,7 @@ mod tests {
             duration: Duration::from_secs(5),
             estimated_cost: CostEstimate {
                 cpu_seconds: 100.0,
+                gpu_seconds: 0.0,
                 estimated_cost_usd: cost_usd,
             },
         }

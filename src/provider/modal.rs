@@ -211,6 +211,7 @@ impl SandboxProvider for ModalProvider {
             env,
             Instant::now(),
             self.cpu_cores,
+            self.config.gpu.clone(),
         ))
     }
 

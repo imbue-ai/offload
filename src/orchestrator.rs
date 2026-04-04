@@ -496,6 +496,7 @@ where
             .fold(CostEstimate::default(), |mut acc, sb| {
                 let cost = sb.cost_estimate();
                 acc.cpu_seconds += cost.cpu_seconds;
+                acc.gpu_seconds += cost.gpu_seconds;
                 acc.estimated_cost_usd += cost.estimated_cost_usd;
                 acc
             });
