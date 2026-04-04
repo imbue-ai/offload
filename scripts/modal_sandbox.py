@@ -452,12 +452,18 @@ def run(command: str):
     default=None,
     help="JSON string of experimental options to pass to Sandbox.create()",
 )
+@click.option(
+    "--gpu",
+    default=None,
+    help="GPU type to attach (e.g. 'T4', 'A10G', 'A100', 'A100:2')",
+)
 def create_from_image(
     image_id: str,
     copy_dirs: tuple[str, ...] = (),
     env_vars: tuple[str, ...] = (),
     cpu: float | None = None,
     experimental_options: str | None = None,
+    gpu: str | None = None,
 ):
     """Create sandbox using existing image_id.
 
@@ -512,6 +518,9 @@ def create_from_image(
         )
         if cpu is not None:
             create_kwargs["cpu"] = cpu
+        if gpu is not None:
+            create_kwargs["gpu"] = gpu
+            logger.debug("[%.2fs]   gpu: %s", time.time() - t0, gpu)
         if experimental_options is not None:
             exp_opts = json.loads(experimental_options)
             create_kwargs["experimental_options"] = exp_opts

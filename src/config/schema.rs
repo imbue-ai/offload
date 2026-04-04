@@ -183,6 +183,15 @@ pub struct ModalProviderConfig {
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
 
+    /// GPU type to attach to each sandbox (e.g. "T4", "A10G", "A100").
+    ///
+    /// When set, each sandbox is provisioned with the specified GPU type.
+    /// Supports count syntax like "A100:2" for multiple GPUs.
+    ///
+    /// Default: None (no GPU).
+    #[serde(default)]
+    pub gpu: Option<String>,
+
     /// Experimental options passed through to the sandbox create command as JSON.
     ///
     /// These are forwarded as `--experimental-options '{json}'` when non-empty.

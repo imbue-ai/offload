@@ -119,6 +119,10 @@ impl ModalProvider {
             self.cpu_cores, image_id
         );
 
+        if let Some(gpu) = &self.config.gpu {
+            cmd.push_str(&format!(" --gpu {}", shell_words::quote(gpu)));
+        }
+
         if !self.config.experimental_options.is_empty() {
             let json = serde_json::to_string(&self.config.experimental_options).map_err(|e| {
                 ProviderError::ExecFailed(format!("Failed to serialize experimental_options: {e}"))
@@ -325,6 +329,21 @@ mod tests {
         });
         let cmd = p.build_create_command("im-xyz")?;
         assert_eq!(cmd, "uv run @modal_sandbox.py create --cpu 2 im-xyz");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_command_with_gpu() -> ProviderResult<()> {
+        let p = provider(ModalProviderConfig {
+            gpu: Some("T4".to_string()),
+            cpu_cores: 0.125,
+            ..Default::default()
+        });
+        let cmd = p.build_create_command("im-abc123")?;
+        assert_eq!(
+            cmd,
+            "uv run @modal_sandbox.py create --cpu 0.125 im-abc123 --gpu T4"
+        );
         Ok(())
     }
 
