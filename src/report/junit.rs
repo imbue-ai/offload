@@ -154,6 +154,10 @@ pub struct MasterJunitReport {
     total_expected: usize,
     /// Format string for constructing test IDs from JUnit XML attributes.
     test_id_format: String,
+    /// Attempt counts by formatted test ID string.
+    test_attempt_counts: HashMap<String, usize>,
+    /// Maximum allowed attempts per formatted test ID string.
+    test_max_attempts: HashMap<String, usize>,
 }
 
 impl MasterJunitReport {
@@ -164,7 +168,16 @@ impl MasterJunitReport {
             test_outcomes: HashMap::new(),
             total_expected,
             test_id_format: test_id_format.to_string(),
+            test_attempt_counts: HashMap::new(),
+            test_max_attempts: HashMap::new(),
         }
+    }
+
+    /// Registers the maximum number of attempts for a test.
+    /// Called by the orchestrator during setup.
+    pub fn register_test_retries(&mut self, test_id: &str, max_attempts: usize) {
+        self.test_max_attempts
+            .insert(test_id.to_string(), max_attempts);
     }
 
     /// Adds JUnit XML content from a batch.
@@ -248,6 +261,14 @@ impl MasterJunitReport {
     /// Called once per test ID per testsuite with the aggregate result
     /// for that ID in that suite.
     fn update_test_outcome(&mut self, test_id: TestId, failed: bool) {
+        // Increment attempt count for the formatted test ID.
+        let formatted = crate::config::format_test_id(
+            &self.test_id_format,
+            &test_id.name,
+            test_id.classname.as_deref(),
+        );
+        *self.test_attempt_counts.entry(formatted).or_insert(0) += 1;
+
         let current = self.test_outcomes.get(&test_id).cloned();
         let new_status = match (current, failed) {
             (None, false) => TestStatus::Passed,
@@ -291,6 +312,23 @@ impl MasterJunitReport {
     /// Returns true if all expected test IDs have passed.
     pub fn all_passed(&self) -> bool {
         self.passed_count() >= self.total_expected
+    }
+
+    /// Returns true when every registered test is resolved:
+    /// either passed/flaky, or has exhausted all allowed attempts.
+    pub fn all_complete(&self) -> bool {
+        if self.test_max_attempts.is_empty() {
+            return false;
+        }
+        self.test_max_attempts.iter().all(|(test_id, &max)| {
+            // Check if test passed/flaky
+            if self.has_test_passed(test_id) {
+                return true;
+            }
+            // Check if attempts exhausted
+            let attempts = self.test_attempt_counts.get(test_id).copied().unwrap_or(0);
+            attempts >= max
+        })
     }
 
     /// Returns true if the test with the given full ID has already passed or is flaky.
@@ -1119,5 +1157,65 @@ mod tests {
         assert_eq!(report.failed_count(), 0);
         // The resolved test ID should be the full pytest nodeid
         assert!(report.has_test_passed("tests/test_foo.py::test_bar"));
+    }
+
+    #[test]
+    fn test_all_complete_all_passed() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="0">
+    <testcase classname="foo" name="test_a" time="0.1" />
+    <testcase classname="foo" name="test_b" time="0.1" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(2, "{name}");
+        report.register_test_retries("test_a", 3);
+        report.register_test_retries("test_b", 3);
+        report.add_junit_xml(xml, &[]).unwrap();
+
+        assert!(report.all_complete()); // all passed, complete even with retries remaining
+    }
+
+    #[test]
+    fn test_all_complete_failed_with_retries_remaining() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="1">
+    <testcase classname="foo" name="test_a" time="0.1" />
+    <testcase classname="foo" name="test_b" time="0.1">
+        <failure message="oops">stack</failure>
+    </testcase>
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(2, "{name}");
+        report.register_test_retries("test_a", 3);
+        report.register_test_retries("test_b", 3);
+        report.add_junit_xml(xml, &[]).unwrap();
+
+        assert!(!report.all_complete()); // test_b failed but has retries remaining
+    }
+
+    #[test]
+    fn test_all_complete_failed_retries_exhausted() {
+        let fail_xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo" name="test_b" time="0.1">
+        <failure message="oops">stack</failure>
+    </testcase>
+</testsuite>"#;
+
+        let pass_xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase classname="foo" name="test_a" time="0.1" />
+</testsuite>"#;
+
+        let mut report = MasterJunitReport::new(2, "{name}");
+        report.register_test_retries("test_a", 1);
+        report.register_test_retries("test_b", 2); // max 2 attempts
+
+        report.add_junit_xml(pass_xml, &[]).unwrap(); // test_a passes
+        report.add_junit_xml(fail_xml, &[]).unwrap(); // test_b fails attempt 1
+        assert!(!report.all_complete()); // test_b has 1 retry left
+
+        report.add_junit_xml(fail_xml, &[]).unwrap(); // test_b fails attempt 2
+        assert!(report.all_complete()); // test_b exhausted, test_a passed
     }
 }

@@ -32,7 +32,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub scheduler: &'a Scheduler<'a>,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
-    pub all_passed: Arc<AtomicBool>,
+    pub all_complete: Arc<AtomicBool>,
     pub cancellation_token: CancellationToken,
     pub sandboxes_for_cleanup: Arc<Mutex<Vec<S>>>,
     pub junit_report: Arc<Mutex<MasterJunitReport>>,
@@ -59,8 +59,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         let batch_idx = cfg.batch_counter.fetch_add(1, Ordering::SeqCst);
 
-        // Early exit if all tests have already passed or fail-fast triggered
-        if cfg.all_passed.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
+        // Early exit if all tests have completed or fail-fast triggered
+        if cfg.all_complete.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
             let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
@@ -206,16 +206,16 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Handle outcome
         match &outcome {
             Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
-                // Early stop: all tests passed
+                // Early stop: all tests completed (passed/flaky or retries exhausted)
                 if let Ok(report) = cfg.junit_report.lock()
-                    && report.all_passed()
-                    && !cfg.all_passed.load(Ordering::SeqCst)
+                    && report.all_complete()
+                    && !cfg.all_complete.load(Ordering::SeqCst)
                 {
                     info!(
-                        "EARLY STOP TRIGGERED: All {} tests have passed after batch {} completed. Cancelling remaining batches.",
+                        "EARLY STOP TRIGGERED: All {} tests have completed after batch {} completed. Cancelling remaining batches.",
                         cfg.total_tests_to_run, batch_idx
                     );
-                    cfg.all_passed.store(true, Ordering::SeqCst);
+                    cfg.all_complete.store(true, Ordering::SeqCst);
                     cfg.cancellation_token.cancel();
                 }
                 // Fail-fast: cancel on first failure
