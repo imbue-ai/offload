@@ -418,7 +418,6 @@ where
                     tracer: self.tracer.clone(),
                     sandbox_index,
                     fail_fast: self.fail_fast,
-                    queue_notify: Arc::clone(&queue_notify),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
