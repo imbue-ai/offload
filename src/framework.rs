@@ -70,8 +70,8 @@ pub struct TestRecord {
     /// Group name this test belongs to (for JUnit testsuite grouping).
     pub group: String,
 
-    /// Whether this test is slow and should run in its own batch.
-    pub is_slow: bool,
+    /// Whether this test should be individually scheduled (one-per-batch).
+    pub schedule_individual: bool,
 }
 
 impl TestRecord {
@@ -89,7 +89,7 @@ impl TestRecord {
             file: None,
             retry_count: 0,
             group: group.into(),
-            is_slow: false,
+            schedule_individual: false,
         }
     }
 
@@ -99,9 +99,9 @@ impl TestRecord {
         self
     }
 
-    /// Marks this test as slow (should run in its own batch).
-    pub fn with_slow(mut self, is_slow: bool) -> Self {
-        self.is_slow = is_slow;
+    /// Marks this test for individual scheduling (one-per-batch).
+    pub fn with_schedule_individual(mut self, schedule_individual: bool) -> Self {
+        self.schedule_individual = schedule_individual;
         self
     }
 
@@ -136,8 +136,8 @@ impl<'a> TestInstance<'a> {
         &self.record.group
     }
 
-    pub fn is_slow(&self) -> bool {
-        self.record.is_slow
+    pub fn schedule_individual(&self) -> bool {
+        self.record.schedule_individual
     }
 }
 

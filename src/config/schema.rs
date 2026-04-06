@@ -325,7 +325,7 @@ pub struct GroupConfig {
     #[serde(default)]
     pub filters: String,
 
-    /// Whether tests in this group are slow and should run one-per-batch.
+    /// Whether tests in this group should be individually scheduled (one-per-batch).
     ///
     /// When true, the scheduler places each test from this group into its
     /// own batch (batch size 1), preventing them from being combined with
@@ -333,7 +333,7 @@ pub struct GroupConfig {
     ///
     /// Default: false
     #[serde(default)]
-    pub is_slow: bool,
+    pub schedule_individual: bool,
 }
 
 /// Test framework configuration specifying how tests are found and run.

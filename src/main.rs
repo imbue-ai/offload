@@ -231,7 +231,7 @@ async fn discover_all_tests(
             .into_iter()
             .map(|t| {
                 t.with_retry_count(group_cfg.retry_count)
-                    .with_slow(group_cfg.is_slow)
+                    .with_schedule_individual(group_cfg.schedule_individual)
             })
             .collect();
 

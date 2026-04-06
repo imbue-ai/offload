@@ -238,7 +238,8 @@ where
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
-        let (slow_tests, normal_tests): (Vec<_>, Vec<_>) = tests.iter().partition(|t| t.is_slow);
+        let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
+            tests.iter().partition(|t| t.schedule_individual);
 
         // Normal tests: flat_map as before
         let normal_instances: Vec<TestInstance<'_>> = normal_tests
@@ -249,18 +250,18 @@ where
             })
             .collect();
 
-        // Slow tests: round-robin interleave instances across unique tests
+        // Individually-scheduled tests: round-robin interleave instances across unique tests
         // Produces [A, B, C, A, B, C, A] instead of [A, A, A, B, B, C]
         // so the scheduler sees them already interleaved and preserves order.
-        let slow_instances: Vec<TestInstance<'_>> = {
-            let max_count = slow_tests
+        let individual_instances: Vec<TestInstance<'_>> = {
+            let max_count = individual_tests
                 .iter()
                 .map(|t| t.retry_count + 1)
                 .max()
                 .unwrap_or(0);
             let mut instances = Vec::new();
             for round in 0..max_count {
-                for test in &slow_tests {
+                for test in &individual_tests {
                     if round < test.retry_count + 1 {
                         instances.push(test.test());
                     }
@@ -269,8 +270,8 @@ where
             instances
         };
 
-        // Slow instances come first so the scheduler sees them first
-        let mut tests_to_run = slow_instances;
+        // Individually-scheduled instances come first so the scheduler sees them first
+        let mut tests_to_run = individual_instances;
         tests_to_run.extend(normal_instances);
 
         // Schedule tests using LPT (Longest Processing Time First) if we have durations,
