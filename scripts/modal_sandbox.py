@@ -4,6 +4,7 @@
 # dependencies = [
 #     "modal==1.4.1",
 #     "click>=8.0",
+#     "dockerfile-parse>=2.0.0",
 # ]
 # ///
 """Modal sandbox management for Offload.
@@ -17,11 +18,14 @@ import logging
 import os
 import sys
 import tarfile
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import click
 import modal
+from dockerfile_parse import DockerfileParser
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -148,6 +152,100 @@ def clear_image_cache() -> None:
         logger.info("Cleared cached image from %s", CACHE_FILE)
 
 
+_LAYER_BOUNDARY_INSTRUCTIONS = frozenset({"RUN", "COPY", "ADD"})
+
+
+def _build_image_from_dockerfile(
+    dockerfile_path: str,
+    context_dir: str = ".",
+) -> modal.Image:
+    """Parse a Dockerfile and build a Modal image with per-layer caching.
+
+    Instead of building the entire Dockerfile as a single monolithic image via
+    modal.Image.from_dockerfile(), this function parses the Dockerfile into its
+    constituent instructions and applies them one batch at a time using
+    modal.Image.dockerfile_commands(). Each batch ends at a RUN, COPY, or ADD
+    instruction (or at end-of-file), so that Modal caches each layer
+    independently. Non-filesystem instructions (ENV, ARG, WORKDIR, etc.) are
+    batched together with the next layer-boundary instruction to reduce API
+    round-trips without sacrificing cacheability.
+
+    This approach prevents Modal's image builder from OOMing during the
+    post-build save/materialize phase for large Dockerfiles, since each layer
+    is materialized separately rather than as one giant blob.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpfile = Path(tmpdir) / "Dockerfile"
+        with open(dockerfile_path) as f:
+            dockerfile_contents = f.read()
+        tmpfile.write_text(dockerfile_contents)
+
+        dfp = DockerfileParser(str(tmpfile))
+
+        if dfp.is_multistage:
+            logger.warning(
+                "Multistage Dockerfiles are not supported for per-layer "
+                "decomposition; falling back to monolithic from_dockerfile()"
+            )
+            return modal.Image.from_dockerfile(dockerfile_path, context_dir=context_dir)
+
+        # Find the last FROM instruction
+        last_from_index = None
+        for i, instr in enumerate(dfp.structure):
+            if instr["instruction"] == "FROM":
+                last_from_index = i
+
+        if last_from_index is None:
+            logger.error("Dockerfile must contain a FROM instruction")
+            sys.exit(1)
+
+        base_image_ref = dfp.baseimage
+        logger.info("Base image: %s", base_image_ref)
+        image = modal.Image.from_registry(base_image_ref)
+
+        instructions = dfp.structure[last_from_index + 1 :]
+
+        # Batch instructions: accumulate until we hit a layer-boundary
+        # instruction (RUN, COPY, ADD) or end-of-file, then flush as a single
+        # dockerfile_commands() call. This reduces Modal API round-trips while
+        # preserving per-layer caching at meaningful boundaries.
+        batch: list[str] = []
+        layer_count = 0
+        for instr in instructions:
+            if instr["instruction"] == "COMMENT":
+                continue
+            batch.append(instr["content"])
+            if instr["instruction"] in _LAYER_BOUNDARY_INSTRUCTIONS:
+                logger.info(
+                    "Building layer %d (%d instruction(s), ending with %s)...",
+                    layer_count,
+                    len(batch),
+                    instr["instruction"],
+                )
+                image = image.dockerfile_commands(
+                    batch,
+                    context_dir=context_dir,
+                )
+                batch = []
+                layer_count += 1
+
+        # Flush any trailing non-boundary instructions (e.g. ENV, EXPOSE, CMD)
+        if batch:
+            logger.info(
+                "Building final layer %d (%d trailing instruction(s))...",
+                layer_count,
+                len(batch),
+            )
+            image = image.dockerfile_commands(
+                batch,
+                context_dir=context_dir,
+            )
+            layer_count += 1
+
+        logger.info("Dockerfile decomposed into %d cached layers", layer_count)
+        return image
+
+
 def _build_fresh_base_image(
     app, dockerfile_path: str | None
 ) -> tuple[modal.Image, str]:
@@ -157,7 +255,7 @@ def _build_fresh_base_image(
         base_img = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
     else:
         logger.info("Building base image from %s with context_dir=.", dockerfile_path)
-        base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+        base_img = _build_image_from_dockerfile(dockerfile_path, context_dir=".")
 
     base_img.build(app)
     # Materialize to get base image_id for caching
@@ -293,7 +391,12 @@ def prepare(
         # Step 3: Build final image, catching cache invalidation errors
         try:
             image_id = _build_final_image(
-                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
+                app,
+                base_image,
+                base_image_id,
+                include_cwd,
+                copy_dirs,
+                ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
             )
         except Exception as e:
@@ -304,7 +407,12 @@ def prepare(
             clear_image_cache()
             base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
             image_id = _build_final_image(
-                app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
+                app,
+                base_image,
+                base_image_id,
+                include_cwd,
+                copy_dirs,
+                ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
             )
 
@@ -381,8 +489,12 @@ def exec_command(sandbox_id: str, command: str):
     process = sandbox.exec("bash", "-c", command)
 
     # Stream stdout and stderr concurrently using threads
-    stdout_thread = threading.Thread(target=stream_output, args=(process.stdout, sys.stdout))
-    stderr_thread = threading.Thread(target=stream_output, args=(process.stderr, sys.stderr))
+    stdout_thread = threading.Thread(
+        target=stream_output, args=(process.stdout, sys.stdout)
+    )
+    stderr_thread = threading.Thread(
+        target=stream_output, args=(process.stderr, sys.stderr)
+    )
     stdout_thread.start()
     stderr_thread.start()
     stdout_thread.join()
@@ -515,7 +627,11 @@ def create_from_image(
         if experimental_options is not None:
             exp_opts = json.loads(experimental_options)
             create_kwargs["experimental_options"] = exp_opts
-            logger.debug("[%.2fs]   experimental_options: %s", time.time() - t0, experimental_options)
+            logger.debug(
+                "[%.2fs]   experimental_options: %s",
+                time.time() - t0,
+                experimental_options,
+            )
         sandbox = modal.Sandbox.create(**create_kwargs)
     except Exception as e:
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
