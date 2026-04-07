@@ -163,7 +163,7 @@ impl MasterJunitReport {
                         let top3: Vec<String> = distances
                             .iter()
                             .take(3)
-                            .map(|(id, d)| format!("  '{}' (distance {})", id, d))
+                            .map(|(id, _)| format!("  '{}'", id))
                             .collect();
                         warn!(
                             "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
