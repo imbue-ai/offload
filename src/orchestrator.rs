@@ -343,9 +343,12 @@ where
 
         // Shared JUnit report for accumulating results and early stopping
         let total_tests_to_run = tests.len();
+        let known_test_ids: std::collections::HashSet<String> =
+            tests.iter().map(|t| t.id.clone()).collect();
         let junit_report = Arc::new(std::sync::Mutex::new(MasterJunitReport::new(
             total_tests_to_run,
             self.config.framework.test_id_format(),
+            known_test_ids,
         )));
         let all_passed = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
