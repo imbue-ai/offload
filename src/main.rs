@@ -229,7 +229,10 @@ async fn discover_all_tests(
         // Tag tests with group retry count
         let group_tests: Vec<TestRecord> = tests
             .into_iter()
-            .map(|t| t.with_retry_count(group_cfg.retry_count))
+            .map(|t| {
+                t.with_retry_count(group_cfg.retry_count)
+                    .with_schedule_individual(group_cfg.schedule_individual)
+            })
             .collect();
 
         all_tests.extend(group_tests);
@@ -786,6 +789,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             GroupConfig {
                 retry_count: 0,
                 filters: String::new(),
+                ..Default::default()
             },
         )]),
         report: ReportConfig::default(),

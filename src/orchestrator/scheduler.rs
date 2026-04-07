@@ -128,8 +128,20 @@ impl Scheduler {
             return Vec::new();
         }
 
+        // Partition: individually-scheduled tests get their own batches, others go through LPT
+        let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
+            tests.iter().copied().partition(|t| t.schedule_individual());
+
+        // Build individual batches (one test per batch)
+        let individual_batches: Vec<Vec<TestInstance<'a>>> =
+            individual_tests.into_iter().map(|t| vec![t]).collect();
+
+        if normal_tests.is_empty() {
+            return individual_batches;
+        }
+
         // Look up durations for each test, sorted longest-first
-        let mut tests_with_duration: Vec<_> = tests
+        let mut tests_with_duration: Vec<_> = normal_tests
             .iter()
             .map(|t| {
                 let duration = match durations.get(t.id()) {
@@ -154,7 +166,7 @@ impl Scheduler {
         tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Initialize batches
-        let num_batches = self.max_parallel.min(tests.len());
+        let num_batches = self.max_parallel.min(normal_tests.len());
         let mut batches: Vec<Batch<'a>> = (0..num_batches).map(|_| Batch::new()).collect();
 
         // LPT assignment: assign each test to the lightest eligible batch
@@ -179,11 +191,15 @@ impl Scheduler {
         // Sort by load descending (heaviest first) for optimal Modal scheduling
         batches.sort_by(|a, b| b.load.cmp(&a.load));
 
-        batches
-            .into_iter()
-            .filter(|b| !b.is_empty())
-            .map(|b| b.tests)
-            .collect()
+        // Prepend individually-scheduled batches before LPT batches
+        let mut result = individual_batches;
+        result.extend(
+            batches
+                .into_iter()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.tests),
+        );
+        result
     }
 }
 
@@ -518,5 +534,93 @@ mod tests {
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 100);
+    }
+
+    #[test]
+    fn test_schedule_individual_tests_get_own_batch() {
+        let scheduler = Scheduler::new(2);
+        let mut records = [
+            TestRecord::new("fast_1", "fast-group"),
+            TestRecord::new("fast_2", "fast-group"),
+            TestRecord::new("slow_1", "slow-group"),
+            TestRecord::new("slow_2", "slow-group"),
+        ];
+        records[2].schedule_individual = true;
+        records[3].schedule_individual = true;
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Each individually-scheduled test must be alone in its batch
+        for batch in &batches {
+            let has_individual = batch.iter().any(|t| t.schedule_individual());
+            if has_individual {
+                assert_eq!(
+                    batch.len(),
+                    1,
+                    "Individually-scheduled test must be alone in its batch"
+                );
+            }
+        }
+        // All 4 tests should be scheduled
+        let total: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn test_schedule_individual_tests_preserves_interleaved_order() {
+        let scheduler = Scheduler::new(4);
+        // Simulate already-interleaved individual instances (as orchestrator would produce)
+        let mut records = vec![
+            TestRecord::new("slow_a", "slow-group"),
+            TestRecord::new("slow_b", "slow-group"),
+            TestRecord::new("slow_a", "slow-group"),
+            TestRecord::new("slow_b", "slow-group"),
+            TestRecord::new("slow_a", "slow-group"),
+        ];
+        for r in &mut records {
+            r.schedule_individual = true;
+        }
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Each individually-scheduled test in its own batch, order preserved
+        let ids: Vec<&str> = batches
+            .iter()
+            .map(|b| {
+                assert_eq!(b.len(), 1);
+                b[0].id()
+            })
+            .collect();
+        assert_eq!(ids, vec!["slow_a", "slow_b", "slow_a", "slow_b", "slow_a"]);
+    }
+
+    #[test]
+    fn test_schedule_individual_tests_at_front() {
+        let scheduler = Scheduler::new(4);
+        let mut records = [
+            TestRecord::new("fast_1", "fast-group"),
+            TestRecord::new("slow_1", "slow-group"),
+            TestRecord::new("fast_2", "fast-group"),
+        ];
+        records[1].schedule_individual = true;
+
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+        let durations = HashMap::new();
+        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+
+        // Individually-scheduled batches come first
+        assert!(
+            batches[0].iter().any(|t| t.schedule_individual()),
+            "First batch should contain individually-scheduled test"
+        );
+        assert_eq!(batches[0].len(), 1);
+
+        // Total tests scheduled
+        let total: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(total, 3);
     }
 }

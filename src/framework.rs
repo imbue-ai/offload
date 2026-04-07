@@ -69,6 +69,9 @@ pub struct TestRecord {
 
     /// Group name this test belongs to (for JUnit testsuite grouping).
     pub group: String,
+
+    /// Whether this test should be individually scheduled (one-per-batch).
+    pub schedule_individual: bool,
 }
 
 impl TestRecord {
@@ -86,12 +89,19 @@ impl TestRecord {
             file: None,
             retry_count: 0,
             group: group.into(),
+            schedule_individual: false,
         }
     }
 
     /// Sets the retry count for this test.
     pub fn with_retry_count(mut self, count: usize) -> Self {
         self.retry_count = count;
+        self
+    }
+
+    /// Marks this test for individual scheduling (one-per-batch).
+    pub fn with_schedule_individual(mut self, schedule_individual: bool) -> Self {
+        self.schedule_individual = schedule_individual;
         self
     }
 
@@ -124,6 +134,10 @@ impl<'a> TestInstance<'a> {
 
     pub fn group(&self) -> &str {
         &self.record.group
+    }
+
+    pub fn schedule_individual(&self) -> bool {
+        self.record.schedule_individual
     }
 }
 
