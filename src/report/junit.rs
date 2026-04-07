@@ -166,7 +166,7 @@ impl MasterJunitReport {
                             .map(|(id, d)| format!("  '{}' (distance {})", id, d))
                             .collect();
                         warn!(
-                            "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly and tests are run from the project root.",
+                            "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
                             formatted_id,
                             top3.join("\n")
                         );
