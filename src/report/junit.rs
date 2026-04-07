@@ -153,7 +153,10 @@ impl MasterJunitReport {
                             .known_test_ids
                             .iter()
                             .map(|known| {
-                                (known.as_str(), levenshtein_distance(&formatted_id, known))
+                                (
+                                    known.as_str(),
+                                    edit_distance::edit_distance(&formatted_id, known),
+                                )
                             })
                             .collect();
                         distances.sort_by_key(|&(_, d)| d);
@@ -545,33 +548,6 @@ fn write_failure_or_error(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, failu
     let _ = writer.write_event(Event::Start(elem));
     let _ = writer.write_event(Event::Text(BytesText::new(&failure.content)));
     let _ = writer.write_event(Event::End(BytesEnd::new(tag)));
-}
-
-/// Computes the Levenshtein edit distance between two strings.
-fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let m = a_chars.len();
-    let n = b_chars.len();
-
-    // Use a single-row approach for space efficiency
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0; n + 1];
-
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-
-    prev[n]
 }
 
 /// Thread-safe handle to a MasterJunitReport.
@@ -1032,11 +1008,11 @@ mod tests {
 
     #[test]
     fn test_levenshtein_distance_basic() {
-        assert_eq!(levenshtein_distance("", ""), 0);
-        assert_eq!(levenshtein_distance("abc", "abc"), 0);
-        assert_eq!(levenshtein_distance("abc", ""), 3);
-        assert_eq!(levenshtein_distance("", "abc"), 3);
-        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
-        assert_eq!(levenshtein_distance("test_foo", "test_bar"), 3);
+        assert_eq!(edit_distance::edit_distance("", ""), 0);
+        assert_eq!(edit_distance::edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance::edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance::edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance::edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance::edit_distance("test_foo", "test_bar"), 3);
     }
 }

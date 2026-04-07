@@ -62,6 +62,7 @@ console = "0.15"
 backon = "1"
 
 # Utilities
+edit-distance = "2"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 shell-words = "1"
