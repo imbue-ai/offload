@@ -149,21 +149,14 @@ impl MasterJunitReport {
                     if !self.known_test_ids.contains(&formatted_id)
                         && self.warned_unknown_ids.insert(formatted_id.clone())
                     {
-                        let mut distances: Vec<(&str, usize)> = self
-                            .known_test_ids
-                            .iter()
-                            .map(|known| {
-                                (
-                                    known.as_str(),
-                                    edit_distance::edit_distance(&formatted_id, known),
-                                )
-                            })
-                            .collect();
-                        distances.sort_by_key(|&(_, d)| d);
-                        let top3: Vec<String> = distances
+                        let mut candidates: Vec<&String> = self.known_test_ids.iter().collect();
+                        candidates.sort_by_cached_key(|known| {
+                            edit_distance::edit_distance(&formatted_id, known)
+                        });
+                        let top3: Vec<String> = candidates
                             .iter()
                             .take(3)
-                            .map(|(id, _)| format!("  '{}'", id))
+                            .map(|id| format!("  '{}'", id))
                             .collect();
                         warn!(
                             "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
