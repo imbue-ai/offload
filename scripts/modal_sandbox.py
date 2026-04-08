@@ -559,6 +559,13 @@ def run(command: str):
     help="CPU cores per sandbox",
 )
 @click.option(
+    "--memory-gb",
+    "memory_gb",
+    type=float,
+    default=None,
+    help="Memory in GB per sandbox",
+)
+@click.option(
     "--experimental-options",
     "experimental_options",
     default=None,
@@ -569,6 +576,7 @@ def create_from_image(
     copy_dirs: tuple[str, ...] = (),
     env_vars: tuple[str, ...] = (),
     cpu: float | None = None,
+    memory_gb: float | None = None,
     experimental_options: str | None = None,
 ):
     """Create sandbox using existing image_id.
@@ -624,6 +632,8 @@ def create_from_image(
         )
         if cpu is not None:
             create_kwargs["cpu"] = cpu
+        if memory_gb is not None:
+            create_kwargs["memory"] = int(memory_gb * 1024)
         if experimental_options is not None:
             exp_opts = json.loads(experimental_options)
             create_kwargs["experimental_options"] = exp_opts
