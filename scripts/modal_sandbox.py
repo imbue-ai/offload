@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11,<3.12"
 # dependencies = [
 #     "modal==1.4.1",
 #     "click>=8.0",
@@ -12,11 +12,14 @@
 Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 """
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import io
 import json
 import logging
 import os
-import sys
 import tarfile
 import tempfile
 import threading
