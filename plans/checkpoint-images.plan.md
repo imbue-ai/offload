@@ -7,13 +7,14 @@ Implementation plan for the checkpoint images spec (`checkpoint-images.spec.md`)
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Git operations | Shell out to `git` CLI | No `git2` crate (heavy native dep); works with jj colocated repos; simple operations only |
-| Identity hashing | `git hash-object --stdin` (SHA-1) | Already available; avoids new `sha2` crate; sufficient for change detection |
-| Notes content | Single-line JSON | Need both `image_id` and `identity_hash` per note |
-| `.offload-image-cache` | Keep as-is in `modal_sandbox.py` | Caches Dockerfile base image locally; different concern from checkpoint notes |
+| Build inputs hashing | `git hash-object --stdin` (SHA-1) | Already available; avoids new `sha2` crate; sufficient for change detection |
+| Notes content | JSON keyed by TOML config path | Prevents collision when multiple configs target different Dockerfiles |
+| `.offload-image-cache` | Remove from `modal_sandbox.py` | Git notes are the sole caching mechanism; `.offload-image-cache` is superseded |
+| Checkpoint detection | `git diff --name-only <parent> <commit>` | Pure function of commit content; no manual step required |
 
 ## Commit Sequence
 
-Eight atomic commits. Each must pass `cargo fmt --check`, `cargo clippy`, `cargo nextest run`.
+Seven atomic commits. Each must pass `cargo fmt --check`, `cargo clippy`, `cargo nextest run`.
 
 ---
 
@@ -26,7 +27,7 @@ Add `CheckpointConfig` struct:
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CheckpointConfig {
     #[serde(default)]
-    pub image_identity: Vec<String>,
+    pub build_inputs: Vec<String>,
 }
 ```
 
@@ -36,7 +37,7 @@ Add to `Config`:
 pub checkpoint: Option<CheckpointConfig>,
 ```
 
-Validation (in `config.rs`): if `checkpoint` is `Some`, `image_identity` must be non-empty; provider must not be `Local`.
+Validation (in `config.rs`): if `checkpoint` is `Some`, `build_inputs` must be non-empty; provider must not be `Local`.
 
 Tests:
 - `test_checkpoint_config_round_trip`
@@ -55,70 +56,83 @@ Public API:
 pub const NOTES_REF: &str = "refs/notes/offload-images";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointNote {
+pub struct ImageEntry {
     pub image_id: String,
-    pub identity_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_inputs_hash: Option<String>,
 }
+
+/// A note is a JSON object keyed by TOML config file path.
+pub type NoteContents = HashMap<String, ImageEntry>;
 
 pub fn head_sha() -> Result<String>;
 pub fn repo_root() -> Result<PathBuf>;
-pub fn compute_identity_hash(repo_root: &Path, files: &[String]) -> Result<String>;
-pub fn read_note(commit_sha: &str) -> Result<Option<CheckpointNote>>;
-pub fn write_note(commit_sha: &str, note: &CheckpointNote) -> Result<()>;
-pub fn remove_note(commit_sha: &str) -> Result<()>;
+pub fn compute_build_inputs_hash(repo_root: &Path, files: &[String]) -> Result<String>;
+pub fn read_note(commit_sha: &str) -> Result<Option<NoteContents>>;
+pub fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>;
 pub fn push_notes(remote: &str) -> Result<()>;
 pub fn fetch_notes(remote: &str) -> Result<()>;
 pub fn configure_notes_fetch(remote: &str) -> Result<()>;
-pub fn find_nearest_checkpoint(max_depth: usize) -> Result<Option<(String, CheckpointNote)>>;
-pub fn is_working_tree_clean() -> Result<bool>;
+pub fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<bool>;
+pub fn ancestors(max_depth: usize) -> Result<Vec<String>>;
 ```
 
 Implementation notes:
-- `compute_identity_hash`: sort files lexicographically; for each, prepend `FILE:<path>:<len>\n` header; concatenate all; pipe to `git hash-object --stdin`.
-- `find_nearest_checkpoint`: run `git notes --ref=refs/notes/offload-images list` to get all annotated SHAs, then `git log --format=%H -n <max_depth>` and intersect. Avoids O(n) note lookups.
+- `compute_build_inputs_hash`: sort files lexicographically; for each, prepend `FILE:<path>:<len>\n` header; concatenate all; pipe to `git hash-object --stdin`.
+- `commit_touches_paths`: `git diff --name-only <sha>^..<sha>`, intersect with `paths`.
+- `ancestors`: `git log --format=%H -n <max_depth>`.
+- `read_note` / `write_note`: read/write full JSON object. `write_note` does a read-modify-write to merge entries (so two configs don't clobber each other). Concurrency policy is last write wins: `git notes add -f` overwrites unconditionally, and `push_notes` uses force-push. Redundant rebuilds from lost writes are acceptable.
 - `configure_notes_fetch`: check `git config --get-all remote.<remote>.fetch` for existing refspec; add `+refs/notes/offload-images:refs/notes/offload-images` if absent.
-- `is_working_tree_clean`: `git status --porcelain` and check output is empty.
 
 Tests (unit):
-- `test_checkpoint_note_json_round_trip`
-- `test_identity_hash_deterministic` (write temp files, call twice, assert equal)
-- `test_identity_hash_content_sensitive` (change a file, assert different hash)
+- `test_image_entry_json_round_trip`
+- `test_build_inputs_hash_deterministic` (write temp files, call twice, assert equal)
+- `test_build_inputs_hash_content_sensitive` (change a file, assert different hash)
 
 Tests (integration, create temp git repos):
 - `test_write_and_read_note`
-- `test_find_nearest_checkpoint_with_note`
-- `test_find_nearest_checkpoint_no_notes`
+- `test_write_note_merges_configs`
+- `test_commit_touches_paths`
 - `test_configure_notes_fetch_idempotent`
-- `test_remove_note`
 
 ---
 
-### Commit 3: `offload checkpoint` CLI subcommand
+### Commit 3: Checkpoint resolution logic -- `src/checkpoint.rs`
 
-**Files:** `src/main.rs`
+**Files:** `src/checkpoint.rs` (new), `src/lib.rs`
 
-Add to `Commands` enum:
+High-level checkpoint resolution, called from `offload run`. Depends on `src/git.rs`.
+
 ```rust
-Checkpoint {
-    #[arg(long)]
-    no_cache: bool,
-    #[arg(long)]
-    delete: bool,
-    #[arg(long, default_value = "origin")]
-    remote: String,
-},
+pub struct ResolvedCheckpoint {
+    pub checkpoint_sha: String,
+    pub image_id: String,
+    pub sandbox_project_root: String,
+}
+
+/// Find the nearest checkpoint ancestor, returning its SHA and cached image
+/// (building and caching if needed).
+pub async fn resolve_checkpoint(
+    config_path: &str,
+    checkpoint_cfg: &CheckpointConfig,
+    provider: &mut impl BuildableProvider,  // trait for "can build a full image"
+    max_depth: usize,
+) -> Result<Option<ResolvedCheckpoint>>;
+
+/// For non-checkpoint mode: check if HEAD has a cached image, build if not.
+pub async fn resolve_cached_image(
+    config_path: &str,
+    provider: &mut impl BuildableProvider,
+) -> Result<Option<String>>;  // image_id
 ```
 
-Implement `checkpoint_handler()`:
-1. Load config, require `[checkpoint]` section.
-2. If `--delete`: `git::remove_note(&git::head_sha()?)`, exit.
-3. Verify `git::is_working_tree_clean()`.
-4. `git::fetch_notes(remote)` (best-effort).
-5. Get HEAD SHA, compute identity hash.
-6. Build checkpoint image via provider `prepare()`.
-7. `git::write_note(&sha, &note)`.
-8. `git::configure_notes_fetch(remote)` (idempotent).
-9. `git::push_notes(remote)`.
+Logic for `resolve_checkpoint`:
+1. `git::ancestors(max_depth)` to get commit SHAs.
+2. For each SHA, `git::commit_touches_paths(sha, &cfg.build_inputs)` to find the nearest checkpoint.
+3. If found: `git::read_note(sha)` and look up config key.
+4. If note has image: verify build inputs hash, return.
+5. If note missing or no entry for this config: build image, write note (read-modify-write), push, return.
+6. If no checkpoint found: return `None`.
 
 ---
 
@@ -143,7 +157,7 @@ Modify `build_prepare_command()`:
 - When `self.checkpoint` is `Some`: append `--from-checkpoint=<image_id> --checkpoint-sha=<sha> --sandbox-project-root=<root>`. Omit `--include-cwd`, `--copy-dir`, `--sandbox-init-cmd`.
 - When `None`: existing behavior unchanged.
 
-Apply same pattern to `DefaultProvider` (append flags to `prepare_command`).
+Apply same pattern to `DefaultProvider`.
 
 Tests:
 - `test_prepare_command_with_checkpoint`
@@ -151,30 +165,25 @@ Tests:
 
 ---
 
-### Commit 5: Modified `offload run` flow
+### Commit 5: Integrate into `offload run`
 
 **Files:** `src/main.rs`
 
 In `run_tests()`, after loading config and before provider dispatch:
 
-```
-if config.checkpoint is Some:
-    fetch_notes (best-effort)
-    find_nearest_checkpoint(100)
-    if found:
-        compute current identity hash
-        if hashes match:
-            set checkpoint_info = Some(...)
-        else:
-            warn "identity files changed"
-    else:
-        info "no checkpoint found"
-```
+**With `[checkpoint]`:**
+1. Fetch notes (best-effort).
+2. `checkpoint::resolve_checkpoint(config_path, checkpoint_cfg, ...)`.
+3. If resolved: create provider with `.with_checkpoint(ctx)`.
+4. If not resolved: full build (fall through to existing path).
 
-In the Modal/Default provider creation blocks, if `checkpoint_info` is `Some`:
-```
-provider = provider.with_checkpoint(CheckpointContext { ... })
-```
+**Without `[checkpoint]`:**
+1. Fetch notes (best-effort).
+2. `checkpoint::resolve_cached_image(config_path, ...)`.
+3. If cached: skip `prepare()`, use cached image ID directly.
+4. If not cached: normal `prepare()`, then write note and push.
+
+In both cases, `--no-cache` bypasses all note interactions.
 
 ---
 
@@ -182,7 +191,15 @@ provider = provider.with_checkpoint(CheckpointContext { ... })
 
 **Files:** `scripts/modal_sandbox.py`
 
-Add options to `prepare` command:
+**Remove old caching mechanism:**
+- Delete `CACHE_FILE = ".offload-image-cache"`
+- Delete `read_cached_image_id()`, `write_cached_image_id()`, `clear_image_cache()`
+- Remove `--cached` flag from `prepare` command
+- Remove all call sites that read/write/clear the cache file
+
+Image caching is now handled entirely by the Rust side via git notes. The Python script is stateless: it builds images and returns IDs.
+
+**Add checkpoint options to `prepare` command:**
 - `--from-checkpoint` (image ID string)
 - `--checkpoint-sha` (git SHA string)
 - `--sandbox-project-root` (default `/app`)
@@ -196,7 +213,7 @@ When `--from-checkpoint` is set:
    - `checkpoint_img.add_local_file(diff_path, "/tmp/offload.patch")`
    - `.run_commands(f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch")`
    - Build, materialize, return new image ID
-5. On image-expired exception: warn, clear, fall back to full build
+5. On image-expired exception: warn, fall back to full build
 
 New helpers:
 - `_generate_git_diff(checkpoint_sha: str) -> str | None`
@@ -204,20 +221,14 @@ New helpers:
 
 ---
 
-### Commit 7: Agent skills updates
+### Commit 7: Agent skills updates + cleanup
 
 **Files:** `skills/offload/SKILL.md`, `skills/offload-onboard/SKILL.md`
 
-- Add checkpoint section to offload skill (when to checkpoint, CLI reference)
+- Add checkpoint section to offload skill
 - Add optional checkpoint setup step to onboarding skill
 - Update troubleshooting tables
-
----
-
-### Commit 8: Integration tests + cleanup
-
-- Manual verification against Modal
-- Remove the old `#checkpoint-images.md#` draft plan file
+- Remove old `#checkpoint-images.md#` draft
 
 ## Verification Checklist
 
@@ -227,13 +238,15 @@ Automated (every commit):
 - [ ] `cargo nextest run`
 
 Manual (after all commits, requires Modal credentials):
-- [ ] `offload checkpoint` creates note on HEAD (`git notes --ref=refs/notes/offload-images show HEAD`)
-- [ ] `offload run` with checkpoint uses thin diff (logs show `[checkpoint] Using checkpoint from ...`)
-- [ ] `offload run --no-cache` ignores checkpoint
-- [ ] Edit a file in `image_identity` → `offload run` warns and falls back
-- [ ] `offload checkpoint --delete` removes note
-- [ ] No source changes since checkpoint → checkpoint image used directly
-- [ ] Note pushed to remote (`git ls-remote origin refs/notes/offload-images`)
+- [ ] First `offload run` against a commit: builds image, writes note, pushes
+- [ ] Second `offload run` against same commit: uses cached image from note
+- [ ] With `[checkpoint]`: only checkpoint commits trigger full rebuild
+- [ ] Non-checkpoint commits after a checkpoint: thin diff applied
+- [ ] `offload run --no-cache`: full build, no note interaction
+- [ ] Cached image expired: warns, rebuilds, updates note
+- [ ] Two different TOML configs: separate entries in same note, no collision
+- [ ] Note visible: `git notes --ref=refs/notes/offload-images show HEAD`
+- [ ] Note pushed: `git ls-remote origin refs/notes/offload-images`
 
 ## Critical Files
 
@@ -242,10 +255,11 @@ Manual (after all commits, requires Modal credentials):
 | `src/config/schema.rs` | Add `CheckpointConfig`, wire into `Config` |
 | `src/config.rs` | Validation for checkpoint config |
 | `src/git.rs` | **New** -- all git notes operations |
-| `src/lib.rs` | Register `git` module |
-| `src/main.rs` | `Checkpoint` subcommand, checkpoint resolution in `run_tests()` |
-| `src/provider/modal.rs` | `CheckpointContext`, `with_checkpoint()`, modified `build_prepare_command()` |
+| `src/checkpoint.rs` | **New** -- checkpoint resolution logic |
+| `src/lib.rs` | Register `git` and `checkpoint` modules |
+| `src/main.rs` | Checkpoint/cache resolution in `run_tests()` |
+| `src/provider/modal.rs` | `CheckpointContext`, `with_checkpoint()`, modified `build_prepare_command()`, remove `--cached` flag |
 | `src/provider/default.rs` | Same checkpoint pattern |
-| `scripts/modal_sandbox.py` | `--from-checkpoint` / `--checkpoint-sha` / `--sandbox-project-root` |
+| `scripts/modal_sandbox.py` | Remove `--cached` + cache file functions; add `--from-checkpoint` / `--checkpoint-sha` / `--sandbox-project-root` |
 | `skills/offload/SKILL.md` | Checkpoint documentation |
 | `skills/offload-onboard/SKILL.md` | Optional checkpoint step |

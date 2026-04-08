@@ -7,34 +7,54 @@ It supersedes the earlier draft in `#checkpoint-images.md#`.
 
 Modal image builds are slow. Every `offload run` rebuilds: base image + source overlay + dependency install. The sculptor and mngr repos work around this with manual "keyframe" systems using committed files (`.offload-base-commit`, `.offload-image-cache`). This is clunky: the files require their own commits and are easy to forget to update.
 
-This feature builds the checkpoint pattern into Offload as a first-class capability, using git notes instead of committed files for metadata storage.
+This feature builds checkpoints into Offload as a first-class capability, using git notes instead of committed files for metadata storage.
 
 ## Goals
 
 1. Make image selection/building for sandboxed test runs Just Work for users.
 2. Avoid rebuilding expensive dependency/download layers on every commit.
-3. Keep a single source of truth for commit → Modal image mapping.
+3. Keep a single source of truth for commit → image mapping.
 4. Store metadata without mutating commit SHAs.
 5. Support both Git and jj users with the same backend mechanism.
 6. Keep the system easy to bootstrap via `offload init`.
 
 ## Non-Goals
 
-- Automatically creating checkpoint images (user must explicitly run `offload checkpoint`).
 - Automatically copying metadata across rebases/amends (new commits get their own mapping).
 - Replacing Modal's internal Dockerfile layer caching (that remains as-is).
 
+## Definitions
+
+**Checkpoint**: A commit whose diff (relative to its parent) modifies any file in the `build_inputs` set. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
+
+**Checkpoint image**: A full image built from a checkpoint commit (Dockerfile base + source checkout + dependency install + sandbox_init_cmd). Expensive to build. Cached in git notes.
+
+**Cached offload image**: When there is no `[checkpoint]` section in the config, offload builds and caches a regular (non-checkpoint) image for each commit. Also stored in git notes.
+
+**Build inputs hash**: A content fingerprint of the files listed in `build_inputs`. Used to determine whether a cached checkpoint image is still valid for the current state of those files.
+
 ## Two-Image Model
+
+When `[checkpoint]` is configured:
 
 ```
 Checkpoint image (rebuilt infrequently):
   Dockerfile base + source checkout + dependency install + sandbox_init_cmd
+  Built from a checkpoint commit. Cached in git notes on that commit.
 
 Current image (rebuilt each run):
   Checkpoint image + thin git diff of changes since checkpoint
 ```
 
-When no checkpoint exists, existing single-image behavior is preserved unchanged.
+When `[checkpoint]` is absent:
+
+```
+Cached offload image (one per commit):
+  Dockerfile base + source + sandbox_init_cmd
+  Cached in git notes on the commit itself.
+```
+
+In both cases, git notes are the storage mechanism. The first run against a commit that lacks a cached image builds and caches it automatically. There is no manual "create checkpoint" step.
 
 ## Configuration: `[checkpoint]` Section
 
@@ -42,7 +62,7 @@ A new optional TOML section in `offload.toml`:
 
 ```toml
 [checkpoint]
-image_identity = [
+build_inputs = [
     "Dockerfile",
     "requirements.txt",
     "setup.py",
@@ -54,15 +74,15 @@ image_identity = [
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `image_identity` | `list[str]` | Yes (if section present) | Repo-relative file paths. A change to ANY of these files means the checkpoint image must be rebuilt. |
+| `build_inputs` | `list[str]` | Yes (if section present) | Repo-relative file paths. A commit that modifies any of these files is a checkpoint. |
 
 ### Semantics
 
-- If the `[checkpoint]` section is absent, checkpointing is disabled. All behavior is unchanged from today.
-- If the section is present, `image_identity` must be non-empty.
+- If the `[checkpoint]` section is absent, checkpoints do not exist. Offload builds and caches a regular image per commit.
+- If the section is present, `build_inputs` must be non-empty.
 - The listed files are the "build spec" -- Dockerfiles, dependency manifests, build/install scripts.
-- Offload computes a content fingerprint of these files (the "identity hash") and stores it alongside the image ID in the checkpoint note.
-- On `offload run`, offload compares the current identity hash against the stored one. If they differ, the checkpoint is stale and a full build occurs (with a warning to re-run `offload checkpoint`).
+- A commit is a checkpoint if and only if its diff (vs parent) touches any file in this list.
+- Offload computes a build inputs hash of these files and stores it alongside the image ID in the note, so it can verify the cached checkpoint is still valid.
 
 ## Metadata Storage: Git Notes
 
@@ -70,7 +90,34 @@ image_identity = [
 
 - Notes ref: `refs/notes/offload-images`
 - Key: Git commit SHA
-- Value: JSON string, e.g. `{"image_id":"im-32147gl084235794327","identity_hash":"a1b2c3d4e5f6"}`
+- Value: JSON object keyed by TOML config file path
+
+Example note on a commit (two configs in the same repo):
+
+```json
+{
+  "offload-modal.toml": {
+    "image_id": "im-abc123",
+    "build_inputs_hash": "e5f6a7b8"
+  },
+  "offload-integration.toml": {
+    "image_id": "im-def456",
+    "build_inputs_hash": "c3d4e5f6"
+  }
+}
+```
+
+When `[checkpoint]` is absent from the config, the entry looks like:
+
+```json
+{
+  "offload.toml": {
+    "image_id": "im-789ghi"
+  }
+}
+```
+
+This structure ensures that multiple TOML configs (with potentially different Dockerfiles) never collide in the same note.
 
 ### Properties
 
@@ -78,103 +125,101 @@ image_identity = [
 - The notes ref is stored on GitHub (or other remote) but is not visible in normal GitHub UI.
 - Users interact with it exclusively through `offload` commands, never directly.
 - `offload` explicitly reads, writes, fetches, and pushes notes.
-- `offload init` (or first `offload checkpoint`) configures the local repo to auto-fetch the notes ref.
+- `offload init` (or first `offload run`) configures the local repo to auto-fetch the notes ref.
+
+### Concurrency
+
+Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write notes to the same commit simultaneously. The concurrency policy is **last write wins**: each writer does a read-modify-write of the note JSON and force-pushes the notes ref. There is no locking. In the worst case, a concurrent write overwrites another's entry, and the next run that needs the lost entry rebuilds and re-caches it. This is acceptable because image builds are idempotent and the cost of a redundant rebuild is low relative to the complexity of a locking protocol.
 
 ### jj Support
 
 - Offload operates on the underlying colocated Git repo (`.git/` directory).
 - The mapping is keyed by Git commit SHA, not jj change ID.
-- Metadata is NOT automatically copied across rebases or amends. If history is rewritten, the new commit has no note and must be re-checkpointed.
+- Metadata is NOT automatically copied across rebases or amends. If history is rewritten, the new commit has no note; the first `offload run` against it will build and cache a new image.
 
-### Identity Hash
+### Build Inputs Hash
 
-- Computed from the concatenated contents of all files listed in `image_identity`, sorted lexicographically by path.
-- Used as a fingerprint to detect when the build spec has changed since the last checkpoint.
+- Computed from the concatenated contents of all files listed in `build_inputs`, sorted lexicographically by path.
+- Used to verify that a cached checkpoint image is still valid (the build input files haven't been modified outside of a checkpoint commit, e.g. via a merge or manual edit).
 - Stored in the note alongside the image ID.
 
-## CLI: `offload checkpoint`
-
-```
-offload checkpoint              # Build checkpoint image, write note, push
-offload checkpoint --delete     # Remove checkpoint note from HEAD
-offload checkpoint --no-cache   # Force fresh base image rebuild
-offload checkpoint --remote X   # Use remote X instead of origin (default: origin)
-```
-
-### Preconditions
-
-- `[checkpoint]` section must be present in config.
-- Working tree must be clean (`git status --porcelain` is empty).
-  - In jj, this means `@` must be empty (changes are in `@-` or earlier).
-- Provider must not be `local`.
-
-### Behavior
-
-1. Verify clean working tree.
-2. Fetch latest notes from remote (best-effort; may fail if no notes exist yet).
-3. Get HEAD commit SHA via `git rev-parse HEAD`.
-4. Compute identity hash from `image_identity` files.
-5. Build checkpoint image via provider (full build: Dockerfile + source + copy_dirs + sandbox_init_cmd).
-6. Write git note on HEAD: `{"image_id":"<id>","identity_hash":"<hash>"}`.
-7. Configure notes fetch refspec (idempotent).
-8. Push notes ref to remote.
-
-### `--delete` Behavior
-
-Remove the note from HEAD (if one exists) and exit.
-
-## Modified `offload run` Flow
+## `offload run` Flow
 
 ### When `[checkpoint]` is configured
 
 1. Fetch notes from remote (best-effort).
-2. Walk git log backwards from HEAD, looking for the most recent commit with an `offload-images` note (bounded search, e.g. 100 commits).
-3. If a note is found:
-   a. Compute the current identity hash from `image_identity` files.
-   b. If identity hash matches the note: use checkpoint.
-      - Generate `git diff <checkpoint-sha> HEAD --binary`.
-      - If diff is empty: use checkpoint image directly (zero overhead).
-      - If diff is non-empty: build thin "current image" by applying diff on top of checkpoint image.
-      - Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into checkpoint).
-   c. If identity hash does NOT match: warn user ("identity files changed, run `offload checkpoint`"), fall back to full build.
-4. If no note is found: inform user, fall back to full build.
+2. Walk git log backwards from HEAD, looking for the most recent checkpoint commit (a commit whose diff touches any file in `build_inputs`).
+3. **If a checkpoint is found:**
+   a. Check the note on that commit for a cached checkpoint image (keyed by TOML config path).
+   b. If no cached image exists: build the checkpoint image (full build), write the note, push notes.
+   c. Verify the build inputs hash matches the current content of the identity files.
+      - If mismatch (identity files were altered outside a checkpoint commit): warn, fall back to full build for this run.
+   d. Generate `git diff <checkpoint-sha> HEAD --binary`.
+   e. If diff is empty: use checkpoint image directly (zero overhead).
+   f. If diff is non-empty: build thin current image by applying diff on top of checkpoint image.
+   g. Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into the checkpoint image).
+4. **If no checkpoint is found** in the search window: build a full image (same as non-checkpoint mode).
 
 ### When `[checkpoint]` is absent
 
-Existing behavior, completely unchanged.
+1. Fetch notes from remote (best-effort).
+2. Check the note on HEAD for a cached image (keyed by TOML config path).
+3. If cached image exists: use it.
+4. If no cached image: build a full image, write the note on HEAD, push notes.
 
 ### When `--no-cache` is passed
 
-Ignore checkpoint, full build (existing behavior).
+Ignore all cached images (both checkpoint and regular). Full build. Do not read or write notes.
 
 ### Cache Expiry
 
-If the checkpoint image has expired on Modal (or other provider):
-- Catch the error.
-- Warn user visibly.
-- Fall back to full build.
-- Do NOT automatically update the note (user should re-run `offload checkpoint`).
+Modal (and other providers) may garbage-collect images at any time. A cached image ID in a git note can become stale. Offload must handle this gracefully:
+
+- Attempt to use the cached image.
+- If the provider reports the image does not exist: catch the error.
+- Warn user visibly (e.g. `[checkpoint] Cached image im-abc123 expired, rebuilding...`).
+- Rebuild the image from scratch.
+- Update the note with the new image ID.
+- Push the updated notes ref to remote.
+
+This applies to both checkpoint images and regular cached images. The system is self-healing: a single expired image causes one slow run, after which the cache is repopulated for all users.
 
 ## Edge Cases
 
 | Case | Behavior |
 |------|----------|
-| First run, no checkpoint | Unchanged from today |
-| After `offload checkpoint` | `offload run` uses thin diff layer |
-| Checkpoint image expired on provider | Warn, fall back to full build |
-| Files in `image_identity` changed since checkpoint | Warn, fall back to full build |
-| `offload run --no-cache` | Ignore checkpoint, full build |
-| Empty diff (no changes since checkpoint) | Use checkpoint image directly |
+| First run, no notes exist | Build image, write note, push |
+| Checkpoint found with cached image | Use cached checkpoint + thin diff |
+| Checkpoint found, no cached image | Build checkpoint image, cache it, apply thin diff |
+| Cached image expired on provider | Warn, rebuild, update note |
+| Build inputs hash mismatch | Warn, fall back to full build |
+| `offload run --no-cache` | Full build, no note read/write |
+| Empty diff since checkpoint | Use checkpoint image directly |
 | Binary files in diff | `git diff --binary` + `git apply` handles them |
 | New untracked files since checkpoint | Detected via `git ls-files --others --exclude-standard`, included alongside diff |
-| `offload checkpoint --delete` | Remove note from HEAD |
-| No `[checkpoint]` in config | Feature entirely disabled |
-| Local provider with `[checkpoint]` | Validation error |
-| History rewritten (rebase/amend) | New commits have no note; user must re-checkpoint |
+| No `[checkpoint]` in config, first run | Build image, cache in note on HEAD |
+| No `[checkpoint]` in config, cached | Use cached image from note on HEAD |
+| Local provider | No notes interaction (local doesn't build images) |
+| History rewritten (rebase/amend) | New commit has no note; first run builds and caches |
 | Multiple team members | Notes pushed/fetched via remote; all share same mapping |
+| Multiple TOML configs in same repo | Notes keyed by config path; no collision |
+| Config path changed (rename) | Old key orphaned; new key triggers fresh build |
+
+## Superseded Mechanisms
+
+Git notes replace all prior file-based caching mechanisms. The following files are no longer used by offload and should be removed from repos that adopt this feature:
+
+| File | Former purpose | Replaced by |
+|------|---------------|-------------|
+| `.offload-image-cache` | Local cache of Dockerfile base image ID (in `modal_sandbox.py`) | Git notes on the commit |
+| `.offload-base-commit` | Pinned checkpoint commit SHA (in mngr/sculptor justfiles) | Automatic checkpoint detection via `build_inputs` |
+| `.offload-cache-key` | Hash of build inputs for invalidation (in mngr justfile) | Build inputs hash stored in git note |
+
+The `read_cached_image_id()`, `write_cached_image_id()`, and `clear_image_cache()` functions in `modal_sandbox.py` will be removed. The `--cached` flag on the `prepare` command will be removed. Git notes become the sole caching mechanism.
+
+Modal's own internal Dockerfile layer caching (within their build infrastructure) is unaffected -- that is a provider-side optimization, not something offload manages.
 
 ## Backward Compatibility
 
-- Existing `offload.toml` files without `[checkpoint]` continue to work with zero changes.
-- The `.offload-image-cache` file used internally by `modal_sandbox.py` for Dockerfile base image caching is unaffected.
-- Projects using the old manual `.offload-base-commit` + `.offload-image-cache` pattern (mngr, sculptor) can migrate by adding a `[checkpoint]` section and running `offload checkpoint`.
+- Existing `offload.toml` files without `[checkpoint]` continue to work. The only new behavior is that image IDs are cached in git notes (today images are rebuilt every run).
+- Projects using the old `.offload-base-commit` + `.offload-image-cache` pattern (mngr, sculptor) can migrate by: (1) adding a `[checkpoint]` section, (2) deleting the old cache files, (3) running `offload run` -- the first run builds and caches automatically.
