@@ -1,10 +1,28 @@
 //! Test scheduling and distribution across parallel sandboxes.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::framework::TestInstance;
+
+/// A scheduled batch of tests ready for execution.
+///
+/// Wraps a list of test instances along with their combined estimated duration.
+/// Workers pop these from the scheduler queue and pass them to `run_batch`.
+#[derive(Clone)]
+pub struct ScheduledBatch<'a> {
+    pub tests: Vec<TestInstance<'a>>,
+    estimated_load: Duration,
+}
+
+impl<'a> ScheduledBatch<'a> {
+    /// Total estimated duration for all tests in this batch.
+    pub fn estimated_load(&self) -> Duration {
+        self.estimated_load
+    }
+}
 
 /// Maximum total length (in chars) of all test IDs in a single batch.
 ///
@@ -65,9 +83,10 @@ impl<'a> Batch<'a> {
 ///
 /// Performs LPT scheduling at construction time and exposes the resulting
 /// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
-/// to pull batches; external code cannot push to the queue.
+/// to pull batches. The `run_batch` method provides hedged re-queuing when
+/// a batch takes too long.
 pub struct Scheduler<'a> {
-    queue: Mutex<VecDeque<Vec<TestInstance<'a>>>>,
+    queue: Mutex<VecDeque<ScheduledBatch<'a>>>,
     batch_count: usize,
     batch_sizes: Vec<usize>,
 }
@@ -119,13 +138,25 @@ impl<'a> Scheduler<'a> {
         let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
             tests.iter().copied().partition(|t| t.schedule_individual());
 
-        // Build individual batches (one test per batch)
-        let individual_batches: Vec<Vec<TestInstance<'a>>> =
-            individual_tests.into_iter().map(|t| vec![t]).collect();
+        // Build individual batches (one test per batch) with estimated load
+        let individual_batches: Vec<ScheduledBatch<'a>> = individual_tests
+            .into_iter()
+            .map(|t| {
+                let load = durations
+                    .get(t.id())
+                    .copied()
+                    .or_else(|| group_to_default_duration.get(t.group()).copied())
+                    .unwrap_or(Duration::from_secs(1));
+                ScheduledBatch {
+                    tests: vec![t],
+                    estimated_load: load,
+                }
+            })
+            .collect();
 
         if normal_tests.is_empty() {
             let batch_count = individual_batches.len();
-            let batch_sizes = individual_batches.iter().map(|b| b.len()).collect();
+            let batch_sizes = individual_batches.iter().map(|b| b.tests.len()).collect();
             return Self {
                 queue: Mutex::new(VecDeque::from(individual_batches)),
                 batch_count,
@@ -190,11 +221,14 @@ impl<'a> Scheduler<'a> {
             batches
                 .into_iter()
                 .filter(|b| !b.is_empty())
-                .map(|b| b.tests),
+                .map(|b| ScheduledBatch {
+                    estimated_load: b.load,
+                    tests: b.tests,
+                }),
         );
 
         let batch_count = result.len();
-        let batch_sizes = result.iter().map(|b| b.len()).collect();
+        let batch_sizes = result.iter().map(|b| b.tests.len()).collect();
         Self {
             queue: Mutex::new(VecDeque::from(result)),
             batch_count,
@@ -205,12 +239,67 @@ impl<'a> Scheduler<'a> {
     /// Removes and returns the next batch from the queue.
     ///
     /// Returns `None` when the queue is empty or if the mutex is poisoned.
-    pub fn pop(&self) -> Option<Vec<TestInstance<'a>>> {
+    pub fn pop(&self) -> Option<ScheduledBatch<'a>> {
         match self.queue.lock() {
             Ok(mut q) => q.pop_front(),
             Err(e) => {
                 tracing::error!("batch queue mutex poisoned: {}", e);
                 None
+            }
+        }
+    }
+
+    /// Pushes a batch to the back of the queue.
+    fn push(&self, batch: ScheduledBatch<'a>) {
+        match self.queue.lock() {
+            Ok(mut q) => q.push_back(batch),
+            Err(e) => {
+                tracing::error!("batch queue mutex poisoned on push: {}", e);
+            }
+        }
+    }
+
+    /// Runs a future for a batch with hedged re-queuing.
+    ///
+    /// Computes a timeout of `2 * batch.estimated_load()`. If the future
+    /// completes before that deadline, its result is returned immediately.
+    /// If the timeout fires, the batch is split (or cloned if single-test)
+    /// and re-queued, then the original future is awaited to completion.
+    pub async fn run_batch<Fut, R>(&self, batch: &ScheduledBatch<'a>, fut: Fut) -> R
+    where
+        Fut: Future<Output = R>,
+    {
+        let requeue_after = 2 * batch.estimated_load();
+
+        tokio::pin!(fut);
+
+        match tokio::time::timeout(requeue_after, &mut fut).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::info!(
+                    "Batch of {} tests exceeded requeue threshold ({:?}); re-queuing",
+                    batch.tests.len(),
+                    requeue_after,
+                );
+
+                if batch.tests.len() > 1 {
+                    let mid = batch.tests.len() / 2;
+                    let first_load = batch.estimated_load * mid as u32 / batch.tests.len() as u32;
+                    let second_load = batch.estimated_load - first_load;
+
+                    self.push(ScheduledBatch {
+                        tests: batch.tests[..mid].to_vec(),
+                        estimated_load: first_load,
+                    });
+                    self.push(ScheduledBatch {
+                        tests: batch.tests[mid..].to_vec(),
+                        estimated_load: second_load,
+                    });
+                } else {
+                    self.push(batch.clone());
+                }
+
+                fut.await
             }
         }
     }
@@ -236,7 +325,7 @@ mod tests {
     fn drain_batches<'a>(scheduler: &Scheduler<'a>) -> Vec<Vec<TestInstance<'a>>> {
         let mut batches = Vec::new();
         while let Some(batch) = scheduler.pop() {
-            batches.push(batch);
+            batches.push(batch.tests);
         }
         batches
     }
@@ -653,5 +742,126 @@ mod tests {
         // Total tests scheduled
         let total: usize = batches.iter().map(|b| b.len()).sum();
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_pop_returns_scheduled_batch_with_correct_estimated_load() -> anyhow::Result<()> {
+        let records = [
+            TestRecord::new("test_a", "test-group"),
+            TestRecord::new("test_b", "test-group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_secs(3));
+        durations.insert("test_b".to_string(), Duration::from_secs(7));
+
+        // 1 worker => both tests in one batch with load = 3 + 7 = 10s
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let batch = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
+
+        assert_eq!(batch.estimated_load(), Duration::from_secs(10));
+        assert_eq!(batch.tests.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_batch_completes_normally_before_threshold() -> anyhow::Result<()> {
+        let records = [TestRecord::new("test_a", "test-group")];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_secs(10));
+
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let batch = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
+
+        // Future completes instantly, well within 2 * 10s threshold
+        let result = scheduler.run_batch(&batch, async { 42 }).await;
+        assert_eq!(result, 42);
+
+        // Queue should be empty — no re-queuing occurred
+        assert!(scheduler.pop().is_none(), "queue should be empty");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_batch_requeues_and_splits_multi_test_batch() -> anyhow::Result<()> {
+        let records = [
+            TestRecord::new("test_a", "test-group"),
+            TestRecord::new("test_b", "test-group"),
+            TestRecord::new("test_c", "test-group"),
+            TestRecord::new("test_d", "test-group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        for r in &records {
+            durations.insert(r.id.clone(), Duration::from_millis(1));
+        }
+
+        // 1 worker => all 4 tests in one batch, estimated_load = 4ms
+        // requeue_after = 2 * 4ms = 8ms — sleep of 50ms will exceed that
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let batch = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
+        assert_eq!(batch.tests.len(), 4);
+
+        scheduler
+            .run_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
+            .await;
+
+        // Should have 2 halves re-queued
+        let first = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected first half"))?;
+        let second = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected second half"))?;
+
+        assert_eq!(first.tests.len(), 2);
+        assert_eq!(second.tests.len(), 2);
+        assert!(
+            scheduler.pop().is_none(),
+            "queue should be empty after two pops"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_batch_requeues_single_test_batch() -> anyhow::Result<()> {
+        let records = [TestRecord::new("test_a", "test-group")];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("test_a".to_string(), Duration::from_millis(1));
+
+        // 1 worker, 1 test, estimated_load = 1ms, requeue_after = 2ms
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let batch = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
+        assert_eq!(batch.tests.len(), 1);
+
+        scheduler
+            .run_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
+            .await;
+
+        // Single-test batch is cloned and re-queued as-is
+        let requeued = scheduler
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("expected requeued batch"))?;
+        assert_eq!(requeued.tests.len(), 1);
+        assert_eq!(requeued.tests[0].id(), "test_a");
+        assert!(
+            scheduler.pop().is_none(),
+            "queue should be empty after one pop"
+        );
+        Ok(())
     }
 }
