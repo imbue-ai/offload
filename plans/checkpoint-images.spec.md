@@ -25,7 +25,7 @@ This feature builds checkpoints into Offload as a first-class capability, using 
 
 ## Definitions
 
-**Checkpoint**: A commit whose diff (relative to its parent) modifies any file in the `build_inputs` set. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
+**Checkpoint**: A commit whose diff (relative to any of its parents) modifies any file in the `build_inputs` set. For merge commits (including octopus merges), the diff is checked against all parents using `git diff-tree --no-commit-id --name-only -r -m <sha>`. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
 
 **Checkpoint image**: A full image built from a checkpoint commit (Dockerfile base + source checkout + dependency install + sandbox_init_cmd). Expensive to build. Cached in git notes.
 
@@ -56,6 +56,8 @@ Cached offload image (one per commit):
 
 In both cases, git notes are the storage mechanism. The first run against a commit that lacks a cached image builds and caches it automatically. There is no manual "create checkpoint" step.
 
+**Requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs. The Dockerfile must install `git` in the image. If `git` is not available, `git apply` will fail and offload will fall back to a full build with a warning.
+
 ## Configuration: `[checkpoint]` Section
 
 A new optional TOML section in `offload.toml`:
@@ -81,7 +83,7 @@ build_inputs = [
 - If the `[checkpoint]` section is absent, checkpoints do not exist. Offload builds and caches a regular image per commit.
 - If the section is present, `build_inputs` must be non-empty.
 - The listed files are the "build spec" -- Dockerfiles, dependency manifests, build/install scripts.
-- A commit is a checkpoint if and only if its diff (vs parent) touches any file in this list.
+- A commit is a checkpoint if and only if its diff (vs any parent) touches any file in this list. For merge commits, all parents are checked.
 - Offload computes a build inputs hash of these files and stores it alongside the image ID in the note, so it can verify the cached checkpoint is still valid.
 
 ## Metadata Storage: Git Notes
@@ -90,7 +92,7 @@ build_inputs = [
 
 - Notes ref: `refs/notes/offload-images`
 - Key: Git commit SHA
-- Value: JSON object keyed by TOML config file path
+- Value: JSON object keyed by TOML config file path (repo-relative, no `./` prefix, e.g. `offload.toml` not `./offload.toml`)
 
 Example note on a commit (two configs in the same repo):
 
@@ -119,6 +121,10 @@ When `[checkpoint]` is absent from the config, the entry looks like:
 
 This structure ensures that multiple TOML configs (with potentially different Dockerfiles) never collide in the same note.
 
+Config paths are canonicalized to repo-relative paths with no `./` prefix before use as keys. This prevents `./offload.toml` and `offload.toml` from creating separate entries.
+
+JSON in notes is pretty-printed (indented) for human debuggability. Users can inspect notes directly via `git notes --ref=refs/notes/offload-images show HEAD`.
+
 ### Properties
 
 - Attaches metadata to a commit without changing the commit SHA.
@@ -129,7 +135,15 @@ This structure ensures that multiple TOML configs (with potentially different Do
 
 ### Concurrency
 
-Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write notes to the same commit simultaneously. The concurrency policy is **last write wins**: each writer does a read-modify-write of the note JSON and force-pushes the notes ref. There is no locking. In the worst case, a concurrent write overwrites another's entry, and the next run that needs the lost entry rebuilds and re-caches it. This is acceptable because image builds are idempotent and the cost of a redundant rebuild is low relative to the complexity of a locking protocol.
+Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write notes to the same commit simultaneously. The concurrency policy is **last write wins** with a fetch-before-push strategy to minimize data loss:
+
+1. Before writing a note, fetch the latest notes ref from the remote.
+2. Read-modify-write the note JSON locally (merge entries so two configs don't clobber each other).
+3. Force-push the notes ref.
+
+This shrinks the race window to the time between the fetch and the push, rather than the entire duration of the image build. In the worst case, a concurrent write still overwrites another's entry, and the next run that needs the lost entry rebuilds and re-caches it. This is acceptable because image builds are idempotent and the cost of a redundant rebuild is low relative to the complexity of a locking protocol.
+
+**WARNING**: Concurrent runs against the same commit may lose each other's cached images. For expensive checkpoint images, avoid parallel CI jobs targeting the same commit.
 
 ### jj Support
 
@@ -140,6 +154,7 @@ Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write 
 ### Build Inputs Hash
 
 - Computed from the concatenated contents of all files listed in `build_inputs`, sorted lexicographically by path.
+- All files listed in `build_inputs` must exist. If any file is missing, offload reports an error and refuses to proceed. This prevents silent hash changes from deleted files.
 - Used to verify that a cached checkpoint image is still valid (the build input files haven't been modified outside of a checkpoint commit, e.g. via a merge or manual edit).
 - Stored in the note alongside the image ID.
 
@@ -152,11 +167,11 @@ Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write 
 3. **If a checkpoint is found:**
    a. Check the note on that commit for a cached checkpoint image (keyed by TOML config path).
    b. If no cached image exists: build the checkpoint image (full build), write the note, push notes.
-   c. Verify the build inputs hash matches the current content of the identity files.
-      - If mismatch (identity files were altered outside a checkpoint commit): warn, fall back to full build for this run.
+   c. Verify the build inputs hash matches the current content of the `build_inputs` files.
+      - If mismatch: warn with an actionable message listing the `build_inputs` files and suggesting the user either commit their changes (to create a new checkpoint) or revert them (to use the cached image). Example: `[checkpoint] Build inputs hash mismatch. Files in build_inputs may have been modified without a checkpoint commit. Check: Dockerfile, requirements.txt. Commit changes to create a new checkpoint, or revert to use the cached image.` Fall back to full build for this run.
    d. Generate `git diff <checkpoint-sha> HEAD --binary`.
    e. If diff is empty: use checkpoint image directly (zero overhead).
-   f. If diff is non-empty: build thin current image by applying diff on top of checkpoint image.
+   f. If diff is non-empty: build thin current image by applying diff on top of checkpoint image. Untracked files (detected via `git ls-files --others --exclude-standard`) are included in the source tarball alongside the diff, not baked into the checkpoint image.
    g. Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into the checkpoint image).
 4. **If no checkpoint is found** in the search window: build a full image (same as non-checkpoint mode).
 
@@ -184,6 +199,28 @@ Modal (and other providers) may garbage-collect images at any time. A cached ima
 
 This applies to both checkpoint images and regular cached images. The system is self-healing: a single expired image causes one slow run, after which the cache is repopulated for all users.
 
+## `offload checkpoint-status` Command
+
+A read-only diagnostic command that shows the current checkpoint state for the working directory. This gives users visibility into the otherwise-opaque checkpoint machinery.
+
+Output includes:
+- Current HEAD SHA.
+- Nearest checkpoint commit (if any) and its SHA, or "no checkpoint found in last N commits".
+- Whether a cached image exists for that checkpoint (and its image ID).
+- Current build inputs hash vs cached hash (match/mismatch).
+- Whether thin diff mode will be used for the next run.
+
+This command requires a `[checkpoint]` section in the config. If absent, it reports that checkpoint mode is not configured.
+
+Example output:
+```
+HEAD:               a1b2c3d4
+Checkpoint:         f5e6d7c8 (3 commits back)
+Cached image:       im-abc123
+Build inputs hash:  e5f6a7b8 (matches cached)
+Next run mode:      thin diff (2 files changed since checkpoint)
+```
+
 ## Edge Cases
 
 | Case | Behavior |
@@ -192,11 +229,11 @@ This applies to both checkpoint images and regular cached images. The system is 
 | Checkpoint found with cached image | Use cached checkpoint + thin diff |
 | Checkpoint found, no cached image | Build checkpoint image, cache it, apply thin diff |
 | Cached image expired on provider | Warn, rebuild, update note |
-| Build inputs hash mismatch | Warn, fall back to full build |
+| Build inputs hash mismatch | Warn with actionable message (list affected files, suggest commit or revert), fall back to full build |
 | `offload run --no-cache` | Full build, no note read/write |
 | Empty diff since checkpoint | Use checkpoint image directly |
 | Binary files in diff | `git diff --binary` + `git apply` handles them |
-| New untracked files since checkpoint | Detected via `git ls-files --others --exclude-standard`, included alongside diff |
+| New untracked files since checkpoint | Detected via `git ls-files --others --exclude-standard`, included in the source tarball sent to the image (not baked into the checkpoint image itself) |
 | No `[checkpoint]` in config, first run | Build image, cache in note on HEAD |
 | No `[checkpoint]` in config, cached | Use cached image from note on HEAD |
 | Local provider | No notes interaction (local doesn't build images) |
