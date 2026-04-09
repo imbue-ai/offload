@@ -658,7 +658,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 1);
@@ -675,7 +675,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
@@ -697,10 +697,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail).unwrap();
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert_eq!(report.failed_count(), 1);
 
-        report.add_junit_xml(xml_pass).unwrap();
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.flaky_count(), 1);
         assert_eq!(report.passed_count(), 1); // flaky counts as passed
@@ -718,7 +718,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1); // 1 unique test ID
         assert_eq!(report.passed_count(), 1);
@@ -739,7 +739,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
@@ -764,10 +764,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail).unwrap();
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert_eq!(report.failed_count(), 1);
 
-        report.add_junit_xml(xml_pass).unwrap();
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.flaky_count(), 1);
         assert_eq!(report.passed_count(), 1);
@@ -782,7 +782,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(2, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("test_alpha"));
         assert!(report.has_test_passed("test_beta"));
@@ -798,7 +798,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{classname} {name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("my_binary tests::test_something"));
         assert!(!report.has_test_passed("tests::test_something")); // name alone
@@ -813,7 +813,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("com.example::testFoo"));
         assert!(!report.has_test_passed("testFoo"));
@@ -830,7 +830,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(!report.has_test_passed("test_fail"));
     }
@@ -850,10 +850,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail).unwrap();
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert!(!report.has_test_passed("test_flaky"));
 
-        report.add_junit_xml(xml_pass).unwrap();
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert!(report.has_test_passed("test_flaky")); // flaky counts as passed
     }
 
@@ -866,7 +866,7 @@ mod tests {
 
         // With {classname}::{name} format but no classname in XML
         let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
-        report.add_junit_xml(xml).unwrap();
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("::test_solo")); // classname is empty
         assert!(!report.has_test_passed("test_solo")); // no match without ::
