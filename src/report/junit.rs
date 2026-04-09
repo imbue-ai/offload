@@ -166,6 +166,29 @@ impl MasterJunitReport {
             if !unrecognized.is_empty() {
                 let mut details = Vec::new();
                 for formatted_id in &unrecognized {
+                    let mut entry =
+                        format!("Unrecognized test ID from JUnit XML: '{}'.", formatted_id);
+
+                    // Check for substring matches first.
+                    let substring_matches: Vec<&String> = self
+                        .known_test_ids
+                        .iter()
+                        .filter(|known| {
+                            known.contains(formatted_id.as_str())
+                                || formatted_id.contains(known.as_str())
+                        })
+                        .collect();
+
+                    if !substring_matches.is_empty() {
+                        let lines: Vec<String> = substring_matches
+                            .iter()
+                            .take(3)
+                            .map(|id| format!("  '{}'", id))
+                            .collect();
+                        entry.push_str(&format!(" Substring matches:\n{}", lines.join("\n")));
+                    }
+
+                    // Always show edit-distance matches.
                     let mut candidates: Vec<&String> = self.known_test_ids.iter().collect();
                     candidates.sort_by_cached_key(|known| {
                         edit_distance::edit_distance(formatted_id, known)
@@ -175,11 +198,9 @@ impl MasterJunitReport {
                         .take(3)
                         .map(|id| format!("  '{}'", id))
                         .collect();
-                    details.push(format!(
-                        "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}",
-                        formatted_id,
-                        top3.join("\n")
-                    ));
+                    entry.push_str(&format!("\nClosest by edit distance:\n{}", top3.join("\n")));
+
+                    details.push(entry);
                 }
                 let msg = format!(
                     "{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
@@ -1001,11 +1022,49 @@ mod tests {
             err_msg.contains("test_baz"),
             "Error should mention the unrecognized ID"
         );
+        assert!(
+            err_msg.contains("Closest by edit distance"),
+            "Error should contain edit distance section"
+        );
 
         // Outcomes are not updated when validation fails
         assert_eq!(report.total_count(), 0);
         assert_eq!(report.passed_count(), 0);
         assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_unknown_test_id_substring_matches() {
+        let known: HashSet<String> = [
+            "libs/foo/test_write.py::test_atomic_write",
+            "libs/foo/test_write.py::test_buffered_write",
+            "libs/bar/test_read.py::test_read_all",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut report = MasterJunitReport::new(3, "{name}", known);
+
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase name="test_atomic_write" time="0.1" />
+</testsuite>"#;
+
+        let result = report.add_junit_xml(xml);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("Substring matches"),
+            "Error should show substring matches when known ID contains the formatted ID"
+        );
+        assert!(
+            err_msg.contains("libs/foo/test_write.py::test_atomic_write"),
+            "Substring match should include the known ID that contains the unrecognized ID"
+        );
+        assert!(
+            err_msg.contains("Closest by edit distance"),
+            "Error should always contain edit distance section"
+        );
     }
 
     #[test]
