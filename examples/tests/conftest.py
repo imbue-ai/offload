@@ -1,5 +1,7 @@
 """Pytest configuration for example tests."""
 
+import os
+
 import pytest
 
 
@@ -10,14 +12,13 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Set JUnit XML name to full nodeid at collection time.
+    """Set JUnit XML name to full test ID at collection time.
 
     Runs before any test execution, so it works for all tests including
     skipped ones (where the record_xml_attribute fixture would not run).
 
-    Offload relies on matching JUnit test IDs to collected test IDs. When
-    the JUnit ``name`` attribute contains ``::`` Offload uses it verbatim,
-    bypassing the lossy classname reconstruction.
+    Uses OFFLOAD_ROOT env var if set (for consistent paths in Offload runs),
+    otherwise falls back to pytest's nodeid directly.
     """
     xml = None
     for plugin in config.pluginmanager.get_plugins():
@@ -26,5 +27,12 @@ def pytest_collection_modifyitems(config, items):
             break
     if xml is None:
         return
+    offload_root = os.environ.get("OFFLOAD_ROOT")
     for item in items:
-        xml.node_reporter(item.nodeid).add_attribute("name", item.nodeid)
+        if offload_root:
+            rel_path = os.path.relpath(str(item.fspath), offload_root)
+            parts = item.nodeid.split("::")
+            test_id = "::".join([rel_path] + parts[1:])
+        else:
+            test_id = item.nodeid
+        xml.node_reporter(item.nodeid).add_attribute("name", test_id)
