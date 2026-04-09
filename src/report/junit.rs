@@ -127,6 +127,7 @@ impl MasterJunitReport {
 
         // Collect all suite outcomes first, then validate before updating.
         let mut all_suite_data: Vec<(TestsuiteXml, HashMap<TestId, bool>)> = Vec::new();
+        let mut skipped_test_ids: HashSet<TestId> = HashSet::new();
 
         for testsuite in parsed_testsuites {
             total_testcases += testsuite.testcases.len();
@@ -135,10 +136,12 @@ impl MasterJunitReport {
             // A test ID fails if ANY of its testcases failed.
             let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
             for testcase in &testsuite.testcases {
+                let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
                 if testcase.skipped {
+                    skipped_test_ids.insert(test_id.clone());
+                    suite_outcomes.entry(test_id).or_insert(false);
                     continue;
                 }
-                let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
                 let entry = suite_outcomes.entry(test_id).or_insert(false);
                 if failed {
@@ -154,6 +157,9 @@ impl MasterJunitReport {
             let mut unrecognized: Vec<String> = Vec::new();
             for (_testsuite, suite_outcomes) in &all_suite_data {
                 for test_id in suite_outcomes.keys() {
+                    if skipped_test_ids.contains(test_id) {
+                        continue;
+                    }
                     let formatted_id = crate::config::format_test_id(
                         &self.test_id_format,
                         &test_id.name,
@@ -1127,7 +1133,8 @@ mod tests {
             result.is_ok(),
             "Skipped tests with unrecognized IDs should not cause errors"
         );
-        assert_eq!(report.total_count(), 1); // only test_foo counted
+        assert_eq!(report.total_count(), 2); // both test_foo and test_baz counted
+        assert_eq!(report.passed_count(), 2); // skipped tests count as passed
     }
 
     #[test]
