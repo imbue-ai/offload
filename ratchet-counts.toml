@@ -111,7 +111,6 @@
 
 [no-underscore-imports]
 "." = 0
-"examples/tests_fail" = 1
 
 [no-unwrap]
 "." = 0

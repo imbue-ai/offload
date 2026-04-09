@@ -1,7 +1,6 @@
 """Pytest configuration for example tests."""
 
 import pytest
-from _pytest.junitxml import xml_key
 
 
 def pytest_configure(config):
@@ -20,7 +19,11 @@ def pytest_collection_modifyitems(config, items):
     the JUnit ``name`` attribute contains ``::`` Offload uses it verbatim,
     bypassing the lossy classname reconstruction.
     """
-    xml = config.stash.get(xml_key, None)
+    xml = None
+    for plugin in config.pluginmanager.get_plugins():
+        if hasattr(plugin, "node_reporter"):
+            xml = plugin
+            break
     if xml is None:
         return
     for item in items:
