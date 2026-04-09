@@ -3,7 +3,7 @@
 //! This module provides functions to merge multiple JUnit XML files into one.
 //! Used to combine results from parallel test execution across multiple sandboxes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -71,7 +71,7 @@ pub struct FailureXml {
 /// Each test ID maps 1:1 to a testcase. Flakiness is detected across
 /// testsuites (batches/retries): a test that fails in one batch and
 /// passes in another is marked flaky.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MasterJunitReport {
     /// Parsed testsuites from each batch
     testsuites: Vec<TestsuiteXml>,
@@ -81,16 +81,26 @@ pub struct MasterJunitReport {
     total_expected: usize,
     /// Format string for constructing test IDs from JUnit XML attributes.
     test_id_format: String,
+    /// Set of discovered test IDs for validation
+    known_test_ids: HashSet<String>,
+    /// Tracks unrecognized test IDs that have already been warned about
+    warned_unknown_ids: HashSet<String>,
 }
 
 impl MasterJunitReport {
     /// Creates a new master report expecting the given number of unique test IDs.
-    pub fn new(total_expected: usize, test_id_format: &str) -> Self {
+    pub fn new(
+        total_expected: usize,
+        test_id_format: &str,
+        known_test_ids: HashSet<String>,
+    ) -> Self {
         Self {
             testsuites: Vec::new(),
             test_outcomes: HashMap::new(),
             total_expected,
             test_id_format: test_id_format.to_string(),
+            known_test_ids,
+            warned_unknown_ids: HashSet::new(),
         }
     }
 
@@ -125,6 +135,35 @@ impl MasterJunitReport {
                 let entry = suite_outcomes.entry(test_id).or_insert(false);
                 if failed {
                     *entry = true;
+                }
+            }
+
+            // Validate test IDs against discovered IDs
+            if !self.known_test_ids.is_empty() {
+                for test_id in suite_outcomes.keys() {
+                    let formatted_id = crate::config::format_test_id(
+                        &self.test_id_format,
+                        &test_id.name,
+                        test_id.classname.as_deref(),
+                    );
+                    if !self.known_test_ids.contains(&formatted_id)
+                        && self.warned_unknown_ids.insert(formatted_id.clone())
+                    {
+                        let mut candidates: Vec<&String> = self.known_test_ids.iter().collect();
+                        candidates.sort_by_cached_key(|known| {
+                            edit_distance::edit_distance(&formatted_id, known)
+                        });
+                        let top3: Vec<String> = candidates
+                            .iter()
+                            .take(3)
+                            .map(|id| format!("  '{}'", id))
+                            .collect();
+                        warn!(
+                            "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
+                            formatted_id,
+                            top3.join("\n")
+                        );
+                    }
                 }
             }
 
@@ -594,7 +633,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_something" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -611,7 +650,7 @@ mod tests {
     </testcase>
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -633,7 +672,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_flaky" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml_fail);
         assert_eq!(report.failed_count(), 1);
 
@@ -654,7 +693,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1); // 1 unique test ID
@@ -675,7 +714,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert_eq!(report.total_count(), 1);
@@ -700,7 +739,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml_fail);
         assert_eq!(report.failed_count(), 1);
 
@@ -718,7 +757,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_beta" time="0.2" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(2, "{name}");
+        let mut report = MasterJunitReport::new(2, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert!(report.has_test_passed("test_alpha"));
@@ -734,7 +773,7 @@ mod tests {
     <testcase classname="my_binary" name="tests::test_something" time="0.5" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{classname} {name}");
+        let mut report = MasterJunitReport::new(1, "{classname} {name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert!(report.has_test_passed("my_binary tests::test_something"));
@@ -749,7 +788,7 @@ mod tests {
     <testcase classname="com.example" name="testFoo" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
+        let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert!(report.has_test_passed("com.example::testFoo"));
@@ -766,7 +805,7 @@ mod tests {
     </testcase>
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert!(!report.has_test_passed("test_fail"));
@@ -786,7 +825,7 @@ mod tests {
     <testcase classname="foo" name="test_flaky" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
         report.add_junit_xml(xml_fail);
         assert!(!report.has_test_passed("test_flaky"));
 
@@ -802,7 +841,7 @@ mod tests {
 </testsuite>"#;
 
         // With {classname}::{name} format but no classname in XML
-        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
+        let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
         report.add_junit_xml(xml);
 
         assert!(report.has_test_passed("::test_solo")); // classname is empty
@@ -916,5 +955,57 @@ mod tests {
         ));
         assert_eq!(suites[0].name, "a & b");
         assert_eq!(suites[0].testcases[0].name, r#"x < y > z "q""#);
+    }
+
+    #[test]
+    fn test_unknown_test_id_warning() {
+        let known: HashSet<String> = ["test_foo", "test_bar"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut report = MasterJunitReport::new(2, "{name}", known);
+
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase name="test_baz" time="0.1" />
+</testsuite>"#;
+
+        report.add_junit_xml(xml);
+
+        // The report still works correctly despite the unknown ID
+        assert_eq!(report.total_count(), 1);
+        assert_eq!(report.passed_count(), 1);
+        assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_known_test_ids_no_warning() {
+        let known: HashSet<String> = ["test_alpha", "test_beta"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut report = MasterJunitReport::new(2, "{name}", known);
+
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="0">
+    <testcase name="test_alpha" time="0.1" />
+    <testcase name="test_beta" time="0.2" />
+</testsuite>"#;
+
+        report.add_junit_xml(xml);
+
+        assert_eq!(report.total_count(), 2);
+        assert_eq!(report.passed_count(), 2);
+        assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_basic() {
+        assert_eq!(edit_distance::edit_distance("", ""), 0);
+        assert_eq!(edit_distance::edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance::edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance::edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance::edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance::edit_distance("test_foo", "test_bar"), 3);
     }
 }
