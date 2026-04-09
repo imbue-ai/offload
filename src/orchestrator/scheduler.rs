@@ -1,6 +1,7 @@
 //! Test scheduling and distribution across parallel sandboxes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::framework::TestInstance;
@@ -62,35 +63,25 @@ impl<'a> Batch<'a> {
 
 /// Distributes tests across parallel sandboxes.
 ///
-/// The scheduler is responsible for creating batches of tests that can
-/// be executed in parallel across multiple sandboxes. It doesn't know
-/// about the actual sandboxes - it just creates batches based on the
-/// configured parallelism level.
-pub struct Scheduler {
-    max_parallel: usize,
+/// Performs LPT scheduling at construction time and exposes the resulting
+/// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
+/// to pull batches; external code cannot push to the queue.
+pub struct Scheduler<'a> {
+    queue: Mutex<VecDeque<Vec<TestInstance<'a>>>>,
+    batch_count: usize,
+    batch_sizes: Vec<usize>,
 }
 
-impl Scheduler {
-    /// Creates a new scheduler with the given parallelism limit.
+impl<'a> Scheduler<'a> {
+    /// Creates a new scheduler and schedules the given tests.
     ///
-    /// # Arguments
+    /// Uses Longest Processing Time First (LPT) algorithm with historical
+    /// test durations to minimize total execution time (makespan). Tests are
+    /// sorted by duration descending and assigned to the worker with the
+    /// smallest current total workload.
     ///
-    /// * `max_parallel` - Maximum number of parallel batches/sandboxes.
-    ///   Minimum is 1 (values below 1 are clamped).
-    pub fn new(max_parallel: usize) -> Self {
-        Self {
-            max_parallel: max_parallel.max(1),
-        }
-    }
-
-    /// Schedules tests using Longest Processing Time First (LPT) algorithm.
-    ///
-    /// Uses historical test durations to minimize total execution time (makespan).
-    /// Tests are sorted by duration descending and assigned to the worker with
-    /// the smallest current total workload.
-    ///
-    /// The returned batches are sorted by total duration descending, so the
-    /// heaviest batch is first. This ensures it gets scheduled first with Modal.
+    /// Batches are sorted by total duration descending, so the heaviest batch
+    /// is first. This ensures it gets scheduled first with Modal.
     ///
     /// When `max_batch_duration` is set, batches that would exceed the cap are
     /// not eligible for assignment, and new batches are created as needed. This
@@ -98,6 +89,8 @@ impl Scheduler {
     ///
     /// # Arguments
     ///
+    /// * `max_parallel` - Maximum number of parallel batches/sandboxes.
+    ///   Minimum is 1 (values below 1 are clamped).
     /// * `tests` - Tests to schedule
     /// * `durations` - Historical test durations from previous runs.
     ///   Tests not in the map use the per-group average from `group_to_default_duration`.
@@ -105,27 +98,21 @@ impl Scheduler {
     ///   Falls back to 1 second if the group has no entry.
     /// * `max_batch_duration` - Optional cap on the total duration of each batch.
     ///   A single test that exceeds the cap is still placed alone in its own batch.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. Sort tests by duration (descending)
-    /// 2. For each test, assign to the worker with smallest current load
-    ///    that does not already contain the same test ID, and (if capped)
-    ///    whose load plus the test duration would not exceed the cap
-    ///    (or is empty)
-    /// 3. If no eligible batch exists, create a new batch
-    /// 4. Sort batches by total duration (descending) so heaviest starts first
-    ///
-    /// This is a greedy 4/3-approximation for the multiprocessor scheduling problem.
-    pub fn schedule<'a>(
-        &self,
+    pub fn new(
+        max_parallel: usize,
         tests: &[TestInstance<'a>],
         durations: &HashMap<String, Duration>,
         group_to_default_duration: &HashMap<String, Duration>,
         max_batch_duration: Option<Duration>,
-    ) -> Vec<Vec<TestInstance<'a>>> {
+    ) -> Self {
+        let max_parallel = max_parallel.max(1);
+
         if tests.is_empty() {
-            return Vec::new();
+            return Self {
+                queue: Mutex::new(VecDeque::new()),
+                batch_count: 0,
+                batch_sizes: Vec::new(),
+            };
         }
 
         // Partition: individually-scheduled tests get their own batches, others go through LPT
@@ -137,7 +124,13 @@ impl Scheduler {
             individual_tests.into_iter().map(|t| vec![t]).collect();
 
         if normal_tests.is_empty() {
-            return individual_batches;
+            let batch_count = individual_batches.len();
+            let batch_sizes = individual_batches.iter().map(|b| b.len()).collect();
+            return Self {
+                queue: Mutex::new(VecDeque::from(individual_batches)),
+                batch_count,
+                batch_sizes,
+            };
         }
 
         // Look up durations for each test, sorted longest-first
@@ -166,7 +159,7 @@ impl Scheduler {
         tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Initialize batches
-        let num_batches = self.max_parallel.min(normal_tests.len());
+        let num_batches = max_parallel.min(normal_tests.len());
         let mut batches: Vec<Batch<'a>> = (0..num_batches).map(|_| Batch::new()).collect();
 
         // LPT assignment: assign each test to the lightest eligible batch
@@ -199,7 +192,37 @@ impl Scheduler {
                 .filter(|b| !b.is_empty())
                 .map(|b| b.tests),
         );
-        result
+
+        let batch_count = result.len();
+        let batch_sizes = result.iter().map(|b| b.len()).collect();
+        Self {
+            queue: Mutex::new(VecDeque::from(result)),
+            batch_count,
+            batch_sizes,
+        }
+    }
+
+    /// Removes and returns the next batch from the queue.
+    ///
+    /// Returns `None` when the queue is empty or if the mutex is poisoned.
+    pub fn pop(&self) -> Option<Vec<TestInstance<'a>>> {
+        match self.queue.lock() {
+            Ok(mut q) => q.pop_front(),
+            Err(e) => {
+                tracing::error!("batch queue mutex poisoned: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Number of batches created during scheduling.
+    pub fn batch_count(&self) -> usize {
+        self.batch_count
+    }
+
+    /// Number of tests in each batch, in schedule order.
+    pub fn batch_sizes(&self) -> &[usize] {
+        &self.batch_sizes
     }
 }
 
@@ -210,18 +233,22 @@ mod tests {
 
     const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
 
+    fn drain_batches<'a>(scheduler: &Scheduler<'a>) -> Vec<Vec<TestInstance<'a>>> {
+        let mut batches = Vec::new();
+        while let Some(batch) = scheduler.pop() {
+            batches.push(batch);
+        }
+        batches
+    }
+
     #[test]
     fn test_schedule_empty() {
-        let scheduler = Scheduler::new(4);
-        let durations = HashMap::new();
-        let batches: Vec<Vec<TestInstance>> =
-            scheduler.schedule(&[], &durations, &HashMap::new(), None);
-        assert!(batches.is_empty());
+        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new(), None);
+        assert_eq!(scheduler.batch_count(), 0);
     }
 
     #[test]
     fn test_schedule_balances_load() {
-        let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("slow_test", "test-group"),
             TestRecord::new("medium_test", "test-group"),
@@ -234,7 +261,8 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // With LPT:
         // 1. Assign slow_test (10s) to worker 0 -> loads: [10, 0]
@@ -251,7 +279,6 @@ mod tests {
 
     #[test]
     fn test_schedule_heaviest_batch_first() {
-        let scheduler = Scheduler::new(3);
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -264,7 +291,8 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Each test in its own batch (3 workers, 3 tests)
         // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
@@ -276,7 +304,6 @@ mod tests {
 
     #[test]
     fn test_schedule_uses_default_for_unknown() {
-        let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("known_slow", "test-group"),
             TestRecord::new("unknown_test", "test-group"),
@@ -287,7 +314,8 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         assert_eq!(batches.len(), 2);
         // known_slow (10s) should be in heaviest batch
@@ -298,7 +326,6 @@ mod tests {
     #[test]
     fn test_schedule_duplicate_prevention() {
         // Simulate retry scenario: same test appears multiple times
-        let scheduler = Scheduler::new(3);
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_a", "test-group"), // retry 1
@@ -309,7 +336,8 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Each instance of test_a must be in a different batch
         assert_eq!(batches.len(), 3);
@@ -328,7 +356,6 @@ mod tests {
     #[test]
     fn test_schedule_mixed_duplicates_and_unique() {
         // Mix of retried and unique tests
-        let scheduler = Scheduler::new(3);
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_a", "test-group"), // retry
@@ -342,7 +369,8 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
@@ -362,7 +390,6 @@ mod tests {
     #[test]
     fn test_schedule_creates_extra_batches_for_retries() {
         // 2 workers but 3 instances of same test — creates 3 batches (one per instance)
-        let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_a", "test-group"),
@@ -371,7 +398,8 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Each instance must be in a separate batch
         assert_eq!(batches.len(), 3);
@@ -383,7 +411,6 @@ mod tests {
 
     #[test]
     fn test_schedule_respects_max_batch_duration() {
-        let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -399,12 +426,14 @@ mod tests {
         durations.insert("test_d".to_string(), Duration::from_secs(3));
 
         // With 10s cap: test_a (6s) + test_c (3s) = 9s OK, test_b (6s) + test_d (3s) = 9s OK
-        let batches = scheduler.schedule(
+        let scheduler = Scheduler::new(
+            2,
             &tests,
             &durations,
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
+        let batches = drain_batches(&scheduler);
 
         // Each batch total should be <= MAX_BATCH_DURATION
         for batch in &batches {
@@ -426,7 +455,6 @@ mod tests {
 
     #[test]
     fn test_schedule_long_test_gets_own_batch() -> anyhow::Result<()> {
-        let scheduler = Scheduler::new(2);
         let records = [
             TestRecord::new("slow_test", "test-group"),
             TestRecord::new("fast_test", "test-group"),
@@ -438,12 +466,14 @@ mod tests {
         durations.insert("fast_test".to_string(), Duration::from_secs(2));
 
         // slow_test exceeds the cap on its own, but that's fine — single test in batch
-        let batches = scheduler.schedule(
+        let scheduler = Scheduler::new(
+            2,
             &tests,
             &durations,
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
+        let batches = drain_batches(&scheduler);
 
         assert_eq!(batches.len(), 2);
         // slow_test should be alone in its batch
@@ -460,7 +490,6 @@ mod tests {
         // 5 tests of 3s each, max_parallel=2, cap=10s
         // Can fit 3 tests per batch (9s < 10s), so need at least 2 batches
         // But only 2 workers, so tests get split: batch 0 = 3 tests (9s), batch 1 = 2 tests (6s)
-        let scheduler = Scheduler::new(2);
         let records: Vec<_> = (0..7)
             .map(|i| TestRecord::new(format!("test_{}", i), "test-group"))
             .collect();
@@ -473,12 +502,14 @@ mod tests {
 
         // 7 tests * 4s = 28s total. Cap 10s means max 2 tests per batch (8s).
         // With 2 initial workers, need at least 4 batches (7 tests / 2 per batch)
-        let batches = scheduler.schedule(
+        let scheduler = Scheduler::new(
+            2,
             &tests,
             &durations,
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
+        let batches = drain_batches(&scheduler);
 
         assert!(
             batches.len() > 2,
@@ -503,7 +534,6 @@ mod tests {
 
     #[test]
     fn test_schedule_splits_on_command_length() {
-        let scheduler = Scheduler::new(1);
         // Create tests whose IDs together exceed MAX_BATCH_COMMAND_LEN
         let long_name = "a".repeat(MAX_BATCH_COMMAND_LEN / 2 + 1);
         let records = [
@@ -512,7 +542,8 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule(&tests, &HashMap::new(), &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Two tests that each use >half the command length budget must be in separate batches
         assert_eq!(batches.len(), 2);
@@ -522,14 +553,14 @@ mod tests {
 
     #[test]
     fn test_schedule_groups_short_commands() {
-        let scheduler = Scheduler::new(1);
         // Create many tests with short IDs that fit in one batch
         let records: Vec<_> = (0..100)
             .map(|i| TestRecord::new(format!("t{i}"), "test-group"))
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let batches = scheduler.schedule(&tests, &HashMap::new(), &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);
@@ -538,7 +569,6 @@ mod tests {
 
     #[test]
     fn test_schedule_individual_tests_get_own_batch() {
-        let scheduler = Scheduler::new(2);
         let mut records = [
             TestRecord::new("fast_1", "fast-group"),
             TestRecord::new("fast_2", "fast-group"),
@@ -550,7 +580,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Each individually-scheduled test must be alone in its batch
         for batch in &batches {
@@ -570,7 +601,6 @@ mod tests {
 
     #[test]
     fn test_schedule_individual_tests_preserves_interleaved_order() {
-        let scheduler = Scheduler::new(4);
         // Simulate already-interleaved individual instances (as orchestrator would produce)
         let mut records = vec![
             TestRecord::new("slow_a", "slow-group"),
@@ -585,7 +615,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Each individually-scheduled test in its own batch, order preserved
         let ids: Vec<&str> = batches
@@ -600,7 +631,6 @@ mod tests {
 
     #[test]
     fn test_schedule_individual_tests_at_front() {
-        let scheduler = Scheduler::new(4);
         let mut records = [
             TestRecord::new("fast_1", "fast-group"),
             TestRecord::new("slow_1", "slow-group"),
@@ -610,7 +640,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let batches = scheduler.schedule(&tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
+        let batches = drain_batches(&scheduler);
 
         // Individually-scheduled batches come first
         assert!(

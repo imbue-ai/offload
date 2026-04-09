@@ -4,7 +4,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod spawn;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -282,7 +282,6 @@ where
             crate::trace::PID_LOCAL,
             crate::trace::TID_MAIN,
         );
-        let scheduler = Scheduler::new(self.config.offload.max_parallel);
         if durations.is_empty() {
             warn!(
                 "No historical test durations found at {}. \
@@ -313,7 +312,8 @@ where
                 .map(|(group, (total, count))| (group, total / count as u32))
                 .collect::<HashMap<String, Duration>>()
         };
-        let batches = scheduler.schedule(
+        let scheduler = Scheduler::new(
+            self.config.offload.max_parallel,
             &tests_to_run,
             &durations,
             &group_to_default_duration,
@@ -328,13 +328,13 @@ where
         info!(
             "[ORCHESTRATOR] Scheduled {} tests into {} batches with {} sandboxes",
             tests_to_run.len(),
-            batches.len(),
+            scheduler.batch_count(),
             sandboxes.len()
         );
-        for (i, batch) in batches.iter().enumerate() {
-            info!("[ORCHESTRATOR] Batch {}: {} tests", i, batch.len());
+        for (i, size) in scheduler.batch_sizes().iter().enumerate() {
+            info!("[ORCHESTRATOR] Batch {}: {} tests", i, size);
         }
-        let total_in_batches: usize = batches.iter().map(|b| b.len()).sum();
+        let total_in_batches: usize = scheduler.batch_sizes().iter().sum();
         info!(
             "[ORCHESTRATOR] Total tests across all batches: {} (should equal {})",
             total_in_batches,
@@ -365,8 +365,6 @@ where
         }
         std::fs::create_dir_all(&logs_dir).ok();
 
-        // Queue-based batching: workers pull from a shared queue
-        let queue = Arc::new(std::sync::Mutex::new(VecDeque::from(batches)));
         let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         // Emit per-sandbox metadata events for trace
@@ -404,7 +402,7 @@ where
                 let cfg = spawn::SpawnConfig {
                     config: &self.config,
                     framework: &self.framework,
-                    queue: Arc::clone(&queue),
+                    scheduler: &scheduler,
                     progress: &progress,
                     total_tests_to_run,
                     all_passed: Arc::clone(&all_passed),
