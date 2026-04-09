@@ -107,7 +107,7 @@ Each group triggers its own discovery call. The discovered test IDs become the c
 Offload matches discovered test IDs to JUnit XML results using a `test_id_format` string that controls how JUnit XML `name` and `classname` attributes are combined into a test ID. For example, `"{name}"` uses just the name attribute; `"{classname} {name}"` joins them with a space. This is the most common source of "Not Run" errors.
 
 - The JUnit attributes produced by the test runner **must match** the test ID from discovery after applying `test_id_format`. If they don't match, Offload reports the test as "Not Run".
-- **pytest**: The format defaults to `"{name}"`. A `pytest_collection_modifyitems` conftest hook writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Configurable via `test_id_format`.
+- **pytest**: The format defaults to `"{name}"`. The `_set_junit_test_id` conftest fixture writes the full nodeid into the JUnit `name` attribute so it matches the `pytest --collect-only` output. Configurable via `test_id_format`.
 - **nextest**: The format defaults to `"{classname} {name}"` where classname is the binary ID and name is the test function. Configurable via `test_id_format`.
 - **vitest**: The format defaults to `"{classname} > {name}"`, configurable via `test_id_format`.
 - **default**: The `test_id_format` field is a required configuration option. Set it to match how your test runner populates the JUnit XML `name` and `classname` attributes.

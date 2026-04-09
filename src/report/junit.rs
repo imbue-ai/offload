@@ -57,6 +57,7 @@ pub struct TestcaseXml {
     pub time: f64,
     pub failure: Option<FailureXml>,
     pub error: Option<FailureXml>,
+    pub skipped: bool,
 }
 
 /// Parsed failure/error element from JUnit XML.
@@ -134,6 +135,9 @@ impl MasterJunitReport {
             // A test ID fails if ANY of its testcases failed.
             let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
             for testcase in &testsuite.testcases {
+                if testcase.skipped {
+                    continue;
+                }
                 let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
                 let entry = suite_outcomes.entry(test_id).or_insert(false);
@@ -405,7 +409,13 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
+                        skipped: false,
                     });
+                }
+                b"skipped" => {
+                    if let Some(ref mut tc) = current_testcase {
+                        tc.skipped = true;
+                    }
                 }
                 b"failure" => {
                     in_failure = true;
@@ -440,9 +450,15 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
+                        skipped: false,
                     };
                     if let Some(ref mut ts) = current_testsuite {
                         ts.testcases.push(tc);
+                    }
+                }
+                b"skipped" => {
+                    if let Some(ref mut tc) = current_testcase {
+                        tc.skipped = true;
                     }
                 }
                 _ => {}
@@ -1087,6 +1103,31 @@ mod tests {
         assert_eq!(report.total_count(), 2);
         assert_eq!(report.passed_count(), 2);
         assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_skipped_testcase_excluded_from_validation() {
+        let known: HashSet<String> = ["test_foo", "test_bar"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut report = MasterJunitReport::new(2, "{name}", known);
+
+        // test_baz is unrecognized but skipped — should NOT trigger an error
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="0">
+    <testcase name="test_foo" time="0.1" />
+    <testcase name="test_baz" time="0.0">
+        <skipped message="root only"/>
+    </testcase>
+</testsuite>"#;
+
+        let result = report.add_junit_xml(xml);
+        assert!(
+            result.is_ok(),
+            "Skipped tests with unrecognized IDs should not cause errors"
+        );
+        assert_eq!(report.total_count(), 1); // only test_foo counted
     }
 
     #[test]
