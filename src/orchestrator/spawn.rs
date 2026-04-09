@@ -180,7 +180,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
         let outcome = cfg
             .scheduler
-            .run_batch(&batch, runner.run_tests(&batch.tests))
+            .register_running_batch(&batch, runner.run_tests(&batch.tests))
             .await;
 
         // Rename log files based on outcome

@@ -10,7 +10,7 @@ use crate::framework::TestInstance;
 /// A scheduled batch of tests ready for execution.
 ///
 /// Wraps a list of test instances along with their combined estimated duration.
-/// Workers pop these from the scheduler queue and pass them to `run_batch`.
+/// Workers pop these from the scheduler queue and pass them to `register_running_batch`.
 #[derive(Clone)]
 pub struct ScheduledBatch<'a> {
     pub tests: Vec<TestInstance<'a>>,
@@ -83,7 +83,7 @@ impl<'a> Batch<'a> {
 ///
 /// Performs LPT scheduling at construction time and exposes the resulting
 /// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
-/// to pull batches. The `run_batch` method provides hedged re-queuing when
+/// to pull batches. The `register_running_batch` method provides hedged re-queuing when
 /// a batch takes too long.
 pub struct Scheduler<'a> {
     queue: Mutex<VecDeque<ScheduledBatch<'a>>>,
@@ -265,7 +265,7 @@ impl<'a> Scheduler<'a> {
     /// completes before that deadline, its result is returned immediately.
     /// If the timeout fires, the batch is split (or cloned if single-test)
     /// and re-queued, then the original future is awaited to completion.
-    pub async fn run_batch<Fut, R>(&self, batch: &ScheduledBatch<'a>, fut: Fut) -> R
+    pub async fn register_running_batch<Fut, R>(&self, batch: &ScheduledBatch<'a>, fut: Fut) -> R
     where
         Fut: Future<Output = R>,
     {
@@ -768,7 +768,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_batch_completes_normally_before_threshold() -> anyhow::Result<()> {
+    async fn test_register_running_batch_completes_normally_before_threshold() -> anyhow::Result<()>
+    {
         let records = [TestRecord::new("test_a", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
@@ -781,7 +782,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
 
         // Future completes instantly, well within 2 * 10s threshold
-        let result = scheduler.run_batch(&batch, async { 42 }).await;
+        let result = scheduler.register_running_batch(&batch, async { 42 }).await;
         assert_eq!(result, 42);
 
         // Queue should be empty — no re-queuing occurred
@@ -790,7 +791,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_batch_requeues_and_splits_multi_test_batch() -> anyhow::Result<()> {
+    async fn test_register_running_batch_requeues_and_splits_multi_test_batch() -> anyhow::Result<()>
+    {
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -813,7 +815,7 @@ mod tests {
         assert_eq!(batch.tests.len(), 4);
 
         scheduler
-            .run_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
+            .register_running_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
             .await;
 
         // Should have 2 halves re-queued
@@ -834,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_batch_requeues_single_test_batch() -> anyhow::Result<()> {
+    async fn test_register_running_batch_requeues_single_test_batch() -> anyhow::Result<()> {
         let records = [TestRecord::new("test_a", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
@@ -849,7 +851,7 @@ mod tests {
         assert_eq!(batch.tests.len(), 1);
 
         scheduler
-            .run_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
+            .register_running_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
             .await;
 
         // Single-test batch is cloned and re-queued as-is
