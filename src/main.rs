@@ -780,6 +780,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
         offload: OffloadConfig {
             max_parallel: 10,
             test_timeout_secs: 900,
+            max_batch_duration_secs: None,
             working_dir: None,
             sandbox_project_root: "/app".to_string(),
             sandbox_init_cmd: None,

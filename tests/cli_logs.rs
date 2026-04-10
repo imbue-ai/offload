@@ -22,6 +22,7 @@ fn write_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
         offload: OffloadConfig {
             max_parallel: 1,
             test_timeout_secs: 300,
+            max_batch_duration_secs: None,
             working_dir: None,
             sandbox_project_root: ".".to_string(),
             sandbox_init_cmd: None,
@@ -397,6 +398,7 @@ fn write_cargo_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
         offload: OffloadConfig {
             max_parallel: 1,
             test_timeout_secs: 300,
+            max_batch_duration_secs: None,
             working_dir: None,
             sandbox_project_root: ".".to_string(),
             sandbox_init_cmd: None,

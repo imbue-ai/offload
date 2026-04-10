@@ -21,12 +21,9 @@ pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
-/// Maximum expected duration for a single batch of tests.
-///
-/// Batches produced by LPT scheduling will not exceed this duration
-/// (unless a single test already exceeds it). This keeps batches
-/// small enough for fast feedback and efficient retry granularity.
-const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
+/// Default LPT batch duration cap when `[offload] max_batch_duration_secs`
+/// is unset. Batches never exceed this unless a single test already does.
+const DEFAULT_MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
 
 /// Aggregated results of an entire test run.
 ///
@@ -312,12 +309,22 @@ where
                 .map(|(group, (total, count))| (group, total / count as u32))
                 .collect::<HashMap<String, Duration>>()
         };
+        let max_batch_duration = self
+            .config
+            .offload
+            .max_batch_duration_secs
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_MAX_BATCH_DURATION);
+        debug!(
+            "Using max_batch_duration of {:?} for LPT scheduling",
+            max_batch_duration
+        );
         let scheduler = Scheduler::new(
             self.config.offload.max_parallel,
             &tests_to_run,
             &durations,
             &group_to_default_duration,
-            Some(MAX_BATCH_DURATION),
+            Some(max_batch_duration),
         );
         drop(_sched_span);
 

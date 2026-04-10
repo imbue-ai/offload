@@ -51,6 +51,14 @@ pub struct OffloadConfig {
     #[serde(default = "default_test_timeout")]
     pub test_timeout_secs: u64,
 
+    /// Cap on the cumulative historical duration of a single LPT batch, in seconds.
+    ///
+    /// Smaller values give finer retry granularity; larger values amortize
+    /// per-batch sandbox overhead. A single test whose duration already
+    /// exceeds the cap is still placed alone in its own batch. Defaults to 10.
+    #[serde(default)]
+    pub max_batch_duration_secs: Option<u64>,
+
     /// Working directory for test execution.
     ///
     /// If specified, tests will run in this directory. Otherwise,
@@ -695,11 +703,57 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_max_batch_duration_secs_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+            max_batch_duration_secs = 60
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+        assert_eq!(config.offload.max_batch_duration_secs, Some(60));
+        Ok(())
+    }
+
+    #[test]
+    fn test_max_batch_duration_secs_default_none() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml)?;
+        assert!(config.offload.max_batch_duration_secs.is_none());
+        Ok(())
+    }
+
     fn pytest_local_config() -> Config {
         Config {
             offload: OffloadConfig {
                 max_parallel: 10,
                 test_timeout_secs: 900,
+                max_batch_duration_secs: None,
                 working_dir: None,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
@@ -731,6 +785,7 @@ mod tests {
             offload: OffloadConfig {
                 max_parallel: 10,
                 test_timeout_secs: 900,
+                max_batch_duration_secs: None,
                 working_dir: None,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
@@ -760,6 +815,7 @@ mod tests {
             offload: OffloadConfig {
                 max_parallel: 10,
                 test_timeout_secs: 900,
+                max_batch_duration_secs: None,
                 working_dir: None,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
@@ -933,6 +989,7 @@ mod tests {
             offload: OffloadConfig {
                 max_parallel: 10,
                 test_timeout_secs: 900,
+                max_batch_duration_secs: None,
                 working_dir: None,
                 sandbox_project_root: "/app".to_string(),
                 sandbox_init_cmd: None,
