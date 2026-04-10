@@ -140,6 +140,8 @@ impl TestFramework for CargoFramework {
             cmd_args.extend(args);
         }
 
+        let cmd_display = format!("cargo {}", cmd_args.join(" "));
+
         let output = tokio::process::Command::new("cargo")
             .args(&cmd_args)
             .output()
@@ -152,8 +154,8 @@ impl TestFramework for CargoFramework {
         if !output.status.success() {
             let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "cargo nextest list failed (exit {}): {}",
-                output.status, detail
+                "cargo nextest list failed (exit {}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 

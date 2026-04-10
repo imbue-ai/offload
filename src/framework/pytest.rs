@@ -119,6 +119,24 @@ impl TestFramework for PytestFramework {
             cmd.arg(path);
         }
 
+        // Build a display string for the command before running it
+        let mut cmd_parts: Vec<&str> = Vec::new();
+        cmd_parts.push(&self.program);
+        for arg in &self.prefix_args {
+            cmd_parts.push(arg);
+        }
+        cmd_parts.push("--collect-only");
+        cmd_parts.push("-q");
+        let filter_display: String;
+        if !filters.is_empty() {
+            filter_display = filters.to_string();
+            cmd_parts.push(&filter_display);
+        }
+        for path in &search_paths {
+            cmd_parts.push(path);
+        }
+        let cmd_display = cmd_parts.join(" ");
+
         let output = cmd
             .output()
             .await
@@ -130,8 +148,8 @@ impl TestFramework for PytestFramework {
         if !output.status.success() && !stdout.contains("::") {
             let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "pytest --collect-only failed (exit {}): {}",
-                output.status, detail
+                "pytest --collect-only failed (exit {}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 

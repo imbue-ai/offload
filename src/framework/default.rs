@@ -95,9 +95,10 @@ impl TestFramework for DefaultFramework {
 
         if !output.status.success() {
             let detail = discovery_error_detail(&stderr, &stdout);
+            let cmd_display = format!("sh -c '{}'", discover_command);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "discover_command failed (exit {}): {}",
-                output.status, detail
+                "discover_command failed (exit {}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 
