@@ -405,19 +405,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     match report.lock() {
                         Ok(mut report) => {
                             let before = report.total_count();
-                            if let Err(e) = report.add_junit_xml(&junit_xml) {
+                            let batch_ids: Vec<String> =
+                                tests.iter().map(|t| t.id().to_string()).collect();
+                            if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
                                 error!(
-                                    "[BATCH ERROR] Sandbox {} test ID mismatch: {}",
+                                    "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
                                     sandbox_id, e
                                 );
-                                if let Some(ref token) = self.cancellation_token {
-                                    token.cancel();
-                                }
-                                return Err(anyhow::anyhow!(
-                                    "Test ID mismatch in JUnit XML from sandbox {}: {}",
-                                    sandbox_id,
-                                    e
-                                ));
+                                return Ok(BatchOutcome::Failure);
                             }
                             let after = report.total_count();
                             info!(
