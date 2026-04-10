@@ -39,7 +39,6 @@ offload run                                 # basic run
 offload run --parallel 8                    # override parallelism
 offload run --copy-dir ".:/app"             # copy cwd into sandbox at /app
 offload run --env KEY=VALUE                 # set sandbox env var (repeatable)
-offload run --no-cache                      # force fresh image build
 offload run --collect-only                  # discover tests without running
 offload run --show-estimated-cost           # show sandbox cost after run
 offload run -c path/to/offload.toml         # use alternate config
@@ -141,7 +140,7 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | Tests discovered but "Not Run" | JUnit test IDs do not match discovery IDs | Check `test_id_format` or conftest JUnit hook |
 | "Exec format error" | Local `.venv` (macOS binaries) copied into Linux sandbox | Add `.venv` to `.dockerignore` |
 | "Token validation failed" | Modal credentials expired | Run `modal token new` |
-| Slow sandbox creation | Docker image not cached | Pass `--no-cache` to force a fresh build, or check that the git note on the base commit is present (`refs/notes/offload-image-cache`) |
+| Slow sandbox creation | Docker image not cached | Check that the git note on the base commit is present (`refs/notes/offload/image-cache`), or remove it with `git notes --ref=offload/image-cache remove <commit>` to force a fresh build |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
 
 ## CLI Quick Reference

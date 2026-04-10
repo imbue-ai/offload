@@ -67,10 +67,6 @@ enum Commands {
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
 
-        /// Skip cached image lookup during prepare (forces fresh build)
-        #[arg(long)]
-        no_cache: bool,
-
         /// Emit a Perfetto trace to {output_dir}/trace.json
         #[arg(long)]
         trace: bool,
@@ -150,7 +146,6 @@ async fn main() -> Result<()> {
             collect_only,
             copy_dir,
             env_vars,
-            no_cache,
             trace,
             show_estimated_cost,
             fail_fast,
@@ -161,7 +156,6 @@ async fn main() -> Result<()> {
                 collect_only,
                 copy_dir,
                 env_vars,
-                no_cache,
                 cli.verbose,
                 trace,
                 show_estimated_cost,
@@ -340,7 +334,6 @@ async fn run_tests(
     collect_only: bool,
     copy_dir_args: Vec<String>,
     env_vars: Vec<String>,
-    no_cache: bool,
     verbose: bool,
     trace: bool,
     show_estimated_cost: bool,
@@ -488,14 +481,10 @@ async fn run_tests(
         .as_ref()
         .and_then(|a| a.context_dir.as_deref());
 
-    // Determine cached image ID from git notes (if git_patch enabled and not --no-cache)
+    // Determine cached image ID from git notes (if git_patch enabled)
     let cached_image_id: Option<String> = if let Some(ref artifact) = git_patch_artifact {
-        if no_cache {
-            None
-        } else {
-            offload::git_patch::read_cached_image_id(&artifact.base_commit)
-                .context("failed to read cached image ID")?
-        }
+        offload::git_patch::read_cached_image_id(&artifact.base_commit)
+            .context("failed to read cached image ID")?
     } else {
         None
     };

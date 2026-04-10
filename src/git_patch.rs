@@ -314,11 +314,11 @@ pub fn prepare(
 }
 
 /// Reads cached image ID from a git note on the given commit.
-/// Uses refs/notes/offload-image-cache namespace.
+/// Uses refs/notes/offload/image-cache namespace.
 /// Returns `Some(image_id)` if note exists and starts with "im-".
 pub fn read_cached_image_id(base_commit: &str) -> Result<Option<String>> {
     let output = Command::new("git")
-        .args(["notes", "--ref=offload-image-cache", "show", base_commit])
+        .args(["notes", "--ref=offload/image-cache", "show", base_commit])
         .output()
         .context("failed to run git notes show")?;
     if !output.status.success() {
@@ -334,12 +334,12 @@ pub fn read_cached_image_id(base_commit: &str) -> Result<Option<String>> {
 }
 
 /// Writes an image ID as a git note on the given commit.
-/// Uses refs/notes/offload-image-cache namespace.
+/// Uses refs/notes/offload/image-cache namespace.
 pub fn write_cached_image_id(base_commit: &str, image_id: &str) -> Result<()> {
     let status = Command::new("git")
         .args([
             "notes",
-            "--ref=offload-image-cache",
+            "--ref=offload/image-cache",
             "add",
             "-f",
             "-m",

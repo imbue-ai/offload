@@ -320,7 +320,7 @@ Append Offload artifacts to `.gitignore`:
 test-results/
 ```
 
-NOTE: Offload caches the prepared image ID as a git note on the base commit (in the `refs/notes/offload-image-cache` namespace), so there is no cache file to track in `.gitignore`. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
+NOTE: Offload caches the prepared image ID as a git note on the base commit (in the `refs/notes/offload/image-cache` namespace), so there is no cache file to track in `.gitignore`. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
 
 ### Step 9: Run Offload Locally and Verify
 
@@ -540,7 +540,7 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | All tests "Not Run" / junit.xml missing | Test command failing inside sandbox | Check Dockerfile has correct runtime; debug with `modal sandbox create` |
 | "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before Offload |
 | Slow sandbox creation | Docker image not cached | Run once to warm cache; the image ID is cached as a git note on the base commit |
-| Stale sandbox image | Cached git note points to an outdated image | Pass `--no-cache` to `offload run` to force a fresh image build |
+| Stale sandbox image | Cached git note points to an outdated image | Remove the git note with `git notes --ref=offload/image-cache remove <commit>` to force a fresh image build |
 | High parallelism slower than low | Sandbox creation overhead dominates | Reduce `max_parallel`; optimal is usually 2-6 for small test suites |
 | Tests fail with unexpected errors in sandbox | Local artifacts (caches, build dirs) interfere with sandbox environment | Create a `.dockerignore` (see below) |
 

@@ -180,7 +180,6 @@ Run tests in parallel.
 | `--collect-only` | Discover tests without running them |
 | `--copy-dir LOCAL:REMOTE` | Copy a directory into each sandbox (repeatable) |
 | `--env KEY=VALUE` | Set an environment variable in sandboxes (repeatable) |
-| `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
 | `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
 
@@ -488,9 +487,10 @@ Commands in configuration can reference bundled scripts using `@filename.ext` sy
 ## Image Cache
 
 When using `[git_patch]`, Offload caches the prepared image ID as a git note
-on the base commit (in the `refs/notes/offload-image-cache` namespace).
+on the base commit (in the `refs/notes/offload/image-cache` namespace).
 On subsequent runs with the same base commit, the cached image is reused
-automatically. Pass `--no-cache` to `offload run` to force a fresh build.
+automatically. To force a fresh build, remove the git note with
+`git notes --ref=offload/image-cache remove <commit>`.
 
 ## Environment Variable Expansion
 
