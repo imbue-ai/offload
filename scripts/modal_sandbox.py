@@ -285,6 +285,7 @@ def prepare(
                 sandbox_init_cmd=sandbox_init_cmd,
             )
 
+    sys.stdout.write("offload:base_image_id=%s\n" % base_image_id)
     sys.stdout.write("%s\n" % final_id)
 
 

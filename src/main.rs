@@ -520,7 +520,10 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = DefaultProvider::from_config(p_cfg.clone());
-            let (all_tests, prepare_image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
+            let (all_tests, prepare_result): (
+                Vec<TestRecord>,
+                Option<offload::provider::PrepareResult>,
+            ) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(
@@ -541,9 +544,11 @@ async fn run_tests(
                         .context("Failed to prepare Default provider")
                 }
             )?;
-            // Cache the image ID as a git note on the base commit
-            if let (Some(artifact), Some(image_id)) = (&git_patch_artifact, &prepare_image_id) {
-                offload::git_patch::write_cached_image_id(&artifact.base_commit, image_id)
+            // Cache the base image ID (not the final ID) as a git note
+            if let (Some(artifact), Some(result)) = (&git_patch_artifact, &prepare_result)
+                && let Some(base_id) = &result.base_image_id
+            {
+                offload::git_patch::write_cached_image_id(&artifact.base_commit, base_id)
                     .context("failed to write cached image ID")?;
             }
             if all_tests.is_empty() {
@@ -566,7 +571,10 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = ModalProvider::from_config(p_cfg.clone());
-            let (all_tests, prepare_image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
+            let (all_tests, prepare_result): (
+                Vec<TestRecord>,
+                Option<offload::provider::PrepareResult>,
+            ) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
                     let _span = tracer.span(
@@ -587,9 +595,11 @@ async fn run_tests(
                         .context("Failed to prepare Modal provider")
                 }
             )?;
-            // Cache the image ID as a git note on the base commit
-            if let (Some(artifact), Some(image_id)) = (&git_patch_artifact, &prepare_image_id) {
-                offload::git_patch::write_cached_image_id(&artifact.base_commit, image_id)
+            // Cache the base image ID (not the final ID) as a git note
+            if let (Some(artifact), Some(result)) = (&git_patch_artifact, &prepare_result)
+                && let Some(base_id) = &result.base_image_id
+            {
+                offload::git_patch::write_cached_image_id(&artifact.base_commit, base_id)
                     .context("failed to write cached image ID")?;
             }
             if all_tests.is_empty() {

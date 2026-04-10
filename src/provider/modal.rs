@@ -80,7 +80,7 @@ impl SandboxProvider for ModalProvider {
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
-    ) -> ProviderResult<Option<String>> {
+    ) -> ProviderResult<Option<super::PrepareResult>> {
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
 
         if let Some(dockerfile) = &self.config.dockerfile {
@@ -121,13 +121,13 @@ impl SandboxProvider for ModalProvider {
 
         debug!("Running prepare command: {}", prepare_cmd);
 
-        let image_id =
+        let result =
             run_prepare_command(&self.connector, &prepare_cmd, "Modal", discovery_done).await?;
 
-        debug!("Modal image prepared with ID: {}", image_id);
+        debug!("Modal image prepared with ID: {}", result.image_id);
 
-        self.image_id = Some(image_id.clone());
-        Ok(Some(image_id))
+        self.image_id = Some(result.image_id.clone());
+        Ok(Some(result))
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {

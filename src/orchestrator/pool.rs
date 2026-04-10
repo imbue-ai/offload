@@ -114,7 +114,7 @@ mod tests {
             _sandbox_init_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
             _context_dir: Option<&std::path::Path>,
-        ) -> ProviderResult<Option<String>> {
+        ) -> ProviderResult<Option<crate::provider::PrepareResult>> {
             Ok(None)
         }
 

@@ -75,8 +75,8 @@ impl SandboxProvider for DefaultProvider {
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
-    ) -> ProviderResult<Option<String>> {
-        let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
+    ) -> ProviderResult<Option<super::PrepareResult>> {
+        let result = if let Some(prepare_cmd) = &self.config.prepare_command {
             let mut full_prepare_cmd = prepare_cmd.clone();
 
             if let Some(id) = cached_image_id {
@@ -105,7 +105,7 @@ impl SandboxProvider for DefaultProvider {
                 full_prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
             }
 
-            let image_id = run_prepare_command(
+            let result = run_prepare_command(
                 &self.connector,
                 &full_prepare_cmd,
                 "Default",
@@ -113,13 +113,13 @@ impl SandboxProvider for DefaultProvider {
             )
             .await?;
 
-            Some(image_id)
+            Some(result)
         } else {
             None
         };
 
-        self.image_id = image_id.clone();
-        Ok(image_id)
+        self.image_id = result.as_ref().map(|r| r.image_id.clone());
+        Ok(result)
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {

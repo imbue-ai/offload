@@ -97,6 +97,19 @@ pub enum ProviderError {
     Other(#[from] anyhow::Error),
 }
 
+/// Result of running a prepare command.
+///
+/// Contains the final image ID (used for sandbox creation) and optionally
+/// the base image ID (used for caching, so the cache stores the base
+/// image without the patch baked in).
+#[derive(Debug, Clone)]
+pub struct PrepareResult {
+    /// The final image ID, with patch and source code applied.
+    pub image_id: String,
+    /// The base image ID before patch/source code layers, if reported.
+    pub base_image_id: Option<String>,
+}
+
 /// A command to execute in a sandbox.
 ///
 /// Commands are built using a fluent builder API and can be converted
@@ -279,13 +292,14 @@ pub trait Sandbox: Send {
 }
 
 /// Streams a prepare command, buffering output while discovery is in-flight.
-/// Returns the image_id (last stdout line) on success.
+/// Returns a [`PrepareResult`] containing the final image ID (last stdout
+/// line) and optionally the base image ID (from a tagged metadata line).
 pub(crate) async fn run_prepare_command(
     connector: &ShellConnector,
     command: &str,
     label: &str,
     discovery_done: Option<&AtomicBool>,
-) -> ProviderResult<String> {
+) -> ProviderResult<PrepareResult> {
     let mut buffer: Vec<String> = Vec::new();
     let emit = |msg: String, buf: &mut Vec<String>| {
         if discovery_done.is_some_and(|flag| !flag.load(Ordering::Acquire)) {
@@ -305,12 +319,16 @@ pub(crate) async fn run_prepare_command(
 
     let mut stream = connector.run_stream(command).await?;
     let mut last_stdout_line = String::new();
+    let mut base_image_id: Option<String> = None;
     let mut exit_code = 0;
 
     while let Some(line) = stream.next().await {
         match line {
             OutputLine::Stdout(s) => {
                 emit(format!("[prepare]   {}", s), &mut buffer);
+                if let Some(base_id) = s.strip_prefix("offload:base_image_id=") {
+                    base_image_id = Some(base_id.trim().to_string());
+                }
                 last_stdout_line = s;
             }
             OutputLine::Stderr(s) => {
@@ -343,7 +361,10 @@ pub(crate) async fn run_prepare_command(
         )));
     }
 
-    Ok(image_id)
+    Ok(PrepareResult {
+        image_id,
+        base_image_id,
+    })
 }
 
 /// Escape a string for use in a shell command.
@@ -375,7 +396,7 @@ pub trait SandboxProvider: Send + Sync {
     /// Each provider creates a specific sandbox implementation
     type Sandbox: Sandbox;
 
-    /// Runs provider preparation (e.g. image build) and returns an image ID.
+    /// Runs provider preparation (e.g. image build) and returns a prepare result.
     ///
     /// For providers that build images (Modal, Default with `prepare_command`),
     /// this runs the prepare command and caches the resulting image ID.
@@ -388,7 +409,7 @@ pub trait SandboxProvider: Send + Sync {
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
-    ) -> ProviderResult<Option<String>>;
+    ) -> ProviderResult<Option<PrepareResult>>;
 
     /// Creates a new sandbox with the given configuration.
     ///
