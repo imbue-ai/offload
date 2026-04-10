@@ -469,13 +469,30 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ) -> Option<(String, usize)> {
         let sandbox_id = self.sandbox.id().to_string();
         let remote_path = std::path::Path::new(result_path);
-        let temp_file = tempfile::NamedTempFile::new().ok()?;
+
+        // Determine where to download: directly into parts_dir when available,
+        // otherwise fall back to a temp file.
+        // Keep the NamedTempFile alive so its Drop cleans up the file at function exit.
+        let mut _temp_guard: Option<tempfile::NamedTempFile> = None;
+        let download_path = if let Some(ref parts_dir) = self.parts_dir {
+            if let Err(e) = std::fs::create_dir_all(parts_dir) {
+                warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
+                return None;
+            }
+            let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+            parts_dir.join(format!("{}.xml", safe_id))
+        } else {
+            let temp_file = tempfile::NamedTempFile::new().ok()?;
+            let path = temp_file.path().to_path_buf();
+            _temp_guard = Some(temp_file);
+            path
+        };
 
         debug!(
             "[DOWNLOAD] Sandbox {} downloading {}...",
             sandbox_id, result_path
         );
-        let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
+        let path_pairs = [(remote_path, download_path.as_path())];
         match with_retry!(self.sandbox.download(&path_pairs)) {
             Ok(_) => debug!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
             Err(e) => {
@@ -487,11 +504,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        let content = match std::fs::read_to_string(temp_file.path()) {
+        let content = match std::fs::read_to_string(&download_path) {
             Ok(c) => c,
             Err(e) => {
                 error!(
-                    "[DOWNLOAD READ FAILED] Sandbox {} failed to read temp file: {}",
+                    "[DOWNLOAD READ FAILED] Sandbox {} failed to read downloaded file: {}",
                     sandbox_id, e
                 );
                 return None;
@@ -516,30 +533,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             expected_count
         );
 
-        // Save to parts directory for debugging if configured
-        if let Some(ref parts_dir) = self.parts_dir {
-            if let Err(e) = std::fs::create_dir_all(parts_dir) {
-                warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
-            } else {
-                // Sanitize sandbox ID to be a valid filename
-                let safe_id =
-                    sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                let part_file = parts_dir.join(format!("{}.xml", safe_id));
-                if let Err(e) = std::fs::write(&part_file, &content) {
-                    warn!("Failed to save part file {:?}: {}", part_file, e);
-                } else {
-                    info!(
-                        "[PARTS] Saved {} to {:?} ({} bytes, {} testcases)",
-                        sandbox_id,
-                        part_file,
-                        content.len(),
-                        actual_count
-                    );
-                }
-            }
+        if self.parts_dir.is_some() {
+            info!(
+                "[PARTS] Saved {} to {:?} ({} bytes, {} testcases)",
+                sandbox_id,
+                download_path,
+                content.len(),
+                actual_count
+            );
 
             // Log parts dir stats
-            if let Ok(entries) = std::fs::read_dir(parts_dir) {
+            if let Ok(entries) = std::fs::read_dir(download_path.parent().unwrap_or(&download_path))
+            {
                 let count = entries.filter(|e| e.is_ok()).count();
                 info!("[PARTS] Directory now has {} files", count);
             }
