@@ -21,6 +21,9 @@ pub struct GitPatchArtifact {
     /// Command to prepend to sandbox_init_cmd.
     pub apply_cmd: Option<String>,
 
+    /// The resolved base commit hash.
+    pub base_commit: String,
+
     /// Temp dir holding the patch file. Kept alive for RAII cleanup.
     _patch_dir: Option<TempDir>,
 
@@ -304,9 +307,55 @@ pub fn prepare(
     Ok(GitPatchArtifact {
         copy_dir,
         apply_cmd,
+        base_commit: commit,
         _patch_dir: patch_dir,
         snapshot_path,
     })
+}
+
+/// Reads cached image ID from a git note on the given commit.
+/// Uses refs/notes/offload-image-cache namespace.
+/// Returns `Some(image_id)` if note exists and starts with "im-".
+pub fn read_cached_image_id(base_commit: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["notes", "--ref=offload-image-cache", "show", base_commit])
+        .output()
+        .context("failed to run git notes show")?;
+    if !output.status.success() {
+        // No note exists — not an error, just no cache
+        return Ok(None);
+    }
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.starts_with("im-") {
+        Ok(Some(id))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Writes an image ID as a git note on the given commit.
+/// Uses refs/notes/offload-image-cache namespace.
+pub fn write_cached_image_id(base_commit: &str, image_id: &str) -> Result<()> {
+    let status = Command::new("git")
+        .args([
+            "notes",
+            "--ref=offload-image-cache",
+            "add",
+            "-f",
+            "-m",
+            image_id,
+            base_commit,
+        ])
+        .status()
+        .context("failed to run git notes add")?;
+    if !status.success() {
+        bail!("git notes add failed for commit {base_commit}");
+    }
+    info!(
+        "[git_patch] Cached image {image_id} on commit {}",
+        &base_commit[..base_commit.len().min(12)]
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -419,6 +468,7 @@ mod tests {
         let artifact = GitPatchArtifact {
             copy_dir: None,
             apply_cmd: None,
+            base_commit: String::new(),
             _patch_dir: None,
             snapshot_path: Some(snap.clone()),
         };
@@ -432,6 +482,7 @@ mod tests {
         let artifact = GitPatchArtifact {
             copy_dir: None,
             apply_cmd: None,
+            base_commit: String::new(),
             _patch_dir: None,
             snapshot_path: None,
         };

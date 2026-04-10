@@ -384,7 +384,7 @@ pub trait SandboxProvider: Send + Sync {
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
+        cached_image_id: Option<&str>,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>>;

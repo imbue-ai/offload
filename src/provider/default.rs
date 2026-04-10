@@ -71,15 +71,15 @@ impl SandboxProvider for DefaultProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        no_cache: bool,
+        cached_image_id: Option<&str>,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
         let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
             let mut full_prepare_cmd = prepare_cmd.clone();
 
-            if !no_cache {
-                full_prepare_cmd.push_str(" --cached");
+            if let Some(id) = cached_image_id {
+                full_prepare_cmd.push_str(&format!(" --image-id={}", id));
             }
 
             for copy_spec in &self.config.copy_dirs {
@@ -763,7 +763,7 @@ mod tests {
         };
 
         let mut provider = DefaultProvider::from_config(config);
-        provider.prepare(&[], false, None, None).await?;
+        provider.prepare(&[], None, None, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

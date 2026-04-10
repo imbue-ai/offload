@@ -76,7 +76,7 @@ impl SandboxProvider for ModalProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
+        cached_image_id: Option<&str>,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
@@ -91,8 +91,8 @@ impl SandboxProvider for ModalProvider {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        if !no_cache {
-            prepare_cmd.push_str(" --cached");
+        if let Some(id) = cached_image_id {
+            prepare_cmd.push_str(&format!(" --image-id={}", id));
         }
 
         for copy_spec in &self.config.copy_dirs {
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_prepare_command_minimal() {
-        // Verify prepare command building logic
+        // Verify prepare command building logic (no cached image)
         let config = ModalProviderConfig::default();
 
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -205,10 +205,35 @@ mod tests {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        // no_cache = false, so --cached should be added
-        prepare_cmd.push_str(" --cached");
+        // cached_image_id = None, so no --image-id flag
+        assert_eq!(prepare_cmd, "uv run @modal_sandbox.py prepare");
+    }
 
-        assert_eq!(prepare_cmd, "uv run @modal_sandbox.py prepare --cached");
+    #[test]
+    fn test_prepare_command_with_cached_image() {
+        // Verify prepare command building logic with a cached image ID
+        let config = ModalProviderConfig::default();
+
+        let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
+
+        if let Some(dockerfile) = &config.dockerfile {
+            prepare_cmd.push(' ');
+            prepare_cmd.push_str(dockerfile);
+        }
+
+        if config.include_cwd {
+            prepare_cmd.push_str(" --include-cwd");
+        }
+
+        let cached_image_id = Some("im-abc123");
+        if let Some(id) = cached_image_id {
+            prepare_cmd.push_str(&format!(" --image-id={}", id));
+        }
+
+        assert_eq!(
+            prepare_cmd,
+            "uv run @modal_sandbox.py prepare --image-id=im-abc123"
+        );
     }
 
     #[test]
@@ -232,12 +257,8 @@ mod tests {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        prepare_cmd.push_str(" --cached");
-
-        assert_eq!(
-            prepare_cmd,
-            "uv run @modal_sandbox.py prepare ./Dockerfile --cached"
-        );
+        // No cached image
+        assert_eq!(prepare_cmd, "uv run @modal_sandbox.py prepare ./Dockerfile");
     }
 
     #[test]
@@ -263,8 +284,7 @@ mod tests {
             prepare_cmd.push_str(" --include-cwd");
         }
 
-        // no_cache = true, so --cached should NOT be added
-        // (simulating no_cache = true by not adding --cached)
+        // cached_image_id = None (simulating --no-cache), so no --image-id flag
 
         for copy_spec in &config.copy_dirs {
             prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));

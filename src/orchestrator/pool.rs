@@ -110,7 +110,7 @@ mod tests {
         async fn prepare(
             &mut self,
             _copy_dirs: &[(PathBuf, PathBuf)],
-            _no_cache: bool,
+            _cached_image_id: Option<&str>,
             _sandbox_init_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
         ) -> ProviderResult<Option<String>> {

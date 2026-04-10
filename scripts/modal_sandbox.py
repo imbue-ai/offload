@@ -102,7 +102,6 @@ def cli():
     pass
 
 
-CACHE_FILE = ".offload-image-cache"
 DOCKERIGNORE_FILE = ".dockerignore"
 
 
@@ -120,33 +119,6 @@ def read_dockerignore_patterns() -> list[str]:
     return patterns
 
 
-def read_cached_image_id() -> str | None:
-    """Read cached image_id from cache file if it exists."""
-    if not os.path.isfile(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE) as f:
-            image_id = f.read().strip()
-            if image_id.startswith("im-"):
-                return image_id
-    except Exception:
-        pass
-    return None
-
-
-def write_cached_image_id(image_id: str) -> None:
-    """Write image_id to cache file."""
-    with open(CACHE_FILE, "w") as f:
-        f.write(image_id + "\n")
-
-
-def clear_image_cache() -> None:
-    """Clear the cached image ID file."""
-    if os.path.isfile(CACHE_FILE):
-        os.remove(CACHE_FILE)
-        logger.info("Cleared cached image from %s", CACHE_FILE)
-
-
 def _build_fresh_base_image(
     app, dockerfile_path: str | None
 ) -> tuple[modal.Image, str]:
@@ -159,13 +131,10 @@ def _build_fresh_base_image(
         base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
 
     base_img.build(app)
-    # Materialize to get base image_id for caching
+    # Materialize to get base image_id
     temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
     temp_sandbox.terminate()
     base_img_id = base_img.object_id
-    # Cache the base image
-    write_cached_image_id(base_img_id)
-    logger.info("Cached base image_id to %s", CACHE_FILE)
     return base_img, base_img_id
 
 
@@ -220,7 +189,7 @@ def _build_final_image(
 
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
-@click.option("--cached", is_flag=True, help="Use cached BASE image if available")
+@click.option("--image-id", default=None, help="Pre-built base image ID to reuse")
 @click.option(
     "--include-cwd",
     is_flag=True,
@@ -239,7 +208,7 @@ def _build_final_image(
 )
 def prepare(
     dockerfile_path: str | None,
-    cached: bool,
+    image_id: str | None,
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
@@ -249,9 +218,9 @@ def prepare(
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
     that Dockerfile. If omitted, builds the default pytest image.
 
-    The --cached flag caches only the BASE image (Dockerfile build). The --include-cwd
-    and --copy-dir options are applied AFTER cache lookup, ensuring fresh source code
-    is always used even when the base image is cached.
+    The --image-id option provides a pre-built base image ID to reuse. The
+    --include-cwd and --copy-dir options are applied AFTER cache lookup,
+    ensuring fresh source code is always used even when the base image is cached.
 
     Prints the image_id to stdout for use with 'create'.
     """
@@ -277,13 +246,17 @@ def prepare(
         base_image = None
         base_image_id = None
 
-        # Step 1: Try to use cached base image if available
-        if cached:
-            cached_id = read_cached_image_id()
-            if cached_id:
-                logger.info("Found cached base image_id: %s", cached_id)
-                base_image = modal.Image.from_id(cached_id)
-                base_image_id = cached_id
+        # Step 1: Try to use provided base image ID if available
+        if image_id is not None:
+            logger.info("Using provided base image_id: %s", image_id)
+            try:
+                base_image = modal.Image.from_id(image_id)
+                base_image_id = image_id
+            except Exception as e:
+                logger.warning(
+                    "Failed to load provided image %s (%s), rebuilding from scratch...",
+                    image_id, e,
+                )
 
         # Step 2: Build fresh base image if no cache
         if base_image is None:
@@ -291,7 +264,7 @@ def prepare(
 
         # Step 3: Build final image, catching cache invalidation errors
         try:
-            image_id = _build_final_image(
+            final_id = _build_final_image(
                 app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
             )
@@ -300,14 +273,13 @@ def prepare(
             logger.warning(
                 "Failed to use cached image (%s), rebuilding from scratch...", e
             )
-            clear_image_cache()
             base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
-            image_id = _build_final_image(
+            final_id = _build_final_image(
                 app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
             )
 
-    sys.stdout.write("%s\n" % image_id)
+    sys.stdout.write("%s\n" % final_id)
 
 
 @cli.command()
@@ -506,8 +478,7 @@ def create_from_image(
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
-            "Delete %s and run 'prepare' again to rebuild.",
-            CACHE_FILE,
+            "Run 'prepare' again to rebuild.",
         )
         sys.exit(1)
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
