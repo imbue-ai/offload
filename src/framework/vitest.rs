@@ -215,7 +215,7 @@ impl TestFramework for VitestFramework {
         if !output.status.success() {
             let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "vitest list failed (exit {}):\n  command: {}\n  {}",
+                "vitest list failed ({}):\n  command: {}\n  {}",
                 output.status, cmd_display, detail
             )));
         }

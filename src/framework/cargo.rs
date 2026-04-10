@@ -154,7 +154,7 @@ impl TestFramework for CargoFramework {
         if !output.status.success() {
             let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "cargo nextest list failed (exit {}):\n  command: {}\n  {}",
+                "cargo nextest list failed ({}):\n  command: {}\n  {}",
                 output.status, cmd_display, detail
             )));
         }

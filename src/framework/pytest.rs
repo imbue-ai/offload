@@ -148,7 +148,7 @@ impl TestFramework for PytestFramework {
         if !output.status.success() && !stdout.contains("::") {
             let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "pytest --collect-only failed (exit {}):\n  command: {}\n  {}",
+                "pytest --collect-only failed ({}):\n  command: {}\n  {}",
                 output.status, cmd_display, detail
             )));
         }
