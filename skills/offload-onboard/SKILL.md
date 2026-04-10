@@ -206,83 +206,7 @@ After `offload collect` passes, run `npx vitest list --json` and check for test 
 
 If any are found, present them to the user and recommend renaming the affected `test()`/`it()`/`describe()` calls to avoid `>` characters. For example, rename `'attribute value with >'` to `'attribute value with greater-than'`. This is not a blocking error — `offload collect` will still pass — but affected tests will be reported as "Not Run" after execution because Offload cannot match their results back to discovered IDs.
 
-### Step 6: Add JUnit ID Normalization (pytest only)
-
-**Skip this step if the framework is not `pytest`.**
-
-By default, pytest's JUnit XML output uses a `classname` + `name` format that cannot be losslessly converted back to the original nodeid used during test collection. This causes Offload to report tests as "Not Run" because it cannot match JUnit results to discovered tests.
-
-There are two approaches. **Try Approach A first** (preferred). If it fails (e.g., due to pytest version incompatibility or internal API changes), fall back to **Approach B**.
-
-1. Identify the root `conftest.py` for the test paths configured in `offload.toml` (e.g., `tests/conftest.py`)
-2. If a `conftest.py` already exists at that location, check whether it already contains `_set_junit_test_id`, `pytest_runtest_setup` modifying JUnit XML, or an equivalent `record_xml_attribute("name", ...)` override. If so, **stop and show the user the existing hook/fixture**. Explain that offload needs the JUnit `name` attribute to match collected test IDs, and ask if they want to replace it with offload's version. If they approve, replace it. If they decline, switch the `[framework]` section in `offload.toml` to `type = "default"` using the `type = "default"` framework pattern from Step 4, wrapping their existing pytest invocation in custom `discover_command` and `run_command` so that offload controls the `--junitxml` flag directly without needing the conftest hook.
-3. If no `conftest.py` exists, create one. If one exists, append to it.
-
-Offload's parser already handles `name` values containing `::` by using them verbatim.
-
-#### Approach A: `pytest_runtest_setup` hook (preferred)
-
-This uses a hook instead of a fixture, so it works for **all** test item types including custom `pytest.Item` subclasses that don't run fixtures. It does not use any experimental pytest APIs. However, it accesses pytest internals (`_pytest.junitxml.xml_key`, `item.config.stash`, `node_reporter`) which requires pytest 7.0+ and could break in a future major version.
-
-```python
-import os
-
-import pytest
-
-
-def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Set JUnit XML name to the full test ID for exact matching with Offload."""
-    from _pytest.junitxml import xml_key
-
-    xml = item.config.stash.get(xml_key, None)
-    if xml is None:
-        return
-
-    offload_root = os.environ.get("OFFLOAD_ROOT")
-    if offload_root:
-        fspath = str(item.path)
-        rel_path = os.path.relpath(fspath, offload_root)
-        nodeid_parts = item.nodeid.split("::")
-        test_id = "::".join([rel_path] + nodeid_parts[1:])
-    else:
-        test_id = item.nodeid
-
-    xml.node_reporter(item.nodeid).add_attribute("name", test_id)
-```
-
-#### Approach B: `record_xml_attribute` fixture (fallback)
-
-This uses pytest's public (but experimental) `record_xml_attribute` fixture API. It only works for standard `pytest.Function` items — **not** for custom `pytest.Item` subclasses that don't run fixtures. Use this as a fallback if Approach A fails due to internal API changes.
-
-**Requirements when using this approach:**
-- Add `junit_family = "xunit1"` to the project's pytest config (`record_xml_attribute` is incompatible with the default `xunit2` family)
-- If the project uses `filterwarnings = ["error"]`, add `"ignore::pytest.PytestExperimentalApiWarning"` to the filter list
-
-```python
-import os
-
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _set_junit_test_id(request: pytest.FixtureRequest, record_xml_attribute) -> None:
-    """Set JUnit XML name to the full test ID for exact matching with Offload."""
-    offload_root = os.environ.get("OFFLOAD_ROOT")
-
-    if offload_root:
-        fspath = str(request.node.path)
-        rel_path = os.path.relpath(fspath, offload_root)
-        nodeid_parts = request.node.nodeid.split("::")
-        test_id = "::".join([rel_path] + nodeid_parts[1:])
-    else:
-        test_id = request.node.nodeid
-
-    record_xml_attribute("name", test_id)
-```
-
-Ensure imports (`os`, `pytest`) are not duplicated if the file already has them.
-
-### Step 7: Create Local Invocation Script
+### Step 6: Create Local Invocation Script
 
 Create `scripts/offload-tests.sh`:
 
@@ -311,7 +235,7 @@ The `--copy-dir` flag tells Offload to bake the local directory into the sandbox
 
 If the project uses a Makefile, justfile, or Taskfile instead of scripts/, add the invocation there instead to be consistent with existing practice.
 
-### Step 8: Update .gitignore
+### Step 7: Update .gitignore
 
 Append Offload artifacts to `.gitignore`:
 
@@ -322,7 +246,7 @@ test-results/
 
 NOTE: `.offload-image-cache` should be checked in to git — it tracks the base image ID and speeds up subsequent runs. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
 
-### Step 9: Run Offload Locally and Verify
+### Step 8: Run Offload Locally and Verify
 
 Install offload if not already present:
 
@@ -330,7 +254,7 @@ Install offload if not already present:
 cargo install offload
 ```
 
-Run the tests using the invocation script from Step 7:
+Run the tests using the invocation script from Step 6:
 
 **First, verify test discovery with `offload collect`:**
 
@@ -381,7 +305,7 @@ Record the number of passed, failed, and skipped tests. Some projects have pre-e
 
 **Keep running and fixing until Offload's pass/fail counts match the baseline. Do not proceed to optimization until they match.**
 
-### Step 10: Optimize Parallelism
+### Step 9: Optimize Parallelism
 
 Run a simple linear search over `max_parallel` to minimize total runtime:
 
@@ -394,11 +318,11 @@ The optimal `max_parallel` depends on the number of test files and per-test dura
 
 Report the results as a table to the user and set the optimal values in `offload.toml`.
 
-### Step 11: Update Agent/Project Instructions (if desired)
+### Step 10: Update Agent/Project Instructions (if desired)
 
 **First, ask the user:** "Would you like to configure Offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
 
-**If the user declines**, skip this step entirely and proceed to Step 12.
+**If the user declines**, skip this step entirely and proceed to Step 11.
 
 **If the user agrees**, ensure that future AI agents working in this repository know to use Offload for running tests:
 
@@ -432,9 +356,9 @@ Report the results as a table to the user and set the optimal values in `offload
 
 6. Preserve the existing tone and formatting of the file. If it uses a digraph, bullet lists, or a specific heading style, match that style. Do not restructure or reformat existing content.
 
-### Step 12: Set Up CI Job (if desired)
+### Step 11: Set Up CI Job (if desired)
 
-Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 12 and 13.
+Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 11 and 12.
 
 If they want CI, detect the CI system from the repository:
 - `.github/workflows/` → GitHub Actions
@@ -511,7 +435,7 @@ jobs:
 
 For other CI systems, adapt the same pattern: install Offload + Modal CLI, set Modal secrets as env vars, run `offload run`.
 
-### Step 13: Configure CI Secrets
+### Step 12: Configure CI Secrets
 
 Tell the user they need to add two repository secrets:
 - `MODAL_TOKEN_ID`: Their Modal API token ID
@@ -572,7 +496,6 @@ node_modules
 |------|---------|
 | `.devcontainer/Dockerfile` (or existing) | Base image for Modal sandboxes |
 | `.dockerignore` | (If needed) Exclude local artifacts from sandbox — see Troubleshooting |
-| `conftest.py` | (pytest only) JUnit ID normalization hook — see Step 6 |
 | `offload.toml` | Offload configuration |
 | `scripts/offload-tests.sh` (or Makefile target) | Local invocation convenience |
 | `.gitignore` | Exclude Offload artifacts |
