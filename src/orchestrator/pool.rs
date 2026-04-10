@@ -136,6 +136,7 @@ mod tests {
             _no_cache: bool,
             _sandbox_init_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
+            _context_dir: Option<&std::path::Path>,
         ) -> ProviderResult<Option<String>> {
             Ok(None)
         }
