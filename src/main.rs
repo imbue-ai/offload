@@ -483,6 +483,11 @@ async fn run_tests(
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
         .collect();
 
+    // Extract context_dir from git_patch artifact for use as Docker build context
+    let context_dir: Option<&Path> = git_patch_artifact
+        .as_ref()
+        .and_then(|a| a.context_dir.as_deref());
+
     // Determine cached image ID from git notes (if git_patch enabled and not --no-cache)
     let cached_image_id: Option<String> = if let Some(ref artifact) = git_patch_artifact {
         if no_cache {
@@ -541,6 +546,7 @@ async fn run_tests(
                             cached_image_id.as_deref(),
                             config.offload.sandbox_init_cmd.as_deref(),
                             Some(&discovery_done),
+                            context_dir,
                         )
                         .await
                         .context("Failed to prepare Default provider")
@@ -586,6 +592,7 @@ async fn run_tests(
                             cached_image_id.as_deref(),
                             config.offload.sandbox_init_cmd.as_deref(),
                             Some(&discovery_done),
+                            context_dir,
                         )
                         .await
                         .context("Failed to prepare Modal provider")

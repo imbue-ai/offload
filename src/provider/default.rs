@@ -74,6 +74,7 @@ impl SandboxProvider for DefaultProvider {
         cached_image_id: Option<&str>,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
         let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
             let mut full_prepare_cmd = prepare_cmd.clone();
@@ -98,6 +99,10 @@ impl SandboxProvider for DefaultProvider {
                     " --sandbox-init-cmd={}",
                     shell_words::quote(init_cmd)
                 ));
+            }
+
+            if let Some(dir) = context_dir {
+                full_prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
             }
 
             let image_id = run_prepare_command(
@@ -763,7 +768,7 @@ mod tests {
         };
 
         let mut provider = DefaultProvider::from_config(config);
-        provider.prepare(&[], None, None, None).await?;
+        provider.prepare(&[], None, None, None, None).await?;
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

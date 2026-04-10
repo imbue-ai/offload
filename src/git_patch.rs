@@ -27,16 +27,11 @@ pub struct GitPatchArtifact {
     /// Temp dir holding the patch file. Kept alive for RAII cleanup.
     _patch_dir: Option<TempDir>,
 
-    /// Path to snapshot tarball placed in CWD. Cleaned up on Drop.
-    snapshot_path: Option<PathBuf>,
-}
+    /// Temp dir holding the snapshot tarball. Kept alive for RAII cleanup.
+    _snapshot_dir: Option<TempDir>,
 
-impl Drop for GitPatchArtifact {
-    fn drop(&mut self) {
-        if let Some(ref path) = self.snapshot_path {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+    /// Docker build context directory (the snapshot temp dir path).
+    pub context_dir: Option<PathBuf>,
 }
 
 /// Resolves the base commit from dependency file history.
@@ -175,8 +170,11 @@ fn generate_patch(commit: &str) -> Result<PatchResult> {
     Ok((Some(patch_dir), Some(copy_dir), Some(apply_cmd)))
 }
 
-/// Creates a tarball of the repository at the given commit, placed in CWD as `current.tar.gz`.
-fn create_snapshot(commit: &str) -> Result<PathBuf> {
+/// Creates a tarball of the repository at the given commit in a new temp directory.
+///
+/// Returns `(snapshot_dir, tar_path)` where `snapshot_dir` is the TempDir
+/// owning the tarball and `tar_path` is the path to `current.tar.gz` inside it.
+fn create_snapshot(commit: &str) -> Result<(TempDir, PathBuf)> {
     let clone_dir = TempDir::new().context("failed to create temp dir for snapshot clone")?;
     let clone_path = clone_dir.path().join("repo");
 
@@ -223,9 +221,9 @@ fn create_snapshot(commit: &str) -> Result<PathBuf> {
         bail!("git checkout {commit} failed in clone");
     }
 
-    // Create tarball in CWD
-    let cwd = std::env::current_dir().context("failed to get current directory")?;
-    let tar_path = cwd.join("current.tar.gz");
+    // Create tarball in a dedicated temp directory (not CWD)
+    let snapshot_dir = TempDir::new().context("failed to create temp dir for snapshot tarball")?;
+    let tar_path = snapshot_dir.path().join("current.tar.gz");
 
     let mut tar_cmd = Command::new("tar");
     tar_cmd.args(["czf"]);
@@ -247,7 +245,7 @@ fn create_snapshot(commit: &str) -> Result<PathBuf> {
     info!("created snapshot tarball at {}", tar_path.display());
 
     // clone_dir is dropped here, cleaning up the temp clone
-    Ok(tar_path)
+    Ok((snapshot_dir, tar_path))
 }
 
 /// Checks the Dockerfile for a reference to `current.tar.gz` and warns if missing.
@@ -296,8 +294,9 @@ pub fn prepare(
     }
     warn_uncommitted_changes(&dep_files);
 
-    // Create snapshot tarball
-    let snapshot_path = Some(create_snapshot(&commit)?);
+    // Create snapshot tarball in a temp directory
+    let (snapshot_dir, _tar_path) = create_snapshot(&commit)?;
+    let context_dir = Some(snapshot_dir.path().to_path_buf());
 
     warn_if_dockerfile_missing_snapshot(dockerfile, sandbox_project_root);
 
@@ -309,7 +308,8 @@ pub fn prepare(
         apply_cmd,
         base_commit: commit,
         _patch_dir: patch_dir,
-        snapshot_path,
+        _snapshot_dir: Some(snapshot_dir),
+        context_dir,
     })
 }
 
@@ -459,21 +459,28 @@ mod tests {
     // ── GitPatchArtifact Drop ──
 
     #[test]
-    fn test_artifact_drop_cleans_snapshot() -> Result<()> {
-        let dir = TempDir::new()?;
-        let snap = dir.path().join("current.tar.gz");
+    fn test_artifact_drop_cleans_snapshot_dir() -> Result<()> {
+        let snapshot_dir = TempDir::new()?;
+        let snap = snapshot_dir.path().join("current.tar.gz");
         std::fs::File::create(&snap)?;
         assert!(snap.exists());
 
+        let context_dir = Some(snapshot_dir.path().to_path_buf());
         let artifact = GitPatchArtifact {
             copy_dir: None,
             apply_cmd: None,
             base_commit: String::new(),
             _patch_dir: None,
-            snapshot_path: Some(snap.clone()),
+            _snapshot_dir: Some(snapshot_dir),
+            context_dir,
         };
+        let dir_path = artifact.context_dir.clone();
         drop(artifact);
-        assert!(!snap.exists(), "snapshot file should be removed on drop");
+        // TempDir removes the directory on drop
+        assert!(
+            !dir_path.as_ref().is_some_and(|p| p.exists()),
+            "snapshot dir should be removed on drop"
+        );
         Ok(())
     }
 
@@ -484,7 +491,8 @@ mod tests {
             apply_cmd: None,
             base_commit: String::new(),
             _patch_dir: None,
-            snapshot_path: None,
+            _snapshot_dir: None,
+            context_dir: None,
         };
         drop(artifact); // should not panic
     }

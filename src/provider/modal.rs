@@ -79,6 +79,7 @@ impl SandboxProvider for ModalProvider {
         cached_image_id: Option<&str>,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
         let mut prepare_cmd = String::from("uv run @modal_sandbox.py prepare");
 
@@ -112,6 +113,10 @@ impl SandboxProvider for ModalProvider {
                 " --sandbox-init-cmd={}",
                 shell_words::quote(init_cmd)
             ));
+        }
+
+        if let Some(dir) = context_dir {
+            prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
         }
 
         debug!("Running prepare command: {}", prepare_cmd);

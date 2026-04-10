@@ -48,6 +48,7 @@ impl SandboxProvider for LocalProvider {
         _cached_image_id: Option<&str>,
         _sandbox_init_cmd: Option<&str>,
         _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+        _context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
         // Local provider has no image preparation step.
         Ok(None)

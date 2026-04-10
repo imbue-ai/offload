@@ -120,15 +120,15 @@ def read_dockerignore_patterns() -> list[str]:
 
 
 def _build_fresh_base_image(
-    app, dockerfile_path: str | None
+    app, dockerfile_path: str | None, context_dir: str = "."
 ) -> tuple[modal.Image, str]:
     """Build a fresh base image (no caching)."""
     if dockerfile_path is None:
         logger.info("Building default base image...")
         base_img = modal.Image.debian_slim(python_version="3.11").pip_install("pytest")
     else:
-        logger.info("Building base image from %s with context_dir=.", dockerfile_path)
-        base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=".")
+        logger.info("Building base image from %s with context_dir=%s", dockerfile_path, context_dir)
+        base_img = modal.Image.from_dockerfile(dockerfile_path, context_dir=context_dir)
 
     base_img.build(app)
     # Materialize to get base image_id
@@ -206,12 +206,18 @@ def _build_final_image(
     default=None,
     help="Command to run during image build after cwd/copy-dirs are applied",
 )
+@click.option(
+    "--context-dir",
+    default=".",
+    help="Docker build context directory",
+)
 def prepare(
     dockerfile_path: str | None,
     image_id: str | None,
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
+    context_dir: str,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
@@ -260,7 +266,7 @@ def prepare(
 
         # Step 2: Build fresh base image if no cache
         if base_image is None:
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
+            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
 
         # Step 3: Build final image, catching cache invalidation errors
         try:
@@ -273,7 +279,7 @@ def prepare(
             logger.warning(
                 "Failed to use cached image (%s), rebuilding from scratch...", e
             )
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path)
+            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
             final_id = _build_final_image(
                 app, base_image, base_image_id, include_cwd, copy_dirs, ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
