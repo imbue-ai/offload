@@ -176,6 +176,8 @@ Configuration reference for fields used above:
 - `retry_count`: Number of retries for failed tests (0 = no retries, 1 = catches transient failures)
 - `filters`: Filter string passed to the framework during discovery (e.g. `-m 'not slow'`)
 
+**IMPORTANT: Do not use JUnit reporting plugins or hooks.** Offload owns the JUnit XML report — it passes `--junitxml` to pytest and uses the resulting XML as the single source of truth for matching test results back to discovered tests. Custom conftest hooks, plugins, or pytest options that modify JUnit XML output (e.g. `record_xml_attribute`, `pytest-metadata`, or `junit_family` overrides) will interfere with Offload's test ID resolution and cause incorrect results. If the project has existing JUnit customization in conftest.py or pytest plugins, **remove it** before proceeding.
+
 ### Step 5: Verify Vitest Test Discovery (vitest only)
 
 **Skip this step if the framework is not `vitest`.**
