@@ -15,6 +15,7 @@ Unified CLI for creating, executing commands on, and destroying Modal sandboxes.
 import io
 import json
 import logging
+import math
 import os
 import sys
 import tarfile
@@ -563,7 +564,9 @@ def run(command: str):
     "memory_gb",
     type=float,
     default=None,
-    help="Memory in GB per sandbox",
+    help="Memory request per sandbox, in GiB (converted to MiB via "
+    "ceil(value * 1024), passed to modal.Sandbox.create(memory=...)). "
+    "Modal's default when unset is 128 MiB. Example: --memory-gb 8",
 )
 @click.option(
     "--experimental-options",
@@ -633,7 +636,7 @@ def create_from_image(
         if cpu is not None:
             create_kwargs["cpu"] = cpu
         if memory_gb is not None:
-            create_kwargs["memory"] = int(memory_gb * 1024)
+            create_kwargs["memory"] = math.ceil(memory_gb * 1024)
         if experimental_options is not None:
             exp_opts = json.loads(experimental_options)
             create_kwargs["experimental_options"] = exp_opts
