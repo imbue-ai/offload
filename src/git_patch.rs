@@ -10,7 +10,6 @@ use anyhow::{Context, Result, bail};
 use tempfile::TempDir;
 use tracing::info;
 
-const BASE_COMMIT_FILE: &str = ".offload-base-commit";
 const REMOTE_DIR: &str = "/offload-patch";
 
 /// Artifact produced by git patch preparation. Holds temp resources
@@ -37,15 +36,18 @@ impl Drop for GitPatchArtifact {
     }
 }
 
-/// Reads the base commit from the base commit file.
+/// Resolves the base commit from dependency file history.
 ///
-/// Reads from `.offload-base-commit`. If the file does not exist,
-/// bootstraps it with `git rev-parse HEAD`.
-fn resolve_base_commit() -> Result<String> {
-    let path = BASE_COMMIT_FILE;
-    let file_path = std::path::Path::new(path);
-    if !file_path.exists() {
-        // Bootstrap: create the file with current HEAD
+/// Builds a combined file list from `dependencies` and `dockerfile` (if
+/// provided). If the combined list is empty, returns HEAD. Otherwise,
+/// returns the most recent commit that modified any of the listed files.
+fn resolve_base_commit(dependencies: &[String], dockerfile: Option<&str>) -> Result<String> {
+    let mut files: Vec<&str> = dependencies.iter().map(String::as_str).collect();
+    if let Some(df) = dockerfile {
+        files.push(df);
+    }
+
+    if files.is_empty() {
         let output = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
@@ -57,23 +59,60 @@ fn resolve_base_commit() -> Result<String> {
             );
         }
         let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        std::fs::write(file_path, format!("{head}\n"))
-            .with_context(|| format!("failed to create base_commit_file: {path}"))?;
-        info!(
-            "[git_patch] Created {} with current HEAD ({})",
-            path,
-            &head[..head.len().min(12)]
-        );
+        info!("[git_patch] No dependency files configured; using HEAD ({head})");
         return Ok(head);
     }
 
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read base_commit_file: {path}"))?;
-    let trimmed = contents.trim().to_string();
-    if trimmed.is_empty() {
-        bail!("base_commit_file '{path}' is empty");
+    let mut cmd = Command::new("git");
+    cmd.args(["log", "-1", "--format=%H", "--"]);
+    for f in &files {
+        cmd.arg(f);
     }
-    Ok(trimmed)
+    let output = cmd.output().context("failed to run git log")?;
+    if !output.status.success() {
+        bail!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if hash.is_empty() {
+        bail!(
+            "no commit found that modified any of the dependency files: {}",
+            files.join(", ")
+        );
+    }
+    info!("[git_patch] Resolved base commit {hash} from dependency files");
+    Ok(hash)
+}
+
+/// Warns if any of the given files have uncommitted changes (staged or unstaged).
+fn warn_uncommitted_changes(files: &[&str]) {
+    if files.is_empty() {
+        return;
+    }
+
+    let check = |diff_args: &[&str], label: &str| {
+        let mut cmd = Command::new("git");
+        cmd.args(diff_args);
+        cmd.arg("--");
+        for f in files {
+            cmd.arg(f);
+        }
+        if let Ok(output) = cmd.output() {
+            let changed: Vec<&str> = std::str::from_utf8(&output.stdout)
+                .unwrap_or("")
+                .lines()
+                .filter(|l| !l.is_empty())
+                .collect();
+            for path in changed {
+                tracing::warn!("[git_patch] Dependency file has {label} changes: {path}");
+            }
+        }
+    };
+
+    check(&["diff", "--name-only"], "unstaged");
+    check(&["diff", "--name-only", "--staged"], "staged");
 }
 
 /// Validates that a commit exists in the current repository and returns the full hash.
@@ -237,10 +276,22 @@ fn warn_if_dockerfile_missing_snapshot(dockerfile: Option<&str>, sandbox_project
 
 /// Prepares git patch artifacts for sandbox deployment.
 ///
-/// Resolves the base commit, creates a snapshot tarball,
-/// and generates a diff patch for application in the sandbox.
-pub fn prepare(dockerfile: Option<&str>, sandbox_project_root: &str) -> Result<GitPatchArtifact> {
-    let commit = validate_commit(&resolve_base_commit()?)?;
+/// Resolves the base commit from dependency file history, creates a
+/// snapshot tarball, and generates a diff patch for application in the
+/// sandbox.
+pub fn prepare(
+    dependencies: &[String],
+    dockerfile: Option<&str>,
+    sandbox_project_root: &str,
+) -> Result<GitPatchArtifact> {
+    let commit = validate_commit(&resolve_base_commit(dependencies, dockerfile)?)?;
+
+    // Warn about uncommitted dependency file changes
+    let mut dep_files: Vec<&str> = dependencies.iter().map(String::as_str).collect();
+    if let Some(df) = dockerfile {
+        dep_files.push(df);
+    }
+    warn_uncommitted_changes(&dep_files);
 
     // Create snapshot tarball
     let snapshot_path = Some(create_snapshot(&commit)?);
@@ -261,7 +312,6 @@ pub fn prepare(dockerfile: Option<&str>, sandbox_project_root: &str) -> Result<G
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::sync::Mutex;
 
     /// Process-global lock for tests that change the current working directory.
@@ -391,40 +441,103 @@ mod tests {
     // ── resolve_base_commit ──
 
     #[test]
-    fn test_resolve_base_commit_from_file() -> Result<()> {
+    fn test_resolve_base_commit_empty_deps_no_dockerfile() -> Result<()> {
         let (dir, head) = setup_temp_git_repo()?;
-        // Write the commit hash to .offload-base-commit
-        let base_file = dir.path().join(BASE_COMMIT_FILE);
-        std::fs::write(&base_file, format!("{head}\n"))?;
-
-        let result = with_cwd(dir.path(), resolve_base_commit)?;
+        let result = with_cwd(dir.path(), || resolve_base_commit(&[], None))?;
         assert_eq!(result?, head);
         Ok(())
     }
 
     #[test]
-    fn test_resolve_base_commit_bootstraps_file() -> Result<()> {
-        let (dir, head) = setup_temp_git_repo()?;
-        let base_file = dir.path().join(BASE_COMMIT_FILE);
-        assert!(!base_file.exists());
+    fn test_resolve_base_commit_finds_correct_commit() -> Result<()> {
+        let (dir, first_commit) = setup_temp_git_repo()?;
+        let path = dir.path().to_path_buf();
 
-        let result = with_cwd(dir.path(), resolve_base_commit)?;
-        assert_eq!(result?, head);
-        assert!(base_file.exists(), "file should be created by bootstrap");
-        let contents = std::fs::read_to_string(&base_file)?;
-        assert_eq!(contents.trim(), head);
+        let run = |args: &[&str]| -> Result<String> {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&path)
+                .output()
+                .context("git command failed to run")?;
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(String::from_utf8(output.stdout)
+                .context("non-utf8 output")?
+                .trim()
+                .to_string())
+        };
+
+        // Create requirements.txt in first commit (amend initial)
+        std::fs::write(path.join("requirements.txt"), "flask\n")?;
+        run(&["add", "requirements.txt"])?;
+        run(&["commit", "-m", "add requirements"])?;
+        let req_commit = run(&["rev-parse", "HEAD"])?;
+
+        // Create a second commit that does NOT touch requirements.txt
+        std::fs::write(path.join("README"), "updated\n")?;
+        run(&["add", "README"])?;
+        run(&["commit", "-m", "update readme"])?;
+
+        let deps = vec!["requirements.txt".to_string()];
+        let result = with_cwd(dir.path(), || resolve_base_commit(&deps, None))?;
+        assert_eq!(result?, req_commit);
+        // Verify it's not the first commit (README-only) or HEAD
+        assert_ne!(req_commit, first_commit);
         Ok(())
     }
 
     #[test]
-    fn test_resolve_base_commit_empty_file_errors() -> Result<()> {
+    fn test_resolve_base_commit_includes_dockerfile() -> Result<()> {
+        let (dir, _first_commit) = setup_temp_git_repo()?;
+        let path = dir.path().to_path_buf();
+
+        let run = |args: &[&str]| -> Result<String> {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&path)
+                .output()
+                .context("git command failed to run")?;
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(String::from_utf8(output.stdout)
+                .context("non-utf8 output")?
+                .trim()
+                .to_string())
+        };
+
+        // Commit a Dockerfile
+        std::fs::write(path.join("Dockerfile"), "FROM ubuntu\n")?;
+        run(&["add", "Dockerfile"])?;
+        run(&["commit", "-m", "add dockerfile"])?;
+        let df_commit = run(&["rev-parse", "HEAD"])?;
+
+        // Another commit that does not touch the Dockerfile
+        std::fs::write(path.join("README"), "updated again\n")?;
+        run(&["add", "README"])?;
+        run(&["commit", "-m", "update readme"])?;
+
+        let result = with_cwd(dir.path(), || resolve_base_commit(&[], Some("Dockerfile")))?;
+        assert_eq!(result?, df_commit);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_base_commit_nonexistent_files_returns_error() -> Result<()> {
         let (dir, _head) = setup_temp_git_repo()?;
-        let base_file = dir.path().join(BASE_COMMIT_FILE);
-        let mut f = std::fs::File::create(&base_file)?;
-        f.write_all(b"")?;
-
-        let result = with_cwd(dir.path(), resolve_base_commit)?;
-        assert!(result.is_err(), "empty file should produce an error");
+        let deps = vec!["nonexistent_file.txt".to_string()];
+        let result = with_cwd(dir.path(), || resolve_base_commit(&deps, None))?;
+        assert!(
+            result.is_err(),
+            "should error when no commit modified any listed file"
+        );
         Ok(())
     }
 

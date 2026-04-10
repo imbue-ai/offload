@@ -375,14 +375,18 @@ async fn run_tests(
     }
 
     // Git patch preparation (generates diff, creates snapshot tarball)
-    let git_patch_artifact = if config.git_patch.is_some() {
+    let git_patch_artifact = if let Some(ref git_patch_cfg) = config.git_patch {
         let dockerfile = match &config.provider {
             ProviderConfig::Modal(cfg) => cfg.dockerfile.as_deref(),
             _ => None,
         };
         Some(
-            offload::git_patch::prepare(dockerfile, &config.offload.sandbox_project_root)
-                .context("git patch preparation failed")?,
+            offload::git_patch::prepare(
+                &git_patch_cfg.dependencies,
+                dockerfile,
+                &config.offload.sandbox_project_root,
+            )
+            .context("git patch preparation failed")?,
         )
     } else {
         None

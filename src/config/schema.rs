@@ -591,26 +591,17 @@ fn default_junit_file() -> String {
     "junit.xml".to_string()
 }
 
-/// Configuration toggle for automatic git patch generation.
+/// Configuration for automatic git patch generation.
 ///
-/// When present, Offload generates a snapshot tarball and git diff
-/// from a base commit, uploads the patch to the sandbox, and prepends
-/// `git apply` to the sandbox init command.
-///
-/// The base commit is read from `.offload-base-commit` (auto-created
-/// with HEAD if missing). The patch is uploaded to `/offload-patch`.
-///
-/// ## Dockerfile requirement
-///
-/// Your Dockerfile must copy and extract the snapshot tarball.
-/// The extraction path should match `sandbox_project_root`:
-///
-/// ```dockerfile
-/// COPY current.tar.gz /code/current.tar.gz
-/// RUN mkdir -p <sandbox_project_root> && tar xzf /code/current.tar.gz -C <sandbox_project_root> && rm /code/current.tar.gz
-/// ```
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct GitPatchConfig {}
+/// The base commit is the most recent commit that modified any dependency
+/// file (or the configured Dockerfile). If no dependencies are listed and
+/// no Dockerfile is configured, HEAD is used.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GitPatchConfig {
+    /// Files whose changes define the base commit.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+}
 
 fn default_retry_count() -> usize {
     0
@@ -1084,6 +1075,38 @@ mod tests {
         assert!(
             config.git_patch.is_some(),
             "Expected git_patch to be Some when [git_patch] section is present"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_git_patch_config_with_dependencies() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+
+            [git_patch]
+            dependencies = ["requirements.txt", "Cargo.toml"]
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        let git_patch = config
+            .git_patch
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected git_patch to be Some"))?;
+        assert_eq!(
+            git_patch.dependencies,
+            vec!["requirements.txt", "Cargo.toml"]
         );
 
         Ok(())
