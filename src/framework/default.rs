@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::DefaultFrameworkConfig;
 use crate::provider::Command;
 
@@ -91,9 +94,10 @@ impl TestFramework for DefaultFramework {
         }
 
         if !output.status.success() {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "Discovery command failed: {}",
-                stderr
+                "discover_command failed (exit {}): {}",
+                output.status, detail
             )));
         }
 

@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::PytestFrameworkConfig;
 use crate::provider::Command;
 
@@ -125,9 +128,10 @@ impl TestFramework for PytestFramework {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() && !stdout.contains("::") {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "pytest discovery failed: {}",
-                stderr
+                "pytest --collect-only failed (exit {}): {}",
+                output.status, detail
             )));
         }
 

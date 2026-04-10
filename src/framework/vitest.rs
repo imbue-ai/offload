@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::VitestFrameworkConfig;
 use crate::provider::Command;
 
@@ -195,9 +198,10 @@ impl TestFramework for VitestFramework {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
                 "vitest list failed (exit {}): {}",
-                output.status, stderr
+                output.status, detail
             )));
         }
 
