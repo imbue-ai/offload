@@ -106,9 +106,8 @@ impl TestFramework for DefaultFramework {
 
         if tests.is_empty() {
             tracing::warn!(
-                "No tests discovered. stdout: {}, stderr: {}",
-                stdout,
-                stderr
+                "No tests discovered. Output: {}",
+                discovery_error_detail(&stderr, &stdout)
             );
         }
 
