@@ -544,9 +544,10 @@ async fn run_tests(
                         .context("Failed to prepare Default provider")
                 }
             )?;
-            // Cache the base image ID (not the final ID) as a git note
+            // Cache the base image ID as a git note (skip if unchanged from cache)
             if let (Some(artifact), Some(result)) = (&git_patch_artifact, &prepare_result)
                 && let Some(base_id) = &result.base_image_id
+                && cached_image_id.as_deref() != Some(base_id.as_str())
             {
                 offload::git_patch::write_cached_image_id(&artifact.base_commit, base_id)
                     .context("failed to write cached image ID")?;
@@ -595,9 +596,10 @@ async fn run_tests(
                         .context("Failed to prepare Modal provider")
                 }
             )?;
-            // Cache the base image ID (not the final ID) as a git note
+            // Cache the base image ID as a git note (skip if unchanged from cache)
             if let (Some(artifact), Some(result)) = (&git_patch_artifact, &prepare_result)
                 && let Some(base_id) = &result.base_image_id
+                && cached_image_id.as_deref() != Some(base_id.as_str())
             {
                 offload::git_patch::write_cached_image_id(&artifact.base_commit, base_id)
                     .context("failed to write cached image ID")?;
