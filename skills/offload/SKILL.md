@@ -144,6 +144,67 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | Slow sandbox creation | Docker image not cached | Delete `.offload-image-cache` or pass `--no-cache` |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
 
+## Checkpoint Mode
+
+Checkpoint mode speeds up sandbox image builds by caching a full image at "checkpoint" commits (commits that change dependency manifests, Dockerfiles, etc.) and applying a thin `git diff` for subsequent commits.
+
+### When to use it
+
+Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, every `offload run` rebuilds everything. With checkpoints, only the first run after a dependency change is slow -- subsequent runs apply a lightweight diff on top of the cached image.
+
+### Configuration
+
+Add a `[checkpoint]` section to `offload.toml`:
+
+```toml
+[checkpoint]
+build_inputs = [
+    "Dockerfile",
+    "requirements.txt",
+    "pyproject.toml",
+]
+```
+
+The `build_inputs` list contains repo-relative file paths. A commit that modifies any of these files is automatically detected as a checkpoint. The list must be non-empty when the section is present.
+
+### How it works
+
+1. On `offload run`, Offload walks the git history looking for the nearest commit that changed any `build_inputs` file.
+2. If a cached image exists for that checkpoint (stored in git notes), Offload generates a `git diff` from the checkpoint to HEAD and applies it on top of the cached image.
+3. If no cached image exists, Offload does a full build, caches the result in git notes, and pushes the notes to the remote.
+4. Without a `[checkpoint]` section, Offload caches a per-commit image in git notes instead.
+
+Git notes (`refs/notes/offload-images`) are used to store commit-to-image mappings. They are fetched and pushed automatically. Users do not need to interact with git notes directly.
+
+### Checking status
+
+Use `offload checkpoint-status` to inspect the current checkpoint state:
+
+```bash
+offload checkpoint-status
+```
+
+Example output:
+
+```
+HEAD:               a1b2c3d4
+Checkpoint:         f5e6d7c8 (3 commits back)
+Cached image:       im-abc123
+Build inputs hash:  e5f6a7b8 (matches cached)
+Next run mode:      thin diff (2 files changed since checkpoint)
+```
+
+This command requires a `[checkpoint]` section in the config. If absent, it reports that checkpoint mode is not configured.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Build inputs hash mismatch warning | A `build_inputs` file was modified without a checkpoint commit (e.g. manual edit or merge) | Commit the changes to create a new checkpoint, or revert to use the cached image |
+| Cached image expired | Modal garbage-collected the image | Offload rebuilds automatically on the next run; no action needed |
+| No checkpoint found in last N commits | No recent commit touched any `build_inputs` file | The search window is limited; a full build runs instead |
+| `git apply` failure inside sandbox | Diff cannot apply (e.g. conflicts, missing `git` in image) | Ensure the Dockerfile installs `git`; Offload falls back to a full build with a warning |
+
 ## CLI Quick Reference
 
 | Command | Purpose |
@@ -153,6 +214,7 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | `offload validate` | Validate `offload.toml` and print settings summary |
 | `offload init` | Generate a new `offload.toml` (`--provider`, `--framework`) |
 | `offload logs` | View per-test results from the most recent run |
+| `offload checkpoint-status` | Show checkpoint cache status for current HEAD |
 
 Global flags: `-c, --config PATH` (config file), `-v, --verbose` (verbose output).
 
