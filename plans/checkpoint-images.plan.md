@@ -6,7 +6,7 @@ Implementation plan for the checkpoint images spec (`checkpoint-images.spec.md`)
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Git operations | Shell out to `git` CLI | No `git2` crate (heavy native dep); works with jj colocated repos; simple operations only |
+| Git operations | Shell out to `git` CLI via `spawn_blocking` | No `git2` crate (heavy native dep); works with jj colocated repos; `spawn_blocking` prevents stalling the tokio runtime |
 | Build inputs hashing | `git hash-object --stdin` (SHA-1) | Already available; avoids new `sha2` crate; sufficient for change detection |
 | Notes content | JSON keyed by TOML config path | Prevents collision when multiple configs target different Dockerfiles |
 | `.offload-image-cache` | Remove from `modal_sandbox.py` | Git notes are the sole caching mechanism; `.offload-image-cache` is superseded |
@@ -51,7 +51,7 @@ Tests:
 
 **Files:** `src/git.rs` (new), `src/lib.rs`
 
-New module encapsulating all git interactions. All functions use `std::process::Command` (blocking).
+New module encapsulating all git interactions. All functions use `tokio::task::spawn_blocking` with `std::process::Command` internally, so they are safe to call from async contexts. Each public function is `async` and returns `Result`.
 
 Public API:
 ```rust
@@ -67,16 +67,16 @@ pub struct ImageEntry {
 /// A note is a JSON object keyed by TOML config file path.
 pub type NoteContents = HashMap<String, ImageEntry>;
 
-pub fn head_sha() -> Result<String>;
-pub fn repo_root() -> Result<PathBuf>;
-pub fn compute_build_inputs_hash(repo_root: &Path, files: &[String]) -> Result<String>;
-pub fn read_note(commit_sha: &str) -> Result<Option<NoteContents>>;
-pub fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>;
-pub fn push_notes(remote: &str) -> Result<()>;
-pub fn fetch_notes(remote: &str) -> Result<()>;
-pub fn configure_notes_fetch(remote: &str) -> Result<()>;
-pub fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<bool>;
-pub fn ancestors(max_depth: usize) -> Result<Vec<String>>;
+pub async fn head_sha() -> Result<String>;
+pub async fn repo_root() -> Result<PathBuf>;
+pub async fn compute_build_inputs_hash(repo_root: &Path, files: &[String]) -> Result<String>;
+pub async fn read_note(commit_sha: &str) -> Result<Option<NoteContents>>;
+pub async fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>;
+pub async fn push_notes(remote: &str) -> Result<()>;
+pub async fn fetch_notes(remote: &str) -> Result<()>;
+pub async fn configure_notes_fetch(remote: &str) -> Result<()>;
+pub async fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<bool>;
+pub async fn ancestors(max_depth: usize) -> Result<Vec<String>>;
 pub fn canonicalize_config_path(config_path: &str, repo_root: &Path) -> Result<String>;
 ```
 
@@ -85,7 +85,7 @@ Implementation notes:
 - `commit_touches_paths`: `git diff-tree --no-commit-id --name-only -r -m <sha>`, intersect with `paths`. The `-m` flag handles merge commits by checking against all parents.
 - `ancestors`: `git log --format=%H -n <max_depth>`.
 - `read_note` / `write_note`: read/write full JSON object, pretty-printed (indented) for human debuggability. `write_note` does a read-modify-write to merge entries (so two configs don't clobber each other). Config paths are canonicalized to repo-relative with no `./` prefix before use as keys. `git notes add -f` overwrites unconditionally.
-- `push_notes`: fetch notes from remote first (to minimize race window), then force-push. Concurrency policy is last write wins. Redundant rebuilds from lost writes are acceptable. Returns `Ok(())` if remote ref doesn't exist yet (first push creates it).
+- `push_notes`: force-push notes to remote unconditionally. Concurrency policy is last write wins -- notes are a write-through cache, so a clobbered entry simply triggers a rebuild on the next run that needs it. Returns `Ok(())` if remote ref doesn't exist yet (first push creates it).
 - `configure_notes_fetch`: check `git config --get-all remote.<remote>.fetch` for existing refspec; add `+refs/notes/offload-images:refs/notes/offload-images` if absent.
 - `fetch_notes`: returns `Ok(())` even if the remote ref doesn't exist (not an error on fresh repos).
 - `read_note`: returns `Ok(None)` if the ref or note doesn't exist (not an error).
@@ -120,7 +120,6 @@ High-level checkpoint resolution, called from `offload run`. Depends on `src/git
 pub struct ResolvedCheckpoint {
     pub checkpoint_sha: String,
     pub image_id: String,
-    pub sandbox_project_root: String,
 }
 
 /// Find the nearest checkpoint ancestor, returning its SHA and cached image
@@ -128,14 +127,14 @@ pub struct ResolvedCheckpoint {
 pub async fn resolve_checkpoint(
     config_path: &str,
     checkpoint_cfg: &CheckpointConfig,
-    provider: &mut impl BuildableProvider,  // trait for "can build a full image"
+    provider: &mut impl SandboxProvider,
     max_depth: usize,
 ) -> Result<Option<ResolvedCheckpoint>>;
 
 /// For non-checkpoint mode: check if HEAD has a cached image, build if not.
 pub async fn resolve_cached_image(
     config_path: &str,
-    provider: &mut impl BuildableProvider,
+    provider: &mut impl SandboxProvider,
 ) -> Result<Option<String>>;  // image_id
 ```
 
@@ -188,7 +187,7 @@ Tests:
 - Remove `--cached` flag from `prepare` command
 - Remove all call sites that read/write/clear the cache file
 
-Image caching is now handled entirely by the Rust side via git notes. The Python script is stateless: it builds images and returns IDs.
+Image caching is now handled entirely by the Rust side via git notes. The Python script is a **thin wrapper around the Modal SDK** -- it builds images and returns IDs. It does not implement caching, fallback logic, or retry decisions. All such logic lives in Rust.
 
 **Add checkpoint options to `prepare` command:**
 - `--from-checkpoint` (image ID string)
@@ -208,7 +207,7 @@ When `--from-checkpoint` is set:
    - `.run_commands(f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch")`
    - If untracked archive: `.run_commands(f"cd {project_root} && tar xf /tmp/offload-untracked.tar && rm /tmp/offload-untracked.tar")`
    - Build, materialize, return new image ID
-6. On image-expired exception: warn, fall back to full build
+6. On image-expired or `git apply` failure: **exit non-zero**. Python does not implement fallback logic. All fallback/retry decisions live in Rust (see design principle in `ARCHITECTURE.md`).
 
 New helpers:
 - `_generate_git_diff(checkpoint_sha: str) -> str | None`
@@ -231,7 +230,7 @@ In `run_tests()`, after loading config and before provider dispatch:
 **With `[checkpoint]`:**
 1. Fetch notes (best-effort).
 2. `checkpoint::resolve_checkpoint(config_path, checkpoint_cfg, ...)`.
-3. If resolved: create provider with `.with_checkpoint(ctx)`.
+3. If resolved: create provider with `.with_checkpoint(ctx)`. Call `prepare()`. If prepare fails (image expired, `git apply` failure), warn, clear checkpoint context, fall through to full build. Update note and push on success.
 4. If not resolved: full build (fall through to existing path).
 
 **Without `[checkpoint]`:**

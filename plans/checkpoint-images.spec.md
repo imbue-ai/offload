@@ -23,9 +23,13 @@ This feature builds checkpoints into Offload as a first-class capability, using 
 - Automatically copying metadata across rebases/amends (new commits get their own mapping).
 - Replacing Modal's internal Dockerfile layer caching (that remains as-is).
 
+## Future Work
+
+- **Configurable `max_depth`**: The ancestor walk currently uses a hardcoded depth limit. Once the walk exceeds this limit without finding a checkpoint, every subsequent commit is treated as needing a full build. Making `max_depth` configurable (or adaptive) is deferred to a follow-up.
+
 ## Definitions
 
-**Checkpoint**: A commit whose diff (relative to any of its parents) modifies any file in the `build_inputs` set. For merge commits (including octopus merges), the diff is checked against all parents using `git diff-tree --no-commit-id --name-only -r -m <sha>`. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
+**Checkpoint**: A commit whose diff (relative to **any** of its parents) modifies any file in the `build_inputs` set. For merge commits (including octopus merges), the diff is checked against each parent separately using `git diff-tree --no-commit-id --name-only -r -m <sha>`. The `-m` flag produces one diff per parent; if any of those diffs touches a `build_inputs` file, the merge is a checkpoint. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
 
 **Checkpoint image**: A full image built from a checkpoint commit (Dockerfile base + source checkout + dependency install + sandbox_init_cmd). Expensive to build. Cached in git notes.
 
@@ -83,7 +87,7 @@ build_inputs = [
 - If the `[checkpoint]` section is absent, checkpoints do not exist. Offload builds and caches a regular image per commit.
 - If the section is present, `build_inputs` must be non-empty.
 - The listed files are the "build spec" -- Dockerfiles, dependency manifests, build/install scripts.
-- A commit is a checkpoint if and only if its diff (vs any parent) touches any file in this list. For merge commits, all parents are checked.
+- A commit is a checkpoint if and only if its diff versus **any** parent touches any file in this list. For merge commits, each parent is checked independently; a difference against any single parent is sufficient.
 - Offload computes a build inputs hash of these files and stores it alongside the image ID in the note, so it can verify the cached checkpoint is still valid.
 
 ## Metadata Storage: Git Notes
@@ -135,15 +139,14 @@ JSON in notes is pretty-printed (indented) for human debuggability. Users can in
 
 ### Concurrency
 
-Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write notes to the same commit simultaneously. The concurrency policy is **last write wins** with a fetch-before-push strategy to minimize data loss:
+Git notes are a **write-through cache**. The expensive work is the image build itself, which has already completed by the time a note is written. Losing a note entry is cheap -- it simply means the next run that needs that entry rebuilds and re-caches it.
 
-1. Before writing a note, fetch the latest notes ref from the remote.
-2. Read-modify-write the note JSON locally (merge entries so two configs don't clobber each other).
-3. Force-push the notes ref.
+Multiple `offload run` invocations (e.g. parallel CI jobs) may attempt to write notes to the same commit simultaneously. The concurrency policy is **last write wins**:
 
-This shrinks the race window to the time between the fetch and the push, rather than the entire duration of the image build. In the worst case, a concurrent write still overwrites another's entry, and the next run that needs the lost entry rebuilds and re-caches it. This is acceptable because image builds are idempotent and the cost of a redundant rebuild is low relative to the complexity of a locking protocol.
+1. Read-modify-write the note JSON locally (merge entries so two configs targeting the same commit don't clobber each other within one writer).
+2. Force-push the notes ref to the remote.
 
-**WARNING**: Concurrent runs against the same commit may lose each other's cached images. For expensive checkpoint images, avoid parallel CI jobs targeting the same commit.
+A concurrent writer may clobber another's entry. This is acceptable: image builds are idempotent, and the "lost" entry is simply rebuilt on the next cache miss. No locking protocol is needed.
 
 ### jj Support
 
