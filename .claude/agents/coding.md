@@ -42,6 +42,7 @@ Before declaring your task complete:
 - `cargo fmt --check` passes
 - `cargo clippy` passes (no warnings)
 - `cargo nextest run` passes within the global timeout (see `TESTING.md`)
+- `ratchets check` passes (see `ratchet-counts.toml` for budgets). Common violations: `no-expect`, `no-unwrap`, `no-panic`. If you add code that triggers a ratchet violation, refactor to avoid it (e.g., use `if let` instead of `.expect()`).
 - No policy violations in `STYLE_GUIDE.md`
 
 ## Graphviz workflow
@@ -57,7 +58,7 @@ digraph CodingAgentWorkflow {
   RESEARCH [label="Research codebase:\n- existing solutions\n- patterns to follow"];
   CAN_COMPLETE [shape=diamond, style=filled, fillcolor=lightyellow, label="Can complete task?"];
   IMPLEMENT [label="Implement changes\n(small, atomic commits)"];
-  RUN_CHECKS [label="Run verification:\nfmt, clippy, nextest"];
+  RUN_CHECKS [label="Run verification:\nfmt, clippy, nextest,\nratchets check"];
   CHECKS_PASS [shape=diamond, style=filled, fillcolor=lightyellow, label="All checks pass?"];
   FIX_ISSUES [label="Fix issues\nfound by checks"];
   REPORT_SUCCESS [label="Report SUCCESS\nto Coordinator"];
