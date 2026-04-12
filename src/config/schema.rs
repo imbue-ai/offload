@@ -27,6 +27,10 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
+
+    /// Optional checkpoint configuration for image caching.
+    #[serde(default)]
+    pub checkpoint: Option<CheckpointConfig>,
 }
 
 /// Core offload execution settings.
@@ -541,6 +545,20 @@ pub struct DefaultFrameworkConfig {
     pub test_id_format: String,
 }
 
+/// Configuration for image checkpointing.
+///
+/// When present, enables checkpointing support for sandbox images.
+/// The `build_inputs` field lists file paths that are hashed to determine
+/// whether a cached image can be reused.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CheckpointConfig {
+    /// File paths whose contents are hashed to compute the image cache key.
+    ///
+    /// Must be non-empty when checkpoint is enabled.
+    #[serde(default)]
+    pub build_inputs: Vec<String>,
+}
+
 /// Configuration for test result reporting.
 ///
 /// Controls where test results are written and output format.
@@ -723,6 +741,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            checkpoint: None,
         }
     }
 
@@ -752,6 +771,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            checkpoint: None,
         }
     }
 
@@ -784,6 +804,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            checkpoint: None,
         }
     }
 
@@ -955,6 +976,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            checkpoint: None,
         }
     }
 
@@ -1124,6 +1146,76 @@ mod tests {
         } else {
             return Err("Expected Modal provider".into());
         }
+
+        Ok(())
+    }
+
+    /// Test that a config with a [checkpoint] section round-trips through serialization.
+    #[test]
+    fn test_checkpoint_config_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = ["Dockerfile", "requirements.txt"]
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        if let Some(ref checkpoint) = config.checkpoint {
+            assert_eq!(
+                checkpoint.build_inputs,
+                vec!["Dockerfile", "requirements.txt"]
+            );
+        } else {
+            return Err("checkpoint should be Some".into());
+        }
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        if let Some(ref checkpoint_rt) = round_tripped.checkpoint {
+            assert_eq!(
+                checkpoint_rt.build_inputs,
+                vec!["Dockerfile", "requirements.txt"]
+            );
+        } else {
+            return Err("checkpoint should survive round-trip".into());
+        }
+
+        Ok(())
+    }
+
+    /// Test that a config without [checkpoint] defaults to None.
+    #[test]
+    fn test_checkpoint_config_absent_defaults_to_none() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(
+            config.checkpoint.is_none(),
+            "Expected checkpoint to be None when absent from config"
+        );
 
         Ok(())
     }

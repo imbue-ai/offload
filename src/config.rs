@@ -103,6 +103,24 @@ fn validate_config(config: &Config) -> Result<()> {
             cfg.discover_command
         );
     }
+
+    if let Some(ref checkpoint) = config.checkpoint {
+        if checkpoint.build_inputs.is_empty() {
+            anyhow::bail!(
+                "Checkpoint configuration requires at least one entry in build_inputs. \
+                 Add file paths whose contents determine the image cache key, e.g.:\n\
+                 [checkpoint]\n\
+                 build_inputs = [\"Dockerfile\", \"requirements.txt\"]"
+            );
+        }
+        if matches!(config.provider, ProviderConfig::Local(_)) {
+            anyhow::bail!(
+                "Checkpoint is not supported with the local provider. \
+                 Use a remote provider (default or modal) for checkpoint support."
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -429,5 +447,91 @@ mod tests {
         let result = expand_env_value("${_OFFLOAD_TEST_MISSING:-}")?;
         assert_eq!(result, "");
         Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_empty_build_inputs_returns_error() {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = []
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(result.is_err(), "Expected error for empty build_inputs");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("build_inputs"),
+            "Error should mention build_inputs, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_with_local_provider_returns_error() {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = ["Dockerfile"]
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error for checkpoint with local provider"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("local provider"),
+            "Error should mention local provider, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_with_modal_provider_succeeds() {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = ["Dockerfile"]
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_ok(),
+            "Expected success for checkpoint with modal provider: {:?}",
+            result.err()
+        );
     }
 }

@@ -2,3 +2,4 @@
 
 # Beads: store tasks in JSONL (no DB).
 no-db: true
+issue-prefix: code
