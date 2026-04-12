@@ -373,6 +373,25 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
+/// Providers that support checkpoint-based image caching.
+///
+/// This trait exposes the checkpoint methods shared by `DefaultProvider`
+/// and `ModalProvider`, enabling generic helpers that operate on either
+/// provider without code duplication.
+pub trait CheckpointProvider: SandboxProvider {
+    /// Configures this provider to build from a checkpoint image.
+    fn with_checkpoint(&mut self, ctx: CheckpointContext);
+
+    /// Clears any checkpoint context, reverting to a full build on the next prepare.
+    fn clear_checkpoint(&mut self);
+
+    /// Sets the image ID directly, bypassing the prepare step.
+    fn set_image_id(&mut self, id: String);
+
+    /// Returns a human-readable label for error messages (e.g. "Default", "Modal").
+    fn provider_label(&self) -> &'static str;
+}
+
 /// Factory for creating and managing sandbox instances.
 ///
 /// A `SandboxProvider` represents an execution backend (local, etc.)
