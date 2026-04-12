@@ -47,4 +47,5 @@ If your task is blocked by a large refactor that you are not cleared to do:
 - `cargo fmt --check` passes
 - `cargo clippy` passes (no warnings)
 - `cargo nextest run` passes within the global timeout (see `TESTING.md`)
+- `ratchets check` passes (see `ratchet-counts.toml` for violation budgets)
 - No policy violations in `STYLE_GUIDE.md`
