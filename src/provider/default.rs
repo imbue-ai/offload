@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use tracing::{debug, warn};
 
 use super::{
-    CheckpointContext, Command, CostEstimate, OutputStream, ProviderError, ProviderResult, Sandbox,
-    SandboxProvider, run_prepare_command,
+    CheckpointContext, CheckpointProvider, Command, CostEstimate, OutputStream, ProviderError,
+    ProviderResult, Sandbox, SandboxProvider, run_prepare_command,
 };
 
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
@@ -66,22 +66,6 @@ impl DefaultProvider {
         }
     }
 
-    /// Configures this provider to build from a checkpoint image.
-    pub fn with_checkpoint(mut self, ctx: CheckpointContext) -> Self {
-        self.checkpoint = Some(ctx);
-        self
-    }
-
-    /// Clears any checkpoint context, reverting to a full build on the next prepare.
-    pub fn clear_checkpoint(&mut self) {
-        self.checkpoint = None;
-    }
-
-    /// Sets the image ID directly, bypassing the prepare step.
-    pub fn set_image_id(&mut self, id: String) {
-        self.image_id = Some(id);
-    }
-
     /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
     fn build_prepare_command(
         &self,
@@ -124,6 +108,24 @@ impl DefaultProvider {
         }
 
         Some(full)
+    }
+}
+
+impl CheckpointProvider for DefaultProvider {
+    fn with_checkpoint(&mut self, ctx: CheckpointContext) {
+        self.checkpoint = Some(ctx);
+    }
+
+    fn clear_checkpoint(&mut self) {
+        self.checkpoint = None;
+    }
+
+    fn set_image_id(&mut self, id: String) {
+        self.image_id = Some(id);
+    }
+
+    fn provider_label(&self) -> &'static str {
+        "Default"
     }
 }
 
@@ -808,11 +810,11 @@ mod tests {
 
     #[test]
     fn test_prepare_command_with_checkpoint() {
-        let p = default_provider_with_prepare(
+        let mut p = default_provider_with_prepare(
             "uv run @modal_sandbox.py prepare --include-cwd Dockerfile",
             vec!["./lib:/app/lib".to_string()],
-        )
-        .with_checkpoint(CheckpointContext {
+        );
+        p.with_checkpoint(CheckpointContext {
             image_id: "im-abc123".to_string(),
             commit_sha: "deadbeef".to_string(),
             sandbox_project_root: "/app".to_string(),
