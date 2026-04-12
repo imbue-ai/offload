@@ -143,8 +143,13 @@ impl SandboxProvider for ModalProvider {
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
-        let prepare_cmd = self.build_prepare_command(copy_dirs, no_cache, sandbox_init_cmd);
+        let mut prepare_cmd = self.build_prepare_command(copy_dirs, no_cache, sandbox_init_cmd);
+
+        if let Some(dir) = context_dir {
+            prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
+        }
 
         debug!("Running prepare command: {}", prepare_cmd);
 

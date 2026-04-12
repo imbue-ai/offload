@@ -497,6 +497,7 @@ async fn run_tests(
                         no_cache,
                         config.offload.sandbox_init_cmd.as_deref(),
                         Some(&discovery_done),
+                        None,
                     ))
                     .context("Failed to prepare Default provider")?;
                     Ok(image_id)
@@ -536,6 +537,7 @@ async fn run_tests(
                         no_cache,
                         config.offload.sandbox_init_cmd.as_deref(),
                         Some(&discovery_done),
+                        None,
                     ))
                     .context("Failed to prepare Modal provider")?;
                     Ok(image_id)

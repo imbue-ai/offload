@@ -388,6 +388,7 @@ pub trait SandboxProvider: Send + Sync {
         no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>>;
 
     /// Creates a new sandbox with the given configuration.
