@@ -329,6 +329,15 @@ pub async fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<
     Ok(paths.iter().any(|p| changed.contains(p.as_str())))
 }
 
+/// Count the number of files changed between two commits.
+pub async fn diff_file_count(from_sha: &str, to_sha: &str) -> Result<usize> {
+    let output = run_git(&["diff", "--name-only", from_sha, to_sha]).await?;
+    if output.is_empty() {
+        return Ok(0);
+    }
+    Ok(output.lines().count())
+}
+
 /// Return the SHAs of the last `max_depth` ancestors of HEAD (including HEAD).
 pub async fn ancestors(max_depth: usize) -> Result<Vec<String>> {
     let n = max_depth.to_string();
