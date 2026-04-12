@@ -141,7 +141,7 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | Tests discovered but "Not Run" | JUnit test IDs do not match discovery IDs | Check `test_id_format` or conftest JUnit hook |
 | "Exec format error" | Local `.venv` (macOS binaries) copied into Linux sandbox | Add `.venv` to `.dockerignore` |
 | "Token validation failed" | Modal credentials expired | Run `modal token new` |
-| Slow sandbox creation | Docker image not cached | Delete `.offload-image-cache` or pass `--no-cache` |
+| Slow sandbox creation | Docker image not cached | Pass `--no-cache` to force a fresh image build |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
 
 ## Checkpoint Mode

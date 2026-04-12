@@ -486,7 +486,7 @@ sandbox_init_cmd = "git apply /offload-upload/patch --allow-empty && uv sync --a
 
 [provider]
 type = "default"
-prepare_command = "uv run @modal_sandbox.py prepare --include-cwd --cached libs/mng/imbue/mng/resources/Dockerfile"
+prepare_command = "uv run @modal_sandbox.py prepare --include-cwd libs/mng/imbue/mng/resources/Dockerfile"
 create_command = "uv run @modal_sandbox.py create {image_id}"
 exec_command = "uv run @modal_sandbox.py exec {sandbox_id} {command}"
 destroy_command = "uv run @modal_sandbox.py destroy {sandbox_id}"
@@ -516,7 +516,7 @@ Commands in configuration can reference bundled scripts using `@filename.ext` sy
 
 ## Image Cache
 
-When using the `modal` provider or a `default` provider with a `prepare_command`, the bundled `modal_sandbox.py` script caches the image ID in `.offload-image-cache` at the project root. Delete this file to force a fresh image build on the next run. You can also pass `--no-cache` to `offload run` to skip cached image lookup.
+Offload caches image IDs in git notes (`refs/notes/offload-images`). Notes are fetched from and pushed to the remote automatically. Pass `--no-cache` to `offload run` to skip cached image lookup and force a fresh build.
 
 ## Environment Variable Expansion
 
