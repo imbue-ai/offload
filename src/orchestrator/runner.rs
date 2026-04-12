@@ -405,7 +405,20 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     match report.lock() {
                         Ok(mut report) => {
                             let before = report.total_count();
-                            report.add_junit_xml(&junit_xml);
+                            if let Err(e) = report.add_junit_xml(&junit_xml) {
+                                error!(
+                                    "[BATCH ERROR] Sandbox {} test ID mismatch: {}",
+                                    sandbox_id, e
+                                );
+                                if let Some(ref token) = self.cancellation_token {
+                                    token.cancel();
+                                }
+                                return Err(anyhow::anyhow!(
+                                    "Test ID mismatch in JUnit XML from sandbox {}: {}",
+                                    sandbox_id,
+                                    e
+                                ));
+                            }
                             let after = report.total_count();
                             info!(
                                 "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",

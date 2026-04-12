@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Tracks the outcome of a single test ID across execution attempts.
 ///
@@ -57,6 +57,7 @@ pub struct TestcaseXml {
     pub time: f64,
     pub failure: Option<FailureXml>,
     pub error: Option<FailureXml>,
+    pub skipped: bool,
 }
 
 /// Parsed failure/error element from JUnit XML.
@@ -83,8 +84,6 @@ pub struct MasterJunitReport {
     test_id_format: String,
     /// Set of discovered test IDs for validation
     known_test_ids: HashSet<String>,
-    /// Tracks unrecognized test IDs that have already been warned about
-    warned_unknown_ids: HashSet<String>,
 }
 
 impl MasterJunitReport {
@@ -100,7 +99,6 @@ impl MasterJunitReport {
             total_expected,
             test_id_format: test_id_format.to_string(),
             known_test_ids,
-            warned_unknown_ids: HashSet::new(),
         }
     }
 
@@ -108,7 +106,11 @@ impl MasterJunitReport {
     ///
     /// Each testsuite represents one batch execution. Test outcomes are
     /// tracked per test ID for flaky detection across retries.
-    pub fn add_junit_xml(&mut self, xml_content: &str) {
+    ///
+    /// Returns `Err` with a descriptive message if any test IDs from the
+    /// JUnit XML are not in the `known_test_ids` set. In this case,
+    /// outcomes are not updated.
+    pub fn add_junit_xml(&mut self, xml_content: &str) -> Result<(), String> {
         let parsed_testsuites = parse_all_testsuites_xml(xml_content);
 
         if parsed_testsuites.is_empty() {
@@ -117,11 +119,15 @@ impl MasterJunitReport {
                 xml_content.len(),
                 &xml_content[..xml_content.len().min(200)]
             );
-            return;
+            return Ok(());
         }
 
         let before_count = self.test_outcomes.len();
         let mut total_testcases = 0;
+
+        // Collect all suite outcomes first, then validate before updating.
+        let mut all_suite_data: Vec<(TestsuiteXml, HashMap<TestId, bool>)> = Vec::new();
+        let mut skipped_test_ids: HashSet<TestId> = HashSet::new();
 
         for testsuite in parsed_testsuites {
             total_testcases += testsuite.testcases.len();
@@ -131,6 +137,11 @@ impl MasterJunitReport {
             let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
             for testcase in &testsuite.testcases {
                 let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
+                if testcase.skipped {
+                    skipped_test_ids.insert(test_id.clone());
+                    suite_outcomes.entry(test_id).or_insert(false);
+                    continue;
+                }
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
                 let entry = suite_outcomes.entry(test_id).or_insert(false);
                 if failed {
@@ -138,40 +149,83 @@ impl MasterJunitReport {
                 }
             }
 
-            // Validate test IDs against discovered IDs
-            if !self.known_test_ids.is_empty() {
+            all_suite_data.push((testsuite, suite_outcomes));
+        }
+
+        // Validate test IDs against discovered IDs before updating outcomes.
+        if !self.known_test_ids.is_empty() {
+            let mut unrecognized: Vec<String> = Vec::new();
+            for (_testsuite, suite_outcomes) in &all_suite_data {
                 for test_id in suite_outcomes.keys() {
+                    if skipped_test_ids.contains(test_id) {
+                        continue;
+                    }
                     let formatted_id = crate::config::format_test_id(
                         &self.test_id_format,
                         &test_id.name,
                         test_id.classname.as_deref(),
                     );
                     if !self.known_test_ids.contains(&formatted_id)
-                        && self.warned_unknown_ids.insert(formatted_id.clone())
+                        && !unrecognized.contains(&formatted_id)
                     {
-                        let mut candidates: Vec<&String> = self.known_test_ids.iter().collect();
-                        candidates.sort_by_cached_key(|known| {
-                            edit_distance::edit_distance(&formatted_id, known)
-                        });
-                        let top3: Vec<String> = candidates
-                            .iter()
-                            .take(3)
-                            .map(|id| format!("  '{}'", id))
-                            .collect();
-                        warn!(
-                            "Unrecognized test ID from JUnit XML: '{}'. Closest discovered IDs:\n{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
-                            formatted_id,
-                            top3.join("\n")
-                        );
+                        unrecognized.push(formatted_id);
                     }
                 }
             }
 
-            // Update global outcomes with this suite's per-ID results.
+            if !unrecognized.is_empty() {
+                let mut details = Vec::new();
+                for formatted_id in &unrecognized {
+                    let mut entry =
+                        format!("Unrecognized test ID from JUnit XML: '{}'.", formatted_id);
+
+                    // Check for substring matches first.
+                    let substring_matches: Vec<&String> = self
+                        .known_test_ids
+                        .iter()
+                        .filter(|known| {
+                            known.contains(formatted_id.as_str())
+                                || formatted_id.contains(known.as_str())
+                        })
+                        .collect();
+
+                    if !substring_matches.is_empty() {
+                        let lines: Vec<String> = substring_matches
+                            .iter()
+                            .take(3)
+                            .map(|id| format!("  '{}'", id))
+                            .collect();
+                        entry.push_str(&format!(" Substring matches:\n{}", lines.join("\n")));
+                    }
+
+                    // Always show edit-distance matches.
+                    let mut candidates: Vec<&String> = self.known_test_ids.iter().collect();
+                    candidates.sort_by_cached_key(|known| {
+                        edit_distance::edit_distance(formatted_id, known)
+                    });
+                    let top3: Vec<String> = candidates
+                        .iter()
+                        .take(3)
+                        .map(|id| format!("  '{}'", id))
+                        .collect();
+                    entry.push_str(&format!("\nClosest by edit distance:\n{}", top3.join("\n")));
+
+                    details.push(entry);
+                }
+                let msg = format!(
+                    "{}\nHint: Ensure `sandbox_project_root` is set correctly, tests are run from the project root, and reporting hooks (e.g. conftest fixtures that set JUnit test IDs) are configured correctly.",
+                    details.join("\n")
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        // All IDs validated; update outcomes.
+        for (testsuite, suite_outcomes) in all_suite_data {
             for (test_id, failed) in suite_outcomes {
                 self.update_test_outcome(test_id, failed);
             }
-
             self.testsuites.push(testsuite);
         }
 
@@ -184,6 +238,7 @@ impl MasterJunitReport {
             new_tests,
             after_count
         );
+        Ok(())
     }
 
     /// Updates the test outcome with flaky detection.
@@ -360,7 +415,13 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
+                        skipped: false,
                     });
+                }
+                b"skipped" => {
+                    if let Some(ref mut tc) = current_testcase {
+                        tc.skipped = true;
+                    }
                 }
                 b"failure" => {
                     in_failure = true;
@@ -395,9 +456,15 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
                         time: get_attr_f64(&e, b"time"),
                         failure: None,
                         error: None,
+                        skipped: false,
                     };
                     if let Some(ref mut ts) = current_testsuite {
                         ts.testcases.push(tc);
+                    }
+                }
+                b"skipped" => {
+                    if let Some(ref mut tc) = current_testcase {
+                        tc.skipped = true;
                     }
                 }
                 _ => {}
@@ -634,7 +701,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 1);
@@ -651,7 +718,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
@@ -673,10 +740,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail);
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert_eq!(report.failed_count(), 1);
 
-        report.add_junit_xml(xml_pass);
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.flaky_count(), 1);
         assert_eq!(report.passed_count(), 1); // flaky counts as passed
@@ -694,7 +761,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1); // 1 unique test ID
         assert_eq!(report.passed_count(), 1);
@@ -715,7 +782,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
@@ -740,10 +807,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail);
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert_eq!(report.failed_count(), 1);
 
-        report.add_junit_xml(xml_pass);
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.flaky_count(), 1);
         assert_eq!(report.passed_count(), 1);
@@ -758,7 +825,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(2, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("test_alpha"));
         assert!(report.has_test_passed("test_beta"));
@@ -774,7 +841,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{classname} {name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("my_binary tests::test_something"));
         assert!(!report.has_test_passed("tests::test_something")); // name alone
@@ -789,7 +856,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("com.example::testFoo"));
         assert!(!report.has_test_passed("testFoo"));
@@ -806,7 +873,7 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(!report.has_test_passed("test_fail"));
     }
@@ -826,10 +893,10 @@ mod tests {
 </testsuite>"#;
 
         let mut report = MasterJunitReport::new(1, "{name}", HashSet::new());
-        report.add_junit_xml(xml_fail);
+        assert!(report.add_junit_xml(xml_fail).is_ok());
         assert!(!report.has_test_passed("test_flaky"));
 
-        report.add_junit_xml(xml_pass);
+        assert!(report.add_junit_xml(xml_pass).is_ok());
         assert!(report.has_test_passed("test_flaky")); // flaky counts as passed
     }
 
@@ -842,7 +909,7 @@ mod tests {
 
         // With {classname}::{name} format but no classname in XML
         let mut report = MasterJunitReport::new(1, "{classname}::{name}", HashSet::new());
-        report.add_junit_xml(xml);
+        assert!(report.add_junit_xml(xml).is_ok());
 
         assert!(report.has_test_passed("::test_solo")); // classname is empty
         assert!(!report.has_test_passed("test_solo")); // no match without ::
@@ -970,12 +1037,56 @@ mod tests {
     <testcase name="test_baz" time="0.1" />
 </testsuite>"#;
 
-        report.add_junit_xml(xml);
+        let result = report.add_junit_xml(xml);
+        assert!(result.is_err(), "Expected Err for unrecognized test ID");
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("test_baz"),
+            "Error should mention the unrecognized ID"
+        );
+        assert!(
+            err_msg.contains("Closest by edit distance"),
+            "Error should contain edit distance section"
+        );
 
-        // The report still works correctly despite the unknown ID
-        assert_eq!(report.total_count(), 1);
-        assert_eq!(report.passed_count(), 1);
+        // Outcomes are not updated when validation fails
+        assert_eq!(report.total_count(), 0);
+        assert_eq!(report.passed_count(), 0);
         assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_unknown_test_id_substring_matches() {
+        let known: HashSet<String> = [
+            "libs/foo/test_write.py::test_atomic_write",
+            "libs/foo/test_write.py::test_buffered_write",
+            "libs/bar/test_read.py::test_read_all",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut report = MasterJunitReport::new(3, "{name}", known);
+
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="0">
+    <testcase name="test_atomic_write" time="0.1" />
+</testsuite>"#;
+
+        let result = report.add_junit_xml(xml);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("Substring matches"),
+            "Error should show substring matches when known ID contains the formatted ID"
+        );
+        assert!(
+            err_msg.contains("libs/foo/test_write.py::test_atomic_write"),
+            "Substring match should include the known ID that contains the unrecognized ID"
+        );
+        assert!(
+            err_msg.contains("Closest by edit distance"),
+            "Error should always contain edit distance section"
+        );
     }
 
     #[test]
@@ -992,11 +1103,38 @@ mod tests {
     <testcase name="test_beta" time="0.2" />
 </testsuite>"#;
 
-        report.add_junit_xml(xml);
+        let result = report.add_junit_xml(xml);
+        assert!(result.is_ok(), "Expected Ok for recognized test IDs");
 
         assert_eq!(report.total_count(), 2);
         assert_eq!(report.passed_count(), 2);
         assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn test_skipped_testcase_excluded_from_validation() {
+        let known: HashSet<String> = ["test_foo", "test_bar"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut report = MasterJunitReport::new(2, "{name}", known);
+
+        // test_baz is unrecognized but skipped — should NOT trigger an error
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="2" failures="0">
+    <testcase name="test_foo" time="0.1" />
+    <testcase name="test_baz" time="0.0">
+        <skipped message="root only"/>
+    </testcase>
+</testsuite>"#;
+
+        let result = report.add_junit_xml(xml);
+        assert!(
+            result.is_ok(),
+            "Skipped tests with unrecognized IDs should not cause errors"
+        );
+        assert_eq!(report.total_count(), 2); // both test_foo and test_baz counted
+        assert_eq!(report.passed_count(), 2); // skipped tests count as passed
     }
 
     #[test]
