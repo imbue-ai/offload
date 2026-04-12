@@ -3,7 +3,6 @@
 //! Instead of zipping sandboxes with batches 1:1, workers pull batches
 //! from a shared queue so N sandboxes can process M batches (M >= N).
 
-use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,11 +14,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::framework::{TestFramework, TestInstance};
+use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
+use super::scheduler::Scheduler;
 
 /// Configuration for a queue-based spawn worker.
 ///
@@ -29,7 +29,7 @@ use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, 
 pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub config: &'a Config,
     pub framework: &'a F,
-    pub queue: Arc<Mutex<VecDeque<Vec<TestInstance<'a>>>>>,
+    pub scheduler: &'a Scheduler<'a>,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
     pub all_passed: Arc<AtomicBool>,
@@ -53,14 +53,9 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
     mut sandbox: S,
 ) {
     loop {
-        let batch = match cfg.queue.lock() {
-            Ok(mut q) => q.pop_front(),
-            Err(e) => {
-                error!("batch queue mutex poisoned: {}", e);
-                break;
-            }
+        let Some(batch) = cfg.scheduler.pop() else {
+            break;
         };
-        let Some(batch) = batch else { break };
 
         let batch_idx = cfg.batch_counter.fetch_add(1, Ordering::SeqCst);
 
