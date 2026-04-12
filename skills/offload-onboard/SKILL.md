@@ -246,7 +246,7 @@ Append Offload artifacts to `.gitignore`:
 test-results/
 ```
 
-NOTE: `.offload-image-cache` should be checked in to git — it tracks the base image ID and speeds up subsequent runs. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
+NOTE: Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
 
 ### Step 8: Run Offload Locally and Verify
 
@@ -493,8 +493,7 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | "Token validation failed" | Modal credentials expired | `modal token new` |
 | All tests "Not Run" / junit.xml missing | Test command failing inside sandbox | Check Dockerfile has correct runtime; debug with `modal sandbox create` |
 | "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before Offload |
-| Slow sandbox creation | Docker image not cached | Run once to warm cache; `.offload-image-cache` tracks the base image ID |
-| Stale sandbox image | `.offload-image-cache` points to an outdated image | Delete `.offload-image-cache` to force a fresh image build on next run |
+| Slow sandbox creation | Docker image not cached | Run once to warm cache; image IDs are cached in git notes automatically |
 | High parallelism slower than low | Sandbox creation overhead dominates | Reduce `max_parallel`; optimal is usually 2-6 for small test suites |
 | Tests fail with unexpected errors in sandbox | Local artifacts (caches, build dirs) interfere with sandbox environment | Create a `.dockerignore` (see below) |
 
@@ -508,7 +507,6 @@ If tests fail due to local artifacts leaking into the sandbox (e.g. "Exec format
 .github
 __pycache__
 *.egg-info
-.offload-image-cache  # excluded from Docker build context, but should be checked in to git
 test-results
 build
 dist
