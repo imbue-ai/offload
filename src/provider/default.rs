@@ -72,6 +72,16 @@ impl DefaultProvider {
         self
     }
 
+    /// Clears any checkpoint context, reverting to a full build on the next prepare.
+    pub fn clear_checkpoint(&mut self) {
+        self.checkpoint = None;
+    }
+
+    /// Sets the image ID directly, bypassing the prepare step.
+    pub fn set_image_id(&mut self, id: String) {
+        self.image_id = Some(id);
+    }
+
     /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
     fn build_prepare_command(
         &self,
