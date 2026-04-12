@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import subprocess
 import tarfile
 import tempfile
 import threading
@@ -111,7 +112,6 @@ def cli():
     pass
 
 
-CACHE_FILE = ".offload-image-cache"
 DOCKERIGNORE_FILE = ".dockerignore"
 
 
@@ -127,33 +127,6 @@ def read_dockerignore_patterns() -> list[str]:
             if line and not line.startswith("#"):
                 patterns.append(line)
     return patterns
-
-
-def read_cached_image_id() -> str | None:
-    """Read cached image_id from cache file if it exists."""
-    if not os.path.isfile(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE) as f:
-            image_id = f.read().strip()
-            if image_id.startswith("im-"):
-                return image_id
-    except Exception:
-        pass
-    return None
-
-
-def write_cached_image_id(image_id: str) -> None:
-    """Write image_id to cache file."""
-    with open(CACHE_FILE, "w") as f:
-        f.write(image_id + "\n")
-
-
-def clear_image_cache() -> None:
-    """Clear the cached image ID file."""
-    if os.path.isfile(CACHE_FILE):
-        os.remove(CACHE_FILE)
-        logger.info("Cleared cached image from %s", CACHE_FILE)
 
 
 _LAYER_BOUNDARY_INSTRUCTIONS = frozenset({"RUN", "COPY", "ADD"})
@@ -262,13 +235,10 @@ def _build_fresh_base_image(
         base_img = _build_image_from_dockerfile(dockerfile_path, context_dir=context_dir)
 
     base_img.build(app)
-    # Materialize to get base image_id for caching
+    # Materialize to get base image_id
     temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
     temp_sandbox.terminate()
     base_img_id = base_img.object_id
-    # Cache the base image
-    write_cached_image_id(base_img_id)
-    logger.info("Cached base image_id to %s", CACHE_FILE)
     return base_img, base_img_id
 
 
@@ -321,9 +291,69 @@ def _build_final_image(
         return base_img_id
 
 
+def _generate_git_diff(checkpoint_sha: str) -> str | None:
+    """Run git diff against checkpoint SHA and return patch content, or None if empty."""
+    result = subprocess.run(
+        ["git", "diff", checkpoint_sha, "HEAD", "--binary"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        logger.error(
+            "git diff failed (exit %d): %s", result.returncode, result.stderr.decode()
+        )
+        sys.exit(1)
+    patch = result.stdout
+    if not patch.strip():
+        return None
+    return patch
+
+
+def _collect_untracked_files() -> list[str]:
+    """Return list of untracked, non-ignored file paths."""
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error(
+            "git ls-files failed (exit %d): %s", result.returncode, result.stderr
+        )
+        sys.exit(1)
+    files = [f for f in result.stdout.splitlines() if f.strip()]
+    return files
+
+
+def _build_run_image_from_checkpoint(
+    app,
+    checkpoint_img: modal.Image,
+    diff_path: str | None,
+    untracked_tar: str | None,
+    project_root: str,
+) -> str:
+    """Apply diff and untracked files to checkpoint image, return new image ID."""
+    img = checkpoint_img
+
+    if diff_path is not None:
+        img = img.add_local_file(diff_path, "/tmp/offload.patch")
+        img = img.run_commands(
+            f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
+        )
+
+    if untracked_tar is not None:
+        img = img.add_local_file(untracked_tar, "/tmp/offload-untracked.tar")
+        img = img.run_commands(
+            f"cd {project_root} && tar xf /tmp/offload-untracked.tar && rm /tmp/offload-untracked.tar"
+        )
+
+    img.build(app)
+    temp_sandbox = modal.Sandbox.create(app=app, image=img, timeout=10)
+    temp_sandbox.terminate()
+    return img.object_id
+
+
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
-@click.option("--cached", is_flag=True, help="Use cached BASE image if available")
 @click.option(
     "--include-cwd",
     is_flag=True,
@@ -345,25 +375,92 @@ def _build_final_image(
     default=".",
     help="Docker build context directory",
 )
+@click.option(
+    "--from-checkpoint",
+    default=None,
+    help="Modal image ID of the checkpoint image",
+)
+@click.option(
+    "--checkpoint-sha",
+    default=None,
+    help="Git commit SHA of the checkpoint",
+)
+@click.option(
+    "--sandbox-project-root",
+    default="/app",
+    help="Project root path in sandbox",
+)
 def prepare(
     dockerfile_path: str | None,
-    cached: bool,
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
     context_dir: str,
+    from_checkpoint: str | None,
+    checkpoint_sha: str | None,
+    sandbox_project_root: str,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
     that Dockerfile. If omitted, builds the default pytest image.
 
-    The --cached flag caches only the BASE image (Dockerfile build). The --include-cwd
-    and --copy-dir options are applied AFTER cache lookup, ensuring fresh source code
-    is always used even when the base image is cached.
+    The --include-cwd and --copy-dir options add source code to the image.
+
+    When --from-checkpoint is set, builds incrementally from the checkpoint
+    image by applying a git diff and any untracked files.
 
     Prints the image_id to stdout for use with 'create'.
     """
+    # Checkpoint mode
+    if from_checkpoint is not None:
+        if checkpoint_sha is None:
+            logger.error("--checkpoint-sha is required when --from-checkpoint is set")
+            sys.exit(1)
+
+        with modal.enable_output():
+            app_name = "offload-checkpoint-sandbox"
+            app = modal.App.lookup(app_name, create_if_missing=True)
+
+            checkpoint_img = modal.Image.from_id(from_checkpoint)
+
+            diff = _generate_git_diff(checkpoint_sha)
+            untracked = _collect_untracked_files()
+
+            if diff is None and not untracked:
+                logger.info("No changes since checkpoint, reusing image")
+                sys.stdout.write("%s\n" % from_checkpoint)
+                return
+
+            logger.info("Building incremental image from checkpoint %s", checkpoint_sha)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                diff_path = None
+                untracked_tar_path = None
+
+                if diff is not None:
+                    diff_path = os.path.join(tmpdir, "offload.patch")
+                    with open(diff_path, "wb") as f:
+                        f.write(diff)
+
+                if untracked:
+                    untracked_tar_path = os.path.join(tmpdir, "offload-untracked.tar")
+                    with tarfile.open(untracked_tar_path, "w") as tar:
+                        for fpath in untracked:
+                            tar.add(fpath)
+
+                image_id = _build_run_image_from_checkpoint(
+                    app,
+                    checkpoint_img,
+                    diff_path,
+                    untracked_tar_path,
+                    sandbox_project_root,
+                )
+
+        sys.stdout.write("%s\n" % image_id)
+        return
+
+    # Standard (non-checkpoint) mode
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
@@ -383,48 +480,17 @@ def prepare(
     with modal.enable_output():
         app = modal.App.lookup(app_name, create_if_missing=True)
 
-        base_image = None
-        base_image_id = None
+        base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
 
-        # Step 1: Try to use cached base image if available
-        if cached:
-            cached_id = read_cached_image_id()
-            if cached_id:
-                logger.info("Found cached base image_id: %s", cached_id)
-                base_image = modal.Image.from_id(cached_id)
-                base_image_id = cached_id
-
-        # Step 2: Build fresh base image if no cache
-        if base_image is None:
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
-
-        # Step 3: Build final image, catching cache invalidation errors
-        try:
-            image_id = _build_final_image(
-                app,
-                base_image,
-                base_image_id,
-                include_cwd,
-                copy_dirs,
-                ignore_patterns,
-                sandbox_init_cmd=sandbox_init_cmd,
-            )
-        except Exception as e:
-            # Cached image no longer exists on Modal - rebuild from scratch
-            logger.warning(
-                "Failed to use cached image (%s), rebuilding from scratch...", e
-            )
-            clear_image_cache()
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
-            image_id = _build_final_image(
-                app,
-                base_image,
-                base_image_id,
-                include_cwd,
-                copy_dirs,
-                ignore_patterns,
-                sandbox_init_cmd=sandbox_init_cmd,
-            )
+        image_id = _build_final_image(
+            app,
+            base_image,
+            base_image_id,
+            include_cwd,
+            copy_dirs,
+            ignore_patterns,
+            sandbox_init_cmd=sandbox_init_cmd,
+        )
 
     sys.stdout.write("%s\n" % image_id)
 
@@ -659,8 +725,7 @@ def create_from_image(
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
-            "Delete %s and run 'prepare' again to rebuild.",
-            CACHE_FILE,
+            "Run 'prepare' again to rebuild."
         )
         sys.exit(1)
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)
