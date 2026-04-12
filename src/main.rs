@@ -110,6 +110,12 @@ enum Commands {
         framework: String,
     },
 
+    /// Show checkpoint cache status for the current HEAD.
+    CheckpointStatus {
+        #[arg(long, default_value = "origin")]
+        remote: String,
+    },
+
     /// View test run logs
     Logs {
         /// Show only failure logs
@@ -177,6 +183,10 @@ async fn main() -> Result<()> {
             provider,
             framework,
         } => init_config(&provider, &framework),
+        Commands::CheckpointStatus { remote } => {
+            let config_path_str = cli.config.to_string_lossy().to_string();
+            checkpoint_status_handler(&config_path_str, &remote).await
+        }
         Commands::Logs {
             failures,
             errors,
@@ -970,6 +980,132 @@ async fn write_note_on_cache_miss(
     if let Err(e) = git::push_notes("origin").await {
         warn!("Failed to push notes: {}", e);
     }
+}
+
+/// Show checkpoint cache status for the current HEAD.
+async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()> {
+    let path = Path::new(config_path);
+    let config = config::load_config(path)
+        .with_context(|| format!("Failed to load config from {}", config_path))?;
+
+    let checkpoint_cfg = match config.checkpoint {
+        Some(ref cfg) => cfg,
+        None => {
+            println!("Checkpoint mode not configured");
+            return Ok(());
+        }
+    };
+
+    // Best-effort fetch and configure notes
+    let _ = git::fetch_notes(remote).await;
+    let _ = git::configure_notes_fetch(remote).await;
+
+    let head = git::head_sha().await.context("Failed to get HEAD SHA")?;
+    let repo_root = git::repo_root().await.context("Failed to get repo root")?;
+    let config_key = git::canonicalize_config_path(config_path, &repo_root)
+        .context("Failed to canonicalize config path")?;
+
+    let ancestors = git::ancestors(100)
+        .await
+        .context("Failed to list ancestors")?;
+
+    // Find nearest checkpoint
+    let mut checkpoint_sha: Option<String> = None;
+    let mut checkpoint_distance: usize = 0;
+    for (i, sha) in ancestors.iter().enumerate() {
+        let touches = git::commit_touches_paths(sha, &checkpoint_cfg.build_inputs)
+            .await
+            .with_context(|| format!("Failed to check paths for commit {}", sha))?;
+        if touches {
+            checkpoint_sha = Some(sha.clone());
+            checkpoint_distance = i;
+            break;
+        }
+    }
+
+    let short_head = &head[..8.min(head.len())];
+
+    let checkpoint_sha = match checkpoint_sha {
+        Some(sha) => sha,
+        None => {
+            println!("HEAD:               {}", short_head);
+            println!("Checkpoint:         (no checkpoint found in last 100 commits)");
+            println!("Next run mode:      full build (no checkpoint found)");
+            return Ok(());
+        }
+    };
+
+    let short_checkpoint = &checkpoint_sha[..8.min(checkpoint_sha.len())];
+
+    // Read note for the checkpoint commit
+    let note = git::read_note(&checkpoint_sha)
+        .await
+        .context("Failed to read note for checkpoint commit")?;
+
+    let cached_entry = note.and_then(|contents| {
+        contents
+            .get(&config_key)
+            .filter(|e| !e.image_id.is_empty())
+            .cloned()
+    });
+
+    match cached_entry {
+        Some(entry) => {
+            // Compute current build inputs hash
+            let current_hash =
+                git::compute_build_inputs_hash(&repo_root, &checkpoint_cfg.build_inputs).await;
+
+            let hash_display = match (&current_hash, &entry.build_inputs_hash) {
+                (Ok(current), Some(cached)) if current == cached => {
+                    format!("{} (matches cached)", &current[..8.min(current.len())])
+                }
+                (Ok(current), Some(cached)) => {
+                    format!(
+                        "{} (MISMATCH: cached {})",
+                        &current[..8.min(current.len())],
+                        &cached[..8.min(cached.len())]
+                    )
+                }
+                (Ok(current), None) => {
+                    format!(
+                        "{} (no cached hash to compare)",
+                        &current[..8.min(current.len())]
+                    )
+                }
+                (Err(_), _) => "(failed to compute)".to_string(),
+            };
+
+            // Determine run mode
+            let run_mode = if checkpoint_sha == head {
+                "use checkpoint image directly (HEAD is the checkpoint)".to_string()
+            } else {
+                match git::diff_file_count(&checkpoint_sha, &head).await {
+                    Ok(count) => format!("thin diff ({} files changed since checkpoint)", count),
+                    Err(_) => "thin diff".to_string(),
+                }
+            };
+
+            println!("HEAD:               {}", short_head);
+            println!(
+                "Checkpoint:         {} ({} commits back)",
+                short_checkpoint, checkpoint_distance
+            );
+            println!("Cached image:       {}", entry.image_id);
+            println!("Build inputs hash:  {}", hash_display);
+            println!("Next run mode:      {}", run_mode);
+        }
+        None => {
+            println!("HEAD:               {}", short_head);
+            println!(
+                "Checkpoint:         {} ({} commits back)",
+                short_checkpoint, checkpoint_distance
+            );
+            println!("Cached image:       (none)");
+            println!("Next run mode:      full build (no cached checkpoint image)");
+        }
+    }
+
+    Ok(())
 }
 
 /// Run all tests with a single orchestrator call.
