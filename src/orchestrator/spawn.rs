@@ -61,11 +61,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Early exit if all tests have already passed or fail-fast triggered
         if cfg.all_passed.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
-            let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
                 batch_idx,
-                batch.len()
+                batch.tests.len()
             );
             debug!("Skipped tests: {:?}", test_ids);
 
@@ -91,16 +91,16 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Skip batches where all tests have already passed
         if let Ok(report) = cfg.junit_report.lock()
-            && batch.iter().all(|t| report.has_test_passed(t.id()))
+            && batch.tests.iter().all(|t| report.has_test_passed(t.id()))
         {
-            let test_ids: Vec<_> = batch.iter().map(|t| t.id()).collect();
+            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
                 "SKIP: Batch {} ({} tests) all already passed, skipping",
                 batch_idx,
-                batch.len()
+                batch.tests.len()
             );
             debug!("Skipped tests: {:?}", test_ids);
-            cfg.progress.inc(batch.len() as u64);
+            cfg.progress.inc(batch.tests.len() as u64);
             continue;
         }
 
@@ -115,7 +115,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             )
             .with_args(serde_json::json!({
                 "batch_index": batch_idx,
-                "test_count": batch.len(),
+                "test_count": batch.tests.len(),
                 "sandbox_index": cfg.sandbox_index,
             }));
 
@@ -170,7 +170,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Verbose logging
         if cfg.verbose {
-            for test in &batch {
+            for test in &batch.tests {
                 println!("Running: {}", test.id());
             }
         }
@@ -178,7 +178,10 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Run tests
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
-        let outcome = runner.run_tests(&batch).await;
+        let outcome = cfg
+            .scheduler
+            .register_running_batch(&batch, runner.run_tests(&batch.tests))
+            .await;
 
         // Rename log files based on outcome
         let extension = match &outcome {
@@ -235,7 +238,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        cfg.progress.inc(batch.len() as u64);
+        cfg.progress.inc(batch.tests.len() as u64);
         if let Ok(report) = cfg.junit_report.lock() {
             let passed = report.passed_count();
             let failed = report.failed_count();
