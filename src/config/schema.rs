@@ -183,6 +183,10 @@ pub struct ModalProviderConfig {
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
 
+    /// Memory per sandbox in GiB. Converted to MiB and passed to Modal.
+    #[serde(default)]
+    pub memory_gb: Option<f64>,
+
     /// Experimental options passed through to the sandbox create command as JSON.
     ///
     /// These are forwarded as `--experimental-options '{json}'` when non-empty.
