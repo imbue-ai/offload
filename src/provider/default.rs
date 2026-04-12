@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use tracing::{debug, warn};
 
 use super::{
-    Command, CostEstimate, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider,
-    run_prepare_command,
+    CheckpointContext, Command, CostEstimate, OutputStream, ProviderError, ProviderResult, Sandbox,
+    SandboxProvider, run_prepare_command,
 };
 
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
@@ -39,6 +39,8 @@ pub struct DefaultProvider {
     config: DefaultProviderConfig,
     /// Set during `prepare()`.
     image_id: Option<String>,
+    /// When set, the prepare step builds from a checkpoint image instead of from scratch.
+    checkpoint: Option<CheckpointContext>,
 }
 
 impl DefaultProvider {
@@ -60,7 +62,58 @@ impl DefaultProvider {
             connector,
             config,
             image_id: None,
+            checkpoint: None,
         }
+    }
+
+    /// Configures this provider to build from a checkpoint image.
+    pub fn with_checkpoint(mut self, ctx: CheckpointContext) -> Self {
+        self.checkpoint = Some(ctx);
+        self
+    }
+
+    /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
+    fn build_prepare_command(
+        &self,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+        context_dir: Option<&std::path::Path>,
+    ) -> Option<String> {
+        let prepare_cmd = self.config.prepare_command.as_ref()?;
+        let mut full = prepare_cmd.clone();
+
+        if let Some(ctx) = &self.checkpoint {
+            full.push_str(&format!(" --from-checkpoint={}", ctx.image_id));
+            full.push_str(&format!(" --checkpoint-sha={}", ctx.commit_sha));
+            full.push_str(&format!(
+                " --sandbox-project-root={}",
+                ctx.sandbox_project_root
+            ));
+        } else {
+            for copy_spec in &self.config.copy_dirs {
+                full.push_str(&format!(" --copy-dir={}", copy_spec));
+            }
+            for (local, remote) in copy_dirs {
+                full.push_str(&format!(
+                    " --copy-dir={}:{}",
+                    local.display(),
+                    remote.display()
+                ));
+            }
+
+            if let Some(init_cmd) = sandbox_init_cmd {
+                full.push_str(&format!(
+                    " --sandbox-init-cmd={}",
+                    shell_words::quote(init_cmd)
+                ));
+            }
+        }
+
+        if let Some(dir) = context_dir {
+            full.push_str(&format!(" --context-dir={}", dir.display()));
+        }
+
+        Some(full)
     }
 }
 
@@ -71,40 +124,14 @@ impl SandboxProvider for DefaultProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        no_cache: bool,
+        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
-        let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
-            let mut full_prepare_cmd = prepare_cmd.clone();
-
-            if !no_cache {
-                full_prepare_cmd.push_str(" --cached");
-            }
-
-            for copy_spec in &self.config.copy_dirs {
-                full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
-            }
-            for (local, remote) in copy_dirs {
-                full_prepare_cmd.push_str(&format!(
-                    " --copy-dir={}:{}",
-                    local.display(),
-                    remote.display()
-                ));
-            }
-
-            if let Some(init_cmd) = sandbox_init_cmd {
-                full_prepare_cmd.push_str(&format!(
-                    " --sandbox-init-cmd={}",
-                    shell_words::quote(init_cmd)
-                ));
-            }
-
-            if let Some(dir) = context_dir {
-                full_prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
-            }
-
+        let image_id = if let Some(full_prepare_cmd) =
+            self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
+        {
             let image_id = run_prepare_command(
                 &self.connector,
                 &full_prepare_cmd,
@@ -718,6 +745,98 @@ mod tests {
         assert!(
             cost.estimated_cost_usd > 0.0,
             "cost should be positive for remote sandboxes"
+        );
+    }
+
+    // -- prepare command tests --
+
+    fn default_provider_with_prepare(
+        prepare_command: &str,
+        copy_dirs: Vec<String>,
+    ) -> DefaultProvider {
+        DefaultProvider::from_config(DefaultProviderConfig {
+            prepare_command: Some(prepare_command.to_string()),
+            create_command: "create {image_id}".to_string(),
+            exec_command: "exec {sandbox_id} {command}".to_string(),
+            destroy_command: "destroy {sandbox_id}".to_string(),
+            download_command: None,
+            working_dir: None,
+            timeout_secs: 60,
+            env: Default::default(),
+            copy_dirs,
+            cpu_cores: 1.0,
+        })
+    }
+
+    #[test]
+    fn test_prepare_command_without_checkpoint() {
+        let p = default_provider_with_prepare(
+            "uv run @modal_sandbox.py prepare --include-cwd Dockerfile",
+            vec!["./lib:/app/lib".to_string()],
+        );
+        let cmd = p.build_prepare_command(&[], Some("pip install -e ."), None);
+        assert!(
+            cmd.is_some(),
+            "should return Some when prepare_command is set"
+        );
+        let cmd = cmd.unwrap_or_default();
+
+        assert!(
+            cmd.contains("--copy-dir=./lib:/app/lib"),
+            "should include --copy-dir"
+        );
+        assert!(
+            cmd.contains("--sandbox-init-cmd="),
+            "should include --sandbox-init-cmd"
+        );
+        assert!(
+            !cmd.contains("--from-checkpoint"),
+            "should NOT include --from-checkpoint"
+        );
+        assert!(!cmd.contains("--cached"), "should NOT include --cached");
+    }
+
+    #[test]
+    fn test_prepare_command_with_checkpoint() {
+        let p = default_provider_with_prepare(
+            "uv run @modal_sandbox.py prepare --include-cwd Dockerfile",
+            vec!["./lib:/app/lib".to_string()],
+        )
+        .with_checkpoint(CheckpointContext {
+            image_id: "im-abc123".to_string(),
+            commit_sha: "deadbeef".to_string(),
+            sandbox_project_root: "/app".to_string(),
+        });
+
+        let cmd = p.build_prepare_command(&[], Some("pip install -e ."), None);
+        assert!(
+            cmd.is_some(),
+            "should return Some when prepare_command is set"
+        );
+        let cmd = cmd.unwrap_or_default();
+
+        // Checkpoint flags should be present
+        assert!(
+            cmd.contains("--from-checkpoint=im-abc123"),
+            "should include --from-checkpoint: {cmd}"
+        );
+        assert!(
+            cmd.contains("--checkpoint-sha=deadbeef"),
+            "should include --checkpoint-sha: {cmd}"
+        );
+        assert!(
+            cmd.contains("--sandbox-project-root=/app"),
+            "should include --sandbox-project-root: {cmd}"
+        );
+
+        // Normal build flags should be omitted
+        assert!(
+            !cmd.contains("--copy-dir"),
+            "should NOT include --copy-dir: {cmd}"
+        );
+        assert!(
+            !cmd.contains("--sandbox-init-cmd"),
+            "should NOT include --sandbox-init-cmd: {cmd}"
         );
     }
 

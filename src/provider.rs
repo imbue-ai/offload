@@ -21,6 +21,21 @@ use crate::connector::{Connector, ShellConnector};
 /// or a [`ProviderError`] describing what went wrong.
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// Context for building a sandbox image from a checkpoint rather than from scratch.
+///
+/// When present, providers append `--from-checkpoint`, `--checkpoint-sha`, and
+/// `--sandbox-project-root` flags to the prepare command and omit the normal
+/// `--include-cwd`, `--copy-dir`, and `--sandbox-init-cmd` flags.
+#[derive(Debug, Clone)]
+pub struct CheckpointContext {
+    /// Modal image ID of the checkpoint image to build on top of.
+    pub image_id: String,
+    /// Git commit SHA that the checkpoint image was built from.
+    pub commit_sha: String,
+    /// Project root path inside the sandbox (e.g. `/app`).
+    pub sandbox_project_root: String,
+}
+
 /// Estimated compute cost of a sandbox or aggregated run.
 #[derive(Clone, Debug, Default)]
 pub struct CostEstimate {
