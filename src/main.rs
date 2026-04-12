@@ -872,6 +872,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             },
         )]),
         report: ReportConfig::default(),
+        checkpoint: None,
     };
 
     let toml_content = toml::to_string_pretty(&config)?;
