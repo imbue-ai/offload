@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::default::DefaultSandbox;
-use super::{ProviderError, ProviderResult, SandboxProvider, run_prepare_command};
+use super::{
+    CheckpointContext, ProviderError, ProviderResult, SandboxProvider, run_prepare_command,
+};
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
@@ -41,6 +43,8 @@ pub struct ModalProvider {
     env: Vec<(String, String)>,
     cpu_cores: f64,
     memory_gb: Option<f64>,
+    /// When set, the prepare step builds from a checkpoint image instead of from scratch.
+    checkpoint: Option<CheckpointContext>,
 }
 
 impl ModalProvider {
@@ -68,14 +72,20 @@ impl ModalProvider {
             env,
             cpu_cores,
             memory_gb,
+            checkpoint: None,
         }
+    }
+
+    /// Configures this provider to build from a checkpoint image.
+    pub fn with_checkpoint(mut self, ctx: CheckpointContext) -> Self {
+        self.checkpoint = Some(ctx);
+        self
     }
 
     /// Builds the shell command string for the `prepare` step.
     fn build_prepare_command(
         &self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
         sandbox_init_cmd: Option<&str>,
     ) -> String {
         let mut cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -85,31 +95,36 @@ impl ModalProvider {
             cmd.push_str(dockerfile);
         }
 
-        if self.config.include_cwd {
-            cmd.push_str(" --include-cwd");
-        }
-
-        if !no_cache {
-            cmd.push_str(" --cached");
-        }
-
-        for copy_spec in &self.config.copy_dirs {
-            cmd.push_str(&format!(" --copy-dir={}", copy_spec));
-        }
-
-        for (local, remote) in copy_dirs {
+        if let Some(ctx) = &self.checkpoint {
+            cmd.push_str(&format!(" --from-checkpoint={}", ctx.image_id));
+            cmd.push_str(&format!(" --checkpoint-sha={}", ctx.commit_sha));
             cmd.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
+                " --sandbox-project-root={}",
+                ctx.sandbox_project_root
             ));
-        }
+        } else {
+            if self.config.include_cwd {
+                cmd.push_str(" --include-cwd");
+            }
 
-        if let Some(init_cmd) = sandbox_init_cmd {
-            cmd.push_str(&format!(
-                " --sandbox-init-cmd={}",
-                shell_words::quote(init_cmd)
-            ));
+            for copy_spec in &self.config.copy_dirs {
+                cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+            }
+
+            for (local, remote) in copy_dirs {
+                cmd.push_str(&format!(
+                    " --copy-dir={}:{}",
+                    local.display(),
+                    remote.display()
+                ));
+            }
+
+            if let Some(init_cmd) = sandbox_init_cmd {
+                cmd.push_str(&format!(
+                    " --sandbox-init-cmd={}",
+                    shell_words::quote(init_cmd)
+                ));
+            }
         }
 
         cmd
@@ -147,12 +162,12 @@ impl SandboxProvider for ModalProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
+        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
-        let mut prepare_cmd = self.build_prepare_command(copy_dirs, no_cache, sandbox_init_cmd);
+        let mut prepare_cmd = self.build_prepare_command(copy_dirs, sandbox_init_cmd);
 
         if let Some(dir) = context_dir {
             prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
@@ -240,14 +255,7 @@ mod tests {
     #[test]
     fn test_prepare_command_defaults() {
         let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(&[], false, None);
-        assert_eq!(cmd, "uv run @modal_sandbox.py prepare --cached");
-    }
-
-    #[test]
-    fn test_prepare_command_no_cache() {
-        let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(&[], true, None);
+        let cmd = p.build_prepare_command(&[], None);
         assert_eq!(cmd, "uv run @modal_sandbox.py prepare");
     }
 
@@ -258,10 +266,10 @@ mod tests {
             include_cwd: true,
             ..Default::default()
         });
-        let cmd = p.build_prepare_command(&[], false, None);
+        let cmd = p.build_prepare_command(&[], None);
         assert_eq!(
             cmd,
-            "uv run @modal_sandbox.py prepare ./Dockerfile --include-cwd --cached"
+            "uv run @modal_sandbox.py prepare ./Dockerfile --include-cwd"
         );
     }
 
@@ -272,7 +280,7 @@ mod tests {
             ..Default::default()
         });
         let runtime_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
-        let cmd = p.build_prepare_command(&runtime_dirs, true, None);
+        let cmd = p.build_prepare_command(&runtime_dirs, None);
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare \
@@ -284,14 +292,10 @@ mod tests {
     #[test]
     fn test_prepare_command_with_sandbox_init_cmd() {
         let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(
-            &[],
-            false,
-            Some("apt-get update && apt-get install -y curl"),
-        );
+        let cmd = p.build_prepare_command(&[], Some("apt-get update && apt-get install -y curl"));
         assert_eq!(
             cmd,
-            "uv run @modal_sandbox.py prepare --cached \
+            "uv run @modal_sandbox.py prepare \
              --sandbox-init-cmd='apt-get update && apt-get install -y curl'"
         );
     }
@@ -305,13 +309,83 @@ mod tests {
             ..Default::default()
         });
         let runtime_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
-        let cmd = p.build_prepare_command(&runtime_dirs, true, Some("make setup"));
+        let cmd = p.build_prepare_command(&runtime_dirs, Some("make setup"));
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile.test --include-cwd \
              --copy-dir=./src:/app/src \
              --copy-dir=./tests:/app/tests \
              --sandbox-init-cmd='make setup'"
+        );
+    }
+
+    #[test]
+    fn test_prepare_command_without_checkpoint() {
+        // Regression test: without checkpoint, existing behavior is unchanged.
+        let p = provider(ModalProviderConfig {
+            dockerfile: Some("./Dockerfile".to_string()),
+            include_cwd: true,
+            copy_dirs: vec!["./lib:/app/lib".to_string()],
+            ..Default::default()
+        });
+        let cmd = p.build_prepare_command(&[], Some("pip install -e ."));
+        assert!(
+            cmd.contains("--include-cwd"),
+            "should include --include-cwd"
+        );
+        assert!(
+            cmd.contains("--copy-dir=./lib:/app/lib"),
+            "should include --copy-dir"
+        );
+        assert!(
+            cmd.contains("--sandbox-init-cmd="),
+            "should include --sandbox-init-cmd"
+        );
+        assert!(
+            !cmd.contains("--from-checkpoint"),
+            "should NOT include --from-checkpoint"
+        );
+    }
+
+    #[test]
+    fn test_prepare_command_with_checkpoint() {
+        let p = provider(ModalProviderConfig {
+            dockerfile: Some("./Dockerfile".to_string()),
+            include_cwd: true,
+            copy_dirs: vec!["./lib:/app/lib".to_string()],
+            ..Default::default()
+        })
+        .with_checkpoint(CheckpointContext {
+            image_id: "im-abc123".to_string(),
+            commit_sha: "deadbeef".to_string(),
+            sandbox_project_root: "/app".to_string(),
+        });
+
+        let cmd = p.build_prepare_command(&[], Some("pip install -e ."));
+
+        // Checkpoint flags should be present
+        assert!(
+            cmd.contains("--from-checkpoint=im-abc123"),
+            "should include --from-checkpoint"
+        );
+        assert!(
+            cmd.contains("--checkpoint-sha=deadbeef"),
+            "should include --checkpoint-sha"
+        );
+        assert!(
+            cmd.contains("--sandbox-project-root=/app"),
+            "should include --sandbox-project-root"
+        );
+
+        // Normal build flags should be omitted
+        assert!(
+            !cmd.contains("--include-cwd"),
+            "should NOT include --include-cwd"
+        );
+        assert!(!cmd.contains("--copy-dir"), "should NOT include --copy-dir");
+        assert!(
+            !cmd.contains("--sandbox-init-cmd"),
+            "should NOT include --sandbox-init-cmd"
         );
     }
 
