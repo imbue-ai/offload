@@ -10,7 +10,8 @@ use tracing::debug;
 
 use super::default::DefaultSandbox;
 use super::{
-    CheckpointContext, ProviderError, ProviderResult, SandboxProvider, run_prepare_command,
+    CheckpointContext, CheckpointProvider, ProviderError, ProviderResult, SandboxProvider,
+    run_prepare_command,
 };
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
@@ -74,22 +75,6 @@ impl ModalProvider {
             memory_gb,
             checkpoint: None,
         }
-    }
-
-    /// Configures this provider to build from a checkpoint image.
-    pub fn with_checkpoint(mut self, ctx: CheckpointContext) -> Self {
-        self.checkpoint = Some(ctx);
-        self
-    }
-
-    /// Clears any checkpoint context, reverting to a full build on the next prepare.
-    pub fn clear_checkpoint(&mut self) {
-        self.checkpoint = None;
-    }
-
-    /// Sets the image ID directly, bypassing the prepare step.
-    pub fn set_image_id(&mut self, id: String) {
-        self.image_id = Some(id);
     }
 
     /// Builds the shell command string for the `prepare` step.
@@ -162,6 +147,24 @@ impl ModalProvider {
         }
 
         Ok(cmd)
+    }
+}
+
+impl CheckpointProvider for ModalProvider {
+    fn with_checkpoint(&mut self, ctx: CheckpointContext) {
+        self.checkpoint = Some(ctx);
+    }
+
+    fn clear_checkpoint(&mut self) {
+        self.checkpoint = None;
+    }
+
+    fn set_image_id(&mut self, id: String) {
+        self.image_id = Some(id);
+    }
+
+    fn provider_label(&self) -> &'static str {
+        "Modal"
     }
 }
 
@@ -359,13 +362,13 @@ mod tests {
 
     #[test]
     fn test_prepare_command_with_checkpoint() {
-        let p = provider(ModalProviderConfig {
+        let mut p = provider(ModalProviderConfig {
             dockerfile: Some("./Dockerfile".to_string()),
             include_cwd: true,
             copy_dirs: vec!["./lib:/app/lib".to_string()],
             ..Default::default()
-        })
-        .with_checkpoint(CheckpointContext {
+        });
+        p.with_checkpoint(CheckpointContext {
             image_id: "im-abc123".to_string(),
             commit_sha: "deadbeef".to_string(),
             sandbox_project_root: "/app".to_string(),
