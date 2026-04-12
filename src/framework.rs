@@ -11,6 +11,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::provider::Command;
 
+/// Build a human-readable detail string from captured process output.
+/// Prefers stderr; falls back to stdout (capped at 500 chars); then "no output captured".
+pub(crate) fn discovery_error_detail(stderr: &str, stdout: &str) -> String {
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        if stdout.len() > 500 {
+            return format!("{}... (truncated)", &stdout[..500]);
+        }
+        return format!("(stderr empty, stdout): {}", stdout);
+    }
+    "no output captured".to_string()
+}
+
 /// Result type for framework operations.
 ///
 /// All framework methods return this type, wrapping either a success
@@ -331,6 +348,38 @@ mod tests {
                 record
             })
             .collect()
+    }
+
+    #[test]
+    fn test_discovery_error_detail_prefers_stderr() {
+        let detail = discovery_error_detail("some error", "some output");
+        assert_eq!(detail, "some error");
+    }
+
+    #[test]
+    fn test_discovery_error_detail_falls_back_to_stdout() {
+        let detail = discovery_error_detail("", "some output");
+        assert_eq!(detail, "(stderr empty, stdout): some output");
+    }
+
+    #[test]
+    fn test_discovery_error_detail_trims_whitespace() {
+        let detail = discovery_error_detail("  \n  ", "  stdout content  \n");
+        assert_eq!(detail, "(stderr empty, stdout): stdout content");
+    }
+
+    #[test]
+    fn test_discovery_error_detail_no_output() {
+        let detail = discovery_error_detail("", "");
+        assert_eq!(detail, "no output captured");
+    }
+
+    #[test]
+    fn test_discovery_error_detail_truncates_long_stdout() {
+        let long_stdout = "x".repeat(600);
+        let detail = discovery_error_detail("", &long_stdout);
+        assert!(detail.contains("... (truncated)"));
+        assert!(detail.len() < 600);
     }
 
     #[test]

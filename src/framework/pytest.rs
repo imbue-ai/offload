@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::PytestFrameworkConfig;
 use crate::provider::Command;
 
@@ -116,6 +119,24 @@ impl TestFramework for PytestFramework {
             cmd.arg(path);
         }
 
+        // Build a display string for the command before running it
+        let mut cmd_parts: Vec<&str> = Vec::new();
+        cmd_parts.push(&self.program);
+        for arg in &self.prefix_args {
+            cmd_parts.push(arg);
+        }
+        cmd_parts.push("--collect-only");
+        cmd_parts.push("-q");
+        let filter_display: String;
+        if !filters.is_empty() {
+            filter_display = filters.to_string();
+            cmd_parts.push(&filter_display);
+        }
+        for path in &search_paths {
+            cmd_parts.push(path);
+        }
+        let cmd_display = cmd_parts.join(" ");
+
         let output = cmd
             .output()
             .await
@@ -125,9 +146,10 @@ impl TestFramework for PytestFramework {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() && !stdout.contains("::") {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "pytest discovery failed: {}",
-                stderr
+                "pytest --collect-only failed ({}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 
@@ -135,9 +157,8 @@ impl TestFramework for PytestFramework {
 
         if tests.is_empty() {
             tracing::warn!(
-                "No tests discovered. stdout: {}, stderr: {}",
-                stdout,
-                stderr
+                "No tests discovered. Output: {}",
+                discovery_error_detail(&stderr, &stdout)
             );
         }
 

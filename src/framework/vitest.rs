@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::VitestFrameworkConfig;
 use crate::provider::Command;
 
@@ -186,6 +189,21 @@ impl TestFramework for VitestFramework {
             }
         }
 
+        // Build a display string for the command before running it
+        let mut cmd_parts: Vec<&str> = Vec::new();
+        cmd_parts.push(&self.program);
+        for arg in &self.prefix_args {
+            cmd_parts.push(arg);
+        }
+        cmd_parts.push("list");
+        cmd_parts.push("--json");
+        let filter_display: String;
+        if !filters.is_empty() {
+            filter_display = filters.to_string();
+            cmd_parts.push(&filter_display);
+        }
+        let cmd_display = cmd_parts.join(" ");
+
         let output = cmd
             .output()
             .await
@@ -195,9 +213,10 @@ impl TestFramework for VitestFramework {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "vitest list failed (exit {}): {}",
-                output.status, stderr
+                "vitest list failed ({}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 
@@ -211,9 +230,8 @@ impl TestFramework for VitestFramework {
 
         if tests.is_empty() {
             tracing::warn!(
-                "No tests discovered. stdout: {}, stderr: {}",
-                stdout,
-                stderr
+                "No tests discovered. Output: {}",
+                discovery_error_detail(&stderr, &stdout)
             );
         }
 

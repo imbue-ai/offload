@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::{FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord};
+use super::{
+    FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
+    discovery_error_detail,
+};
 use crate::config::CargoFrameworkConfig;
 use crate::provider::Command;
 
@@ -137,6 +140,8 @@ impl TestFramework for CargoFramework {
             cmd_args.extend(args);
         }
 
+        let cmd_display = format!("cargo {}", cmd_args.join(" "));
+
         let output = tokio::process::Command::new("cargo")
             .args(&cmd_args)
             .output()
@@ -147,9 +152,10 @@ impl TestFramework for CargoFramework {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
+            let detail = discovery_error_detail(&stderr, &stdout);
             return Err(FrameworkError::DiscoveryFailed(format!(
-                "cargo nextest list failed: {}",
-                stderr
+                "cargo nextest list failed ({}):\n  command: {}\n  {}",
+                output.status, cmd_display, detail
             )));
         }
 
@@ -157,9 +163,8 @@ impl TestFramework for CargoFramework {
 
         if tests.is_empty() {
             tracing::warn!(
-                "No tests discovered. stdout: {}, stderr: {}",
-                stdout,
-                stderr
+                "No tests discovered. Output: {}",
+                discovery_error_detail(&stderr, &stdout)
             );
         } else {
             tracing::info!("Discovered {} tests", tests.len());
