@@ -320,11 +320,39 @@ The optimal `max_parallel` depends on the number of test files and per-test dura
 
 Report the results as a table to the user and set the optimal values in `offload.toml`.
 
-### Step 10: Update Agent/Project Instructions (if desired)
+### Step 11: Enable Checkpoint Mode (optional)
+
+**Skip this step if the project has fast dependency installs (under ~30 seconds).** Checkpoint mode is most useful for repositories where dependency installation or build steps are expensive (e.g. large `requirements.txt`, monorepo `uv sync --all-packages`, heavy `cargo build`).
+
+To enable checkpoint mode, add a `[checkpoint]` section to `offload.toml` listing the files whose changes should trigger a full image rebuild:
+
+```toml
+[checkpoint]
+build_inputs = [
+    "Dockerfile",
+    "requirements.txt",
+    "pyproject.toml",
+]
+```
+
+Common `build_inputs` patterns:
+
+| Project type | Typical build_inputs |
+|-------------|---------------------|
+| Python (pip/uv) | `Dockerfile`, `requirements.txt`, `pyproject.toml`, `uv.lock` |
+| Python (poetry) | `Dockerfile`, `pyproject.toml`, `poetry.lock` |
+| Rust | `Dockerfile`, `Cargo.toml`, `Cargo.lock` |
+| Node.js | `Dockerfile`, `package.json`, `package-lock.json` |
+
+After adding the section, run `offload validate` to check the config and `offload checkpoint-status` to verify checkpoint detection.
+
+This step is optional. Repositories without a `[checkpoint]` section still benefit from per-commit image caching via git notes -- every `offload run` caches its image so that repeated runs against the same commit reuse the cached image.
+
+### Step 12: Update Agent/Project Instructions (if desired)
 
 **First, ask the user:** "Would you like to configure Offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
 
-**If the user declines**, skip this step entirely and proceed to Step 11.
+**If the user declines**, skip this step entirely and proceed to Step 13.
 
 **If the user agrees**, ensure that future AI agents working in this repository know to use Offload for running tests:
 
@@ -358,9 +386,9 @@ Report the results as a table to the user and set the optimal values in `offload
 
 6. Preserve the existing tone and formatting of the file. If it uses a digraph, bullet lists, or a specific heading style, match that style. Do not restructure or reformat existing content.
 
-### Step 11: Set Up CI Job (if desired)
+### Step 13: Set Up CI Job (if desired)
 
-Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 11 and 12.
+Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 13 and 14.
 
 If they want CI, detect the CI system from the repository:
 - `.github/workflows/` → GitHub Actions
@@ -437,7 +465,7 @@ jobs:
 
 For other CI systems, adapt the same pattern: install Offload + Modal CLI, set Modal secrets as env vars, run `offload run`.
 
-### Step 12: Configure CI Secrets
+### Step 14: Configure CI Secrets
 
 Tell the user they need to add two repository secrets:
 - `MODAL_TOKEN_ID`: Their Modal API token ID
