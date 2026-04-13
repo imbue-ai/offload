@@ -350,7 +350,7 @@ def _derive_image_from_checkpoint(
     img = checkpoint_img
 
     if diff_path is not None:
-        img = img.add_local_file(diff_path, "/tmp/offload.patch")
+        img = img.add_local_file(diff_path, "/tmp/offload.patch", copy=True)
         img = img.run_commands(
             f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
         )
