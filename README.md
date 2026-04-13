@@ -254,6 +254,7 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 |-------|------|---------|-------------|
 | `max_parallel` | integer | `10` | Maximum number of parallel sandboxes |
 | `test_timeout_secs` | integer | `900` | Timeout per test batch in seconds |
+| `max_batch_duration_secs` | integer | `10` | Cap on the cumulative historical duration of a single LPT batch. Larger values amortize per-batch sandbox/exec overhead on large test suites; smaller values give finer retry granularity. A single test whose duration already exceeds the cap is still placed alone in its own batch. |
 | `working_dir` | string | (cwd) | Working directory for test execution |
 | `sandbox_project_root` | string | required | Project root path on the remote sandbox (exported as `OFFLOAD_ROOT`) |
 | `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
