@@ -123,7 +123,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         let parts_dir = cfg.config.report.output_dir.join("junit-parts");
         let runner_config = RunnerConfig {
             fail_fast: cfg.fail_fast,
-            parts_dir: Some(parts_dir),
+            parts_dir,
             junit_report: Some(Arc::clone(&cfg.junit_report)),
             cancellation_token: Some(cfg.cancellation_token.clone()),
             artifacts: ArtifactConfig {

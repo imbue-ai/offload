@@ -51,7 +51,7 @@ pub struct ArtifactConfig {
 /// Configuration shared across all runners in a single Offload run.
 pub struct RunnerConfig {
     pub fail_fast: bool,
-    pub parts_dir: Option<std::path::PathBuf>,
+    pub parts_dir: std::path::PathBuf,
     pub junit_report: Option<SharedJunitReport>,
     pub cancellation_token: Option<CancellationToken>,
     pub artifacts: ArtifactConfig,
@@ -75,8 +75,8 @@ pub struct TestRunner<'a, S, D> {
     cancellation_token: Option<CancellationToken>,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: Option<SharedJunitReport>,
-    /// Optional directory to save individual batch JUnit XMLs for debugging.
-    parts_dir: Option<std::path::PathBuf>,
+    /// Directory to save individual batch JUnit XMLs for debugging.
+    parts_dir: std::path::PathBuf,
     tracer: crate::trace::Tracer,
     sandbox_pid: u32,
     fail_fast: bool,
@@ -392,10 +392,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 }
 
                 // Save processed JUnit XML to parts dir (overwrites raw download)
-                if let Some(ref parts_dir) = self.parts_dir {
+                {
                     let safe_id =
                         sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                    let part_file = parts_dir.join(format!("{}.xml", safe_id));
+                    let part_file = self.parts_dir.join(format!("{}.xml", safe_id));
                     if let Err(e) = std::fs::write(&part_file, &junit_xml) {
                         warn!("Failed to save processed part file {:?}: {}", part_file, e);
                     }
@@ -405,19 +405,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     match report.lock() {
                         Ok(mut report) => {
                             let before = report.total_count();
-                            if let Err(e) = report.add_junit_xml(&junit_xml) {
+                            let batch_ids: Vec<String> =
+                                tests.iter().map(|t| t.id().to_string()).collect();
+                            if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
                                 error!(
-                                    "[BATCH ERROR] Sandbox {} test ID mismatch: {}",
+                                    "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
                                     sandbox_id, e
                                 );
-                                if let Some(ref token) = self.cancellation_token {
-                                    token.cancel();
-                                }
-                                return Err(anyhow::anyhow!(
-                                    "Test ID mismatch in JUnit XML from sandbox {}: {}",
-                                    sandbox_id,
-                                    e
-                                ));
+                                return Ok(BatchOutcome::Failure);
                             }
                             let after = report.total_count();
                             info!(
@@ -469,13 +464,20 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     ) -> Option<(String, usize)> {
         let sandbox_id = self.sandbox.id().to_string();
         let remote_path = std::path::Path::new(result_path);
-        let temp_file = tempfile::NamedTempFile::new().ok()?;
+
+        // Download directly into parts_dir.
+        if let Err(e) = std::fs::create_dir_all(&self.parts_dir) {
+            warn!("Failed to create parts dir {:?}: {}", self.parts_dir, e);
+            return None;
+        }
+        let safe_id = sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        let download_path = self.parts_dir.join(format!("{}.xml", safe_id));
 
         debug!(
             "[DOWNLOAD] Sandbox {} downloading {}...",
             sandbox_id, result_path
         );
-        let path_pairs = [(remote_path, temp_file.path() as &std::path::Path)];
+        let path_pairs = [(remote_path, download_path.as_path())];
         match with_retry!(self.sandbox.download(&path_pairs)) {
             Ok(_) => debug!("[DOWNLOAD] Sandbox {} download succeeded", sandbox_id),
             Err(e) => {
@@ -487,11 +489,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        let content = match std::fs::read_to_string(temp_file.path()) {
+        let content = match std::fs::read_to_string(&download_path) {
             Ok(c) => c,
             Err(e) => {
                 error!(
-                    "[DOWNLOAD READ FAILED] Sandbox {} failed to read temp file: {}",
+                    "[DOWNLOAD READ FAILED] Sandbox {} failed to read downloaded file: {}",
                     sandbox_id, e
                 );
                 return None;
@@ -516,33 +518,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             expected_count
         );
 
-        // Save to parts directory for debugging if configured
-        if let Some(ref parts_dir) = self.parts_dir {
-            if let Err(e) = std::fs::create_dir_all(parts_dir) {
-                warn!("Failed to create parts dir {:?}: {}", parts_dir, e);
-            } else {
-                // Sanitize sandbox ID to be a valid filename
-                let safe_id =
-                    sandbox_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-                let part_file = parts_dir.join(format!("{}.xml", safe_id));
-                if let Err(e) = std::fs::write(&part_file, &content) {
-                    warn!("Failed to save part file {:?}: {}", part_file, e);
-                } else {
-                    info!(
-                        "[PARTS] Saved {} to {:?} ({} bytes, {} testcases)",
-                        sandbox_id,
-                        part_file,
-                        content.len(),
-                        actual_count
-                    );
-                }
-            }
+        info!(
+            "[PARTS] Saved {} to {:?} ({} bytes, {} testcases)",
+            sandbox_id,
+            download_path,
+            content.len(),
+            actual_count
+        );
 
-            // Log parts dir stats
-            if let Ok(entries) = std::fs::read_dir(parts_dir) {
-                let count = entries.filter(|e| e.is_ok()).count();
-                info!("[PARTS] Directory now has {} files", count);
-            }
+        // Log parts dir stats
+        if let Ok(entries) = std::fs::read_dir(download_path.parent().unwrap_or(&download_path)) {
+            let count = entries.filter(|e| e.is_ok()).count();
+            info!("[PARTS] Directory now has {} files", count);
         }
 
         Some((content, actual_count))
