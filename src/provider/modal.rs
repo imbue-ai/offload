@@ -155,10 +155,6 @@ impl CheckpointProvider for ModalProvider {
     fn set_image_id(&mut self, id: String) {
         self.image_id = Some(id);
     }
-
-    fn provider_label(&self) -> &'static str {
-        "Modal"
-    }
 }
 
 #[async_trait]

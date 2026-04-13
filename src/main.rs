@@ -400,7 +400,11 @@ async fn run_with_checkpoint_provider<P: CheckpointProvider>(
         false
     };
 
-    let label = provider.provider_label();
+    let label = match &config.provider {
+        ProviderConfig::Local(_) => "Local",
+        ProviderConfig::Default(_) => "Default",
+        ProviderConfig::Modal(_) => "Modal",
+    };
 
     let (all_tests, prepare_result): (Vec<TestRecord>, Option<String>) = if skip_prepare {
         // Discovery only -- prepare already satisfied by cached image
