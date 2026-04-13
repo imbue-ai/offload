@@ -53,9 +53,9 @@ pub struct ArtifactConfig {
 pub struct RunnerConfig {
     pub fail_fast: bool,
     pub parts_dir: std::path::PathBuf,
-    pub junit_report: Option<SharedJunitReport>,
-    pub tracker: Option<SharedCompletionTracker>,
-    pub cancellation_token: Option<CancellationToken>,
+    pub junit_report: SharedJunitReport,
+    pub tracker: SharedCompletionTracker,
+    pub cancellation_token: CancellationToken,
     pub artifacts: ArtifactConfig,
 }
 
@@ -74,9 +74,9 @@ pub struct TestRunner<'a, S, D> {
     framework: &'a D,
     timeout: Duration,
     output_callback: Option<OutputCallback>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_token: CancellationToken,
     /// Shared JUnit report for accumulating results across batches.
-    junit_report: Option<SharedJunitReport>,
+    junit_report: SharedJunitReport,
     /// Directory to save individual batch JUnit XMLs for debugging.
     parts_dir: std::path::PathBuf,
     tracer: crate::trace::Tracer,
@@ -87,7 +87,7 @@ pub struct TestRunner<'a, S, D> {
     /// Configuration for downloading artifacts after batch execution.
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
-    tracker: Option<SharedCompletionTracker>,
+    tracker: SharedCompletionTracker,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -199,46 +199,29 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
-        // If we have a cancellation token, use select! to race against it
-        if let Some(ref token) = self.cancellation_token {
-            loop {
-                select! {
-                    _ = token.cancelled() => {
-                        debug!("Test execution cancelled (all tests passed)");
-                        return Ok(None);
-                    }
-                    line = stream.next() => {
-                        match line {
-                            Some(line) => {
-                                if let OutputLine::ExitCode(code) = &line {
-                                    exit_code = Some(*code);
-                                }
-                                Self::process_output_line(
-                                    &line,
-                                    output_id,
-                                    &mut stdout,
-                                    &mut stderr,
-                                    &mut self.output_callback,
-                                );
+        loop {
+            select! {
+                _ = self.cancellation_token.cancelled() => {
+                    debug!("Test execution cancelled (all tests passed)");
+                    return Ok(None);
+                }
+                line = stream.next() => {
+                    match line {
+                        Some(line) => {
+                            if let OutputLine::ExitCode(code) = &line {
+                                exit_code = Some(*code);
                             }
-                            None => break, // Stream ended
+                            Self::process_output_line(
+                                &line,
+                                output_id,
+                                &mut stdout,
+                                &mut stderr,
+                                &mut self.output_callback,
+                            );
                         }
+                        None => break, // Stream ended
                     }
                 }
-            }
-        } else {
-            // No cancellation token, process normally
-            while let Some(line) = stream.next().await {
-                if let OutputLine::ExitCode(code) = &line {
-                    exit_code = Some(*code);
-                }
-                Self::process_output_line(
-                    &line,
-                    output_id,
-                    &mut stdout,
-                    &mut stderr,
-                    &mut self.output_callback,
-                );
             }
         }
 
@@ -406,48 +389,42 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     }
                 }
 
-                if let Some(report) = &self.junit_report {
-                    match report.lock() {
-                        Ok(mut report) => {
-                            let before = report.total_count();
-                            let batch_ids: Vec<String> =
-                                tests.iter().map(|t| t.id().to_string()).collect();
-                            if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
-                                error!(
-                                    "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
-                                    sandbox_id, e
-                                );
-                                return Ok(BatchOutcome::Failure);
-                            }
-                            let after = report.total_count();
-                            info!(
-                                "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
-                                sandbox_id,
-                                before,
-                                after,
-                                after - before
-                            );
-
-                            // Update completion tracker immediately so progress
-                            // stays in sync with the report.
-                            if let Some(ref tracker) = self.tracker
-                                && let Ok(mut t) = tracker.lock()
-                            {
-                                t.record_batch(
-                                    &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                                    |id| report.has_test_passed(id),
-                                );
-                            }
-                        }
-                        Err(e) => {
+                match self.junit_report.lock() {
+                    Ok(mut report) => {
+                        let before = report.total_count();
+                        let batch_ids: Vec<String> =
+                            tests.iter().map(|t| t.id().to_string()).collect();
+                        if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
                             error!(
-                                "[BATCH ERROR] Failed to lock junit report for {}: {}",
+                                "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
                                 sandbox_id, e
+                            );
+                            return Ok(BatchOutcome::Failure);
+                        }
+                        let after = report.total_count();
+                        info!(
+                            "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
+                            sandbox_id,
+                            before,
+                            after,
+                            after - before
+                        );
+
+                        // Update completion tracker immediately so progress
+                        // stays in sync with the report.
+                        if let Ok(mut t) = self.tracker.lock() {
+                            t.record_batch(
+                                &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                |id| report.has_test_passed(id),
                             );
                         }
                     }
-                } else {
-                    warn!("[BATCH WARN] No junit report configured for {}", sandbox_id);
+                    Err(e) => {
+                        error!(
+                            "[BATCH ERROR] Failed to lock junit report for {}: {}",
+                            sandbox_id, e
+                        );
+                    }
                 }
                 has_failures_in_xml(&junit_xml)
             }

@@ -178,7 +178,7 @@ impl<'a> Scheduler<'a> {
                             .get(t.group())
                             .copied()
                             .unwrap_or(Duration::from_secs(1));
-                        tracing::warn!(
+                        tracing::debug!(
                             "No historical duration for test '{}', using group '{}' default {:?}",
                             t.id(),
                             t.group(),

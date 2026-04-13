@@ -61,6 +61,11 @@ impl CompletionTracker {
         }
     }
 
+    /// Returns true if this test has a decided outcome.
+    pub fn is_decided(&self, test_id: &str) -> bool {
+        self.decided.contains(test_id)
+    }
+
     /// Number of tests with a decided outcome.
     pub fn decided_count(&self) -> usize {
         self.decided.len()

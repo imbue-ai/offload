@@ -283,9 +283,8 @@ where
             crate::trace::TID_MAIN,
         );
         if durations.is_empty() {
-            warn!(
-                "No historical test durations found at {}. \
-                 Run tests once to generate junit.xml for optimized LPT scheduling.",
+            info!(
+                "No historical test durations found at {}. Using default durations for scheduling.",
                 junit_path.display()
             );
         } else {
@@ -533,12 +532,26 @@ where
                 acc
             });
 
+        let term_progress = indicatif::ProgressBar::new(sandboxes.len() as u64);
+        if let Ok(style) = indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} Terminating sandboxes [{bar:40.cyan/blue}] {pos}/{len}")
+        {
+            term_progress.set_style(style.progress_chars("#>-"));
+        }
+        term_progress.enable_steady_tick(std::time::Duration::from_millis(100));
+        let term_progress_ref = &term_progress;
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
-            if let Err(e) = sandbox.terminate().await {
-                warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e);
+            match tokio::time::timeout(std::time::Duration::from_secs(30), sandbox.terminate())
+                .await
+            {
+                Ok(Err(e)) => warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e),
+                Err(_) => warn!("Timeout terminating sandbox {}", sandbox.id()),
+                Ok(Ok(())) => {}
             }
+            term_progress_ref.inc(1);
         });
         futures::future::join_all(terminate_futures).await;
+        term_progress.finish_and_clear();
         drop(_cleanup_span);
 
         // Update run_result with estimated_cost
