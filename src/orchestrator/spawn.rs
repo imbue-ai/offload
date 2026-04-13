@@ -18,6 +18,7 @@ use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
+use super::completion::CompletionTracker;
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 use super::scheduler::Scheduler;
 
@@ -42,6 +43,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub tracer: crate::trace::Tracer,
     pub sandbox_index: usize,
     pub fail_fast: bool,
+    pub tracker: Arc<Mutex<CompletionTracker>>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -53,7 +55,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
     mut sandbox: S,
 ) {
     loop {
-        let Some(batch) = cfg.scheduler.pop() else {
+        let batch = tokio::select! {
+            batch = cfg.scheduler.pop() => batch,
+            () = cfg.cancellation_token.cancelled() => None,
+        };
+        let Some(batch) = batch else {
             break;
         };
 
@@ -100,7 +106,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 batch.tests.len()
             );
             debug!("Skipped tests: {:?}", test_ids);
-            cfg.progress.inc(batch.tests.len() as u64);
             continue;
         }
 
@@ -175,13 +180,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Run tests
+        // Run tests, racing against cancellation
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
-        let outcome = cfg
-            .scheduler
-            .register_running_batch(&batch, runner.run_tests(&batch.tests))
-            .await;
+        let outcome = tokio::select! {
+            result = cfg.scheduler.register_running_batch(&batch, runner.run_tests(&batch.tests)) => result,
+            () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
+        };
 
         // Rename log files based on outcome
         let extension = match &outcome {
@@ -206,18 +211,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Handle outcome
         match &outcome {
             Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
-                // Early stop: all tests completed (passed/flaky or retries exhausted)
-                if let Ok(report) = cfg.junit_report.lock()
-                    && report.all_complete()
-                    && !cfg.all_complete.load(Ordering::SeqCst)
-                {
-                    info!(
-                        "EARLY STOP TRIGGERED: All {} tests have completed after batch {} completed. Cancelling remaining batches.",
-                        cfg.total_tests_to_run, batch_idx
-                    );
-                    cfg.all_complete.store(true, Ordering::SeqCst);
-                    cfg.cancellation_token.cancel();
-                }
                 // Fail-fast: cancel on first failure
                 if cfg.fail_fast
                     && matches!(&outcome, Ok(BatchOutcome::Failure))
@@ -238,12 +231,16 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        cfg.progress.inc(batch.tests.len() as u64);
-        if let Ok(report) = cfg.junit_report.lock() {
+        // Record attempts and update progress
+        let test_ids: Vec<&str> = batch.tests.iter().map(|t| t.id()).collect();
+        if let (Ok(report), Ok(mut tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
+            tracker.record_batch(&test_ids, |id| report.has_test_passed(id));
+            let decided = tracker.decided_count();
+            cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();
             let failed = report.failed_count();
             let flaky = report.flaky_count();
-            let awaiting = cfg.total_tests_to_run.saturating_sub(report.total_count());
+            let awaiting = cfg.total_tests_to_run - decided;
             cfg.progress.set_message(format!(
                 "{}\n{}\n{}\n{}",
                 console::style(format!("passed: {passed}")).green(),
@@ -251,6 +248,16 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 console::style(format!("flaky: {flaky}")).yellow(),
                 console::style(format!("awaiting: {awaiting}")).dim(),
             ));
+
+            // Early stop: all tests have a decided outcome
+            if tracker.all_complete() && !cfg.all_complete.load(Ordering::SeqCst) {
+                info!(
+                    "EARLY STOP TRIGGERED: All {} tests have completed after batch {} completed. Cancelling remaining batches.",
+                    cfg.total_tests_to_run, batch_idx
+                );
+                cfg.all_complete.store(true, Ordering::SeqCst);
+                cfg.cancellation_token.cancel();
+            }
         }
         drop(_batch_span);
         sandbox = runner.into_sandbox();
