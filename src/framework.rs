@@ -136,12 +136,12 @@ impl TestRecord {
 
 /// A lightweight handle to a test for execution in a sandbox.
 #[derive(Debug, Clone, Copy)]
-pub struct TestInstance<'a> {
-    record: &'a TestRecord,
+pub struct TestInstance<'rec> {
+    record: &'rec TestRecord,
 }
 
-impl<'a> TestInstance<'a> {
-    pub fn new(record: &'a TestRecord) -> Self {
+impl<'rec> TestInstance<'rec> {
+    pub fn new(record: &'rec TestRecord) -> Self {
         Self { record }
     }
 

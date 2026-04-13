@@ -27,11 +27,11 @@ use super::scheduler::Scheduler;
 /// Each worker loops pulling batches from the shared `queue` and
 /// executing them with a [`TestRunner`]. Batch indices are assigned
 /// atomically via `batch_counter`.
-pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
-    pub config: &'a Config,
-    pub framework: &'a F,
-    pub scheduler: &'a Scheduler<'a>,
-    pub progress: &'a ProgressBar,
+pub(crate) struct SpawnConfig<'rec, F: TestFramework, S: Sandbox> {
+    pub config: &'rec Config,
+    pub framework: &'rec F,
+    pub scheduler: &'rec Scheduler<'rec>,
+    pub progress: &'rec ProgressBar,
     pub total_tests_to_run: usize,
     pub all_complete: Arc<AtomicBool>,
     pub cancellation_token: CancellationToken,
@@ -50,8 +50,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
 ///
 /// The worker assigns batch indices atomically, sets up per-batch log
 /// files, and drives the [`TestRunner`] for each batch.
-pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
-    cfg: SpawnConfig<'a, F, S>,
+pub(crate) async fn spawn_task<'rec, F: TestFramework, S: Sandbox>(
+    cfg: SpawnConfig<'rec, F, S>,
     mut sandbox: S,
 ) {
     loop {
