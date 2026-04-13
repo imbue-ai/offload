@@ -183,7 +183,7 @@ pub struct ModalProviderConfig {
     #[serde(default = "default_modal_cpu_cores")]
     pub cpu_cores: f64,
 
-    /// Memory per sandbox in GiB. Converted to MiB and passed to Modal.
+    /// Memory per sandbox in GiB, passed to Modal via `--memory-gb`.
     #[serde(default)]
     pub memory_gb: Option<f64>,
 
