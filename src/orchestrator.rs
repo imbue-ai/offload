@@ -1,4 +1,5 @@
 //! Test orchestration: discovery, scheduling, parallel execution, and result aggregation.
+pub mod completion;
 pub mod pool;
 pub mod runner;
 pub mod scheduler;
@@ -219,9 +220,8 @@ where
             });
         }
 
-        // Set up progress bar
-        let total_instances: usize = tests.iter().map(|t| t.retry_count + 1).sum();
-        let progress = indicatif::ProgressBar::new(total_instances as u64);
+        // Set up progress bar (tracks unique test results, not retry instances)
+        let progress = indicatif::ProgressBar::new(tests.len() as u64);
         if let Ok(style) = indicatif::ProgressStyle::default_bar()
             .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%")
         {
@@ -347,7 +347,12 @@ where
             total_tests_to_run,
             self.config.framework.test_id_format(),
         )));
-        let all_passed = Arc::new(AtomicBool::new(false));
+        let mut tracker = completion::CompletionTracker::new(total_tests_to_run);
+        for test in tests {
+            tracker.register_retries(&test.id, test.retry_count + 1);
+        }
+        let tracker = Arc::new(std::sync::Mutex::new(tracker));
+        let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
         // Collect sandboxes back after use for termination
@@ -402,7 +407,7 @@ where
                     scheduler: &scheduler,
                     progress: &progress,
                     total_tests_to_run,
-                    all_passed: Arc::clone(&all_passed),
+                    all_complete: Arc::clone(&all_complete),
                     cancellation_token: cancellation_token.clone(),
                     sandboxes_for_cleanup: Arc::clone(&sandboxes_for_cleanup),
                     junit_report: Arc::clone(&junit_report),
@@ -412,6 +417,7 @@ where
                     tracer: self.tracer.clone(),
                     sandbox_index,
                     fail_fast: self.fail_fast,
+                    tracker: Arc::clone(&tracker),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }

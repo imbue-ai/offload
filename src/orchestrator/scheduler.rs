@@ -87,6 +87,7 @@ impl<'a> Batch<'a> {
 /// a batch takes too long.
 pub struct Scheduler<'a> {
     queue: Mutex<VecDeque<ScheduledBatch<'a>>>,
+    notify: tokio::sync::Notify,
     batch_count: usize,
     batch_sizes: Vec<usize>,
 }
@@ -129,6 +130,7 @@ impl<'a> Scheduler<'a> {
         if tests.is_empty() {
             return Self {
                 queue: Mutex::new(VecDeque::new()),
+                notify: tokio::sync::Notify::new(),
                 batch_count: 0,
                 batch_sizes: Vec::new(),
             };
@@ -159,6 +161,7 @@ impl<'a> Scheduler<'a> {
             let batch_sizes = individual_batches.iter().map(|b| b.tests.len()).collect();
             return Self {
                 queue: Mutex::new(VecDeque::from(individual_batches)),
+                notify: tokio::sync::Notify::new(),
                 batch_count,
                 batch_sizes,
             };
@@ -231,28 +234,48 @@ impl<'a> Scheduler<'a> {
         let batch_sizes = result.iter().map(|b| b.tests.len()).collect();
         Self {
             queue: Mutex::new(VecDeque::from(result)),
+            notify: tokio::sync::Notify::new(),
             batch_count,
             batch_sizes,
         }
     }
 
-    /// Removes and returns the next batch from the queue.
+    /// Removes and returns the next batch from the queue, blocking if empty.
     ///
-    /// Returns `None` when the queue is empty or if the mutex is poisoned.
-    pub fn pop(&self) -> Option<ScheduledBatch<'a>> {
-        match self.queue.lock() {
-            Ok(mut q) => q.pop_front(),
-            Err(e) => {
-                tracing::error!("batch queue mutex poisoned: {}", e);
-                None
+    /// Waits for a batch to become available via [`push`](Self::push).
+    /// Returns `None` if the mutex is poisoned.
+    ///
+    /// This future is cancel-safe: callers should race it against a
+    /// cancellation token via `tokio::select!`.
+    pub async fn pop(&self) -> Option<ScheduledBatch<'a>> {
+        loop {
+            // Register notified BEFORE checking the queue to avoid missed wakeups
+            let notified = self.notify.notified();
+
+            match self.queue.lock() {
+                Ok(mut q) => {
+                    if let Some(batch) = q.pop_front() {
+                        return Some(batch);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("batch queue mutex poisoned: {}", e);
+                    return None;
+                }
             }
+
+            // Queue is empty — wait for push()
+            notified.await;
         }
     }
 
     /// Pushes a batch to the back of the queue.
     fn push(&self, batch: ScheduledBatch<'a>) {
         match self.queue.lock() {
-            Ok(mut q) => q.push_back(batch),
+            Ok(mut q) => {
+                q.push_back(batch);
+                self.notify.notify_one();
+            }
             Err(e) => {
                 tracing::error!("batch queue mutex poisoned on push: {}", e);
             }
@@ -322,9 +345,11 @@ mod tests {
 
     const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
 
-    fn drain_batches<'a>(scheduler: &Scheduler<'a>) -> Vec<Vec<TestInstance<'a>>> {
+    async fn drain_batches<'a>(scheduler: &Scheduler<'a>) -> Vec<Vec<TestInstance<'a>>> {
         let mut batches = Vec::new();
-        while let Some(batch) = scheduler.pop() {
+        while let Ok(Some(batch)) =
+            tokio::time::timeout(Duration::from_millis(10), scheduler.pop()).await
+        {
             batches.push(batch.tests);
         }
         batches
@@ -336,8 +361,8 @@ mod tests {
         assert_eq!(scheduler.batch_count(), 0);
     }
 
-    #[test]
-    fn test_schedule_balances_load() {
+    #[tokio::test]
+    async fn test_schedule_balances_load() {
         let records = [
             TestRecord::new("slow_test", "test-group"),
             TestRecord::new("medium_test", "test-group"),
@@ -351,7 +376,7 @@ mod tests {
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
         let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // With LPT:
         // 1. Assign slow_test (10s) to worker 0 -> loads: [10, 0]
@@ -366,8 +391,8 @@ mod tests {
         assert_eq!(batches[1].len(), 2);
     }
 
-    #[test]
-    fn test_schedule_heaviest_batch_first() {
+    #[tokio::test]
+    async fn test_schedule_heaviest_batch_first() {
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -381,7 +406,7 @@ mod tests {
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
         let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each test in its own batch (3 workers, 3 tests)
         // Sorted by duration: test_b (5s), test_c (3s), test_a (1s)
@@ -391,8 +416,8 @@ mod tests {
         assert_eq!(batches[2][0].id(), "test_a");
     }
 
-    #[test]
-    fn test_schedule_uses_default_for_unknown() {
+    #[tokio::test]
+    async fn test_schedule_uses_default_for_unknown() {
         let records = [
             TestRecord::new("known_slow", "test-group"),
             TestRecord::new("unknown_test", "test-group"),
@@ -404,7 +429,7 @@ mod tests {
         // unknown_test will use default of 1 second
 
         let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
         // known_slow (10s) should be in heaviest batch
@@ -412,8 +437,8 @@ mod tests {
         assert_eq!(batches[1][0].id(), "unknown_test");
     }
 
-    #[test]
-    fn test_schedule_duplicate_prevention() {
+    #[tokio::test]
+    async fn test_schedule_duplicate_prevention() {
         // Simulate retry scenario: same test appears multiple times
         let records = [
             TestRecord::new("test_a", "test-group"),
@@ -426,7 +451,7 @@ mod tests {
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
         let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each instance of test_a must be in a different batch
         assert_eq!(batches.len(), 3);
@@ -442,8 +467,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_schedule_mixed_duplicates_and_unique() {
+    #[tokio::test]
+    async fn test_schedule_mixed_duplicates_and_unique() {
         // Mix of retried and unique tests
         let records = [
             TestRecord::new("test_a", "test-group"),
@@ -459,7 +484,7 @@ mod tests {
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
         let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Verify no batch contains duplicate test IDs
         for batch in &batches {
@@ -476,8 +501,8 @@ mod tests {
         assert_eq!(all_ids.iter().filter(|&&id| id == "test_a").count(), 2);
     }
 
-    #[test]
-    fn test_schedule_creates_extra_batches_for_retries() {
+    #[tokio::test]
+    async fn test_schedule_creates_extra_batches_for_retries() {
         // 2 workers but 3 instances of same test — creates 3 batches (one per instance)
         let records = [
             TestRecord::new("test_a", "test-group"),
@@ -488,7 +513,7 @@ mod tests {
 
         let durations = HashMap::new();
         let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each instance must be in a separate batch
         assert_eq!(batches.len(), 3);
@@ -498,8 +523,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_schedule_respects_max_batch_duration() {
+    #[tokio::test]
+    async fn test_schedule_respects_max_batch_duration() {
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -522,7 +547,7 @@ mod tests {
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each batch total should be <= MAX_BATCH_DURATION
         for batch in &batches {
@@ -542,8 +567,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_schedule_long_test_gets_own_batch() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_schedule_long_test_gets_own_batch() -> anyhow::Result<()> {
         let records = [
             TestRecord::new("slow_test", "test-group"),
             TestRecord::new("fast_test", "test-group"),
@@ -562,7 +587,7 @@ mod tests {
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
         // slow_test should be alone in its batch
@@ -574,8 +599,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_schedule_creates_extra_batches_for_duration_cap() {
+    #[tokio::test]
+    async fn test_schedule_creates_extra_batches_for_duration_cap() {
         // 5 tests of 3s each, max_parallel=2, cap=10s
         // Can fit 3 tests per batch (9s < 10s), so need at least 2 batches
         // But only 2 workers, so tests get split: batch 0 = 3 tests (9s), batch 1 = 2 tests (6s)
@@ -598,7 +623,7 @@ mod tests {
             &HashMap::new(),
             Some(MAX_BATCH_DURATION),
         );
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         assert!(
             batches.len() > 2,
@@ -621,8 +646,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_schedule_splits_on_command_length() {
+    #[tokio::test]
+    async fn test_schedule_splits_on_command_length() {
         // Create tests whose IDs together exceed MAX_BATCH_COMMAND_LEN
         let long_name = "a".repeat(MAX_BATCH_COMMAND_LEN / 2 + 1);
         let records = [
@@ -632,7 +657,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Two tests that each use >half the command length budget must be in separate batches
         assert_eq!(batches.len(), 2);
@@ -640,8 +665,8 @@ mod tests {
         assert_eq!(batches[1].len(), 1);
     }
 
-    #[test]
-    fn test_schedule_groups_short_commands() {
+    #[tokio::test]
+    async fn test_schedule_groups_short_commands() {
         // Create many tests with short IDs that fit in one batch
         let records: Vec<_> = (0..100)
             .map(|i| TestRecord::new(format!("t{i}"), "test-group"))
@@ -649,15 +674,15 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 100);
     }
 
-    #[test]
-    fn test_schedule_individual_tests_get_own_batch() {
+    #[tokio::test]
+    async fn test_schedule_individual_tests_get_own_batch() {
         let mut records = [
             TestRecord::new("fast_1", "fast-group"),
             TestRecord::new("fast_2", "fast-group"),
@@ -670,7 +695,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
         let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test must be alone in its batch
         for batch in &batches {
@@ -688,8 +713,8 @@ mod tests {
         assert_eq!(total, 4);
     }
 
-    #[test]
-    fn test_schedule_individual_tests_preserves_interleaved_order() {
+    #[tokio::test]
+    async fn test_schedule_individual_tests_preserves_interleaved_order() {
         // Simulate already-interleaved individual instances (as orchestrator would produce)
         let mut records = vec![
             TestRecord::new("slow_a", "slow-group"),
@@ -705,7 +730,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
         let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test in its own batch, order preserved
         let ids: Vec<&str> = batches
@@ -718,8 +743,8 @@ mod tests {
         assert_eq!(ids, vec!["slow_a", "slow_b", "slow_a", "slow_b", "slow_a"]);
     }
 
-    #[test]
-    fn test_schedule_individual_tests_at_front() {
+    #[tokio::test]
+    async fn test_schedule_individual_tests_at_front() {
         let mut records = [
             TestRecord::new("fast_1", "fast-group"),
             TestRecord::new("slow_1", "slow-group"),
@@ -730,7 +755,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
         let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
-        let batches = drain_batches(&scheduler);
+        let batches = drain_batches(&scheduler).await;
 
         // Individually-scheduled batches come first
         assert!(
@@ -744,8 +769,8 @@ mod tests {
         assert_eq!(total, 3);
     }
 
-    #[test]
-    fn test_pop_returns_scheduled_batch_with_correct_estimated_load() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_pop_returns_scheduled_batch_with_correct_estimated_load() -> anyhow::Result<()> {
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
@@ -758,8 +783,10 @@ mod tests {
 
         // 1 worker => both tests in one batch with load = 3 + 7 = 10s
         let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
-        let batch = scheduler
-            .pop()
+
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
 
         assert_eq!(batch.estimated_load(), Duration::from_secs(10));
@@ -777,8 +804,10 @@ mod tests {
         durations.insert("test_a".to_string(), Duration::from_secs(10));
 
         let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
-        let batch = scheduler
-            .pop()
+
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
 
         // Future completes instantly, well within 2 * 10s threshold
@@ -786,7 +815,12 @@ mod tests {
         assert_eq!(result, 42);
 
         // Queue should be empty — no re-queuing occurred
-        assert!(scheduler.pop().is_none(), "queue should be empty");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
+                .await
+                .is_err(),
+            "queue should be empty"
+        );
         Ok(())
     }
 
@@ -809,8 +843,10 @@ mod tests {
         // 1 worker => all 4 tests in one batch, estimated_load = 4ms
         // requeue_after = 2 * 4ms = 8ms — sleep of 50ms will exceed that
         let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
-        let batch = scheduler
-            .pop()
+
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
         assert_eq!(batch.tests.len(), 4);
 
@@ -819,17 +855,21 @@ mod tests {
             .await;
 
         // Should have 2 halves re-queued
-        let first = scheduler
-            .pop()
+        let first = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for first half"))?
             .ok_or_else(|| anyhow::anyhow!("expected first half"))?;
-        let second = scheduler
-            .pop()
+        let second = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for second half"))?
             .ok_or_else(|| anyhow::anyhow!("expected second half"))?;
 
         assert_eq!(first.tests.len(), 2);
         assert_eq!(second.tests.len(), 2);
         assert!(
-            scheduler.pop().is_none(),
+            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
+                .await
+                .is_err(),
             "queue should be empty after two pops"
         );
         Ok(())
@@ -845,8 +885,10 @@ mod tests {
 
         // 1 worker, 1 test, estimated_load = 1ms, requeue_after = 2ms
         let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
-        let batch = scheduler
-            .pop()
+
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
         assert_eq!(batch.tests.len(), 1);
 
@@ -855,13 +897,16 @@ mod tests {
             .await;
 
         // Single-test batch is cloned and re-queued as-is
-        let requeued = scheduler
-            .pop()
+        let requeued = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for requeued batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected requeued batch"))?;
         assert_eq!(requeued.tests.len(), 1);
         assert_eq!(requeued.tests[0].id(), "test_a");
         assert!(
-            scheduler.pop().is_none(),
+            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
+                .await
+                .is_err(),
             "queue should be empty after one pop"
         );
         Ok(())

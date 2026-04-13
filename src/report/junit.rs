@@ -290,7 +290,7 @@ impl MasterJunitReport {
 
     /// Returns true if all expected test IDs have passed.
     pub fn all_passed(&self) -> bool {
-        self.passed_count() >= self.total_expected
+        self.passed_count() == self.total_expected
     }
 
     /// Returns true if the test with the given full ID has already passed or is flaky.
