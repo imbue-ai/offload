@@ -291,59 +291,68 @@ def _build_final_image(
         return base_img_id
 
 
-def _generate_git_diff(checkpoint_sha: str) -> str | None:
-    """Run git diff against checkpoint SHA and return patch content, or None if empty."""
-    result = subprocess.run(
-        ["git", "diff", checkpoint_sha, "HEAD", "--binary"],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        logger.error(
-            "git diff failed (exit %d): %s", result.returncode, result.stderr.decode()
+def _generate_full_diff(checkpoint_sha: str) -> bytes | None:
+    """Generate a single binary patch capturing all working-tree changes since checkpoint_sha.
+
+    Uses a temporary git index so that both tracked modifications and untracked
+    (non-ignored) files are included in one unified diff.  The real index is
+    never touched.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".idx", delete=True) as tmp:
+        tmp_index = tmp.name
+
+    env = {**os.environ, "GIT_INDEX_FILE": tmp_index}
+
+    try:
+        # Seed the temp index with the checkpoint tree
+        r = subprocess.run(
+            ["git", "read-tree", checkpoint_sha], env=env, capture_output=True
         )
-        sys.exit(1)
-    patch = result.stdout
+        if r.returncode != 0:
+            logger.error("git read-tree failed: %s", r.stderr.decode())
+            sys.exit(1)
+
+        # Stage the entire current working tree (tracked + untracked) into it
+        r = subprocess.run(
+            ["git", "add", "-A"], env=env, capture_output=True
+        )
+        if r.returncode != 0:
+            logger.error("git add -A failed: %s", r.stderr.decode())
+            sys.exit(1)
+
+        # Diff the checkpoint against the staged state → single patch
+        r = subprocess.run(
+            ["git", "diff", "--cached", "--binary", checkpoint_sha],
+            env=env,
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            logger.error("git diff --cached failed: %s", r.stderr.decode())
+            sys.exit(1)
+    finally:
+        # Clean up temp index
+        if os.path.exists(tmp_index):
+            os.unlink(tmp_index)
+
+    patch = r.stdout
     if not patch.strip():
         return None
     return patch
 
 
-def _collect_untracked_files() -> list[str]:
-    """Return list of untracked, non-ignored file paths."""
-    result = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        logger.error(
-            "git ls-files failed (exit %d): %s", result.returncode, result.stderr
-        )
-        sys.exit(1)
-    files = [f for f in result.stdout.splitlines() if f.strip()]
-    return files
-
-
-def _build_run_image_from_checkpoint(
+def _derive_image_from_checkpoint(
     app,
     checkpoint_img: modal.Image,
     diff_path: str | None,
-    untracked_tar: str | None,
     project_root: str,
 ) -> str:
-    """Apply diff and untracked files to checkpoint image, return new image ID."""
+    """Apply a unified diff to the checkpoint image and return the new image ID."""
     img = checkpoint_img
 
     if diff_path is not None:
         img = img.add_local_file(diff_path, "/tmp/offload.patch")
         img = img.run_commands(
             f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
-        )
-
-    if untracked_tar is not None:
-        img = img.add_local_file(untracked_tar, "/tmp/offload-untracked.tar")
-        img = img.run_commands(
-            f"cd {project_root} && tar xf /tmp/offload-untracked.tar && rm /tmp/offload-untracked.tar"
         )
 
     img.build(app)
@@ -424,10 +433,9 @@ def prepare(
 
             checkpoint_img = modal.Image.from_id(from_checkpoint)
 
-            diff = _generate_git_diff(checkpoint_sha)
-            untracked = _collect_untracked_files()
+            diff = _generate_full_diff(checkpoint_sha)
 
-            if diff is None and not untracked:
+            if diff is None:
                 logger.info("No changes since checkpoint, reusing image")
                 sys.stdout.write("%s\n" % from_checkpoint)
                 return
@@ -435,25 +443,14 @@ def prepare(
             logger.info("Building incremental image from checkpoint %s", checkpoint_sha)
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                diff_path = None
-                untracked_tar_path = None
+                diff_path = os.path.join(tmpdir, "offload.patch")
+                with open(diff_path, "wb") as f:
+                    f.write(diff)
 
-                if diff is not None:
-                    diff_path = os.path.join(tmpdir, "offload.patch")
-                    with open(diff_path, "wb") as f:
-                        f.write(diff)
-
-                if untracked:
-                    untracked_tar_path = os.path.join(tmpdir, "offload-untracked.tar")
-                    with tarfile.open(untracked_tar_path, "w") as tar:
-                        for fpath in untracked:
-                            tar.add(fpath)
-
-                image_id = _build_run_image_from_checkpoint(
+                image_id = _derive_image_from_checkpoint(
                     app,
                     checkpoint_img,
                     diff_path,
-                    untracked_tar_path,
                     sandbox_project_root,
                 )
 
