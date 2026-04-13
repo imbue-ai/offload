@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
+use crate::orchestrator::completion::SharedCompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
@@ -53,6 +54,7 @@ pub struct RunnerConfig {
     pub fail_fast: bool,
     pub parts_dir: std::path::PathBuf,
     pub junit_report: Option<SharedJunitReport>,
+    pub tracker: Option<SharedCompletionTracker>,
     pub cancellation_token: Option<CancellationToken>,
     pub artifacts: ArtifactConfig,
 }
@@ -84,6 +86,8 @@ pub struct TestRunner<'a, S, D> {
     batch_idx: usize,
     /// Configuration for downloading artifacts after batch execution.
     artifact_config: ArtifactConfig,
+    /// Shared completion tracker for decided-outcome counting.
+    tracker: Option<SharedCompletionTracker>,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -136,6 +140,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             batch_idx,
             fail_fast: config.fail_fast,
             artifact_config: config.artifacts,
+            tracker: config.tracker,
         }
     }
 
@@ -422,6 +427,17 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                                 after,
                                 after - before
                             );
+
+                            // Update completion tracker immediately so progress
+                            // stays in sync with the report.
+                            if let Some(ref tracker) = self.tracker
+                                && let Ok(mut t) = tracker.lock()
+                            {
+                                t.record_batch(
+                                    &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                    |id| report.has_test_passed(id),
+                                );
+                            }
                         }
                         Err(e) => {
                             error!(

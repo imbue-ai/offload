@@ -130,6 +130,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             fail_fast: cfg.fail_fast,
             parts_dir,
             junit_report: Some(Arc::clone(&cfg.junit_report)),
+            tracker: Some(Arc::clone(&cfg.tracker)),
             cancellation_token: Some(cfg.cancellation_token.clone()),
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
@@ -231,10 +232,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Record attempts and update progress
-        let test_ids: Vec<&str> = batch.tests.iter().map(|t| t.id()).collect();
-        if let (Ok(report), Ok(mut tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
-            tracker.record_batch(&test_ids, |id| report.has_test_passed(id));
+        // Update progress from tracker (record_batch already called inside runner)
+        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();
