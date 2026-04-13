@@ -223,7 +223,6 @@ impl MasterJunitReport {
                 }
             }
 
-
             // Update global outcomes with this suite's per-ID results.
             for (test_id, failed) in suite_outcomes {
                 self.update_test_outcome(test_id, failed);
