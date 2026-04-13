@@ -64,6 +64,12 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         };
 
         let batch_idx = cfg.batch_counter.fetch_add(1, Ordering::SeqCst);
+        info!(
+            "Worker {} picked up batch {} ({} tests)",
+            cfg.sandbox_index,
+            batch_idx,
+            batch.tests.len()
+        );
 
         // Early exit if all tests have completed or fail-fast triggered
         if cfg.all_complete.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
@@ -95,13 +101,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip batches where all tests have already passed
-        if let Ok(report) = cfg.junit_report.lock()
-            && batch.tests.iter().all(|t| report.has_test_passed(t.id()))
+        // Skip batches where all tests have a decided outcome (passed/flaky or retries exhausted)
+        if let Ok(tracker) = cfg.tracker.lock()
+            && batch.tests.iter().all(|t| tracker.is_decided(t.id()))
         {
             let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
-                "SKIP: Batch {} ({} tests) all already passed, skipping",
+                "SKIP: Batch {} ({} tests) all already decided, skipping",
                 batch_idx,
                 batch.tests.len()
             );
@@ -129,8 +135,9 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         let runner_config = RunnerConfig {
             fail_fast: cfg.fail_fast,
             parts_dir,
-            junit_report: Some(Arc::clone(&cfg.junit_report)),
-            cancellation_token: Some(cfg.cancellation_token.clone()),
+            junit_report: Arc::clone(&cfg.junit_report),
+            tracker: Arc::clone(&cfg.tracker),
+            cancellation_token: cfg.cancellation_token.clone(),
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
@@ -188,6 +195,17 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
         };
 
+        info!(
+            "Worker {} finished batch {} ({} tests): {:?}",
+            cfg.sandbox_index,
+            batch_idx,
+            batch.tests.len(),
+            outcome
+                .as_ref()
+                .map(|o| *o)
+                .unwrap_or(BatchOutcome::Cancelled)
+        );
+
         // Rename log files based on outcome
         let extension = match &outcome {
             Ok(BatchOutcome::Success) => "success",
@@ -231,10 +249,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Record attempts and update progress
-        let test_ids: Vec<&str> = batch.tests.iter().map(|t| t.id()).collect();
-        if let (Ok(report), Ok(mut tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
-            tracker.record_batch(&test_ids, |id| report.has_test_passed(id));
+        // Update progress from tracker (record_batch already called inside runner)
+        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();

@@ -5,6 +5,10 @@
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+/// Shared completion tracker, protected by a mutex for concurrent access.
+pub type SharedCompletionTracker = Arc<Mutex<CompletionTracker>>;
 
 /// Tracks which tests have a decided outcome.
 ///
@@ -55,6 +59,11 @@ impl CompletionTracker {
                 self.decided.insert(test_id.to_string());
             }
         }
+    }
+
+    /// Returns true if this test has a decided outcome.
+    pub fn is_decided(&self, test_id: &str) -> bool {
+        self.decided.contains(test_id)
     }
 
     /// Number of tests with a decided outcome.
