@@ -4,8 +4,8 @@ pub mod schema;
 
 pub use schema::*;
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -75,6 +75,18 @@ pub fn load_config_str(content: &str) -> Result<Config> {
     Ok(config)
 }
 
+/// Normalizes a path lexically by stripping `.` components.
+///
+/// This does not touch the filesystem, so it works even if the file does not exist.
+/// It does not resolve `..` — that would require knowing the real directory structure.
+fn normalize_path(raw: &str) -> PathBuf {
+    use std::path::Component;
+    Path::new(raw)
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect()
+}
+
 /// Validates configuration invariants that cannot be expressed in the schema.
 ///
 /// # Errors
@@ -118,6 +130,21 @@ fn validate_config(config: &Config) -> Result<()> {
                 "Checkpoint is not supported with the local provider. \
                  Use a remote provider (default or modal) for checkpoint support."
             );
+        }
+
+        // Detect duplicate entries by normalizing paths lexically.
+        // This catches "./Dockerfile" vs "Dockerfile" without requiring files to exist.
+        let mut seen = HashSet::new();
+        for raw in &checkpoint.build_inputs {
+            let normalized = normalize_path(raw);
+            if !seen.insert(normalized.clone()) {
+                anyhow::bail!(
+                    "Duplicate entry in build_inputs: '{}' (normalizes to '{}'). \
+                     build_inputs must be a set of unique file paths.",
+                    raw,
+                    normalized.display()
+                );
+            }
         }
     }
 
@@ -532,6 +559,65 @@ mod tests {
             result.is_ok(),
             "Expected success for checkpoint with modal provider: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_duplicate_build_inputs_returns_error() {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = ["Dockerfile", "requirements.txt", "Dockerfile"]
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(result.is_err(), "Expected error for duplicate build_inputs");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Duplicate"),
+            "Error should mention duplicate, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_normalized_duplicate_build_inputs_returns_error() {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = ["Dockerfile", "./Dockerfile"]
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error for normalized duplicate build_inputs"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Duplicate"),
+            "Error should mention duplicate, got: {err_msg}"
         );
     }
 }
