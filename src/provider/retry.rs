@@ -53,13 +53,6 @@ pub fn is_retryable(e: &ProviderError) -> bool {
 ///
 /// Non-retryable errors propagate immediately. Retryable errors are retried
 /// up to `PROVIDER_RETRIES` times with exponential backoff.
-///
-/// # Usage
-///
-/// ```ignore
-/// use offload::with_retry;
-/// let result = with_retry!(provider.prepare(&dirs, no_cache, init, done))?;
-/// ```
 #[macro_export]
 macro_rules! with_retry {
     ($expr:expr) => {{
