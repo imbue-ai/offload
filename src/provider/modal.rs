@@ -40,6 +40,7 @@ pub struct ModalProvider {
     image_id: Option<String>,
     env: Vec<(String, String)>,
     cpu_cores: f64,
+    memory_gb: Option<f64>,
 }
 
 impl ModalProvider {
@@ -58,6 +59,7 @@ impl ModalProvider {
             .collect();
 
         let cpu_cores = config.cpu_cores;
+        let memory_gb = config.memory_gb;
 
         Self {
             connector,
@@ -65,6 +67,7 @@ impl ModalProvider {
             image_id: None,
             env,
             cpu_cores,
+            memory_gb,
         }
     }
 
@@ -118,6 +121,10 @@ impl ModalProvider {
             "uv run @modal_sandbox.py create --cpu {} {}",
             self.cpu_cores, image_id
         );
+
+        if let Some(gb) = self.memory_gb {
+            cmd.push_str(&format!(" --memory-gb {}", gb));
+        }
 
         if !self.config.experimental_options.is_empty() {
             let json = serde_json::to_string(&self.config.experimental_options).map_err(|e| {
@@ -330,6 +337,32 @@ mod tests {
         });
         let cmd = p.build_create_command("im-xyz")?;
         assert_eq!(cmd, "uv run @modal_sandbox.py create --cpu 2 im-xyz");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_command_with_memory_gb() -> ProviderResult<()> {
+        let p = provider(ModalProviderConfig {
+            cpu_cores: 0.125,
+            memory_gb: Some(8.0),
+            ..Default::default()
+        });
+        let cmd = p.build_create_command("im-abc123")?;
+        assert!(cmd.contains("--memory-gb 8"));
+        assert!(cmd.contains("--cpu 0.125"));
+        assert!(cmd.contains("im-abc123"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_command_without_memory_gb() -> ProviderResult<()> {
+        let p = provider(ModalProviderConfig {
+            cpu_cores: 0.125,
+            memory_gb: None,
+            ..Default::default()
+        });
+        let cmd = p.build_create_command("im-abc123")?;
+        assert!(!cmd.contains("--memory-gb"));
         Ok(())
     }
 

@@ -300,6 +300,7 @@ Simplified Modal sandbox provider. Internally generates the appropriate Modal CL
 | `copy_dirs` | list | `[]` | Directories to copy into the image (`"local:remote"` format) |
 | `env` | table | `{}` | Environment variables for test processes |
 | `cpu_cores` | float | `0.125` | CPU cores per sandbox |
+| `memory_gb` | float | (none) | Memory per sandbox in GiB |
 | `experimental_options` | table | `{}` | Experimental options passed as JSON to `Sandbox.create()` (e.g. `enable_docker = true`) |
 
 Use `experimental_options` to pass feature flags to Modal's `Sandbox.create()` (e.g. `[provider.experimental_options]\nenable_docker = true`). These options may change on Modal's side without notice.
