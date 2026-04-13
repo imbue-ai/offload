@@ -387,9 +387,6 @@ pub trait CheckpointProvider: SandboxProvider {
 
     /// Sets the image ID directly, bypassing the prepare step.
     fn set_image_id(&mut self, id: String);
-
-    /// Returns a human-readable label for error messages (e.g. "Default", "Modal").
-    fn provider_label(&self) -> &'static str;
 }
 
 /// Factory for creating and managing sandbox instances.
