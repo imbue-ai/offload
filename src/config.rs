@@ -47,6 +47,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     expand_provider_env(&mut config.provider)?;
+    resolve_checkpoint_defaults(&mut config);
     validate_config(&config)?;
 
     Ok(config)
@@ -70,6 +71,7 @@ pub fn load_config_str(content: &str) -> Result<Config> {
     let mut config: Config = toml::from_str(content).context("Failed to parse config")?;
 
     expand_provider_env(&mut config.provider)?;
+    resolve_checkpoint_defaults(&mut config);
     validate_config(&config)?;
 
     Ok(config)
@@ -85,6 +87,27 @@ fn normalize_path(raw: &str) -> PathBuf {
         .components()
         .filter(|c| !matches!(c, Component::CurDir))
         .collect()
+}
+
+/// Injects the provider's dockerfile into `build_inputs` when checkpoint is enabled.
+///
+/// The dockerfile is a build input by definition — changes to it invalidate the
+/// image cache. Rather than requiring users to duplicate the path, we resolve it
+/// from the provider config and prepend it automatically.
+fn resolve_checkpoint_defaults(config: &mut Config) {
+    let dockerfile = match &config.provider {
+        ProviderConfig::Modal(cfg) => cfg.dockerfile.clone(),
+        // Default provider embeds the dockerfile path in prepare_command;
+        // there is no structured field to resolve from.
+        ProviderConfig::Default(_) | ProviderConfig::Local(_) => None,
+    };
+
+    if let Some(ref mut checkpoint) = config.checkpoint
+        && let Some(path) = dockerfile
+        && !checkpoint.build_inputs.contains(&path)
+    {
+        checkpoint.build_inputs.insert(0, path);
+    }
 }
 
 /// Validates configuration invariants that cannot be expressed in the schema.
@@ -563,13 +586,14 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_duplicate_build_inputs_returns_error() {
+    fn test_checkpoint_auto_includes_modal_dockerfile() -> Result<()> {
         let toml = r#"
             [offload]
             sandbox_project_root = "/app"
 
             [provider]
             type = "modal"
+            dockerfile = "infra/Dockerfile"
 
             [framework]
             type = "nextest"
@@ -578,26 +602,28 @@ mod tests {
             retry_count = 0
 
             [checkpoint]
-            build_inputs = ["Dockerfile", "requirements.txt", "Dockerfile"]
+            build_inputs = ["requirements.txt"]
         "#;
 
-        let result = load_config_str(toml);
-        assert!(result.is_err(), "Expected error for duplicate build_inputs");
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Duplicate"),
-            "Error should mention duplicate, got: {err_msg}"
+        let config = load_config_str(toml)?;
+        let checkpoint = config.checkpoint.context("checkpoint should be set")?;
+        assert_eq!(
+            checkpoint.build_inputs,
+            vec!["infra/Dockerfile", "requirements.txt"],
+            "Dockerfile from modal provider should be prepended to build_inputs"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_checkpoint_normalized_duplicate_build_inputs_returns_error() {
+    fn test_checkpoint_auto_include_skips_if_already_present() -> Result<()> {
         let toml = r#"
             [offload]
             sandbox_project_root = "/app"
 
             [provider]
             type = "modal"
+            dockerfile = "Dockerfile"
 
             [framework]
             type = "nextest"
@@ -606,18 +632,46 @@ mod tests {
             retry_count = 0
 
             [checkpoint]
-            build_inputs = ["Dockerfile", "./Dockerfile"]
+            build_inputs = ["Dockerfile", "requirements.txt"]
         "#;
 
-        let result = load_config_str(toml);
-        assert!(
-            result.is_err(),
-            "Expected error for normalized duplicate build_inputs"
+        let config = load_config_str(toml)?;
+        let checkpoint = config.checkpoint.context("checkpoint should be set")?;
+        assert_eq!(
+            checkpoint.build_inputs,
+            vec!["Dockerfile", "requirements.txt"],
+            "Should not duplicate Dockerfile when already present"
         );
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Duplicate"),
-            "Error should mention duplicate, got: {err_msg}"
+        Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_modal_dockerfile_alone_suffices() -> Result<()> {
+        let toml = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "modal"
+            dockerfile = "Dockerfile"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+
+            [checkpoint]
+            build_inputs = []
+        "#;
+
+        let config = load_config_str(toml)?;
+        let checkpoint = config.checkpoint.context("checkpoint should be set")?;
+        assert_eq!(
+            checkpoint.build_inputs,
+            vec!["Dockerfile"],
+            "Dockerfile from modal provider should make empty build_inputs valid"
         );
+        Ok(())
     }
 }
