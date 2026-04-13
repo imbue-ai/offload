@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 import io
 import json
 import logging
+import math
 import os
 import tarfile
 import tempfile
@@ -568,6 +569,15 @@ def run(command: str):
     help="CPU cores per sandbox",
 )
 @click.option(
+    "--memory-gb",
+    "memory_gb",
+    type=float,
+    default=None,
+    help="Memory request per sandbox, in GiB (converted to MiB via "
+    "ceil(value * 1024), passed to modal.Sandbox.create(memory=...)). "
+    "Modal's default when unset is 128 MiB. Example: --memory-gb 8",
+)
+@click.option(
     "--experimental-options",
     "experimental_options",
     default=None,
@@ -578,6 +588,7 @@ def create_from_image(
     copy_dirs: tuple[str, ...] = (),
     env_vars: tuple[str, ...] = (),
     cpu: float | None = None,
+    memory_gb: float | None = None,
     experimental_options: str | None = None,
 ):
     """Create sandbox using existing image_id.
@@ -633,6 +644,8 @@ def create_from_image(
         )
         if cpu is not None:
             create_kwargs["cpu"] = cpu
+        if memory_gb is not None:
+            create_kwargs["memory"] = math.ceil(memory_gb * 1024)
         if experimental_options is not None:
             exp_opts = json.loads(experimental_options)
             create_kwargs["experimental_options"] = exp_opts
