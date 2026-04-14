@@ -65,17 +65,17 @@ jobs:
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
-        OUTPUT=$(LAST_COMMIT_SHA=${{ env.MNGR_REF }} just test-offload 2>&1 || true)
-        echo "$OUTPUT"
+        LOGFILE=$(mktemp)
+        LAST_COMMIT_SHA=${{ env.MNGR_REF }} just test-offload 2>&1 | tee "$LOGFILE" || true
 
         # Check that "passed" appears in output
-        if ! echo "$OUTPUT" | grep -q "passed"; then
+        if ! grep -q "passed" "$LOGFILE"; then
           echo "FAIL: output does not contain 'passed'"
           exit 1
         fi
 
         # Check that "failed" appears followed by a number < 10
-        FAILED_COUNT=$(echo "$OUTPUT" | grep -oE 'failed[: ]*[0-9]+' | grep -oE '[0-9]+' | tail -1)
+        FAILED_COUNT=$(grep -oE 'failed[: ]*[0-9]+' "$LOGFILE" | grep -oE '[0-9]+' | tail -1)
         if [ -z "$FAILED_COUNT" ]; then
           echo "FAIL: output does not contain 'failed' with a count"
           exit 1
