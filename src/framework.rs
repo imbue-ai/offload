@@ -129,32 +129,42 @@ impl TestRecord {
     }
 
     /// Creates a `TestInstance` handle for execution in a sandbox.
-    pub fn test(&self) -> TestInstance<'_> {
-        TestInstance::new(self)
+    pub fn test(&self) -> TestInstance {
+        TestInstance {
+            id: self.id.clone(),
+            group: self.group.clone(),
+            schedule_individual: self.schedule_individual,
+        }
     }
 }
 
 /// A lightweight handle to a test for execution in a sandbox.
-#[derive(Debug, Clone, Copy)]
-pub struct TestInstance<'a> {
-    record: &'a TestRecord,
+#[derive(Debug, Clone)]
+pub struct TestInstance {
+    id: String,
+    group: String,
+    schedule_individual: bool,
 }
 
-impl<'a> TestInstance<'a> {
-    pub fn new(record: &'a TestRecord) -> Self {
-        Self { record }
+impl TestInstance {
+    pub fn new(record: &TestRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            group: record.group.clone(),
+            schedule_individual: record.schedule_individual,
+        }
     }
 
     pub fn id(&self) -> &str {
-        &self.record.id
+        &self.id
     }
 
     pub fn group(&self) -> &str {
-        &self.record.group
+        &self.group
     }
 
     pub fn schedule_individual(&self) -> bool {
-        self.record.schedule_individual
+        self.schedule_individual
     }
 }
 

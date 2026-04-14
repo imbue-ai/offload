@@ -12,12 +12,12 @@ use crate::framework::TestInstance;
 /// Wraps a list of test instances along with their combined estimated duration.
 /// Workers pop these from the scheduler queue and pass them to `register_running_batch`.
 #[derive(Clone)]
-pub struct ScheduledBatch<'a> {
-    pub tests: Vec<TestInstance<'a>>,
+pub struct ScheduledBatch {
+    pub tests: Vec<TestInstance>,
     estimated_load: Duration,
 }
 
-impl<'a> ScheduledBatch<'a> {
+impl ScheduledBatch {
     /// Total estimated duration for all tests in this batch.
     pub fn estimated_load(&self) -> Duration {
         self.estimated_load
@@ -35,14 +35,14 @@ const MAX_BATCH_COMMAND_LEN: usize = 30_000;
 /// Tracks the tests, their cumulative expected duration, total command length,
 /// and which test IDs are present (to prevent scheduling the same test twice
 /// in one batch).
-struct Batch<'a> {
-    tests: Vec<TestInstance<'a>>,
+struct Batch {
+    tests: Vec<TestInstance>,
     load: Duration,
     command_len: usize,
     test_ids: HashSet<String>,
 }
 
-impl<'a> Batch<'a> {
+impl Batch {
     fn new() -> Self {
         Self {
             tests: Vec::new(),
@@ -52,7 +52,7 @@ impl<'a> Batch<'a> {
         }
     }
 
-    fn add(&mut self, test: TestInstance<'a>, duration: Duration) {
+    fn add(&mut self, test: TestInstance, duration: Duration) {
         self.command_len += test.id().len();
         self.test_ids.insert(test.id().to_string());
         self.tests.push(test);
@@ -85,14 +85,14 @@ impl<'a> Batch<'a> {
 /// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
 /// to pull batches. The `register_running_batch` method provides hedged re-queuing when
 /// a batch takes too long.
-pub struct Scheduler<'a> {
-    queue: Mutex<VecDeque<ScheduledBatch<'a>>>,
+pub struct Scheduler {
+    queue: Mutex<VecDeque<ScheduledBatch>>,
     notify: tokio::sync::Notify,
     batch_count: usize,
     batch_sizes: Vec<usize>,
 }
 
-impl<'a> Scheduler<'a> {
+impl Scheduler {
     /// Creates a new scheduler and schedules the given tests.
     ///
     /// Uses Longest Processing Time First (LPT) algorithm with historical
@@ -120,7 +120,7 @@ impl<'a> Scheduler<'a> {
     ///   A single test that exceeds the cap is still placed alone in its own batch.
     pub fn new(
         max_parallel: usize,
-        tests: &[TestInstance<'a>],
+        tests: &[TestInstance],
         durations: &HashMap<String, Duration>,
         group_to_default_duration: &HashMap<String, Duration>,
         max_batch_duration: Option<Duration>,
@@ -138,10 +138,10 @@ impl<'a> Scheduler<'a> {
 
         // Partition: individually-scheduled tests get their own batches, others go through LPT
         let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
-            tests.iter().copied().partition(|t| t.schedule_individual());
+            tests.iter().cloned().partition(|t| t.schedule_individual());
 
         // Build individual batches (one test per batch) with estimated load
-        let individual_batches: Vec<ScheduledBatch<'a>> = individual_tests
+        let individual_batches: Vec<ScheduledBatch> = individual_tests
             .into_iter()
             .map(|t| {
                 let load = durations
@@ -187,14 +187,14 @@ impl<'a> Scheduler<'a> {
                         fallback
                     }
                 };
-                (*t, duration)
+                (t.clone(), duration)
             })
             .collect();
         tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Initialize batches
         let num_batches = max_parallel.min(normal_tests.len());
-        let mut batches: Vec<Batch<'a>> = (0..num_batches).map(|_| Batch::new()).collect();
+        let mut batches: Vec<Batch> = (0..num_batches).map(|_| Batch::new()).collect();
 
         // LPT assignment: assign each test to the lightest eligible batch
         for (test, duration) in tests_with_duration {
@@ -247,7 +247,7 @@ impl<'a> Scheduler<'a> {
     ///
     /// This future is cancel-safe: callers should race it against a
     /// cancellation token via `tokio::select!`.
-    pub async fn pop(&self) -> Option<ScheduledBatch<'a>> {
+    pub async fn pop(&self) -> Option<ScheduledBatch> {
         loop {
             // Register notified BEFORE checking the queue to avoid missed wakeups
             let notified = self.notify.notified();
@@ -270,7 +270,7 @@ impl<'a> Scheduler<'a> {
     }
 
     /// Pushes a batch to the back of the queue.
-    fn push(&self, batch: ScheduledBatch<'a>) {
+    fn push(&self, batch: ScheduledBatch) {
         match self.queue.lock() {
             Ok(mut q) => {
                 q.push_back(batch);
@@ -288,7 +288,7 @@ impl<'a> Scheduler<'a> {
     /// completes before that deadline, its result is returned immediately.
     /// If the timeout fires, the batch is split (or cloned if single-test)
     /// and re-queued, then the original future is awaited to completion.
-    pub async fn register_running_batch<Fut, R>(&self, batch: &ScheduledBatch<'a>, fut: Fut) -> R
+    pub async fn register_running_batch<Fut, R>(&self, batch: &ScheduledBatch, fut: Fut) -> R
     where
         Fut: Future<Output = R>,
     {
@@ -345,7 +345,7 @@ mod tests {
 
     const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
 
-    async fn drain_batches<'a>(scheduler: &Scheduler<'a>) -> Vec<Vec<TestInstance<'a>>> {
+    async fn drain_batches(scheduler: &Scheduler) -> Vec<Vec<TestInstance>> {
         let mut batches = Vec::new();
         while let Ok(Some(batch)) =
             tokio::time::timeout(Duration::from_millis(10), scheduler.pop()).await

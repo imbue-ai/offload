@@ -258,7 +258,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// - `Ok(BatchOutcome::Failure)` if execution completed but one or more tests failed
     /// - `Ok(BatchOutcome::Cancelled)` if the batch was cancelled before completion
     /// - `Err(...)` if execution failed due to an infrastructure error
-    pub async fn run_tests(&mut self, tests: &[TestInstance<'_>]) -> Result<BatchOutcome> {
+    pub async fn run_tests(&mut self, tests: &[TestInstance]) -> Result<BatchOutcome> {
         let start = std::time::Instant::now();
         let expected_count = tests.len();
         let sandbox_id = self.sandbox.id().to_string();

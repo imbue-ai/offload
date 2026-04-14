@@ -30,7 +30,7 @@ use super::scheduler::Scheduler;
 pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub config: &'a Config,
     pub framework: &'a F,
-    pub scheduler: &'a Scheduler<'a>,
+    pub scheduler: &'a Scheduler,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
     pub all_complete: Arc<AtomicBool>,
