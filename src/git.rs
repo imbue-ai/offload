@@ -74,6 +74,27 @@ pub async fn head_sha() -> Result<String> {
     run_git(&["rev-parse", "HEAD"]).await
 }
 
+/// Return the SHA of HEAD's parent (HEAD~1).
+/// Returns `Ok(None)` if HEAD is the initial commit (no parent).
+pub async fn parent_sha() -> Result<Option<String>> {
+    let result = run_git(&["rev-parse", "--verify", "HEAD~1"]).await;
+    match result {
+        Ok(sha) => Ok(Some(sha)),
+        Err(e) => {
+            let msg = e.to_string();
+            // Initial commit has no parent
+            if msg.contains("unknown revision")
+                || msg.contains("bad revision")
+                || msg.contains("Needed a single revision")
+            {
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 /// Return the repository root directory.
 pub async fn repo_root() -> Result<PathBuf> {
     let root = run_git(&["rev-parse", "--show-toplevel"]).await?;
@@ -1017,5 +1038,49 @@ mod tests {
             Ok(())
         })
         .await?
+    }
+
+    async fn parent_sha_in(dir: &Path) -> Result<Option<String>> {
+        let result = run_git_in(dir, &["rev-parse", "--verify", "HEAD~1"]).await;
+        match result {
+            Ok(sha) => Ok(Some(sha)),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("unknown revision")
+                    || msg.contains("bad revision")
+                    || msg.contains("Needed a single revision")
+                {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parent_sha_exists() -> Result<()> {
+        let dir = init_temp_repo()?;
+        // init_temp_repo creates one commit. Add another.
+        std::fs::write(dir.path().join("second.txt"), "second")?;
+        git_in(dir.path(), &["add", "second.txt"])?;
+        git_in(dir.path(), &["commit", "-m", "second commit"])?;
+
+        let parent = parent_sha_in(dir.path()).await?;
+        assert!(parent.is_some(), "should have a parent");
+
+        // Parent should be the initial commit, not the current HEAD
+        let head = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        assert_ne!(parent.unwrap(), head);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parent_sha_initial_commit() -> Result<()> {
+        let dir = init_temp_repo()?;
+        // init_temp_repo creates exactly one commit — it has no parent
+        let parent = parent_sha_in(dir.path()).await?;
+        assert!(parent.is_none(), "initial commit should have no parent");
+        Ok(())
     }
 }
