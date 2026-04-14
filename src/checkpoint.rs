@@ -63,26 +63,6 @@ pub async fn resolve_checkpoint(
     Ok(None)
 }
 
-/// Check if HEAD has a cached image in git notes.
-///
-/// Reads the git note for the current HEAD commit and looks up the entry
-/// for the given config path. Returns the image_id if found, `None` otherwise.
-pub async fn resolve_cached_image(config_path: &str) -> Result<Option<String>> {
-    let head = git::head_sha().await?;
-    let repo_root = git::repo_root().await?;
-    let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-
-    let note = git::read_note(&head).await?;
-    let Some(contents) = note else {
-        return Ok(None);
-    };
-
-    match contents.get(&config_key) {
-        Some(entry) if !entry.image_id.is_empty() => Ok(Some(entry.image_id.clone())),
-        _ => Ok(None),
-    }
-}
-
 /// Read the cached image entry from a git note for a specific commit and config key.
 async fn read_cached_image_for_commit(
     commit_sha: &str,
@@ -315,41 +295,6 @@ mod tests {
         let cached = info.cached_image.context("should have cached image")?;
         assert_eq!(cached.image_id, "im-cached123");
         assert_eq!(cached.build_inputs_hash.as_deref(), Some("abc123hash"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_resolve_cached_image_hit() -> Result<()> {
-        let dir = init_temp_repo()?;
-        let head = head_sha_in(dir.path())?;
-
-        // Write a note on HEAD
-        let mut contents = NoteContents::new();
-        contents.insert(
-            "offload.toml".to_string(),
-            ImageEntry {
-                image_id: "im-head-cached".to_string(),
-                build_inputs_hash: None,
-            },
-        );
-        write_note_in(dir.path(), &head, &contents)?;
-
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_cached_image("offload.toml").await?;
-
-        assert_eq!(result.as_deref(), Some("im-head-cached"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_resolve_cached_image_miss() -> Result<()> {
-        let dir = init_temp_repo()?;
-
-        // No note written on HEAD
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_cached_image("offload.toml").await?;
-
-        assert!(result.is_none(), "no note means no cached image");
         Ok(())
     }
 }

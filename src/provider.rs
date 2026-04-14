@@ -21,21 +21,6 @@ use crate::connector::{Connector, ShellConnector};
 /// or a [`ProviderError`] describing what went wrong.
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
-/// Context for building a sandbox image from a checkpoint rather than from scratch.
-///
-/// When present, providers append `--from-checkpoint`, `--checkpoint-sha`, and
-/// `--sandbox-project-root` flags to the prepare command and omit the normal
-/// `--include-cwd`, `--copy-dir`, and `--sandbox-init-cmd` flags.
-#[derive(Debug, Clone)]
-pub struct CheckpointContext {
-    /// Modal image ID of the checkpoint image to build on top of.
-    pub image_id: String,
-    /// Git commit SHA that the checkpoint image was built from.
-    pub commit_sha: String,
-    /// Project root path inside the sandbox (e.g. `/app`).
-    pub sandbox_project_root: String,
-}
-
 /// Estimated compute cost of a sandbox or aggregated run.
 #[derive(Clone, Debug, Default)]
 pub struct CostEstimate {
@@ -373,22 +358,6 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
-/// Providers that support checkpoint-based image caching.
-///
-/// This trait exposes the checkpoint methods shared by `DefaultProvider`
-/// and `ModalProvider`, enabling generic helpers that operate on either
-/// provider without code duplication.
-pub trait CheckpointProvider: SandboxProvider {
-    /// Configures this provider to build from a checkpoint image.
-    fn with_checkpoint(&mut self, ctx: CheckpointContext);
-
-    /// Clears any checkpoint context, reverting to a full build on the next prepare.
-    fn clear_checkpoint(&mut self);
-
-    /// Sets the image ID directly, bypassing the prepare step.
-    fn set_image_id(&mut self, id: String);
-}
-
 /// Factory for creating and managing sandbox instances.
 ///
 /// A `SandboxProvider` represents an execution backend (local, etc.)
@@ -452,6 +421,11 @@ pub trait SandboxProvider: Send + Sync {
     fn base_env(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// Set the image ID directly, bypassing prepare().
+    /// Used when the image was obtained from cache or built externally.
+    /// Default implementation is a no-op (for providers like Local that don't use image IDs).
+    fn set_image_id(&mut self, _id: String) {}
 }
 
 #[cfg(test)]

@@ -329,6 +329,54 @@ pub async fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<
     Ok(paths.iter().any(|p| changed.contains(p.as_str())))
 }
 
+/// Export a commit's tree into an existing directory as a shallow git clone.
+///
+/// Creates a shallow clone (depth=1) of the current repo at the given commit
+/// SHA in `dest`. The result is a proper git repository whose HEAD points to
+/// the real commit, preserving the actual SHA, author, and message. This is
+/// needed so that `COPY . /app` in a Dockerfile includes `.git/`, which many
+/// repos require and which the thin-diff `git apply` step depends on.
+pub async fn export_tree(commit_sha: &str, dest: &Path) -> Result<()> {
+    let repo_root = repo_root().await?;
+    let sha = commit_sha.to_string();
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        // file:// protocol is required to fetch arbitrary SHAs from a local repo.
+        let repo_url = format!("file://{}", repo_root.display());
+
+        let run = |args: &[&str]| -> Result<()> {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .output()
+                .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("git {} failed: {}", args.join(" "), stderr.trim());
+            }
+            Ok(())
+        };
+
+        run(&["init", &dest.to_string_lossy()])?;
+        run(&[
+            "-C",
+            &dest.to_string_lossy(),
+            "fetch",
+            "--depth=1",
+            &repo_url,
+            &sha,
+        ])?;
+        run(&["-C", &dest.to_string_lossy(), "checkout", "FETCH_HEAD"])?;
+        // Create a branch so refs/heads/ is non-empty.  Some container
+        // image builders (e.g. Modal) only upload files, not empty
+        // directories, and git refuses to recognise a repo whose
+        // refs/heads/ directory is missing.
+        run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
+
+        Ok(())
+    })
+    .await?
+}
+
 /// Count the number of files changed between two commits.
 pub async fn diff_file_count(from_sha: &str, to_sha: &str) -> Result<usize> {
     let output = run_git(&["diff", "--name-only", from_sha, to_sha]).await?;
@@ -609,6 +657,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_export_tree() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        // Add a file and commit
+        std::fs::write(dir.path().join("hello.txt"), "world")?;
+        git_in(dir.path(), &["add", "hello.txt"])?;
+        git_in(dir.path(), &["commit", "-m", "add hello"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Add another file on top (should NOT appear in export of prior commit)
+        std::fs::write(dir.path().join("extra.txt"), "nope")?;
+        git_in(dir.path(), &["add", "extra.txt"])?;
+        git_in(dir.path(), &["commit", "-m", "add extra"])?;
+
+        // Export the earlier commit's tree
+        let dest = tempfile::tempdir()?;
+        export_tree_in(dir.path(), &sha, dest.path()).await?;
+
+        // The exported tree should contain hello.txt and README.md
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("hello.txt"))?,
+            "world"
+        );
+        assert!(dest.path().join("README.md").exists());
+        // extra.txt should NOT be present
+        assert!(!dest.path().join("extra.txt").exists());
+        // Should be a git repo with the actual SHA as HEAD
+        assert!(dest.path().join(".git").exists(), ".git should exist");
+        let exported_head = git_in(dest.path(), &["rev-parse", "HEAD"])?;
+        assert_eq!(exported_head, sha, "HEAD should match the exported SHA");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_commit_touches_paths() -> Result<()> {
         let dir = init_temp_repo()?;
 
@@ -871,6 +953,42 @@ mod tests {
                 let stderr = String::from_utf8_lossy(&add_output.stderr);
                 bail!("git config --add failed: {}", stderr.trim());
             }
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn export_tree_in(repo_dir: &Path, commit_sha: &str, dest: &Path) -> Result<()> {
+        let repo_dir = repo_dir.to_path_buf();
+        let sha = commit_sha.to_string();
+        let dest = dest.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let repo_url = format!("file://{}", repo_dir.display());
+
+            let run = |args: &[&str]| -> Result<()> {
+                let output = std::process::Command::new("git")
+                    .args(args)
+                    .output()
+                    .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    bail!("git {} failed: {}", args.join(" "), stderr.trim());
+                }
+                Ok(())
+            };
+
+            run(&["init", &dest.to_string_lossy()])?;
+            run(&[
+                "-C",
+                &dest.to_string_lossy(),
+                "fetch",
+                "--depth=1",
+                &repo_url,
+                &sha,
+            ])?;
+            run(&["-C", &dest.to_string_lossy(), "checkout", "FETCH_HEAD"])?;
+            run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
+
             Ok(())
         })
         .await?
