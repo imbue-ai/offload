@@ -29,6 +29,7 @@ jobs:
         ref: ${{ env.MNG_REF }}
         token: ${{ secrets.MNGR_ACCESS_TOKEN }}
         path: mng
+        fetch-depth: 0
 
     - name: Install Rust stable
       uses: dtolnay/rust-toolchain@stable
