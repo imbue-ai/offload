@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Reference of mng to test against. Pinned to a commit where tests are expected to mostly pass.
-  MNG_REF: "f0fa20ebbd1dbd863ff996cdc83f6840d86ebc1e"
+  # Reference of mngr to test against. Pinned to a commit where tests are expected to mostly pass.
+  MNGR_REF: "f0fa20ebbd1dbd863ff996cdc83f6840d86ebc1e"
 
 jobs:
   integration:
@@ -22,13 +22,13 @@ jobs:
       with:
         path: offload
 
-    - name: Checkout mng
+    - name: Checkout mngr
       uses: actions/checkout@v6
       with:
-        repository: imbue-ai/mng
-        ref: ${{ env.MNG_REF }}
+        repository: imbue-ai/mngr
+        ref: ${{ env.MNGR_REF }}
         token: ${{ secrets.MNGR_ACCESS_TOKEN }}
-        path: mng
+        path: mngr
         fetch-depth: 0
 
     - name: Install Rust stable
@@ -51,21 +51,21 @@ jobs:
       working-directory: offload
       run: just install
 
-    - name: Install mng dependencies
-      working-directory: mng
+    - name: Install mngr dependencies
+      working-directory: mngr
       run: |
         uv venv .venv --clear
         uv sync --all-packages
         uv tool install -e libs/mngr
 
     - name: Run integration test
-      working-directory: mng
+      working-directory: mngr
       env:
         MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
-        OUTPUT=$(LAST_COMMIT_SHA=${{ env.MNG_REF }} just test-offload 2>&1 || true)
+        OUTPUT=$(LAST_COMMIT_SHA=${{ env.MNGR_REF }} just test-offload 2>&1 || true)
         echo "$OUTPUT"
 
         # Check that "passed" appears in output
