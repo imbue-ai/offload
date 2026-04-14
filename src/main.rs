@@ -241,6 +241,32 @@ async fn discover_all_tests(
     Ok(all_tests)
 }
 
+/// Copy the working directory into a temporary directory for use as build context.
+///
+/// This produces a frozen snapshot so that files modified by other processes
+/// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
+/// when Modal uploads the context.
+fn snapshot_working_directory() -> Result<tempfile::TempDir> {
+    let snapshot = tempfile::tempdir()
+        .context("Failed to create temporary directory for build context snapshot")?;
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+    // Use cp -a for a faithful copy that preserves symlinks, permissions, etc.
+    let status = std::process::Command::new("cp")
+        .args(["-a", "--"])
+        .arg(format!("{}/.", cwd.display()))
+        .arg(snapshot.path())
+        .status()
+        .context("Failed to spawn cp for working directory snapshot")?;
+    if !status.success() {
+        return Err(anyhow!("cp -a failed with exit code {:?}", status.code()));
+    }
+    info!(
+        "Snapshotted working directory into {}",
+        snapshot.path().display()
+    );
+    Ok(snapshot)
+}
+
 /// Discover tests concurrently with provider preparation, signalling completion.
 async fn discover_with_signal(
     framework: &FrameworkConfig,
@@ -483,6 +509,10 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = DefaultProvider::from_config(p_cfg.clone());
+            // Snapshot the working directory so the upload operates on a frozen
+            // copy, avoiding races where files are modified during upload.
+            let context_snapshot = snapshot_working_directory()?;
+            let context_dir = context_snapshot.path();
             let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
@@ -497,7 +527,7 @@ async fn run_tests(
                         no_cache,
                         config.offload.sandbox_init_cmd.as_deref(),
                         Some(&discovery_done),
-                        None,
+                        Some(context_dir),
                     ))
                     .context("Failed to prepare Default provider")?;
                     Ok(image_id)
@@ -523,6 +553,10 @@ async fn run_tests(
             // Run discovery and image preparation concurrently
             let discovery_done = AtomicBool::new(false);
             let mut provider = ModalProvider::from_config(p_cfg.clone());
+            // Snapshot the working directory so the upload operates on a frozen
+            // copy, avoiding races where files are modified during upload.
+            let context_snapshot = snapshot_working_directory()?;
+            let context_dir = context_snapshot.path();
             let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
                 async {
@@ -537,7 +571,7 @@ async fn run_tests(
                         no_cache,
                         config.offload.sandbox_init_cmd.as_deref(),
                         Some(&discovery_done),
-                        None,
+                        Some(context_dir),
                     ))
                     .context("Failed to prepare Modal provider")?;
                     Ok(image_id)
