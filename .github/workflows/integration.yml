@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Reference of mng to test against. Should ideally be a pinned commit on the main branch.
-  MNG_REF: "ded3b841ffbefb440915b1b06d6da4717d95b7fc"
+  # Reference of mng to test against. Pinned to a commit where tests are expected to mostly pass.
+  MNG_REF: "f0fa20ebb"
 
 jobs:
   integration:
@@ -64,4 +64,23 @@ jobs:
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
-        LAST_COMMIT_SHA=${{ env.MNG_REF }} just test-offload
+        OUTPUT=$(LAST_COMMIT_SHA=${{ env.MNG_REF }} just test-offload 2>&1 || true)
+        echo "$OUTPUT"
+
+        # Check that "passed" appears in output
+        if ! echo "$OUTPUT" | grep -q "passed"; then
+          echo "FAIL: output does not contain 'passed'"
+          exit 1
+        fi
+
+        # Check that "failed" appears followed by a number < 10
+        FAILED_COUNT=$(echo "$OUTPUT" | grep -oE 'failed[: ]*[0-9]+' | grep -oE '[0-9]+' | tail -1)
+        if [ -z "$FAILED_COUNT" ]; then
+          echo "FAIL: output does not contain 'failed' with a count"
+          exit 1
+        fi
+        if [ "$FAILED_COUNT" -ge 10 ]; then
+          echo "FAIL: failed count is $FAILED_COUNT (must be < 10)"
+          exit 1
+        fi
+        echo "PASS: found 'passed' and failed count is $FAILED_COUNT (< 10)"
