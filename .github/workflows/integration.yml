@@ -55,7 +55,7 @@ jobs:
       run: |
         uv venv .venv --clear
         uv sync --all-packages
-        uv tool install -e libs/mng
+        uv tool install -e libs/mngr
 
     - name: Run integration test
       working-directory: mng
