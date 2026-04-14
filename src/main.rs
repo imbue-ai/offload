@@ -20,8 +20,7 @@ use offload::framework::{
 };
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
-    CheckpointContext, CheckpointProvider, default::DefaultProvider, local::LocalProvider,
-    modal::ModalProvider,
+    SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
 };
 use offload::{checkpoint, git, with_retry};
 
@@ -417,10 +416,90 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
-/// Shared logic for Default and Modal provider arms: checkpoint/cache setup,
-/// concurrent discovery + prepare, note writing, and framework dispatch.
+/// Build a thin-diff image on top of a checkpoint base image.
+///
+/// Calls the Python script directly with --from-checkpoint flags, bypassing
+/// the provider's prepare() method. Returns the target image ID on success.
+async fn build_thin_diff_image(
+    base_image_id: &str,
+    checkpoint_sha: &str,
+    sandbox_project_root: &str,
+    discovery_done: Option<&AtomicBool>,
+) -> Result<String, offload::provider::ProviderError> {
+    use futures::StreamExt;
+    use offload::connector::Connector;
+    use offload::provider::{OutputLine, ProviderError};
+
+    let cmd = format!(
+        "uv run @modal_sandbox.py prepare --from-checkpoint={} --checkpoint-sha={} --sandbox-project-root={}",
+        base_image_id, checkpoint_sha, sandbox_project_root
+    );
+    let connector = offload::connector::ShellConnector::new();
+
+    // Buffer output while discovery is in progress, then flush
+    let mut buffer: Vec<String> = Vec::new();
+    let emit = |msg: String, buf: &mut Vec<String>| {
+        if discovery_done.is_some_and(|flag| !flag.load(Ordering::Acquire)) {
+            buf.push(msg);
+        } else {
+            for buffered in buf.drain(..) {
+                eprintln!("{}", buffered);
+            }
+            eprintln!("{}", msg);
+        }
+    };
+
+    emit(
+        "[prepare] Building thin diff image...".to_string(),
+        &mut buffer,
+    );
+
+    let mut stream = connector.run_stream(&cmd).await?;
+    let mut last_stdout_line = String::new();
+    let mut exit_code = 0;
+
+    while let Some(line) = stream.next().await {
+        match line {
+            OutputLine::Stdout(s) => {
+                emit(format!("[prepare]   {}", s), &mut buffer);
+                last_stdout_line = s;
+            }
+            OutputLine::Stderr(s) => {
+                emit(format!("[prepare]   {}", s), &mut buffer);
+            }
+            OutputLine::ExitCode(code) => {
+                exit_code = code;
+            }
+        }
+    }
+
+    // Flush any remaining buffered output
+    for buffered in buffer.drain(..) {
+        eprintln!("{}", buffered);
+    }
+
+    if exit_code != 0 {
+        return Err(ProviderError::ExecFailed(format!(
+            "thin diff prepare command failed with exit code {}",
+            exit_code
+        )));
+    }
+
+    let image_id = last_stdout_line.trim().to_string();
+
+    if image_id.is_empty() {
+        return Err(ProviderError::ExecFailed(
+            "thin diff prepare command returned empty image_id".to_string(),
+        ));
+    }
+
+    Ok(image_id)
+}
+
+/// Shared logic for Default and Modal provider arms: checkpoint caching pipeline,
+/// concurrent discovery + prepare, and framework dispatch.
 #[allow(clippy::too_many_arguments)]
-async fn run_with_checkpoint_provider<P: CheckpointProvider>(
+async fn run_with_caching<P: SandboxProvider>(
     mut provider: P,
     config: &Config,
     cache_state: &Option<CacheState>,
@@ -435,110 +514,180 @@ async fn run_with_checkpoint_provider<P: CheckpointProvider>(
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
-    // Determine if we can skip prepare via cached image (Mode 2)
-    let skip_prepare = if let Some(CacheState::CachedImage(image_id)) = cache_state {
-        provider.set_image_id(image_id.clone());
-        info!("Using cached image from git notes: {}", image_id);
-        eprintln!("[cache] Using cached image: {}", image_id);
-        true
-    } else {
-        false
-    };
+    // Step 1: Handle cache states that bypass or modify prepare
+    match cache_state {
+        // Checkpoint cache hit: build thin diff on existing base
+        Some(CacheState::Checkpoint {
+            checkpoint_sha,
+            cached_image: Some(cached),
+        }) => {
+            eprintln!(
+                "[cache] Using checkpoint image from {}",
+                &checkpoint_sha[..8.min(checkpoint_sha.len())]
+            );
 
-    // Apply checkpoint context if available (Mode 1), track if we set one
-    let has_checkpoint = if let Some(CacheState::Checkpoint {
-        checkpoint_sha,
-        cached_image: Some(cached),
-    }) = &cache_state
-    {
-        provider.with_checkpoint(CheckpointContext {
-            image_id: cached.image_id.clone(),
-            commit_sha: checkpoint_sha.clone(),
-            sandbox_project_root: config.offload.sandbox_project_root.clone(),
-        });
-        info!(
-            "Using checkpoint image {} from commit {}",
-            cached.image_id, checkpoint_sha
-        );
-        eprintln!(
-            "[cache] Using checkpoint image from {}",
-            &checkpoint_sha[..8.min(checkpoint_sha.len())]
-        );
-        true
-    } else {
-        false
-    };
+            // Try thin diff; on failure, fall through to full build
+            let (all_tests, thin_diff_result) = tokio::try_join!(
+                discover_with_signal(&config.framework, &config.groups, &discovery_done),
+                async {
+                    let _span = tracer.span(
+                        "thin_diff",
+                        "local",
+                        offload::trace::PID_LOCAL,
+                        offload::trace::TID_MAIN,
+                    );
+                    // Return the result as a value, not using ?
+                    Ok::<_, anyhow::Error>(
+                        build_thin_diff_image(
+                            &cached.image_id,
+                            checkpoint_sha,
+                            &config.offload.sandbox_project_root,
+                            Some(&discovery_done),
+                        )
+                        .await,
+                    )
+                }
+            )?;
 
+            match thin_diff_result {
+                Ok(target_id) => {
+                    provider.set_image_id(target_id);
+                    if all_tests.is_empty() {
+                        return Ok(None);
+                    }
+                    return dispatch_framework(
+                        config,
+                        &all_tests,
+                        provider,
+                        copy_dirs,
+                        verbose,
+                        tracer,
+                        show_estimated_cost,
+                        fail_fast,
+                    )
+                    .await
+                    .map(Some);
+                }
+                Err(e) => {
+                    warn!("Thin diff failed, falling back to full build: {}", e);
+                    eprintln!("[cache] Thin diff failed, falling back to full build");
+                    // Fall through to full build below
+                }
+            }
+        }
+
+        // Mode 1 checkpoint cache miss: build base image, cache it, then thin diff
+        Some(CacheState::Checkpoint {
+            checkpoint_sha,
+            cached_image: None,
+        }) => {
+            eprintln!(
+                "[cache] No cached checkpoint image for {} — building base",
+                &checkpoint_sha[..8.min(checkpoint_sha.len())]
+            );
+
+            // Export checkpoint tree
+            let tree_dir =
+                tempfile::tempdir().context("failed to create temp dir for checkpoint tree")?;
+            git::export_tree(checkpoint_sha, tree_dir.path())
+                .await
+                .with_context(|| format!("failed to export tree for {}", checkpoint_sha))?;
+
+            // Build base image from checkpoint source (normal prepare with context_dir)
+            eprintln!("[prepare] Building checkpoint base image...");
+            let base_image_id = with_retry!(provider.prepare(
+                copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+                None,
+                Some(tree_dir.path()),
+            ))
+            .context("Failed to build checkpoint base image")?;
+
+            if let Some(ref base_id) = base_image_id {
+                write_note_for_commit(checkpoint_sha, base_id, config_path, config).await;
+            }
+
+            // Now build thin diff on top
+            if let Some(base_id) = base_image_id {
+                let (all_tests, thin_diff_result) = tokio::try_join!(
+                    discover_with_signal(&config.framework, &config.groups, &discovery_done),
+                    async {
+                        Ok::<_, anyhow::Error>(
+                            build_thin_diff_image(
+                                &base_id,
+                                checkpoint_sha,
+                                &config.offload.sandbox_project_root,
+                                Some(&discovery_done),
+                            )
+                            .await,
+                        )
+                    }
+                )?;
+
+                match thin_diff_result {
+                    Ok(target_id) => {
+                        provider.set_image_id(target_id);
+                        if all_tests.is_empty() {
+                            return Ok(None);
+                        }
+                        return dispatch_framework(
+                            config,
+                            &all_tests,
+                            provider,
+                            copy_dirs,
+                            verbose,
+                            tracer,
+                            show_estimated_cost,
+                            fail_fast,
+                        )
+                        .await
+                        .map(Some);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Thin diff failed after base build, falling back to full build: {}",
+                            e
+                        );
+                        eprintln!("[cache] Thin diff failed, falling back to full build");
+                    }
+                }
+            }
+            // Fall through to full build if base build failed or thin diff failed
+        }
+
+        // No cache state (non-checkpoint workflow) or checkpoint with no cached image: full build
+        _ => {}
+    }
+
+    // Full build fallthrough: concurrent discover + prepare
     let label = match &config.provider {
         ProviderConfig::Local(_) => "Local",
         ProviderConfig::Default(_) => "Default",
         ProviderConfig::Modal(_) => "Modal",
     };
 
-    let (all_tests, prepare_result): (Vec<TestRecord>, Option<String>) = if skip_prepare {
-        // Discovery only -- prepare already satisfied by cached image
-        let tests =
-            discover_with_signal(&config.framework, &config.groups, &discovery_done).await?;
-        (tests, None)
-    } else {
-        tokio::try_join!(
-            discover_with_signal(&config.framework, &config.groups, &discovery_done),
-            async {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                // If checkpoint prepare fails, fall back to full build
-                let image_id = if has_checkpoint {
-                    match with_retry!(provider.prepare(
-                        copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                        None,
-                    )) {
-                        Ok(id) => Ok(id),
-                        Err(e) => {
-                            warn!(
-                                "Checkpoint prepare failed, falling back to full build: {}",
-                                e
-                            );
-                            eprintln!(
-                                "[cache] Checkpoint prepare failed, falling back to full build"
-                            );
-                            provider.clear_checkpoint();
-                            with_retry!(provider.prepare(
-                                copy_dir_tuples,
-                                no_cache,
-                                config.offload.sandbox_init_cmd.as_deref(),
-                                Some(&discovery_done),
-                                None,
-                            ))
-                            .context(format!("Failed to prepare {} provider (fallback)", label))
-                        }
-                    }
-                } else {
-                    with_retry!(provider.prepare(
-                        copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                        None,
-                    ))
-                    .context(format!("Failed to prepare {} provider", label))
-                }?;
-                Ok(image_id)
-            }
-        )?
-    };
-
-    // Write note on cache miss
-    write_note_on_cache_miss(cache_state, &prepare_result, config_path, config).await;
+    let (all_tests, _prepare_result) = tokio::try_join!(
+        discover_with_signal(&config.framework, &config.groups, &discovery_done),
+        async {
+            let _span = tracer.span(
+                "image_prepare",
+                "local",
+                offload::trace::PID_LOCAL,
+                offload::trace::TID_MAIN,
+            );
+            with_retry!(provider.prepare(
+                copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+                Some(&discovery_done),
+                None,
+            ))
+            .context(format!("Failed to prepare {} provider", label))
+        }
+    )?;
 
     if all_tests.is_empty() {
-        info!("No tests to run");
         return Ok(None);
     }
     dispatch_framework(
@@ -708,7 +857,7 @@ async fn run_tests(
         }
         ProviderConfig::Default(p_cfg) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            match run_with_checkpoint_provider(
+            match run_with_caching(
                 provider,
                 &config,
                 &cache_state,
@@ -729,7 +878,7 @@ async fn run_tests(
         }
         ProviderConfig::Modal(p_cfg) => {
             let provider = ModalProvider::from_config(p_cfg.clone());
-            match run_with_checkpoint_provider(
+            match run_with_caching(
                 provider,
                 &config,
                 &cache_state,
@@ -767,21 +916,22 @@ async fn run_tests(
 
 /// Pre-resolved cache/checkpoint state, determined before provider dispatch.
 enum CacheState {
-    /// Mode 2: HEAD has a cached image in git notes (no `[checkpoint]` section).
-    CachedImage(String),
     /// Mode 1: A checkpoint commit was found (with `[checkpoint]` section).
     Checkpoint {
         checkpoint_sha: String,
         cached_image: Option<checkpoint::CachedImage>,
     },
-    /// Mode 1 or 2: No cached image or checkpoint found -- full build needed.
-    CacheMiss,
 }
 
 /// Fetch notes and resolve checkpoint/cache state before provider dispatch.
 ///
-/// Returns `None` if not in a git repo or if resolution fails (best-effort).
+/// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
+/// no `[checkpoint]` section is configured (non-checkpoint workflow has no caching).
 async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<CacheState> {
+    // Non-checkpoint workflow: no caching (notes only make sense for checkpoint images
+    // tied to stable checkpoint commits, not for images built from the working tree)
+    let checkpoint_cfg = config.checkpoint.as_ref()?;
+
     // Check if we're in a git repo
     if git::repo_root().await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
@@ -798,79 +948,31 @@ async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<Cach
 
     let config_path_str = config_path.to_string_lossy();
 
-    if let Some(ref checkpoint_cfg) = config.checkpoint {
-        // Mode 1: With [checkpoint] section
-        match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
-            Ok(Some(info)) => Some(CacheState::Checkpoint {
-                checkpoint_sha: info.checkpoint_sha,
-                cached_image: info.cached_image,
-            }),
-            Ok(None) => {
-                info!("No checkpoint commit found in ancestor window");
-                Some(CacheState::CacheMiss)
-            }
-            Err(e) => {
-                warn!("Checkpoint resolution failed: {}", e);
-                None
-            }
+    match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
+        Ok(Some(info)) => Some(CacheState::Checkpoint {
+            checkpoint_sha: info.checkpoint_sha,
+            cached_image: info.cached_image,
+        }),
+        Ok(None) => {
+            info!("No checkpoint commit found in ancestor window");
+            None
         }
-    } else {
-        // Mode 2: Without [checkpoint] section
-        match checkpoint::resolve_cached_image(&config_path_str).await {
-            Ok(Some(image_id)) => Some(CacheState::CachedImage(image_id)),
-            Ok(None) => Some(CacheState::CacheMiss),
-            Err(e) => {
-                warn!("Cached image resolution failed: {}", e);
-                None
-            }
+        Err(e) => {
+            warn!("Checkpoint resolution failed: {}", e);
+            None
         }
     }
 }
 
-/// Write a git note and push after a cache miss (best-effort).
-///
-/// Called after a successful prepare when the cache state indicates a miss.
-/// For Mode 1 (checkpoint): writes note on the checkpoint commit.
-/// For Mode 2 (no checkpoint): writes note on HEAD.
-async fn write_note_on_cache_miss(
-    cache_state: &Option<CacheState>,
-    prepare_result: &Option<String>,
+/// Write a git note for an image on a specific commit (best-effort).
+async fn write_note_for_commit(
+    commit_sha: &str,
+    image_id: &str,
     config_path: &Path,
     config: &Config,
 ) {
-    // Only write on cache miss where we actually built an image
-    let image_id = match prepare_result {
-        Some(id) => id,
-        None => return, // Skipped prepare (cache hit) or no image returned
-    };
-
-    let is_miss = matches!(
-        cache_state,
-        Some(CacheState::CacheMiss)
-            | Some(CacheState::Checkpoint {
-                cached_image: None,
-                ..
-            })
-    );
-    if !is_miss {
-        return;
-    }
-
     let config_path_str = config_path.to_string_lossy();
 
-    // Determine which commit SHA to write the note on
-    let commit_sha = match cache_state {
-        Some(CacheState::Checkpoint { checkpoint_sha, .. }) => checkpoint_sha.clone(),
-        _ => match git::head_sha().await {
-            Ok(sha) => sha,
-            Err(e) => {
-                warn!("Failed to get HEAD SHA for note: {}", e);
-                return;
-            }
-        },
-    };
-
-    // Canonicalize config path
     let config_key = match git::repo_root().await {
         Ok(root) => match git::canonicalize_config_path(&config_path_str, &root) {
             Ok(key) => key,
@@ -885,7 +987,6 @@ async fn write_note_on_cache_miss(
         }
     };
 
-    // Compute build inputs hash if checkpoint config is present
     let build_inputs_hash = if let Some(ref checkpoint_cfg) = config.checkpoint {
         match git::repo_root().await {
             Ok(root) => {
@@ -907,13 +1008,13 @@ async fn write_note_on_cache_miss(
     contents.insert(
         config_key,
         git::ImageEntry {
-            image_id: image_id.clone(),
+            image_id: image_id.to_string(),
             build_inputs_hash,
         },
     );
 
-    if let Err(e) = git::write_note(&commit_sha, &contents).await {
-        warn!("Failed to write git note: {}", e);
+    if let Err(e) = git::write_note(commit_sha, &contents).await {
+        warn!("Failed to write note: {}", e);
         return;
     }
     info!(

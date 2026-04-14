@@ -153,7 +153,10 @@ def _build_image_from_dockerfile(
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpfile = Path(tmpdir) / "Dockerfile"
-        with open(dockerfile_path) as f:
+        # When context_dir is provided, resolve the Dockerfile relative to it
+        # so that checkpoint builds use the Dockerfile from the exported tree.
+        resolved_dockerfile = Path(context_dir) / dockerfile_path
+        with open(resolved_dockerfile) as f:
             dockerfile_contents = f.read()
         tmpfile.write_text(dockerfile_contents)
 

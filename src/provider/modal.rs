@@ -9,10 +9,7 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::default::DefaultSandbox;
-use super::{
-    CheckpointContext, CheckpointProvider, ProviderError, ProviderResult, SandboxProvider,
-    run_prepare_command,
-};
+use super::{ProviderError, ProviderResult, SandboxProvider, run_prepare_command};
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 
@@ -44,8 +41,6 @@ pub struct ModalProvider {
     env: Vec<(String, String)>,
     cpu_cores: f64,
     memory_gb: Option<f64>,
-    /// When set, the prepare step builds from a checkpoint image instead of from scratch.
-    checkpoint: Option<CheckpointContext>,
 }
 
 impl ModalProvider {
@@ -73,7 +68,6 @@ impl ModalProvider {
             env,
             cpu_cores,
             memory_gb,
-            checkpoint: None,
         }
     }
 
@@ -90,36 +84,27 @@ impl ModalProvider {
             cmd.push_str(dockerfile);
         }
 
-        if let Some(ctx) = &self.checkpoint {
-            cmd.push_str(&format!(" --from-checkpoint={}", ctx.image_id));
-            cmd.push_str(&format!(" --checkpoint-sha={}", ctx.commit_sha));
+        if self.config.include_cwd {
+            cmd.push_str(" --include-cwd");
+        }
+
+        for copy_spec in &self.config.copy_dirs {
+            cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+        }
+
+        for (local, remote) in copy_dirs {
             cmd.push_str(&format!(
-                " --sandbox-project-root={}",
-                ctx.sandbox_project_root
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
             ));
-        } else {
-            if self.config.include_cwd {
-                cmd.push_str(" --include-cwd");
-            }
+        }
 
-            for copy_spec in &self.config.copy_dirs {
-                cmd.push_str(&format!(" --copy-dir={}", copy_spec));
-            }
-
-            for (local, remote) in copy_dirs {
-                cmd.push_str(&format!(
-                    " --copy-dir={}:{}",
-                    local.display(),
-                    remote.display()
-                ));
-            }
-
-            if let Some(init_cmd) = sandbox_init_cmd {
-                cmd.push_str(&format!(
-                    " --sandbox-init-cmd={}",
-                    shell_words::quote(init_cmd)
-                ));
-            }
+        if let Some(init_cmd) = sandbox_init_cmd {
+            cmd.push_str(&format!(
+                " --sandbox-init-cmd={}",
+                shell_words::quote(init_cmd)
+            ));
         }
 
         cmd
@@ -147,20 +132,6 @@ impl ModalProvider {
         }
 
         Ok(cmd)
-    }
-}
-
-impl CheckpointProvider for ModalProvider {
-    fn with_checkpoint(&mut self, ctx: CheckpointContext) {
-        self.checkpoint = Some(ctx);
-    }
-
-    fn clear_checkpoint(&mut self) {
-        self.checkpoint = None;
-    }
-
-    fn set_image_id(&mut self, id: String) {
-        self.image_id = Some(id);
     }
 }
 
@@ -249,6 +220,10 @@ impl SandboxProvider for ModalProvider {
     fn base_env(&self) -> Vec<(String, String)> {
         self.env.clone()
     }
+
+    fn set_image_id(&mut self, id: String) {
+        self.image_id = Some(id);
+    }
 }
 
 #[cfg(test)]
@@ -325,76 +300,6 @@ mod tests {
              --copy-dir=./src:/app/src \
              --copy-dir=./tests:/app/tests \
              --sandbox-init-cmd='make setup'"
-        );
-    }
-
-    #[test]
-    fn test_prepare_command_without_checkpoint() {
-        // Regression test: without checkpoint, existing behavior is unchanged.
-        let p = provider(ModalProviderConfig {
-            dockerfile: Some("./Dockerfile".to_string()),
-            include_cwd: true,
-            copy_dirs: vec!["./lib:/app/lib".to_string()],
-            ..Default::default()
-        });
-        let cmd = p.build_prepare_command(&[], Some("pip install -e ."));
-        assert!(
-            cmd.contains("--include-cwd"),
-            "should include --include-cwd"
-        );
-        assert!(
-            cmd.contains("--copy-dir=./lib:/app/lib"),
-            "should include --copy-dir"
-        );
-        assert!(
-            cmd.contains("--sandbox-init-cmd="),
-            "should include --sandbox-init-cmd"
-        );
-        assert!(
-            !cmd.contains("--from-checkpoint"),
-            "should NOT include --from-checkpoint"
-        );
-    }
-
-    #[test]
-    fn test_prepare_command_with_checkpoint() {
-        let mut p = provider(ModalProviderConfig {
-            dockerfile: Some("./Dockerfile".to_string()),
-            include_cwd: true,
-            copy_dirs: vec!["./lib:/app/lib".to_string()],
-            ..Default::default()
-        });
-        p.with_checkpoint(CheckpointContext {
-            image_id: "im-abc123".to_string(),
-            commit_sha: "deadbeef".to_string(),
-            sandbox_project_root: "/app".to_string(),
-        });
-
-        let cmd = p.build_prepare_command(&[], Some("pip install -e ."));
-
-        // Checkpoint flags should be present
-        assert!(
-            cmd.contains("--from-checkpoint=im-abc123"),
-            "should include --from-checkpoint"
-        );
-        assert!(
-            cmd.contains("--checkpoint-sha=deadbeef"),
-            "should include --checkpoint-sha"
-        );
-        assert!(
-            cmd.contains("--sandbox-project-root=/app"),
-            "should include --sandbox-project-root"
-        );
-
-        // Normal build flags should be omitted
-        assert!(
-            !cmd.contains("--include-cwd"),
-            "should NOT include --include-cwd"
-        );
-        assert!(!cmd.contains("--copy-dir"), "should NOT include --copy-dir");
-        assert!(
-            !cmd.contains("--sandbox-init-cmd"),
-            "should NOT include --sandbox-init-cmd"
         );
     }
 
