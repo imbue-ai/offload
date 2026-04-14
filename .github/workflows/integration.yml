@@ -10,7 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Reference of mngr to test against. Pinned to a commit where tests are expected to mostly pass.
-  MNGR_REF: "f0fa20ebbd1dbd863ff996cdc83f6840d86ebc1e"
+  MNGR_REF: "97b1e1b493150c453ed7a4192568cea76e5593e2"
 
 jobs:
   integration:
