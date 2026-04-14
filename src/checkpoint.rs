@@ -28,6 +28,32 @@ pub struct CheckpointInfo {
     pub cached_image: Option<CachedImage>,
 }
 
+/// In non-checkpoint mode: look up the parent commit's cached image.
+///
+/// Returns `Some((parent_sha, image_id))` if the parent commit (HEAD~1)
+/// has a cached image in git notes for the given config path.
+/// Returns `None` if this is the initial commit (no parent) or the parent
+/// has no cached image.
+pub async fn resolve_parent_base(config_path: &str) -> Result<Option<(String, String)>> {
+    let parent = git::parent_sha().await?;
+    let Some(parent_sha) = parent else {
+        return Ok(None);
+    };
+
+    let repo_root = git::repo_root().await?;
+    let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
+
+    let note = git::read_note(&parent_sha).await?;
+    let Some(contents) = note else {
+        return Ok(None);
+    };
+
+    match contents.get(&config_key) {
+        Some(entry) if !entry.image_id.is_empty() => Ok(Some((parent_sha, entry.image_id.clone()))),
+        _ => Ok(None),
+    }
+}
+
 /// Find the nearest checkpoint ancestor and its cached image information.
 ///
 /// Walks up to `max_depth` ancestors of HEAD looking for the first commit
@@ -295,6 +321,66 @@ mod tests {
         let cached = info.cached_image.context("should have cached image")?;
         assert_eq!(cached.image_id, "im-cached123");
         assert_eq!(cached.build_inputs_hash.as_deref(), Some("abc123hash"));
+        Ok(())
+    }
+
+    // ---- Tests for resolve_parent_base ----
+
+    #[tokio::test]
+    async fn test_resolve_parent_base_hit() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let initial_sha = head_sha_in(dir.path())?;
+
+        // Write a note on the initial commit
+        let mut contents = NoteContents::new();
+        contents.insert(
+            "offload.toml".to_string(),
+            ImageEntry {
+                image_id: "im-parent-cached".to_string(),
+                build_inputs_hash: None,
+            },
+        );
+        write_note_in(dir.path(), &initial_sha, &contents)?;
+
+        // Create a second commit so HEAD~1 = initial commit
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_cmd(dir.path(), &["add", "app.py"])?;
+        git_cmd(dir.path(), &["commit", "-m", "add app"])?;
+
+        let _guard = CwdGuard::set(dir.path())?;
+        let result = resolve_parent_base("offload.toml").await?;
+
+        let (parent_sha, image_id) = result.context("should find parent base")?;
+        assert_eq!(parent_sha, initial_sha);
+        assert_eq!(image_id, "im-parent-cached");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_base_miss() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        // Create a second commit (no note on initial commit)
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_cmd(dir.path(), &["add", "app.py"])?;
+        git_cmd(dir.path(), &["commit", "-m", "add app"])?;
+
+        let _guard = CwdGuard::set(dir.path())?;
+        let result = resolve_parent_base("offload.toml").await?;
+
+        assert!(result.is_none(), "no note on parent means no cached base");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_base_initial_commit() -> Result<()> {
+        let dir = init_temp_repo()?;
+        // Only one commit — no parent
+
+        let _guard = CwdGuard::set(dir.path())?;
+        let result = resolve_parent_base("offload.toml").await?;
+
+        assert!(result.is_none(), "initial commit has no parent");
         Ok(())
     }
 }

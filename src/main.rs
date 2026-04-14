@@ -513,6 +513,7 @@ async fn run_with_caching<P: SandboxProvider>(
     config_path: &Path,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
+    let mut mode2_parent_sha: Option<String> = None;
 
     // Step 1: Handle cache states that bypass or modify prepare
     match cache_state {
@@ -656,8 +657,72 @@ async fn run_with_caching<P: SandboxProvider>(
             // Fall through to full build if base build failed or thin diff failed
         }
 
-        // No cache state (non-checkpoint workflow) or checkpoint with no cached image: full build
-        _ => {}
+        // Mode 2 cache hit: parent has a cached base image, build thin diff on top
+        Some(CacheState::ParentBase {
+            parent_sha,
+            cached_image_id: Some(image_id),
+        }) => {
+            eprintln!(
+                "[cache] Mode 2: using cached parent image from {}",
+                &parent_sha[..8.min(parent_sha.len())]
+            );
+
+            // Try thin diff from parent; on failure, fall through to full build
+            let thin_diff_result = build_thin_diff_image(
+                image_id,
+                parent_sha,
+                &config.offload.sandbox_project_root,
+                Some(&discovery_done),
+            )
+            .await;
+
+            match thin_diff_result {
+                Ok(target_id) => {
+                    provider.set_image_id(target_id);
+                    let all_tests =
+                        discover_with_signal(&config.framework, &config.groups, &discovery_done)
+                            .await?;
+                    if all_tests.is_empty() {
+                        return Ok(None);
+                    }
+                    return dispatch_framework(
+                        config,
+                        &all_tests,
+                        provider,
+                        copy_dirs,
+                        verbose,
+                        tracer,
+                        show_estimated_cost,
+                        fail_fast,
+                    )
+                    .await
+                    .map(Some);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[cache] Thin diff from parent failed, falling back to full build: {}",
+                        e
+                    );
+                    // Fall through to full build
+                }
+            }
+        }
+
+        // Mode 2 cache miss: no cached parent image, do full build and cache on parent
+        Some(CacheState::ParentBase {
+            parent_sha,
+            cached_image_id: None,
+        }) => {
+            eprintln!(
+                "[cache] Mode 2: no cached image for parent {}, will cache after build",
+                &parent_sha[..8.min(parent_sha.len())]
+            );
+            // Fall through to full build; after build, cache the image on parent_sha
+            mode2_parent_sha = Some(parent_sha.clone());
+        }
+
+        // No cache state: full build
+        None => {}
     }
 
     // Full build fallthrough: concurrent discover + prepare
@@ -667,7 +732,7 @@ async fn run_with_caching<P: SandboxProvider>(
         ProviderConfig::Modal(_) => "Modal",
     };
 
-    let (all_tests, _prepare_result) = tokio::try_join!(
+    let (all_tests, prepare_result) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
         async {
             let _span = tracer.span(
@@ -686,6 +751,11 @@ async fn run_with_caching<P: SandboxProvider>(
             .context(format!("Failed to prepare {} provider", label))
         }
     )?;
+
+    // Cache image on parent commit (Mode 2 cache miss)
+    if let (Some(parent_sha), Some(image_id)) = (&mode2_parent_sha, &prepare_result) {
+        write_note_for_commit(parent_sha, image_id, config_path, config).await;
+    }
 
     if all_tests.is_empty() {
         return Ok(None);
@@ -921,17 +991,18 @@ enum CacheState {
         checkpoint_sha: String,
         cached_image: Option<checkpoint::CachedImage>,
     },
+    /// Mode 2: parent commit base image (non-checkpoint mode).
+    ParentBase {
+        parent_sha: String,
+        cached_image_id: Option<String>,
+    },
 }
 
 /// Fetch notes and resolve checkpoint/cache state before provider dispatch.
 ///
 /// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
-/// no `[checkpoint]` section is configured (non-checkpoint workflow has no caching).
+/// this is an initial commit with no parent (non-checkpoint workflow).
 async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<CacheState> {
-    // Non-checkpoint workflow: no caching (notes only make sense for checkpoint images
-    // tied to stable checkpoint commits, not for images built from the working tree)
-    let checkpoint_cfg = config.checkpoint.as_ref()?;
-
     // Check if we're in a git repo
     if git::repo_root().await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
@@ -948,18 +1019,52 @@ async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<Cach
 
     let config_path_str = config_path.to_string_lossy();
 
-    match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
-        Ok(Some(info)) => Some(CacheState::Checkpoint {
-            checkpoint_sha: info.checkpoint_sha,
-            cached_image: info.cached_image,
+    // Mode 1: If we have a [checkpoint] section, use checkpoint-based caching
+    if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
+        return match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
+            Ok(Some(info)) => Some(CacheState::Checkpoint {
+                checkpoint_sha: info.checkpoint_sha,
+                cached_image: info.cached_image,
+            }),
+            Ok(None) => {
+                info!("No checkpoint commit found in ancestor window");
+                None
+            }
+            Err(e) => {
+                warn!("Checkpoint resolution failed: {}", e);
+                None
+            }
+        };
+    }
+
+    // Mode 2: no [checkpoint] config — use parent commit as base
+    let parent_base =
+        match checkpoint::resolve_parent_base(config_path.to_str().unwrap_or("offload.toml")).await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("Parent base resolution failed: {}", e);
+                return None;
+            }
+        };
+    match parent_base {
+        Some((parent_sha, image_id)) => Some(CacheState::ParentBase {
+            parent_sha,
+            cached_image_id: Some(image_id),
         }),
-        Ok(None) => {
-            info!("No checkpoint commit found in ancestor window");
-            None
-        }
-        Err(e) => {
-            warn!("Checkpoint resolution failed: {}", e);
-            None
+        None => {
+            // Check if we have a parent at all (for caching after full build)
+            let parent = match git::parent_sha().await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to get parent SHA: {}", e);
+                    return None;
+                }
+            };
+            parent.map(|parent_sha| CacheState::ParentBase {
+                parent_sha,
+                cached_image_id: None,
+            })
         }
     }
 }
