@@ -242,7 +242,7 @@ where
             tests.iter().partition(|t| t.schedule_individual);
 
         // Normal tests: flat_map as before
-        let normal_instances: Vec<TestInstance<'_>> = normal_tests
+        let normal_instances: Vec<TestInstance> = normal_tests
             .iter()
             .flat_map(|t| {
                 let count = t.retry_count + 1;
@@ -253,7 +253,7 @@ where
         // Individually-scheduled tests: round-robin interleave instances across unique tests
         // Produces [A, B, C, A, B, C, A] instead of [A, A, A, B, B, C]
         // so the scheduler sees them already interleaved and preserves order.
-        let individual_instances: Vec<TestInstance<'_>> = {
+        let individual_instances: Vec<TestInstance> = {
             let max_count = individual_tests
                 .iter()
                 .map(|t| t.retry_count + 1)
