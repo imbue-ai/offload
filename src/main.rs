@@ -273,15 +273,19 @@ fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
 /// When a `.dockerignore` file is present, a `tar` pipeline is used to exclude
 /// the listed patterns. Otherwise falls back to `cp -a`.
 fn snapshot_working_directory() -> Result<tempfile::TempDir> {
+    let start = std::time::Instant::now();
     let snapshot = tempfile::tempdir()
         .context("Failed to create temporary directory for build context snapshot")?;
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
 
+    eprintln!("[snapshot] Reading .dockerignore patterns...");
     let patterns = read_dockerignore_patterns(&cwd);
 
     if patterns.is_empty() {
+        eprintln!("[snapshot] No .dockerignore found, using cp -a");
         // No .dockerignore — use cp -a for a faithful copy that preserves
         // symlinks, permissions, etc.
+        eprintln!("[snapshot] Copying working directory (cp -a)...");
         let status = std::process::Command::new("cp")
             .args(["-a", "--"])
             .arg(format!("{}/.", cwd.display()))
@@ -292,6 +296,7 @@ fn snapshot_working_directory() -> Result<tempfile::TempDir> {
             return Err(anyhow!("cp -a failed with exit code {:?}", status.code()));
         }
     } else {
+        eprintln!("[snapshot] Found {} exclude patterns", patterns.len());
         // Build a tar pipeline that honours .dockerignore exclusions.
         let mut exclude_args = String::new();
         for pat in &patterns {
@@ -304,6 +309,7 @@ fn snapshot_working_directory() -> Result<tempfile::TempDir> {
             shell_words::quote(&cwd.display().to_string()),
             shell_words::quote(&snapshot.path().display().to_string()),
         );
+        eprintln!("[snapshot] Copying working directory (filtered tar)...");
         let status = std::process::Command::new("sh")
             .args(["-c", &cmd])
             .status()
@@ -316,6 +322,12 @@ fn snapshot_working_directory() -> Result<tempfile::TempDir> {
         }
     }
 
+    let elapsed = start.elapsed().as_secs_f64();
+    eprintln!(
+        "[snapshot] Snapshot complete in {:.1}s -> {}",
+        elapsed,
+        snapshot.path().display()
+    );
     info!(
         "Snapshotted working directory into {}",
         snapshot.path().display()
