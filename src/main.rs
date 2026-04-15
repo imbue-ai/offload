@@ -241,28 +241,71 @@ async fn discover_all_tests(
     Ok(all_tests)
 }
 
+/// Read `.dockerignore` patterns from the current directory.
+///
+/// Returns an empty vec if the file does not exist. Skips blank lines and
+/// comments (lines starting with `#`), matching the behaviour of
+/// `read_dockerignore_patterns()` in `modal_sandbox.py`.
+fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
+    let path = cwd.join(".dockerignore");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    contents
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
+}
+
 /// Copy the working directory into a temporary directory for use as build context.
 ///
 /// This produces a frozen snapshot so that files modified by other processes
 /// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
 /// when Modal uploads the context.
-fn snapshot_working_directory() -> Result<tempfile::TempDir> {
+///
+/// If a `.dockerignore` file is present, its patterns are passed as `--exclude`
+/// rules to `rsync` so that large ignored trees (`.git`, `.venv`, etc.) are
+/// never copied, keeping the snapshot fast.
+fn snapshot_working_directory(tracer: &offload::trace::Tracer) -> Result<tempfile::TempDir> {
+    let _span = tracer.span(
+        "snapshot_cwd",
+        "local",
+        offload::trace::PID_LOCAL,
+        offload::trace::TID_MAIN,
+    );
+
     let snapshot = tempfile::tempdir()
         .context("Failed to create temporary directory for build context snapshot")?;
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
-    // Use cp -a for a faithful copy that preserves symlinks, permissions, etc.
-    let status = std::process::Command::new("cp")
-        .args(["-a", "--"])
-        .arg(format!("{}/.", cwd.display()))
-        .arg(snapshot.path())
+
+    let ignore_patterns = read_dockerignore_patterns(&cwd);
+
+    // rsync requires a trailing slash on the source to copy *contents* into dest.
+    let mut src = cwd.as_os_str().to_os_string();
+    src.push("/");
+
+    let mut cmd = std::process::Command::new("rsync");
+    cmd.arg("-a");
+    for pattern in &ignore_patterns {
+        cmd.arg(format!("--exclude={pattern}"));
+    }
+    cmd.arg("--");
+    cmd.arg(&src);
+    cmd.arg(snapshot.path());
+
+    let status = cmd
         .status()
-        .context("Failed to spawn cp for working directory snapshot")?;
+        .context("Failed to spawn rsync for working directory snapshot")?;
     if !status.success() {
-        return Err(anyhow!("cp -a failed with exit code {:?}", status.code()));
+        return Err(anyhow!("rsync failed with exit code {:?}", status.code()));
     }
     info!(
-        "Snapshotted working directory into {}",
-        snapshot.path().display()
+        "Snapshotted working directory into {} (excluded {} .dockerignore pattern(s))",
+        snapshot.path().display(),
+        ignore_patterns.len(),
     );
     Ok(snapshot)
 }
@@ -511,7 +554,7 @@ async fn run_tests(
             let mut provider = DefaultProvider::from_config(p_cfg.clone());
             // Snapshot the working directory so the upload operates on a frozen
             // copy, avoiding races where files are modified during upload.
-            let context_snapshot = snapshot_working_directory()?;
+            let context_snapshot = snapshot_working_directory(&tracer)?;
             let context_dir = context_snapshot.path();
             let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
@@ -555,7 +598,7 @@ async fn run_tests(
             let mut provider = ModalProvider::from_config(p_cfg.clone());
             // Snapshot the working directory so the upload operates on a frozen
             // copy, avoiding races where files are modified during upload.
-            let context_snapshot = snapshot_working_directory()?;
+            let context_snapshot = snapshot_working_directory(&tracer)?;
             let context_dir = context_snapshot.path();
             let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
                 discover_with_signal(&config.framework, &config.groups, &discovery_done),
