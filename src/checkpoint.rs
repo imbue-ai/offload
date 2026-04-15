@@ -54,6 +54,28 @@ pub async fn resolve_parent_base(config_path: &str) -> Result<Option<(String, St
     }
 }
 
+/// Find the nearest checkpoint ancestor SHA without reading git notes.
+///
+/// Walks up to `max_depth` ancestors of HEAD looking for the first commit
+/// that touches any of the configured `build_inputs` paths.
+///
+/// Returns `None` if no checkpoint commit is found within the ancestor window.
+pub async fn find_checkpoint_sha(
+    checkpoint_cfg: &CheckpointConfig,
+    max_depth: usize,
+) -> Result<Option<String>> {
+    let ancestors = git::ancestors(max_depth).await?;
+
+    for sha in &ancestors {
+        let touches = git::commit_touches_paths(sha, &checkpoint_cfg.build_inputs).await?;
+        if touches {
+            return Ok(Some(sha.clone()));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Find the nearest checkpoint ancestor and its cached image information.
 ///
 /// Walks up to `max_depth` ancestors of HEAD looking for the first commit

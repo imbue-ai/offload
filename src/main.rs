@@ -446,6 +446,100 @@ async fn run_with_caching<P: SandboxProvider>(
     let discovery_done = AtomicBool::new(false);
     let mut parent_base_sha: Option<String> = None;
 
+    // --no-cache with [checkpoint]: use checkpoint build procedure without cache.
+    // This still exports a clean tree and builds via context_dir + thin diff,
+    // but skips all note reading/writing.
+    if let Some(checkpoint_cfg) = config.checkpoint.as_ref().filter(|_| no_cache) {
+        // Resolve checkpoint SHA (walks git log + checks build_inputs, no notes)
+        let checkpoint_sha = if git::repo_root().await.is_ok() {
+            match checkpoint::find_checkpoint_sha(checkpoint_cfg, 100).await {
+                Ok(sha) => sha,
+                Err(e) => {
+                    warn!("Checkpoint resolution failed (--no-cache): {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(checkpoint_sha) = checkpoint_sha {
+            eprintln!(
+                "[prepare] --no-cache with checkpoint: building from {} (no cache lookup)",
+                &checkpoint_sha[..8.min(checkpoint_sha.len())]
+            );
+
+            // Export checkpoint tree
+            let tree_dir =
+                tempfile::tempdir().context("failed to create temp dir for checkpoint tree")?;
+            git::export_tree(&checkpoint_sha, tree_dir.path())
+                .await
+                .with_context(|| format!("failed to export tree for {}", checkpoint_sha))?;
+
+            // Build base image from checkpoint source (normal prepare with context_dir)
+            eprintln!("[prepare] Building checkpoint base image (--no-cache)...");
+            let base_image_id = with_retry!(provider.prepare(
+                copy_dir_tuples,
+                no_cache,
+                config.offload.sandbox_init_cmd.as_deref(),
+                None,
+                Some(tree_dir.path()),
+            ))
+            .context("Failed to build checkpoint base image")?;
+
+            // No note writing -- this is --no-cache
+
+            // Build thin diff on top
+            if let Some(base_id) = base_image_id {
+                let (all_tests, thin_diff_result) = tokio::try_join!(
+                    discover_with_signal(&config.framework, &config.groups, &discovery_done),
+                    async {
+                        Ok::<_, anyhow::Error>(
+                            build_thin_diff_image(
+                                &base_id,
+                                &checkpoint_sha,
+                                &config.offload.sandbox_project_root,
+                                Some(&discovery_done),
+                            )
+                            .await,
+                        )
+                    }
+                )?;
+
+                match thin_diff_result {
+                    Ok(target_id) => {
+                        provider.set_image_id(target_id);
+                        if all_tests.is_empty() {
+                            return Ok(None);
+                        }
+                        return dispatch_framework(
+                            config,
+                            &all_tests,
+                            provider,
+                            copy_dirs,
+                            verbose,
+                            tracer,
+                            show_estimated_cost,
+                            fail_fast,
+                        )
+                        .await
+                        .map(Some);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Thin diff failed after --no-cache base build, falling back to full build: {}",
+                            e
+                        );
+                        eprintln!("[prepare] Thin diff failed, falling back to full build");
+                        // Fall through to full build below
+                    }
+                }
+            }
+            // Fall through to full build if base build failed or thin diff failed
+        }
+        // If no checkpoint found, fall through to full build (same as today)
+    }
+
     // Step 1: Handle cache states that bypass or modify prepare
     match cache_state {
         // Checkpoint cache hit: build thin diff on existing base
