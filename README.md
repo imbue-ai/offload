@@ -313,7 +313,7 @@ The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `paths` | list | `["tests"]` | Directories to search for tests |
+| `paths` | list | (none) | Optional directories to search for tests. When omitted, pytest uses its own default discovery |
 | `command` | string | `"python -m pytest"` | Full command prefix for pytest invocation (e.g. `"uv run pytest"`) |
 | `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
 | `test_id_format` | string | `"{name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
