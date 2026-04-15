@@ -444,6 +444,8 @@ async fn run_tests(
     show_estimated_cost: bool,
     fail_fast: bool,
 ) -> Result<()> {
+    let run_start = std::time::Instant::now();
+
     let tracer = if trace {
         offload::trace::Tracer::new()
     } else {
@@ -464,8 +466,23 @@ async fn run_tests(
     );
 
     // Load configuration
+    eprintln!(
+        "[offload] Loading configuration from {}...",
+        config_path.display()
+    );
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    let provider_type = match &config.provider {
+        ProviderConfig::Local(_) => "local",
+        ProviderConfig::Default(_) => "default",
+        ProviderConfig::Modal(_) => "modal",
+    };
+    eprintln!(
+        "[offload] Configuration loaded ({} groups, provider: {})",
+        config.groups.len(),
+        provider_type
+    );
 
     // Apply overrides
     if let Some(parallel) = parallel_override {
@@ -670,6 +687,11 @@ async fn run_tests(
     } else if trace {
         eprintln!("Trace written to {}", trace_path.display());
     }
+
+    eprintln!(
+        "[offload] Total wall time: {:.1}s",
+        run_start.elapsed().as_secs_f64()
+    );
 
     if exit_code != 0 {
         std::process::exit(exit_code);
