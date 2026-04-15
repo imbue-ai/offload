@@ -369,6 +369,8 @@ Failed tests that pass on retry are marked as "flaky" (exit code 2).
 | `output_dir` | string | `"test-results"` | Directory for report files |
 | `junit` | boolean | `true` | Enable JUnit XML output |
 | `junit_file` | string | `"junit.xml"` | Filename for JUnit XML output |
+| `download_globs` | string[] | `[]` | Glob patterns for files to download from sandboxes after each batch |
+| `download_globs_on_failure` | boolean | `false` | When true, only download `download_globs` artifacts for batches that had test failures or errors |
 
 ## Performance Tracing
 

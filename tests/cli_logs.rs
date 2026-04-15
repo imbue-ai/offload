@@ -34,6 +34,7 @@ fn write_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
             junit: true,
             junit_file: "junit.xml".to_string(),
             download_globs: vec![],
+            download_globs_on_failure: false,
         },
         checkpoint: None,
     };
@@ -410,6 +411,7 @@ fn write_cargo_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
             junit: true,
             junit_file: "junit.xml".to_string(),
             download_globs: vec![],
+            download_globs_on_failure: false,
         },
         checkpoint: None,
     };
