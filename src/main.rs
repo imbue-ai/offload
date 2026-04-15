@@ -823,7 +823,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
 
     let framework_config = match framework {
         "pytest" => FrameworkConfig::Pytest(PytestFrameworkConfig {
-            paths: vec![PathBuf::from("tests")],
+            paths: None,
             command: "python -m pytest".into(),
             test_id_format: "{name}".into(),
             ..Default::default()

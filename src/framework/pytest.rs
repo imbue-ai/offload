@@ -101,10 +101,12 @@ impl TestFramework for PytestFramework {
             }
         }
 
-        // Add paths to search
+        // Add paths to search (caller-provided paths take precedence over config)
         let search_paths: Vec<_> = if paths.is_empty() {
             self.config
                 .paths
+                .as_deref()
+                .unwrap_or_default()
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()

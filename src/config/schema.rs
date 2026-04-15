@@ -379,11 +379,11 @@ impl FrameworkConfig {
 /// Configuration for pytest test framework.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PytestFrameworkConfig {
-    /// Directories to search for tests, relative to the working directory.
+    /// Optional directories to search for tests, relative to the working directory.
     ///
-    /// Default: `["tests"]`
-    #[serde(default = "default_test_paths")]
-    pub paths: Vec<PathBuf>,
+    /// When omitted, pytest uses its own default discovery (current directory or testpaths from pytest.ini).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<PathBuf>>,
 
     /// Full command prefix for invoking pytest (e.g. `"uv run pytest"`).
     ///
@@ -404,10 +404,6 @@ pub struct PytestFrameworkConfig {
     /// Default: `"{name}"` (pytest typically includes full path in name)
     #[serde(default = "default_pytest_test_id_format")]
     pub test_id_format: String,
-}
-
-fn default_test_paths() -> Vec<PathBuf> {
-    vec![PathBuf::from("tests")]
 }
 
 fn default_pytest_command() -> String {
@@ -713,7 +709,7 @@ mod tests {
                 ..Default::default()
             }),
             framework: FrameworkConfig::Pytest(PytestFrameworkConfig {
-                paths: vec![PathBuf::from("tests")],
+                paths: None,
                 command: "python -m pytest".into(),
                 test_id_format: "{name}".into(),
                 ..Default::default()
@@ -924,7 +920,7 @@ mod tests {
         if let FrameworkConfig::Pytest(ref pytest) = config.framework {
             assert_eq!(pytest.command, "python -m pytest");
             assert!(pytest.run_args.is_none());
-            assert_eq!(pytest.paths, vec![PathBuf::from("tests")]);
+            assert_eq!(pytest.paths, None);
         } else {
             return Err("Expected Pytest framework".into());
         }
