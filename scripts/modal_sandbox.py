@@ -280,14 +280,15 @@ def _build_final_image(
     copy_dirs: tuple[str, ...],
     ignore_patterns: list[str],
     sandbox_init_cmd: str | None = None,
+    context_dir: str = ".",
 ) -> str:
     """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
     final_img = base_img
 
     if include_cwd:
-        logger.info("Adding current directory as /app...")
+        logger.info("Adding %s as /app...", context_dir)
         final_img = final_img.add_local_dir(
-            ".", "/app", copy=True, ignore=ignore_patterns
+            context_dir, "/app", copy=True, ignore=ignore_patterns
         )
 
     # Add user-specified directories
@@ -408,6 +409,7 @@ def prepare(
                 copy_dirs,
                 ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
+                context_dir=context_dir,
             )
         except Exception as e:
             # Cached image no longer exists on Modal - rebuild from scratch
@@ -424,6 +426,7 @@ def prepare(
                 copy_dirs,
                 ignore_patterns,
                 sandbox_init_cmd=sandbox_init_cmd,
+                context_dir=context_dir,
             )
 
     sys.stdout.write("%s\n" % image_id)
