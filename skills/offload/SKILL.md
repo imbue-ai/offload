@@ -42,6 +42,8 @@ offload run --env KEY=VALUE                 # set sandbox env var (repeatable)
 offload run --no-cache                      # force fresh image build
 offload run --collect-only                  # discover tests without running
 offload run --show-estimated-cost           # show sandbox cost after run
+offload run --fail-fast                     # stop on first test failure
+offload run --trace                         # emit Perfetto trace to {output_dir}/trace.json
 offload run -c path/to/offload.toml         # use alternate config
 ```
 
