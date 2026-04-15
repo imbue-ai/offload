@@ -112,7 +112,7 @@ junit_file = "junit.xml"
 
 ```toml
 [framework]
-type = "cargo"
+type = "nextest"
 ```
 
 **Optional: `sandbox_init_cmd` for build-time setup**
@@ -170,7 +170,7 @@ Configuration reference for fields used above:
 
 **`[framework]`** (pytest)
 - `paths`: Directories to search for tests (default: `["tests"]`)
-- `command`: Full command prefix for pytest invocation (e.g. `"uv run pytest"`). Replaces the legacy `python`/`extra_args` fields
+- `command`: Full command prefix for pytest invocation (e.g. `"uv run pytest"`)
 
 **`[groups.<name>]`**
 - `retry_count`: Number of retries for failed tests (0 = no retries, 1 = catches transient failures)
