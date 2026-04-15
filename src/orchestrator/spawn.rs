@@ -141,7 +141,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
-                on_failure_only: cfg.config.report.download_globs_on_failure,
+                on_failure_only: cfg.config.report.download_globs_failure_only,
             },
         };
         let mut runner = TestRunner::new(
