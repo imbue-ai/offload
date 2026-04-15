@@ -206,7 +206,7 @@ Generate a new `offload.toml` configuration file.
 
 | Flag | Description |
 |------|-------------|
-| `-p, --provider TYPE` | Provider type: `local`, `default` (default: `local`) |
+| `-p, --provider TYPE` | Provider type: `local`, `default` (default: `local`). The `modal` provider is not available in `offload init`; configure it manually in `offload.toml` |
 | `-f, --framework TYPE` | Framework type: `pytest`, `nextest`, `vitest`, `default` (default: `pytest`) |
 
 ### `offload logs`
@@ -369,6 +369,7 @@ Failed tests that pass on retry are marked as "flaky" (exit code 2).
 | `output_dir` | string | `"test-results"` | Directory for report files |
 | `junit` | boolean | `true` | Enable JUnit XML output |
 | `junit_file` | string | `"junit.xml"` | Filename for JUnit XML output |
+| `download_globs` | list | `[]` | Glob patterns for files to download from sandboxes after each batch (e.g. `["*.xml", "coverage/*"]`). Files are stored under `{output_dir}/{sandbox_id}/{batch_id}/` |
 
 ## Performance Tracing
 
