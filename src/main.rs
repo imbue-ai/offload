@@ -478,14 +478,22 @@ async fn run_with_caching<P: SandboxProvider>(
 
             // Build base image from checkpoint source (normal prepare with context_dir)
             eprintln!("[prepare] Building checkpoint base image (--no-cache)...");
-            let base_image_id = with_retry!(provider.prepare(
-                copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-                None,
-                Some(tree_dir.path()),
-            ))
-            .context("Failed to build checkpoint base image")?;
+            let base_image_id = {
+                let _span = tracer.span(
+                    "checkpoint_base_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                with_retry!(provider.prepare(
+                    copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                    None,
+                    Some(tree_dir.path()),
+                ))
+                .context("Failed to build checkpoint base image")?
+            };
 
             // No note writing -- this is --no-cache
 
@@ -494,6 +502,12 @@ async fn run_with_caching<P: SandboxProvider>(
                 let (all_tests, thin_diff_result) = tokio::try_join!(
                     discover_with_signal(&config.framework, &config.groups, &discovery_done),
                     async {
+                        let _span = tracer.span(
+                            "thin_diff",
+                            "local",
+                            offload::trace::PID_LOCAL,
+                            offload::trace::TID_MAIN,
+                        );
                         Ok::<_, anyhow::Error>(
                             build_thin_diff_image(
                                 &base_id,
@@ -621,14 +635,22 @@ async fn run_with_caching<P: SandboxProvider>(
 
             // Build base image from checkpoint source (normal prepare with context_dir)
             eprintln!("[prepare] Building checkpoint base image...");
-            let base_image_id = with_retry!(provider.prepare(
-                copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-                None,
-                Some(tree_dir.path()),
-            ))
-            .context("Failed to build checkpoint base image")?;
+            let base_image_id = {
+                let _span = tracer.span(
+                    "checkpoint_base_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                with_retry!(provider.prepare(
+                    copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                    None,
+                    Some(tree_dir.path()),
+                ))
+                .context("Failed to build checkpoint base image")?
+            };
 
             if let Some(ref base_id) = base_image_id {
                 write_note_for_commit(checkpoint_sha, base_id, config_path, config).await;
@@ -639,6 +661,12 @@ async fn run_with_caching<P: SandboxProvider>(
                 let (all_tests, thin_diff_result) = tokio::try_join!(
                     discover_with_signal(&config.framework, &config.groups, &discovery_done),
                     async {
+                        let _span = tracer.span(
+                            "thin_diff",
+                            "local",
+                            offload::trace::PID_LOCAL,
+                            offload::trace::TID_MAIN,
+                        );
                         Ok::<_, anyhow::Error>(
                             build_thin_diff_image(
                                 &base_id,
@@ -693,13 +721,21 @@ async fn run_with_caching<P: SandboxProvider>(
             );
 
             // Try thin diff from parent; on failure, fall through to full build
-            let thin_diff_result = build_thin_diff_image(
-                image_id,
-                parent_sha,
-                &config.offload.sandbox_project_root,
-                Some(&discovery_done),
-            )
-            .await;
+            let thin_diff_result = {
+                let _span = tracer.span(
+                    "thin_diff",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                build_thin_diff_image(
+                    image_id,
+                    parent_sha,
+                    &config.offload.sandbox_project_root,
+                    Some(&discovery_done),
+                )
+                .await
+            };
 
             match thin_diff_result {
                 Ok(target_id) => {
@@ -918,6 +954,12 @@ async fn run_tests(
     // We fetch notes and resolve checkpoint info upfront so the provider arms
     // can use it during the concurrent discover+prepare phase.
     let cache_state = if !no_cache && !matches!(&config.provider, ProviderConfig::Local(_)) {
+        let _span = tracer.span(
+            "resolve_cache_state",
+            "local",
+            offload::trace::PID_LOCAL,
+            offload::trace::TID_MAIN,
+        );
         resolve_cache_state(config_path, &config).await
     } else {
         None
