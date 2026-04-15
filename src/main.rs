@@ -653,7 +653,7 @@ async fn run_with_caching<P: SandboxProvider>(
             };
 
             if let Some(ref base_id) = base_image_id {
-                write_note_for_commit(checkpoint_sha, base_id, config_path, config).await;
+                write_note_for_commit(checkpoint_sha, base_id, config_path).await;
             }
 
             // Now build thin diff on top
@@ -815,7 +815,7 @@ async fn run_with_caching<P: SandboxProvider>(
 
     // Cache image on parent commit (parent-commit cache miss)
     if let (Some(parent_sha), Some(image_id)) = (&parent_base_sha, &prepare_result) {
-        write_note_for_commit(parent_sha, image_id, config_path, config).await;
+        write_note_for_commit(parent_sha, image_id, config_path).await;
     }
 
     if all_tests.is_empty() {
@@ -1137,12 +1137,7 @@ async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<Cach
 }
 
 /// Write a git note for an image on a specific commit (best-effort).
-async fn write_note_for_commit(
-    commit_sha: &str,
-    image_id: &str,
-    config_path: &Path,
-    config: &Config,
-) {
+async fn write_note_for_commit(commit_sha: &str, image_id: &str, config_path: &Path) {
     let config_path_str = config_path.to_string_lossy();
 
     let config_key = match git::repo_root().await {
@@ -1159,29 +1154,11 @@ async fn write_note_for_commit(
         }
     };
 
-    let build_inputs_hash = if let Some(ref checkpoint_cfg) = config.checkpoint {
-        match git::repo_root().await {
-            Ok(root) => {
-                match git::compute_build_inputs_hash(&root, &checkpoint_cfg.build_inputs).await {
-                    Ok(hash) => Some(hash),
-                    Err(e) => {
-                        warn!("Failed to compute build inputs hash: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-
     let mut contents = git::NoteContents::new();
     contents.insert(
         config_key,
         git::ImageEntry {
             image_id: image_id.to_string(),
-            build_inputs_hash,
         },
     );
 
@@ -1268,30 +1245,6 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
 
     match cached_entry {
         Some(entry) => {
-            // Compute current build inputs hash
-            let current_hash =
-                git::compute_build_inputs_hash(&repo_root, &checkpoint_cfg.build_inputs).await;
-
-            let hash_display = match (&current_hash, &entry.build_inputs_hash) {
-                (Ok(current), Some(cached)) if current == cached => {
-                    format!("{} (matches cached)", &current[..8.min(current.len())])
-                }
-                (Ok(current), Some(cached)) => {
-                    format!(
-                        "{} (MISMATCH: cached {})",
-                        &current[..8.min(current.len())],
-                        &cached[..8.min(cached.len())]
-                    )
-                }
-                (Ok(current), None) => {
-                    format!(
-                        "{} (no cached hash to compare)",
-                        &current[..8.min(current.len())]
-                    )
-                }
-                (Err(_), _) => "(failed to compute)".to_string(),
-            };
-
             // Determine run mode
             let run_mode = if checkpoint_sha == head {
                 "use checkpoint image directly (HEAD is the checkpoint)".to_string()
@@ -1308,7 +1261,6 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
                 short_checkpoint, checkpoint_distance
             );
             println!("Cached image:       {}", entry.image_id);
-            println!("Build inputs hash:  {}", hash_display);
             println!("Next run mode:      {}", run_mode);
         }
         None => {

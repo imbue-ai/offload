@@ -15,8 +15,6 @@ use crate::git;
 pub struct CachedImage {
     /// The cached image identifier.
     pub image_id: String,
-    /// The build inputs hash stored alongside the image, if any.
-    pub build_inputs_hash: Option<String>,
 }
 
 /// Information about a resolved checkpoint commit.
@@ -127,7 +125,6 @@ async fn read_cached_image_for_commit(
     match contents.get(config_key) {
         Some(entry) if !entry.image_id.is_empty() => Ok(Some(CachedImage {
             image_id: entry.image_id.clone(),
-            build_inputs_hash: entry.build_inputs_hash.clone(),
         })),
         _ => Ok(None),
     }
@@ -321,7 +318,6 @@ mod tests {
             "offload.toml".to_string(),
             ImageEntry {
                 image_id: "im-cached123".to_string(),
-                build_inputs_hash: Some("abc123hash".to_string()),
             },
         );
         write_note_in(dir.path(), &checkpoint_sha, &contents)?;
@@ -342,7 +338,6 @@ mod tests {
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
         let cached = info.cached_image.context("should have cached image")?;
         assert_eq!(cached.image_id, "im-cached123");
-        assert_eq!(cached.build_inputs_hash.as_deref(), Some("abc123hash"));
         Ok(())
     }
 
@@ -359,7 +354,6 @@ mod tests {
             "offload.toml".to_string(),
             ImageEntry {
                 image_id: "im-parent-cached".to_string(),
-                build_inputs_hash: None,
             },
         );
         write_note_in(dir.path(), &initial_sha, &contents)?;

@@ -13,8 +13,6 @@ pub const NOTES_REF: &str = "refs/notes/offload-images";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageEntry {
     pub image_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_inputs_hash: Option<String>,
 }
 
 /// A note is a JSON object keyed by TOML config file path.
@@ -99,68 +97,6 @@ pub async fn parent_sha() -> Result<Option<String>> {
 pub async fn repo_root() -> Result<PathBuf> {
     let root = run_git(&["rev-parse", "--show-toplevel"]).await?;
     Ok(PathBuf::from(root))
-}
-
-/// Compute a deterministic hash of the given files using `git hash-object`.
-///
-/// Files are sorted lexicographically. For each file, a header
-/// `FILE:<path>:<len>\n` is prepended followed by the file contents.
-/// The concatenated result is piped to `git hash-object --stdin`.
-pub async fn compute_build_inputs_hash(repo_root: &Path, files: &[String]) -> Result<String> {
-    let repo_root = repo_root.to_path_buf();
-    let mut sorted_files = files.to_vec();
-    sorted_files.sort();
-
-    let payload = tokio::task::spawn_blocking({
-        let repo_root = repo_root.clone();
-        let sorted_files = sorted_files.clone();
-        move || {
-            let mut buf = Vec::new();
-            for file in &sorted_files {
-                let path = repo_root.join(file);
-                let contents = std::fs::read(&path)
-                    .with_context(|| format!("build input file not found: {}", path.display()))?;
-                let header = format!("FILE:{}:{}\n", file, contents.len());
-                buf.extend_from_slice(header.as_bytes());
-                buf.extend_from_slice(&contents);
-            }
-            Ok::<Vec<u8>, anyhow::Error>(buf)
-        }
-    })
-    .await??;
-
-    let repo_root_owned = repo_root.clone();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Write;
-        let mut child = std::process::Command::new("git")
-            .args(["hash-object", "--stdin"])
-            .current_dir(&repo_root_owned)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .context("failed to spawn git hash-object")?;
-
-        if let Some(ref mut stdin) = child.stdin {
-            stdin
-                .write_all(&payload)
-                .context("failed to write to git hash-object stdin")?;
-        }
-        // Drop stdin to close it so git can finish
-        drop(child.stdin.take());
-
-        let output = child
-            .wait_with_output()
-            .context("failed to wait for git hash-object")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("git hash-object failed: {}", stderr.trim());
-        }
-        let hash =
-            String::from_utf8(output.stdout).context("git hash-object output was not UTF-8")?;
-        Ok(hash.trim().to_string())
-    })
-    .await?
 }
 
 /// Read the offload-images note for a given commit.
@@ -492,77 +428,10 @@ mod tests {
     fn test_image_entry_json_round_trip() -> Result<()> {
         let entry = ImageEntry {
             image_id: "im-abc123".to_string(),
-            build_inputs_hash: Some("deadbeef".to_string()),
         };
         let json = serde_json::to_string(&entry)?;
         let parsed: ImageEntry = serde_json::from_str(&json)?;
         assert_eq!(parsed.image_id, entry.image_id);
-        assert_eq!(parsed.build_inputs_hash, entry.build_inputs_hash);
-
-        // Also test with None hash
-        let entry_no_hash = ImageEntry {
-            image_id: "im-xyz".to_string(),
-            build_inputs_hash: None,
-        };
-        let json2 = serde_json::to_string(&entry_no_hash)?;
-        assert!(!json2.contains("build_inputs_hash"));
-        let parsed2: ImageEntry = serde_json::from_str(&json2)?;
-        assert!(parsed2.build_inputs_hash.is_none());
-        Ok(())
-    }
-
-    /// Helper: create a temp dir with `git init` (no commits needed).
-    fn init_git_dir() -> Result<tempfile::TempDir> {
-        let dir = tempfile::tempdir()?;
-        let output = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()?;
-        if !output.status.success() {
-            bail!("git init failed");
-        }
-        Ok(dir)
-    }
-
-    #[tokio::test]
-    async fn test_build_inputs_hash_deterministic() -> Result<()> {
-        let dir = init_git_dir()?;
-
-        std::fs::write(dir.path().join("a.txt"), "hello world")?;
-        std::fs::write(dir.path().join("b.txt"), "goodbye")?;
-
-        let files = vec!["a.txt".to_string(), "b.txt".to_string()];
-        let hash1 = compute_build_inputs_hash(dir.path(), &files).await?;
-        let hash2 = compute_build_inputs_hash(dir.path(), &files).await?;
-        assert_eq!(hash1, hash2);
-        assert!(!hash1.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_build_inputs_hash_content_sensitive() -> Result<()> {
-        let dir = init_git_dir()?;
-
-        let file_a = dir.path().join("a.txt");
-        std::fs::write(&file_a, "version 1")?;
-
-        let files = vec!["a.txt".to_string()];
-        let hash1 = compute_build_inputs_hash(dir.path(), &files).await?;
-
-        std::fs::write(&file_a, "version 2")?;
-        let hash2 = compute_build_inputs_hash(dir.path(), &files).await?;
-
-        assert_ne!(hash1, hash2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_build_inputs_hash_missing_file_errors() -> Result<()> {
-        let dir = init_git_dir()?;
-
-        let files = vec!["nonexistent.txt".to_string()];
-        let result = compute_build_inputs_hash(dir.path(), &files).await;
-        assert!(result.is_err());
         Ok(())
     }
 
@@ -614,7 +483,6 @@ mod tests {
             "offload.toml".to_string(),
             ImageEntry {
                 image_id: "im-test123".to_string(),
-                build_inputs_hash: Some("abc123".to_string()),
             },
         );
 
@@ -640,7 +508,6 @@ mod tests {
             "config-a.toml".to_string(),
             ImageEntry {
                 image_id: "im-aaa".to_string(),
-                build_inputs_hash: None,
             },
         );
         write_note_in(dir.path(), &sha, &contents_a).await?;
@@ -651,7 +518,6 @@ mod tests {
             "config-b.toml".to_string(),
             ImageEntry {
                 image_id: "im-bbb".to_string(),
-                build_inputs_hash: Some("hash-b".to_string()),
             },
         );
         write_note_in(dir.path(), &sha, &contents_b).await?;
