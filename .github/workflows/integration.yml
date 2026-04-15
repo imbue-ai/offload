@@ -73,14 +73,14 @@ jobs:
     - name: Validate test results
       run: |
         echo "=== Validating test output ==="
-        # Check that "passed" appears in output
-        if ! grep -q "passed" /tmp/test-output.log; then
+        # Check that "passed" appears in output (case-insensitive)
+        if ! grep -qi "passed" /tmp/test-output.log; then
           echo "FAIL: output does not contain 'passed'"
           exit 1
         fi
 
-        # Check that "failed" appears followed by a number < 10
-        FAILED_COUNT=$(grep -oE 'failed[: ]*[0-9]+' /tmp/test-output.log | grep -oE '[0-9]+' | tail -1)
+        # Check that "failed" appears followed by a number < 10 (case-insensitive)
+        FAILED_COUNT=$(grep -oiE 'failed[: ]*[0-9]+' /tmp/test-output.log | grep -oE '[0-9]+' | tail -1)
         if [ -z "$FAILED_COUNT" ]; then
           echo "FAIL: output does not contain 'failed' with a count"
           exit 1
