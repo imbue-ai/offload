@@ -22,13 +22,6 @@ pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 
-/// Maximum expected duration for a single batch of tests.
-///
-/// Batches produced by LPT scheduling will not exceed this duration
-/// (unless a single test already exceeds it). This keeps batches
-/// small enough for fast feedback and efficient retry granularity.
-const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
-
 /// Aggregated results of an entire test run.
 ///
 /// Contains summary statistics and individual test results. This is the
@@ -316,7 +309,6 @@ where
             &tests_to_run,
             &durations,
             &group_to_default_duration,
-            Some(MAX_BATCH_DURATION),
         );
         drop(_sched_span);
 

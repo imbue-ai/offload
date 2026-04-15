@@ -67,15 +67,8 @@ impl Batch {
         self.tests.is_empty()
     }
 
-    fn would_fit(
-        &self,
-        test_id_len: usize,
-        duration: Duration,
-        max_batch_duration: Option<Duration>,
-    ) -> bool {
-        self.is_empty()
-            || (self.command_len + test_id_len <= MAX_BATCH_COMMAND_LEN
-                && max_batch_duration.is_none_or(|cap| self.load + duration <= cap))
+    fn would_fit(&self, test_id_len: usize) -> bool {
+        self.is_empty() || (self.command_len + test_id_len <= MAX_BATCH_COMMAND_LEN)
     }
 }
 
@@ -103,10 +96,6 @@ impl Scheduler {
     /// Batches are sorted by total duration descending, so the heaviest batch
     /// is first. This ensures it gets scheduled first with Modal.
     ///
-    /// When `max_batch_duration` is set, batches that would exceed the cap are
-    /// not eligible for assignment, and new batches are created as needed. This
-    /// means the total number of batches may exceed `max_parallel`.
-    ///
     /// # Arguments
     ///
     /// * `max_parallel` - Maximum number of parallel batches/sandboxes.
@@ -116,14 +105,11 @@ impl Scheduler {
     ///   Tests not in the map use the per-group average from `group_to_default_duration`.
     /// * `group_to_default_duration` - Per-group average duration for tests without historical data.
     ///   Falls back to 1 second if the group has no entry.
-    /// * `max_batch_duration` - Optional cap on the total duration of each batch.
-    ///   A single test that exceeds the cap is still placed alone in its own batch.
     pub fn new(
         max_parallel: usize,
         tests: &[TestInstance],
         durations: &HashMap<String, Duration>,
         group_to_default_duration: &HashMap<String, Duration>,
-        max_batch_duration: Option<Duration>,
     ) -> Self {
         let max_parallel = max_parallel.max(1);
 
@@ -201,10 +187,7 @@ impl Scheduler {
             let test_id = test.id();
 
             let target_idx = (0..batches.len())
-                .filter(|&i| {
-                    !batches[i].contains(test_id)
-                        && batches[i].would_fit(test_id.len(), duration, max_batch_duration)
-                })
+                .filter(|&i| !batches[i].contains(test_id) && batches[i].would_fit(test_id.len()))
                 .min_by_key(|&i| batches[i].load);
 
             let idx = target_idx.unwrap_or_else(|| {
@@ -343,8 +326,6 @@ mod tests {
     use super::*;
     use crate::framework::TestRecord;
 
-    const MAX_BATCH_DURATION: Duration = Duration::from_secs(10);
-
     async fn drain_batches(scheduler: &Scheduler) -> Vec<Vec<TestInstance>> {
         let mut batches = Vec::new();
         while let Ok(Some(batch)) =
@@ -357,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_schedule_empty() {
-        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new(), None);
+        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new());
         assert_eq!(scheduler.batch_count(), 0);
     }
 
@@ -375,7 +356,7 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // With LPT:
@@ -405,7 +386,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Each test in its own batch (3 workers, 3 tests)
@@ -428,7 +409,7 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
@@ -450,7 +431,7 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Each instance of test_a must be in a different batch
@@ -483,7 +464,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Verify no batch contains duplicate test IDs
@@ -512,7 +493,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Each instance must be in a separate batch
@@ -520,129 +501,6 @@ mod tests {
         for batch in &batches {
             assert_eq!(batch.len(), 1);
             assert_eq!(batch[0].id(), "test_a");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_schedule_respects_max_batch_duration() {
-        let records = [
-            TestRecord::new("test_a", "test-group"),
-            TestRecord::new("test_b", "test-group"),
-            TestRecord::new("test_c", "test-group"),
-            TestRecord::new("test_d", "test-group"),
-        ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-
-        let mut durations = HashMap::new();
-        durations.insert("test_a".to_string(), Duration::from_secs(6));
-        durations.insert("test_b".to_string(), Duration::from_secs(6));
-        durations.insert("test_c".to_string(), Duration::from_secs(3));
-        durations.insert("test_d".to_string(), Duration::from_secs(3));
-
-        // With 10s cap: test_a (6s) + test_c (3s) = 9s OK, test_b (6s) + test_d (3s) = 9s OK
-        let scheduler = Scheduler::new(
-            2,
-            &tests,
-            &durations,
-            &HashMap::new(),
-            Some(MAX_BATCH_DURATION),
-        );
-        let batches = drain_batches(&scheduler).await;
-
-        // Each batch total should be <= MAX_BATCH_DURATION
-        for batch in &batches {
-            let total: Duration = batch
-                .iter()
-                .map(|t| {
-                    durations
-                        .get(t.id())
-                        .copied()
-                        .unwrap_or(Duration::from_secs(1))
-                })
-                .sum();
-            assert!(
-                total <= MAX_BATCH_DURATION,
-                "Batch duration {total:?} exceeds cap"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_schedule_long_test_gets_own_batch() -> anyhow::Result<()> {
-        let records = [
-            TestRecord::new("slow_test", "test-group"),
-            TestRecord::new("fast_test", "test-group"),
-        ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-
-        let mut durations = HashMap::new();
-        durations.insert("slow_test".to_string(), Duration::from_secs(15));
-        durations.insert("fast_test".to_string(), Duration::from_secs(2));
-
-        // slow_test exceeds the cap on its own, but that's fine — single test in batch
-        let scheduler = Scheduler::new(
-            2,
-            &tests,
-            &durations,
-            &HashMap::new(),
-            Some(MAX_BATCH_DURATION),
-        );
-        let batches = drain_batches(&scheduler).await;
-
-        assert_eq!(batches.len(), 2);
-        // slow_test should be alone in its batch
-        let slow_batch = batches
-            .iter()
-            .find(|b| b.iter().any(|t| t.id() == "slow_test"))
-            .ok_or_else(|| anyhow::anyhow!("slow_test batch not found"))?;
-        assert_eq!(slow_batch.len(), 1);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_schedule_creates_extra_batches_for_duration_cap() {
-        // 5 tests of 3s each, max_parallel=2, cap=10s
-        // Can fit 3 tests per batch (9s < 10s), so need at least 2 batches
-        // But only 2 workers, so tests get split: batch 0 = 3 tests (9s), batch 1 = 2 tests (6s)
-        let records: Vec<_> = (0..7)
-            .map(|i| TestRecord::new(format!("test_{}", i), "test-group"))
-            .collect();
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-
-        let mut durations = HashMap::new();
-        for i in 0..7 {
-            durations.insert(format!("test_{}", i), Duration::from_secs(4));
-        }
-
-        // 7 tests * 4s = 28s total. Cap 10s means max 2 tests per batch (8s).
-        // With 2 initial workers, need at least 4 batches (7 tests / 2 per batch)
-        let scheduler = Scheduler::new(
-            2,
-            &tests,
-            &durations,
-            &HashMap::new(),
-            Some(MAX_BATCH_DURATION),
-        );
-        let batches = drain_batches(&scheduler).await;
-
-        assert!(
-            batches.len() > 2,
-            "Should create more batches than max_parallel"
-        );
-        for batch in &batches {
-            let total: Duration = batch
-                .iter()
-                .map(|t| {
-                    durations
-                        .get(t.id())
-                        .copied()
-                        .unwrap_or(Duration::from_secs(1))
-                })
-                .sum();
-            assert!(
-                total <= MAX_BATCH_DURATION,
-                "Batch duration {total:?} exceeds cap"
-            );
         }
     }
 
@@ -656,7 +514,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Two tests that each use >half the command length budget must be in separate batches
@@ -673,7 +531,7 @@ mod tests {
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
@@ -694,7 +552,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test must be alone in its batch
@@ -729,7 +587,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test in its own batch, order preserved
@@ -754,7 +612,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new());
         let batches = drain_batches(&scheduler).await;
 
         // Individually-scheduled batches come first
@@ -782,7 +640,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(7));
 
         // 1 worker => both tests in one batch with load = 3 + 7 = 10s
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
 
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
@@ -803,7 +661,7 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(10));
 
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
 
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
@@ -842,7 +700,7 @@ mod tests {
 
         // 1 worker => all 4 tests in one batch, estimated_load = 4ms
         // requeue_after = 2 * 4ms = 8ms — sleep of 50ms will exceed that
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
 
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
@@ -884,7 +742,7 @@ mod tests {
         durations.insert("test_a".to_string(), Duration::from_millis(1));
 
         // 1 worker, 1 test, estimated_load = 1ms, requeue_after = 2ms
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new(), None);
+        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
 
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
