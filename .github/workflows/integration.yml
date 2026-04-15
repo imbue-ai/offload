@@ -59,23 +59,28 @@ jobs:
         uv tool install -e libs/mngr
 
     - name: Run integration test
+      id: run-tests
+      continue-on-error: true
       working-directory: mngr
       env:
         MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
         MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       run: |
         source .venv/bin/activate
-        LOGFILE=$(mktemp)
-        LAST_COMMIT_SHA=${{ env.MNGR_REF }} just test-offload 2>&1 | tee "$LOGFILE" || true
+        LAST_COMMIT_SHA=${{ env.MNGR_REF }} stdbuf -oL just test-offload -v 2>&1 | stdbuf -oL tee /tmp/test-output.log
+        echo "EXIT_CODE=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
 
+    - name: Validate test results
+      run: |
+        echo "=== Validating test output ==="
         # Check that "passed" appears in output
-        if ! grep -q "passed" "$LOGFILE"; then
+        if ! grep -q "passed" /tmp/test-output.log; then
           echo "FAIL: output does not contain 'passed'"
           exit 1
         fi
 
         # Check that "failed" appears followed by a number < 10
-        FAILED_COUNT=$(grep -oE 'failed[: ]*[0-9]+' "$LOGFILE" | grep -oE '[0-9]+' | tail -1)
+        FAILED_COUNT=$(grep -oE 'failed[: ]*[0-9]+' /tmp/test-output.log | grep -oE '[0-9]+' | tail -1)
         if [ -z "$FAILED_COUNT" ]; then
           echo "FAIL: output does not contain 'failed' with a count"
           exit 1
