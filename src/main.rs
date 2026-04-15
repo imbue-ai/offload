@@ -241,25 +241,81 @@ async fn discover_all_tests(
     Ok(all_tests)
 }
 
+/// Read `.dockerignore` patterns from the given directory.
+///
+/// Returns an empty Vec if the file does not exist. Lines starting with `#`
+/// and empty lines are skipped. Leading and trailing `/` are stripped from
+/// each pattern so they work with `tar --exclude`.
+fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
+    let path = cwd.join(".dockerignore");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let l = l.strip_suffix('/').unwrap_or(l);
+            let l = l.strip_prefix('/').unwrap_or(l);
+            l.to_string()
+        })
+        .collect()
+}
+
 /// Copy the working directory into a temporary directory for use as build context.
 ///
 /// This produces a frozen snapshot so that files modified by other processes
 /// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
 /// when Modal uploads the context.
+///
+/// When a `.dockerignore` file is present, a `tar` pipeline is used to exclude
+/// the listed patterns. Otherwise falls back to `cp -a`.
 fn snapshot_working_directory() -> Result<tempfile::TempDir> {
     let snapshot = tempfile::tempdir()
         .context("Failed to create temporary directory for build context snapshot")?;
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
-    // Use cp -a for a faithful copy that preserves symlinks, permissions, etc.
-    let status = std::process::Command::new("cp")
-        .args(["-a", "--"])
-        .arg(format!("{}/.", cwd.display()))
-        .arg(snapshot.path())
-        .status()
-        .context("Failed to spawn cp for working directory snapshot")?;
-    if !status.success() {
-        return Err(anyhow!("cp -a failed with exit code {:?}", status.code()));
+
+    let patterns = read_dockerignore_patterns(&cwd);
+
+    if patterns.is_empty() {
+        // No .dockerignore — use cp -a for a faithful copy that preserves
+        // symlinks, permissions, etc.
+        let status = std::process::Command::new("cp")
+            .args(["-a", "--"])
+            .arg(format!("{}/.", cwd.display()))
+            .arg(snapshot.path())
+            .status()
+            .context("Failed to spawn cp for working directory snapshot")?;
+        if !status.success() {
+            return Err(anyhow!("cp -a failed with exit code {:?}", status.code()));
+        }
+    } else {
+        // Build a tar pipeline that honours .dockerignore exclusions.
+        let mut exclude_args = String::new();
+        for pat in &patterns {
+            exclude_args.push_str(" --exclude=");
+            exclude_args.push_str(&shell_words::quote(pat));
+        }
+        let cmd = format!(
+            "tar cf -{} -C {} . | tar xf - -C {}",
+            exclude_args,
+            shell_words::quote(&cwd.display().to_string()),
+            shell_words::quote(&snapshot.path().display().to_string()),
+        );
+        let status = std::process::Command::new("sh")
+            .args(["-c", &cmd])
+            .status()
+            .context("Failed to spawn tar pipeline for working directory snapshot")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "tar snapshot pipeline failed with exit code {:?}",
+                status.code()
+            ));
+        }
     }
+
     info!(
         "Snapshotted working directory into {}",
         snapshot.path().display()
