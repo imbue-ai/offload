@@ -9,7 +9,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::orchestrator::completion::SharedCompletionTracker;
+use crate::orchestrator::completion::{
+    SharedCompletionTracker, SharedDecidedFlags, SharedRunningBatchRegistry, SharedTestIndex,
+};
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
@@ -57,6 +59,9 @@ pub struct RunnerConfig {
     pub tracker: SharedCompletionTracker,
     pub cancellation_token: CancellationToken,
     pub artifacts: ArtifactConfig,
+    pub decided_flags: SharedDecidedFlags,
+    pub test_index: SharedTestIndex,
+    pub running_batch_registry: SharedRunningBatchRegistry,
 }
 
 /// Executes tests within a single sandbox.
@@ -88,6 +93,12 @@ pub struct TestRunner<'a, S, D> {
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
     tracker: SharedCompletionTracker,
+    /// Lock-free decided-status flags indexed by numeric test ID.
+    decided_flags: SharedDecidedFlags,
+    /// Maps string test IDs to numeric indices.
+    test_index: SharedTestIndex,
+    /// Registry of running batches for per-batch cancellation.
+    running_batch_registry: SharedRunningBatchRegistry,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -141,6 +152,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             fail_fast: config.fail_fast,
             artifact_config: config.artifacts,
             tracker: config.tracker,
+            decided_flags: config.decided_flags,
+            test_index: config.test_index,
+            running_batch_registry: config.running_batch_registry,
         }
     }
 
@@ -410,13 +424,31 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                             after - before
                         );
 
-                        // Update completion tracker immediately so progress
-                        // stays in sync with the report.
+                        // Collect newly decided test indices while holding tracker lock
+                        let mut newly_decided = Vec::new();
                         if let Ok(mut t) = self.tracker.lock() {
                             t.record_batch(
                                 &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                                 |id| report.has_test_passed(id),
                             );
+                            for id in &batch_ids {
+                                if t.is_decided(id) {
+                                    if let Some(idx) = self.test_index.get(id) {
+                                        if !self.decided_flags.is_decided(idx) {
+                                            self.decided_flags.mark_decided(idx);
+                                            newly_decided.push(idx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Notify registry (tracker lock released, no deadlock risk)
+                        if !newly_decided.is_empty() {
+                            if let Ok(mut reg) = self.running_batch_registry.lock() {
+                                for idx in newly_decided {
+                                    reg.notify_decided(idx);
+                                }
+                            }
                         }
                     }
                     Err(e) => {
