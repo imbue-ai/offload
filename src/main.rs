@@ -183,8 +183,9 @@ async fn main() -> Result<()> {
             framework,
         } => init_config(&provider, &framework),
         Commands::CheckpointStatus { remote } => {
+            let cwd = std::env::current_dir().context("failed to get current directory")?;
             let config_path_str = cli.config.to_string_lossy().to_string();
-            checkpoint_status_handler(&config_path_str, &remote).await
+            checkpoint_status_handler(&cwd, &config_path_str, &remote).await
         }
         Commands::Logs {
             failures,
@@ -422,6 +423,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
 /// `--patch-file` if there are changes. If no changes exist, returns the
 /// base image ID directly without invoking Python.
 async fn build_thin_diff_image(
+    repo: &Path,
     base_image_id: &str,
     checkpoint_sha: &str,
     sandbox_project_root: &str,
@@ -432,7 +434,7 @@ async fn build_thin_diff_image(
     use offload::provider::{OutputLine, ProviderError};
 
     // Generate diff on the Rust side
-    let patch_file = git::generate_checkpoint_diff(checkpoint_sha)
+    let patch_file = git::generate_checkpoint_diff(repo, checkpoint_sha)
         .await
         .map_err(|e| {
             ProviderError::ExecFailed(format!("failed to generate checkpoint diff: {e}"))
@@ -544,6 +546,7 @@ enum BaseBuildOutcome {
 /// a git note is written after the base build. When `None`, note writing is skipped.
 #[allow(clippy::too_many_arguments)]
 async fn run_base_build_pipeline<P: SandboxProvider>(
+    repo: &Path,
     provider: &mut P,
     config: &Config,
     base_sha: &str,
@@ -555,7 +558,7 @@ async fn run_base_build_pipeline<P: SandboxProvider>(
 ) -> Result<BaseBuildOutcome> {
     // Export base tree
     let tree_dir = tempfile::tempdir().context("failed to create temp dir for base tree")?;
-    git::export_tree(base_sha, tree_dir.path())
+    git::export_tree(repo, base_sha, tree_dir.path())
         .await
         .with_context(|| format!("failed to export tree for {}", base_sha))?;
 
@@ -580,7 +583,7 @@ async fn run_base_build_pipeline<P: SandboxProvider>(
 
     // Write note if config_path provided (i.e. not --no-cache)
     if let (Some(cfg_path), Some(base_id)) = (note_config_path, &base_image_id) {
-        write_note_for_commit(base_sha, base_id, cfg_path).await;
+        write_note_for_commit(repo, base_sha, base_id, cfg_path).await;
     }
 
     // Build thin diff on top
@@ -599,6 +602,7 @@ async fn run_base_build_pipeline<P: SandboxProvider>(
             );
             Ok::<_, anyhow::Error>(
                 build_thin_diff_image(
+                    repo,
                     &base_id,
                     base_sha,
                     &config.offload.sandbox_project_root,
@@ -629,6 +633,7 @@ async fn run_base_build_pipeline<P: SandboxProvider>(
 /// concurrent discovery + prepare, and framework dispatch.
 #[allow(clippy::too_many_arguments)]
 async fn run_with_caching<P: SandboxProvider>(
+    repo: &Path,
     mut provider: P,
     config: &Config,
     resolved_base: &Option<ResolvedBase>,
@@ -649,8 +654,8 @@ async fn run_with_caching<P: SandboxProvider>(
         // Resolve base SHA without reading notes
         let base_sha = if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
             // With [checkpoint]: walk ancestors looking for checkpoint commit
-            if git::repo_root().await.is_ok() {
-                match checkpoint::find_checkpoint_sha(checkpoint_cfg, 100).await {
+            if git::repo_root(repo).await.is_ok() {
+                match checkpoint::find_checkpoint_sha(repo, checkpoint_cfg, 100).await {
                     Ok(sha) => sha,
                     Err(e) => {
                         warn!("Checkpoint resolution failed (--no-cache): {}", e);
@@ -662,8 +667,8 @@ async fn run_with_caching<P: SandboxProvider>(
             }
         } else {
             // Without [checkpoint]: use parent SHA (HEAD~1)
-            if git::repo_root().await.is_ok() {
-                match git::parent_sha().await {
+            if git::repo_root(repo).await.is_ok() {
+                match git::parent_sha(repo).await {
                     Ok(sha) => sha,
                     Err(e) => {
                         warn!("Parent SHA resolution failed (--no-cache): {}", e);
@@ -688,6 +693,7 @@ async fn run_with_caching<P: SandboxProvider>(
             );
 
             match run_base_build_pipeline(
+                repo,
                 &mut provider,
                 config,
                 &base_sha,
@@ -765,6 +771,7 @@ async fn run_with_caching<P: SandboxProvider>(
                         );
                         Ok::<_, anyhow::Error>(
                             build_thin_diff_image(
+                                repo,
                                 image_id,
                                 base_sha,
                                 &config.offload.sandbox_project_root,
@@ -817,6 +824,7 @@ async fn run_with_caching<P: SandboxProvider>(
                 );
 
                 match run_base_build_pipeline(
+                    repo,
                     &mut provider,
                     config,
                     base_sha,
@@ -1020,6 +1028,9 @@ async fn run_tests(
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
         .collect();
 
+    // Resolve cwd once for threading through git/checkpoint calls
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+
     // Resolve base commit if not --no-cache and not local provider.
     // We fetch notes and resolve checkpoint/parent info upfront so the provider arms
     // can use it during the concurrent discover+prepare phase.
@@ -1030,7 +1041,7 @@ async fn run_tests(
             offload::trace::PID_LOCAL,
             offload::trace::TID_MAIN,
         );
-        resolve_base(config_path, &config).await
+        resolve_base(&cwd, config_path, &config).await
     } else {
         None
     };
@@ -1065,6 +1076,7 @@ async fn run_tests(
         ProviderConfig::Default(p_cfg) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
             match run_with_caching(
+                &cwd,
                 provider,
                 &config,
                 &resolved_base,
@@ -1086,6 +1098,7 @@ async fn run_tests(
         ProviderConfig::Modal(p_cfg) => {
             let provider = ModalProvider::from_config(p_cfg.clone());
             match run_with_caching(
+                &cwd,
                 provider,
                 &config,
                 &resolved_base,
@@ -1142,18 +1155,18 @@ enum ResolvedBase {
 ///
 /// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
 /// this is an initial commit with no parent (non-checkpoint workflow).
-async fn resolve_base(config_path: &Path, config: &Config) -> Option<ResolvedBase> {
+async fn resolve_base(repo: &Path, config_path: &Path, config: &Config) -> Option<ResolvedBase> {
     // Check if we're in a git repo
-    if git::repo_root().await.is_err() {
+    if git::repo_root(repo).await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
         return None;
     }
 
     // Best-effort fetch and configure notes
-    if let Err(e) = git::fetch_notes("origin").await {
+    if let Err(e) = git::fetch_notes(repo, "origin").await {
         warn!("Failed to fetch notes: {}", e);
     }
-    if let Err(e) = git::configure_notes_fetch("origin").await {
+    if let Err(e) = git::configure_notes_fetch(repo, "origin").await {
         warn!("Failed to configure notes fetch: {}", e);
     }
 
@@ -1161,7 +1174,9 @@ async fn resolve_base(config_path: &Path, config: &Config) -> Option<ResolvedBas
 
     // Checkpoint caching: if we have a [checkpoint] section, use checkpoint-based caching
     if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
-        return match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
+        return match checkpoint::resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100)
+            .await
+        {
             Ok(Some(info)) => Some(ResolvedBase::Checkpoint {
                 base_sha: info.checkpoint_sha,
                 cached_image_id: info.cached_image.map(|c| c.image_id),
@@ -1178,7 +1193,7 @@ async fn resolve_base(config_path: &Path, config: &Config) -> Option<ResolvedBas
     }
 
     // Parent-commit caching: no [checkpoint] config — use parent commit as base
-    match checkpoint::resolve_parent_base(&config_path_str).await {
+    match checkpoint::resolve_parent_base(repo, &config_path_str).await {
         Ok(Some(info)) => Some(ResolvedBase::ParentBase {
             base_sha: info.parent_sha,
             cached_image_id: info.cached_image.map(|c| c.image_id),
@@ -1195,10 +1210,10 @@ async fn resolve_base(config_path: &Path, config: &Config) -> Option<ResolvedBas
 }
 
 /// Write a git note for an image on a specific commit (best-effort).
-async fn write_note_for_commit(commit_sha: &str, image_id: &str, config_path: &Path) {
+async fn write_note_for_commit(repo: &Path, commit_sha: &str, image_id: &str, config_path: &Path) {
     let config_path_str = config_path.to_string_lossy();
 
-    let config_key = match git::repo_root().await {
+    let config_key = match git::repo_root(repo).await {
         Ok(root) => match git::canonicalize_config_path(&config_path_str, &root) {
             Ok(key) => key,
             Err(e) => {
@@ -1220,7 +1235,7 @@ async fn write_note_for_commit(commit_sha: &str, image_id: &str, config_path: &P
         },
     );
 
-    if let Err(e) = git::write_note(commit_sha, &contents).await {
+    if let Err(e) = git::write_note(repo, commit_sha, &contents).await {
         warn!("Failed to write note: {}", e);
         return;
     }
@@ -1229,27 +1244,29 @@ async fn write_note_for_commit(commit_sha: &str, image_id: &str, config_path: &P
         &commit_sha[..8.min(commit_sha.len())]
     );
 
-    if let Err(e) = git::push_notes("origin").await {
+    if let Err(e) = git::push_notes(repo, "origin").await {
         warn!("Failed to push notes: {}", e);
     }
 }
 
 /// Show checkpoint/cache status for the current HEAD.
-async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()> {
+async fn checkpoint_status_handler(repo: &Path, config_path: &str, remote: &str) -> Result<()> {
     let path = Path::new(config_path);
     let config = config::load_config(path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
 
     // Best-effort fetch and configure notes
-    let _ = git::fetch_notes(remote).await;
-    let _ = git::configure_notes_fetch(remote).await;
+    let _ = git::fetch_notes(repo, remote).await;
+    let _ = git::configure_notes_fetch(repo, remote).await;
 
-    let head = git::head_sha().await.context("Failed to get HEAD SHA")?;
+    let head = git::head_sha(repo)
+        .await
+        .context("Failed to get HEAD SHA")?;
     let short_head = &head[..8.min(head.len())];
 
     if let Some(ref checkpoint_cfg) = config.checkpoint {
         // Checkpoint mode: find nearest ancestor touching build_inputs
-        let info = checkpoint::resolve_checkpoint(config_path, checkpoint_cfg, 100)
+        let info = checkpoint::resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -1263,7 +1280,7 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
         let short_base = &info.checkpoint_sha[..8.min(info.checkpoint_sha.len())];
 
         // Compute distance by finding the checkpoint SHA in the ancestor list
-        let distance = match git::ancestors(100).await {
+        let distance = match git::ancestors(repo, 100).await {
             Ok(ancestors) => ancestors.iter().position(|sha| sha == &info.checkpoint_sha),
             Err(_) => None,
         };
@@ -1277,7 +1294,7 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
                 let run_mode = if info.checkpoint_sha == head {
                     "use checkpoint image directly (HEAD is the checkpoint)".to_string()
                 } else {
-                    match git::diff_file_count(&info.checkpoint_sha, &head).await {
+                    match git::diff_file_count(repo, &info.checkpoint_sha, &head).await {
                         Ok(count) => {
                             format!("thin diff ({} files changed since checkpoint)", count)
                         }
@@ -1305,7 +1322,7 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
         }
     } else {
         // Parent-commit mode: use HEAD~1 as base
-        let info = checkpoint::resolve_parent_base(config_path)
+        let info = checkpoint::resolve_parent_base(repo, config_path)
             .await
             .context("Failed to resolve parent base")?;
 
@@ -1320,7 +1337,7 @@ async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()
 
         match info.cached_image {
             Some(cached) => {
-                let run_mode = match git::diff_file_count(&info.parent_sha, &head).await {
+                let run_mode = match git::diff_file_count(repo, &info.parent_sha, &head).await {
                     Ok(count) => {
                         format!("thin diff ({} files changed since parent)", count)
                     }
