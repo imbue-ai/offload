@@ -192,17 +192,25 @@ Use `offload checkpoint-status` to inspect the current checkpoint state:
 offload checkpoint-status
 ```
 
-Example output:
+Example output (with `[checkpoint]` section):
 
 ```
 HEAD:               a1b2c3d4
-Checkpoint:         f5e6d7c8 (3 commits back)
+Base commit:        f5e6d7c8 (checkpoint, 3 commits back)
 Cached image:       im-abc123
-Build inputs hash:  e5f6a7b8 (matches cached)
 Next run mode:      thin diff (2 files changed since checkpoint)
 ```
 
-This command requires a `[checkpoint]` section in the config. If absent, it reports that checkpoint mode is not configured.
+Example output (without `[checkpoint]` section, parent-commit mode):
+
+```
+HEAD:               a1b2c3d4
+Base commit:        e5f6a7b8 (parent, HEAD~1)
+Cached image:       im-abc123
+Next run mode:      thin diff (2 files changed since parent)
+```
+
+This command works in both modes: with a `[checkpoint]` section it shows checkpoint info, without it shows parent-commit info.
 
 ### Troubleshooting
 
