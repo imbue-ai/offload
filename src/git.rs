@@ -334,6 +334,66 @@ pub async fn export_tree(commit_sha: &str, dest: &Path) -> Result<()> {
     .await?
 }
 
+/// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
+///
+/// Uses a temporary git index so that both tracked modifications and untracked
+/// (non-ignored) files are included in one unified diff. The real index is
+/// never touched.
+///
+/// Returns `Ok(None)` if there are no changes. Otherwise returns `Ok(Some(path))`
+/// where path is a `NamedTempFile` containing the binary patch. The caller
+/// owns the temp file and is responsible for its lifetime.
+pub async fn generate_checkpoint_diff(
+    checkpoint_sha: &str,
+) -> Result<Option<tempfile::NamedTempFile>> {
+    let sha = checkpoint_sha.to_string();
+    tokio::task::spawn_blocking(move || {
+        // Create a temporary index file
+        let tmp_index =
+            tempfile::NamedTempFile::new().context("failed to create temp index file")?;
+        let tmp_index_path = tmp_index.path().to_string_lossy().to_string();
+
+        let run_git_with_index = |args: &[&str]| -> Result<std::process::Output> {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .env("GIT_INDEX_FILE", &tmp_index_path)
+                .output()
+                .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("git {} failed: {}", args.join(" "), stderr.trim());
+            }
+            Ok(output)
+        };
+
+        // Seed the temp index with the checkpoint tree
+        run_git_with_index(&["read-tree", &sha])?;
+
+        // Stage the entire current working tree (tracked + untracked) into it
+        run_git_with_index(&["add", "-A"])?;
+
+        // Diff the checkpoint against the staged state -> single binary patch
+        let output = run_git_with_index(&["diff", "--cached", "--binary", &sha])?;
+
+        // tmp_index is dropped here, cleaning up the temp index file
+
+        let patch = output.stdout;
+        if patch.iter().all(|&b| b.is_ascii_whitespace()) || patch.is_empty() {
+            return Ok(None);
+        }
+
+        // Write the patch to a temp file
+        let mut patch_file =
+            tempfile::NamedTempFile::new().context("failed to create temp patch file")?;
+        std::io::Write::write_all(&mut patch_file, &patch)
+            .context("failed to write patch to temp file")?;
+        std::io::Write::flush(&mut patch_file).context("failed to flush patch temp file")?;
+
+        Ok(Some(patch_file))
+    })
+    .await?
+}
+
 /// Count the number of files changed between two commits.
 pub async fn diff_file_count(from_sha: &str, to_sha: &str) -> Result<usize> {
     let output = run_git(&["diff", "--name-only", from_sha, to_sha]).await?;
