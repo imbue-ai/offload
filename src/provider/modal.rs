@@ -240,7 +240,7 @@ impl SandboxProvider for ModalProvider {
         discovery_done: Option<&std::sync::atomic::AtomicBool>,
     ) -> ProviderResult<Option<String>> {
         let cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-checkpoint={} --patch-file={} --sandbox-project-root={}",
+            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
             base_image_id,
             patch_file.display(),
             sandbox_project_root

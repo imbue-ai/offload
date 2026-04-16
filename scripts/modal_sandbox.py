@@ -293,14 +293,14 @@ def _build_final_image(
         return base_img_id
 
 
-def _derive_image_from_checkpoint(
+def _derive_image_from_base(
     app,
-    checkpoint_img: modal.Image,
+    base_img: modal.Image,
     patch_file: str | None,
     project_root: str,
 ) -> str:
-    """Apply a binary patch to the checkpoint image and return the new image ID."""
-    img = checkpoint_img
+    """Apply a binary patch to a base image and return the new image ID."""
+    img = base_img
 
     if patch_file is not None:
         img = img.add_local_file(patch_file, "/tmp/offload.patch", copy=True)
@@ -344,14 +344,14 @@ def _derive_image_from_checkpoint(
     help="Deprecated no-op kept for backward compatibility",
 )
 @click.option(
-    "--from-checkpoint",
+    "--from-base-image",
     default=None,
-    help="Modal image ID of the checkpoint image",
+    help="Modal image ID to build incrementally on top of",
 )
 @click.option(
     "--patch-file",
     default=None,
-    help="Path to a binary patch file to apply on top of the checkpoint image",
+    help="Path to a binary patch file to apply on top of the base image",
 )
 @click.option(
     "--sandbox-project-root",
@@ -365,7 +365,7 @@ def prepare(
     sandbox_init_cmd: str | None,
     context_dir: str,
     cached: bool,
-    from_checkpoint: str | None,
+    from_base_image: str | None,
     patch_file: str | None,
     sandbox_project_root: str,
 ):
@@ -376,24 +376,24 @@ def prepare(
 
     The --include-cwd and --copy-dir options add source code to the image.
 
-    When --from-checkpoint is set, builds incrementally from the checkpoint
+    When --from-base-image is set, builds incrementally from the given base
     image by applying the patch file (if provided) on top of it.
 
     Prints the image_id to stdout for use with 'create'.
     """
-    # Checkpoint mode
-    if from_checkpoint is not None:
+    # Incremental build mode
+    if from_base_image is not None:
         with modal.enable_output():
             app_name = "offload-checkpoint-sandbox"
             app = modal.App.lookup(app_name, create_if_missing=True)
 
-            checkpoint_img = modal.Image.from_id(from_checkpoint)
+            base_img = modal.Image.from_id(from_base_image)
 
-            logger.info("Building incremental image from checkpoint")
+            logger.info("Building incremental image from base")
 
-            image_id = _derive_image_from_checkpoint(
+            image_id = _derive_image_from_base(
                 app,
-                checkpoint_img,
+                base_img,
                 patch_file,
                 sandbox_project_root,
             )
@@ -401,7 +401,7 @@ def prepare(
         sys.stdout.write("%s\n" % image_id)
         return
 
-    # Standard (non-checkpoint) mode
+    # Standard (full build) mode
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
