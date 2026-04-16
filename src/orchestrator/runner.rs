@@ -432,22 +432,21 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                                 |id| report.has_test_passed(id),
                             );
                             for id in &batch_ids {
-                                if t.is_decided(id) {
-                                    if let Some(idx) = self.test_index.get(id) {
-                                        if !self.decided_flags.is_decided(idx) {
-                                            self.decided_flags.mark_decided(idx);
-                                            newly_decided.push(idx);
-                                        }
-                                    }
+                                if t.is_decided(id)
+                                    && let Some(idx) = self.test_index.get(id)
+                                    && !self.decided_flags.is_decided(idx)
+                                {
+                                    self.decided_flags.mark_decided(idx);
+                                    newly_decided.push(idx);
                                 }
                             }
                         }
                         // Notify registry (tracker lock released, no deadlock risk)
-                        if !newly_decided.is_empty() {
-                            if let Ok(mut reg) = self.incomplete_tests.lock() {
-                                for idx in newly_decided {
-                                    reg.notify_decided(idx);
-                                }
+                        if !newly_decided.is_empty()
+                            && let Ok(mut reg) = self.incomplete_tests.lock()
+                        {
+                            for idx in newly_decided {
+                                reg.notify_decided(idx);
                             }
                         }
                     }

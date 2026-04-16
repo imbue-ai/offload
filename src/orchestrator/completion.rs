@@ -152,18 +152,36 @@ impl DecidedFlags {
     }
 }
 
-struct IncompleteEntry {
-    remaining: usize,
+/// Cancels a batch's token when the last reference is dropped.
+///
+/// Shared via `Arc` between all incomplete tests in the batch. When the
+/// last test is decided and removed from the registry, the final clone
+/// drops and cancellation fires automatically.
+struct BatchGuard {
+    batch_idx: usize,
     token: CancellationToken,
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        if !self.token.is_cancelled() {
+            tracing::info!(
+                "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
+                self.batch_idx,
+            );
+        }
+        self.token.cancel();
+    }
 }
 
 /// Tracks incomplete tests and enables efficient per-test cancellation notification.
 ///
 /// When all tests in a batch become decided, the batch's cancellation token is
-/// cancelled so the sandbox can be reclaimed early.
+/// cancelled so the sandbox can be reclaimed early. This is achieved via
+/// `Arc<BatchGuard>`: each undecided test holds a clone, and when the last
+/// clone is dropped the `Drop` impl fires cancellation.
 pub struct IncompleteTestsRegistry {
-    entries: HashMap<usize, IncompleteEntry>,
-    test_to_batches: HashMap<usize, Vec<usize>>,
+    test_to_guards: HashMap<usize, Vec<Arc<BatchGuard>>>,
 }
 
 impl Default for IncompleteTestsRegistry {
@@ -175,16 +193,14 @@ impl Default for IncompleteTestsRegistry {
 impl IncompleteTestsRegistry {
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
-            test_to_batches: HashMap::new(),
+            test_to_guards: HashMap::new(),
         }
     }
 
     /// Registers a batch with the given test numeric IDs.
     ///
     /// Already-decided tests (according to `decided`) are filtered out. If all
-    /// tests are already decided, the token is cancelled immediately and the
-    /// batch is not added to the registry.
+    /// tests are already decided, the token is cancelled immediately.
     pub fn register(
         &mut self,
         batch_idx: usize,
@@ -203,42 +219,22 @@ impl IncompleteTestsRegistry {
             return;
         }
 
-        self.entries.insert(
-            batch_idx,
-            IncompleteEntry {
-                remaining: undecided.len(),
-                token,
-            },
-        );
+        let guard = Arc::new(BatchGuard { batch_idx, token });
 
         for &test_id in &undecided {
-            self.test_to_batches
+            self.test_to_guards
                 .entry(test_id)
                 .or_default()
-                .push(batch_idx);
+                .push(Arc::clone(&guard));
         }
-    }
-
-    /// Removes a batch from the registry. Stale reverse-index refs are harmless.
-    pub fn unregister(&mut self, batch_idx: usize) {
-        self.entries.remove(&batch_idx);
     }
 
     /// Notifies the registry that a test has been decided.
     ///
-    /// Decrements the remaining count for each batch containing this test.
-    /// When a batch's remaining count reaches zero, its token is cancelled.
+    /// Removes all guard references for this test. When a guard's last
+    /// reference is dropped, its `Drop` impl cancels the batch token.
     pub fn notify_decided(&mut self, test_num_id: usize) {
-        if let Some(batch_idxs) = self.test_to_batches.remove(&test_num_id) {
-            for batch_idx in batch_idxs {
-                if let Some(entry) = self.entries.get_mut(&batch_idx) {
-                    entry.remaining = entry.remaining.saturating_sub(1);
-                    if entry.remaining == 0 {
-                        entry.token.cancel();
-                    }
-                }
-            }
-        }
+        self.test_to_guards.remove(&test_num_id);
     }
 }
 
@@ -411,17 +407,20 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_unregister_removes_entry() {
+    fn test_registry_stale_guards_harmless() {
         let decided = DecidedFlags::new(2);
         let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone(), &decided);
-        registry.unregister(0);
 
-        // notify_decided for removed batch should not panic or cancel
+        // Deciding all tests drops the last guard and cancels the token
         registry.notify_decided(0);
         registry.notify_decided(1);
-        assert!(!token.is_cancelled());
+        assert!(token.is_cancelled());
+
+        // Cancelling an already-cancelled token is a no-op
+        token.cancel();
+        assert!(token.is_cancelled());
     }
 }

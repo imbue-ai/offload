@@ -18,7 +18,9 @@ use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
-use super::completion::CompletionTracker;
+use super::completion::{
+    CompletionTracker, SharedDecidedFlags, SharedIncompleteTestsRegistry, SharedTestIndex,
+};
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 use super::scheduler::Scheduler;
 
@@ -44,6 +46,9 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub sandbox_index: usize,
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
+    pub decided_flags: SharedDecidedFlags,
+    pub test_index: SharedTestIndex,
+    pub incomplete_tests: SharedIncompleteTestsRegistry,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -142,6 +147,9 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
             },
+            decided_flags: Arc::clone(&cfg.decided_flags),
+            test_index: Arc::clone(&cfg.test_index),
+            incomplete_tests: Arc::clone(&cfg.incomplete_tests),
         };
         let mut runner = TestRunner::new(
             sandbox,

@@ -343,6 +343,12 @@ where
             tracker.register_retries(&test.id, test.retry_count + 1);
         }
         let tracker = Arc::new(std::sync::Mutex::new(tracker));
+        let test_ids: Vec<&str> = tests.iter().map(|t| t.id.as_str()).collect();
+        let test_index = Arc::new(completion::TestIndex::new(&test_ids));
+        let decided_flags = Arc::new(completion::DecidedFlags::new(test_index.len()));
+        let incomplete_tests = Arc::new(std::sync::Mutex::new(
+            completion::IncompleteTestsRegistry::new(),
+        ));
         let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
@@ -409,6 +415,9 @@ where
                     sandbox_index,
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
+                    decided_flags: Arc::clone(&decided_flags),
+                    test_index: Arc::clone(&test_index),
+                    incomplete_tests: Arc::clone(&incomplete_tests),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
