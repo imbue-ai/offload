@@ -18,9 +18,7 @@ use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
-use super::completion::{
-    CompletionTracker, SharedDecidedFlags, SharedIncompleteTestsRegistry, SharedTestIndex,
-};
+use super::completion::{CompletionTracker, DecidedFlags, IncompleteTestsRegistry, TestIndex};
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 use super::scheduler::Scheduler;
 
@@ -46,9 +44,9 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub sandbox_index: usize,
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
-    pub decided_flags: SharedDecidedFlags,
-    pub test_index: SharedTestIndex,
-    pub incomplete_tests: SharedIncompleteTestsRegistry,
+    pub decided_flags: Arc<DecidedFlags>,
+    pub test_index: Arc<TestIndex>,
+    pub incomplete_tests: Arc<Mutex<IncompleteTestsRegistry>>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.

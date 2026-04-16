@@ -5,22 +5,10 @@
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
-
-/// Shared completion tracker, protected by a mutex for concurrent access.
-pub type SharedCompletionTracker = Arc<Mutex<CompletionTracker>>;
-
-/// Shared decided flags for lock-free decided-status checks.
-pub type SharedDecidedFlags = Arc<DecidedFlags>;
-
-/// Shared test index for mapping string test IDs to numeric indices.
-pub type SharedTestIndex = Arc<TestIndex>;
-
-/// Shared incomplete-tests registry, protected by a mutex for concurrent access.
-pub type SharedIncompleteTestsRegistry = Arc<Mutex<IncompleteTestsRegistry>>;
 
 /// Tracks which tests have a decided outcome.
 ///
