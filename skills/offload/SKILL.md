@@ -152,18 +152,18 @@ Offload caches image IDs in git notes (`refs/notes/offload-images`). Notes are k
 
 Offload uses a unified pipeline for image caching. Both modes follow identical steps after resolving the base commit: cache lookup, tree export, base image build, thin diff application, and note write. The only difference is how the base commit is selected.
 
-### Parent-commit mode (default)
+### Latest-commit mode (default)
 
-When no `[checkpoint]` section is present, Offload uses the parent commit (HEAD~1) as the base:
+When no `[checkpoint]` section is present, Offload uses the latest commit (HEAD) as the base:
 
-1. Look up HEAD~1 in git notes for a cached base image.
-2. **Cache hit**: generate a binary diff from parent to HEAD and apply it on top of the cached image.
-3. **Cache miss**: export the parent commit tree, build a base image from it, cache the result in git notes on HEAD~1, then apply thin diff.
-4. **Initial commit** (no parent): fall through to a full build, no caching.
+1. Look up HEAD in git notes for a cached base image.
+2. **Cache hit**: generate a binary diff from HEAD to the working tree and apply it on top of the cached image.
+3. **Cache miss**: export the HEAD tree, build a base image from it, cache the result in git notes on HEAD, then apply thin diff.
+4. **Empty repo** (no commits): fall through to a full build, no caching.
 
 ### Checkpoint mode (opt-in)
 
-When a `[checkpoint]` section is present, Offload walks git ancestors to find the nearest commit that touched any `build_inputs` file. That commit is the base instead of HEAD~1. The rest of the pipeline (cache lookup, tree export, build, thin diff, note write) is the same as parent-commit mode.
+When a `[checkpoint]` section is present, Offload walks git ancestors to find the nearest commit that touched any `build_inputs` file. That commit is the base instead of HEAD. The rest of the pipeline (cache lookup, tree export, build, thin diff, note write) is the same as latest-commit mode.
 
 Add a `[checkpoint]` section to `offload.toml`:
 
@@ -178,7 +178,7 @@ build_inputs = [
 
 `build_inputs` lists repo-relative file paths. A commit that modifies any of these files is automatically detected as a checkpoint. The list must be non-empty when the section is present. For merge commits, diffs against all parents are checked.
 
-Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, every parent commit change requires a new base image build. With checkpoints, only commits that change dependency manifests trigger full rebuilds -- subsequent runs apply a lightweight diff on top of the cached checkpoint image.
+Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, the base image is rebuilt from HEAD on every new commit. With checkpoints, only commits that change dependency manifests trigger full rebuilds -- subsequent runs apply a lightweight diff on top of the cached checkpoint image.
 
 ### Thin diff details
 
@@ -201,16 +201,16 @@ Cached image:       im-abc123
 Next run mode:      thin diff (2 files changed since checkpoint)
 ```
 
-Example output (without `[checkpoint]` section, parent-commit mode):
+Example output (without `[checkpoint]` section, latest-commit mode):
 
 ```
 HEAD:               a1b2c3d4
-Base commit:        e5f6a7b8 (parent, HEAD~1)
+Base commit:        a1b2c3d4 (latest commit, HEAD)
 Cached image:       im-abc123
-Next run mode:      thin diff (2 files changed since parent)
+Next run mode:      thin diff (uncommitted changes only)
 ```
 
-This command works in both modes: with a `[checkpoint]` section it shows checkpoint info, without it shows parent-commit info.
+This command works in both modes: with a `[checkpoint]` section it shows checkpoint info, without it shows latest-commit info.
 
 ### Troubleshooting
 
