@@ -22,7 +22,7 @@ use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
     SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
 };
-use offload::{checkpoint, git, with_retry};
+use offload::{git, image_cache, with_retry};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -1107,7 +1107,7 @@ async fn resolve_base(
     if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
         if no_cache {
             // Resolve SHA only, no notes lookup
-            return match checkpoint::find_checkpoint_sha(repo, checkpoint_cfg, 100).await {
+            return match image_cache::find_checkpoint_sha(repo, checkpoint_cfg, 100).await {
                 Ok(Some(sha)) => Some(ResolvedBase {
                     base_sha: sha,
                     cached_image_id: None,
@@ -1125,7 +1125,7 @@ async fn resolve_base(
         }
 
         let config_path_str = config_path.to_string_lossy();
-        return match checkpoint::resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100)
+        return match image_cache::resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100)
             .await
         {
             Ok(Some(info)) => Some(ResolvedBase {
@@ -1161,7 +1161,7 @@ async fn resolve_base(
     }
 
     let config_path_str = config_path.to_string_lossy();
-    match checkpoint::resolve_latest_commit(repo, &config_path_str).await {
+    match image_cache::resolve_latest_commit(repo, &config_path_str).await {
         Ok(Some(info)) => Some(ResolvedBase {
             base_sha: info.head_sha,
             cached_image_id: info.cached_image.map(|c| c.image_id),
@@ -1235,7 +1235,7 @@ async fn checkpoint_status_handler(repo: &Path, config_path: &str, remote: &str)
 
     if let Some(ref checkpoint_cfg) = config.checkpoint {
         // Checkpoint mode: find nearest ancestor touching build_inputs
-        let info = checkpoint::resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
+        let info = image_cache::resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -1291,7 +1291,7 @@ async fn checkpoint_status_handler(repo: &Path, config_path: &str, remote: &str)
         }
     } else {
         // Latest-commit mode: use HEAD as base
-        let info = checkpoint::resolve_latest_commit(repo, config_path)
+        let info = image_cache::resolve_latest_commit(repo, config_path)
             .await
             .context("Failed to resolve latest commit")?;
 

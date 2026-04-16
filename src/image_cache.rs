@@ -1,4 +1,4 @@
-//! Checkpoint resolution logic for sandbox image caching via git notes.
+//! Image cache resolution logic for sandbox image caching via git notes.
 //!
 //! This module resolves checkpoint commits and their cached images by reading
 //! git notes. It does NOT build images or call providers -- it only reads
