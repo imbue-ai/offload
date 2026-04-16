@@ -180,54 +180,28 @@ impl DecidedFlags {
     }
 }
 
-/// Cancels a batch's token when the last reference is dropped.
+/// Tracks incomplete tests per batch for per-batch cancellation.
 ///
-/// Shared via `Arc` between all incomplete tests in the batch. When the
-/// last test is decided and removed from the registry, the final clone
-/// drops and cancellation fires automatically.
-///
-/// Uses `Arc` (not `Rc`) because `CompletionTracker` is shared across worker
-/// tasks via `Arc<Mutex<...>>`, which requires the inner type to be `Send`.
-/// `Rc` is `!Send`. The atomic overhead is negligible since all access is
-/// serialized by the outer `Mutex`.
-struct BatchGuard {
-    batch_idx: usize,
-    token: CancellationToken,
-}
-
-impl Drop for BatchGuard {
-    fn drop(&mut self) {
-        if !self.token.is_cancelled() {
-            tracing::info!(
-                "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
-                self.batch_idx,
-            );
-        }
-        self.token.cancel();
-    }
-}
-
-/// Tracks incomplete tests and enables efficient per-test cancellation notification.
-///
-/// When all tests in a batch become decided, the batch's cancellation token is
-/// cancelled so the sandbox can be reclaimed early. This is achieved via
-/// `Arc<BatchGuard>`: each undecided test holds a clone, and when the last
-/// clone is dropped the `Drop` impl fires cancellation.
+/// Each batch has a remaining count of undecided tests and a cancellation
+/// token. When `notify_decided` decrements the count to zero, the token
+/// is cancelled so the sandbox can be reclaimed early.
 struct IncompleteTestsRegistry {
-    test_to_guards: HashMap<usize, Vec<Arc<BatchGuard>>>,
+    /// batch_idx -> (remaining undecided count, cancellation token)
+    batches: HashMap<usize, (usize, CancellationToken)>,
+    /// test_num_id -> list of batch indices containing this test
+    test_to_batches: HashMap<usize, Vec<usize>>,
 }
 
 impl IncompleteTestsRegistry {
     fn new() -> Self {
         Self {
-            test_to_guards: HashMap::new(),
+            batches: HashMap::new(),
+            test_to_batches: HashMap::new(),
         }
     }
 
-    /// Registers a batch with the given test numeric IDs.
-    ///
-    /// Already-decided tests (according to `decided`) are filtered out. If all
-    /// tests are already decided, the token is cancelled immediately.
+    /// Registers a batch. Already-decided tests (per `decided`) are filtered out.
+    /// If all tests are already decided, the token is cancelled immediately.
     fn register(
         &mut self,
         batch_idx: usize,
@@ -246,22 +220,35 @@ impl IncompleteTestsRegistry {
             return;
         }
 
-        let guard = Arc::new(BatchGuard { batch_idx, token });
+        self.batches.insert(batch_idx, (undecided.len(), token));
 
         for &test_id in &undecided {
-            self.test_to_guards
+            self.test_to_batches
                 .entry(test_id)
                 .or_default()
-                .push(Arc::clone(&guard));
+                .push(batch_idx);
         }
     }
 
     /// Notifies the registry that a test has been decided.
     ///
-    /// Removes all guard references for this test. When a guard's last
-    /// reference is dropped, its `Drop` impl cancels the batch token.
+    /// Decrements the remaining count for each batch containing this test.
+    /// When a batch's count reaches zero, its token is cancelled.
     fn notify_decided(&mut self, test_num_id: usize) {
-        self.test_to_guards.remove(&test_num_id);
+        if let Some(batch_idxs) = self.test_to_batches.remove(&test_num_id) {
+            for batch_idx in batch_idxs {
+                if let Some((remaining, token)) = self.batches.get_mut(&batch_idx) {
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        tracing::info!(
+                            "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
+                            batch_idx,
+                        );
+                        token.cancel();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -439,20 +426,22 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_stale_guards_harmless() {
-        let decided = DecidedFlags::new(2);
+    fn test_registry_counter_reaches_zero_cancels() {
+        let decided = DecidedFlags::new(3);
         let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
-        registry.register(0, &[0, 1], token.clone(), &decided);
+        registry.register(0, &[0, 1, 2], token.clone(), &decided);
+        assert!(!token.is_cancelled());
 
-        // Deciding all tests drops the last guard and cancels the token
         registry.notify_decided(0);
-        registry.notify_decided(1);
-        assert!(token.is_cancelled());
+        assert!(!token.is_cancelled());
 
-        // Cancelling an already-cancelled token is a no-op
-        token.cancel();
+        registry.notify_decided(1);
+        assert!(!token.is_cancelled());
+
+        // Counter reaches zero, token is cancelled
+        registry.notify_decided(2);
         assert!(token.is_cancelled());
     }
 }
