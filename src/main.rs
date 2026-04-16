@@ -1161,101 +1161,110 @@ async fn write_note_for_commit(commit_sha: &str, image_id: &str, config_path: &P
     }
 }
 
-/// Show checkpoint cache status for the current HEAD.
+/// Show checkpoint/cache status for the current HEAD.
 async fn checkpoint_status_handler(config_path: &str, remote: &str) -> Result<()> {
     let path = Path::new(config_path);
     let config = config::load_config(path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
-
-    let checkpoint_cfg = match config.checkpoint {
-        Some(ref cfg) => cfg,
-        None => {
-            println!("Checkpoint mode not configured");
-            return Ok(());
-        }
-    };
 
     // Best-effort fetch and configure notes
     let _ = git::fetch_notes(remote).await;
     let _ = git::configure_notes_fetch(remote).await;
 
     let head = git::head_sha().await.context("Failed to get HEAD SHA")?;
-    let repo_root = git::repo_root().await.context("Failed to get repo root")?;
-    let config_key = git::canonicalize_config_path(config_path, &repo_root)
-        .context("Failed to canonicalize config path")?;
-
-    let ancestors = git::ancestors(100)
-        .await
-        .context("Failed to list ancestors")?;
-
-    // Find nearest checkpoint
-    let mut checkpoint_sha: Option<String> = None;
-    let mut checkpoint_distance: usize = 0;
-    for (i, sha) in ancestors.iter().enumerate() {
-        let touches = git::commit_touches_paths(sha, &checkpoint_cfg.build_inputs)
-            .await
-            .with_context(|| format!("Failed to check paths for commit {}", sha))?;
-        if touches {
-            checkpoint_sha = Some(sha.clone());
-            checkpoint_distance = i;
-            break;
-        }
-    }
-
     let short_head = &head[..8.min(head.len())];
 
-    let checkpoint_sha = match checkpoint_sha {
-        Some(sha) => sha,
-        None => {
+    if let Some(ref checkpoint_cfg) = config.checkpoint {
+        // Checkpoint mode: find nearest ancestor touching build_inputs
+        let info = checkpoint::resolve_checkpoint(config_path, checkpoint_cfg, 100)
+            .await
+            .context("Failed to resolve checkpoint")?;
+
+        let Some(info) = info else {
             println!("HEAD:               {}", short_head);
-            println!("Checkpoint:         (no checkpoint found in last 100 commits)");
+            println!("Base commit:        (no checkpoint found in last 100 commits)");
             println!("Next run mode:      full build (no checkpoint found)");
             return Ok(());
+        };
+
+        let short_base = &info.checkpoint_sha[..8.min(info.checkpoint_sha.len())];
+
+        // Compute distance by finding the checkpoint SHA in the ancestor list
+        let distance = match git::ancestors(100).await {
+            Ok(ancestors) => ancestors.iter().position(|sha| sha == &info.checkpoint_sha),
+            Err(_) => None,
+        };
+        let distance_label = match distance {
+            Some(d) => format!("{} commits back", d),
+            None => "unknown distance".to_string(),
+        };
+
+        match info.cached_image {
+            Some(cached) => {
+                let run_mode = if info.checkpoint_sha == head {
+                    "use checkpoint image directly (HEAD is the checkpoint)".to_string()
+                } else {
+                    match git::diff_file_count(&info.checkpoint_sha, &head).await {
+                        Ok(count) => {
+                            format!("thin diff ({} files changed since checkpoint)", count)
+                        }
+                        Err(_) => "thin diff".to_string(),
+                    }
+                };
+
+                println!("HEAD:               {}", short_head);
+                println!(
+                    "Base commit:        {} (checkpoint, {})",
+                    short_base, distance_label
+                );
+                println!("Cached image:       {}", cached.image_id);
+                println!("Next run mode:      {}", run_mode);
+            }
+            None => {
+                println!("HEAD:               {}", short_head);
+                println!(
+                    "Base commit:        {} (checkpoint, {})",
+                    short_base, distance_label
+                );
+                println!("Cached image:       (none)");
+                println!("Next run mode:      full build (no cached checkpoint image)");
+            }
         }
-    };
+    } else {
+        // Parent-commit mode: use HEAD~1 as base
+        let info = checkpoint::resolve_parent_base(config_path)
+            .await
+            .context("Failed to resolve parent base")?;
 
-    let short_checkpoint = &checkpoint_sha[..8.min(checkpoint_sha.len())];
+        let Some(info) = info else {
+            println!("HEAD:               {}", short_head);
+            println!("Base commit:        (none -- initial commit)");
+            println!("Next run mode:      full build");
+            return Ok(());
+        };
 
-    // Read note for the checkpoint commit
-    let note = git::read_note(&checkpoint_sha)
-        .await
-        .context("Failed to read note for checkpoint commit")?;
+        let short_base = &info.parent_sha[..8.min(info.parent_sha.len())];
 
-    let cached_entry = note.and_then(|contents| {
-        contents
-            .get(&config_key)
-            .filter(|e| !e.image_id.is_empty())
-            .cloned()
-    });
-
-    match cached_entry {
-        Some(entry) => {
-            // Determine run mode
-            let run_mode = if checkpoint_sha == head {
-                "use checkpoint image directly (HEAD is the checkpoint)".to_string()
-            } else {
-                match git::diff_file_count(&checkpoint_sha, &head).await {
-                    Ok(count) => format!("thin diff ({} files changed since checkpoint)", count),
+        match info.cached_image {
+            Some(cached) => {
+                let run_mode = match git::diff_file_count(&info.parent_sha, &head).await {
+                    Ok(count) => {
+                        format!("thin diff ({} files changed since parent)", count)
+                    }
                     Err(_) => "thin diff".to_string(),
-                }
-            };
+                };
 
-            println!("HEAD:               {}", short_head);
-            println!(
-                "Checkpoint:         {} ({} commits back)",
-                short_checkpoint, checkpoint_distance
-            );
-            println!("Cached image:       {}", entry.image_id);
-            println!("Next run mode:      {}", run_mode);
-        }
-        None => {
-            println!("HEAD:               {}", short_head);
-            println!(
-                "Checkpoint:         {} ({} commits back)",
-                short_checkpoint, checkpoint_distance
-            );
-            println!("Cached image:       (none)");
-            println!("Next run mode:      full build (no cached checkpoint image)");
+                println!("HEAD:               {}", short_head);
+                println!("Base commit:        {} (parent, HEAD~1)", short_base);
+                println!("Cached image:       {}", cached.image_id);
+                println!("Next run mode:      {}", run_mode);
+            }
+            None => {
+                println!("HEAD:               {}", short_head);
+                println!("Base commit:        {} (parent, HEAD~1)", short_base);
+                println!("Cached image:       (none)");
+                println!("Next run mode:      full build (no cached parent image)");
+            }
         }
     }
 
