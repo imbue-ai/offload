@@ -338,14 +338,17 @@ where
             total_tests_to_run,
             self.config.framework.test_id_format(),
         )));
-        let mut tracker = completion::CompletionTracker::new(total_tests_to_run);
+        // Build TestIndex first (CompletionTracker needs it)
+        let unique_test_ids: Vec<&str> = tests.iter().map(|t| t.id.as_str()).collect();
+        let test_index = Arc::new(completion::TestIndex::new(&unique_test_ids));
+
+        let mut tracker =
+            completion::CompletionTracker::new(total_tests_to_run, Arc::clone(&test_index));
         for test in tests {
             tracker.register_retries(&test.id, test.retry_count + 1);
         }
+        let decided_flags = tracker.decided_flags();
         let tracker = Arc::new(std::sync::Mutex::new(tracker));
-        let test_ids: Vec<&str> = tests.iter().map(|t| t.id.as_str()).collect();
-        let test_index = Arc::new(completion::TestIndex::new(&test_ids));
-        let decided_flags = Arc::new(completion::DecidedFlags::new(test_index.len()));
         let incomplete_tests = Arc::new(std::sync::Mutex::new(
             completion::IncompleteTestsRegistry::new(),
         ));

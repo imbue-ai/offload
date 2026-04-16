@@ -106,10 +106,12 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip batches where all tests have a decided outcome (passed/flaky or retries exhausted)
-        if let Ok(tracker) = cfg.tracker.lock()
-            && batch.tests.iter().all(|t| tracker.is_decided(t.id()))
-        {
+        // Skip batches where all tests have a decided outcome (lock-free check)
+        if batch.tests.iter().all(|t| {
+            cfg.test_index
+                .get(t.id())
+                .is_some_and(|idx| cfg.decided_flags.is_decided(idx))
+        }) {
             let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
                 "SKIP: Batch {} ({} tests) all already decided, skipping",
@@ -163,8 +165,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
             },
-            decided_flags: Arc::clone(&cfg.decided_flags),
-            test_index: Arc::clone(&cfg.test_index),
             incomplete_tests: Arc::clone(&cfg.incomplete_tests),
         };
         let mut runner = TestRunner::new(

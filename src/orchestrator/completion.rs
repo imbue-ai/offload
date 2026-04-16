@@ -4,7 +4,7 @@
 //! it has exhausted all retry attempts while still failing. The progress bar
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -25,67 +25,86 @@ pub type SharedIncompleteTestsRegistry = Arc<Mutex<IncompleteTestsRegistry>>;
 /// Tracks which tests have a decided outcome.
 ///
 /// Call [`record_batch`] after each batch returns to increment attempt counts
-/// and update the decided set.
+/// and update the decided set. Owns [`DecidedFlags`] internally so that
+/// lock-free decided-status checks stay in sync with the authoritative state.
 pub struct CompletionTracker {
-    max_attempts: HashMap<String, usize>,
-    attempt_counts: HashMap<String, usize>,
-    decided: HashSet<String>,
+    index: Arc<TestIndex>,
+    max_attempts: Vec<usize>,
+    attempt_counts: Vec<usize>,
+    decided: Arc<DecidedFlags>,
+    decided_count: usize,
     total_expected: usize,
 }
 
 impl CompletionTracker {
-    pub fn new(total_expected: usize) -> Self {
+    pub fn new(total_expected: usize, index: Arc<TestIndex>) -> Self {
+        let len = index.len();
+        let decided = Arc::new(DecidedFlags::new(len));
         Self {
-            max_attempts: HashMap::new(),
-            attempt_counts: HashMap::new(),
-            decided: HashSet::new(),
+            index,
+            max_attempts: vec![1; len], // default 1 attempt
+            attempt_counts: vec![0; len],
+            decided,
+            decided_count: 0,
             total_expected,
         }
     }
 
     /// Registers the maximum number of attempts for a test.
     pub fn register_retries(&mut self, test_id: &str, max_attempts: usize) {
-        self.max_attempts.insert(test_id.to_string(), max_attempts);
+        if let Some(idx) = self.index.get(test_id) {
+            self.max_attempts[idx] = max_attempts;
+        }
     }
 
     /// Records one attempt for each test in the batch and updates decided set.
     ///
     /// `is_passed` should return true if the test has passed or is flaky.
-    pub fn record_batch(&mut self, test_ids: &[&str], is_passed: impl Fn(&str) -> bool) {
+    /// Returns the numeric indices of tests that became newly decided.
+    pub fn record_batch(
+        &mut self,
+        test_ids: &[&str],
+        is_passed: impl Fn(&str) -> bool,
+    ) -> Vec<usize> {
+        let mut newly_decided = Vec::new();
         for &test_id in test_ids {
-            if self.decided.contains(test_id) {
+            let Some(num_id) = self.index.get(test_id) else {
+                continue;
+            };
+            if self.decided.is_decided(num_id) {
                 continue;
             }
 
-            *self.attempt_counts.entry(test_id.to_string()).or_insert(0) += 1;
+            self.attempt_counts[num_id] += 1;
 
-            let decided = if is_passed(test_id) {
+            let is_now_decided = if is_passed(test_id) {
                 true
             } else {
-                let attempts = self.attempt_counts[test_id];
-                let max = self.max_attempts.get(test_id).copied().unwrap_or(1);
-                attempts >= max
+                self.attempt_counts[num_id] >= self.max_attempts[num_id]
             };
 
-            if decided {
-                self.decided.insert(test_id.to_string());
+            if is_now_decided {
+                self.decided.mark_decided(num_id);
+                self.decided_count += 1;
+                newly_decided.push(num_id);
             }
         }
-    }
-
-    /// Returns true if this test has a decided outcome.
-    pub fn is_decided(&self, test_id: &str) -> bool {
-        self.decided.contains(test_id)
+        newly_decided
     }
 
     /// Number of tests with a decided outcome.
     pub fn decided_count(&self) -> usize {
-        self.decided.len()
+        self.decided_count
     }
 
     /// True when every expected test has a decided outcome.
     pub fn all_complete(&self) -> bool {
-        self.decided_count() == self.total_expected
+        self.decided_count == self.total_expected
+    }
+
+    /// Returns the shared decided flags for lock-free access.
+    pub fn decided_flags(&self) -> Arc<DecidedFlags> {
+        Arc::clone(&self.decided)
     }
 }
 
@@ -244,11 +263,12 @@ mod tests {
 
     #[test]
     fn test_all_passed_immediately_decided() {
-        let mut tracker = CompletionTracker::new(2);
+        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 3);
         tracker.register_retries("test_b", 3);
 
-        tracker.record_batch(&["test_a", "test_b"], |_| true);
+        let _ = tracker.record_batch(&["test_a", "test_b"], |_| true);
 
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
@@ -256,12 +276,13 @@ mod tests {
 
     #[test]
     fn test_failure_with_retries_remaining() {
-        let mut tracker = CompletionTracker::new(2);
+        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 3);
 
         // test_a passes, test_b fails (has retries remaining)
-        tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -269,27 +290,29 @@ mod tests {
 
     #[test]
     fn test_failure_retries_exhausted() {
-        let mut tracker = CompletionTracker::new(2);
+        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 2);
 
         // Attempt 1: test_a passes, test_b fails
-        tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
         assert_eq!(tracker.decided_count(), 1);
 
         // Attempt 2: test_b fails again, retries exhausted
-        tracker.record_batch(&["test_b"], |_| false);
+        let _ = tracker.record_batch(&["test_b"], |_| false);
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
     }
 
     #[test]
     fn test_missing_test_not_complete() {
-        let mut tracker = CompletionTracker::new(2);
+        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);
 
-        tracker.record_batch(&["test_a"], |_| true);
+        let _ = tracker.record_batch(&["test_a"], |_| true);
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -297,11 +320,12 @@ mod tests {
 
     #[test]
     fn test_already_decided_not_double_counted() {
-        let mut tracker = CompletionTracker::new(1);
+        let index = Arc::new(TestIndex::new(&["test_a"]));
+        let mut tracker = CompletionTracker::new(1, index);
         tracker.register_retries("test_a", 1);
 
-        tracker.record_batch(&["test_a"], |_| true);
-        tracker.record_batch(&["test_a"], |_| true); // duplicate
+        let _ = tracker.record_batch(&["test_a"], |_| true);
+        let _ = tracker.record_batch(&["test_a"], |_| true); // duplicate
 
         assert_eq!(tracker.decided_count(), 1);
     }
