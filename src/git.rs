@@ -722,14 +722,17 @@ mod tests {
     async fn test_commit_touches_paths_merge_commit() -> Result<()> {
         let dir = init_temp_repo()?;
 
+        // Capture the initial branch name
+        let initial_branch = git_in(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"])?;
+
         // Create branch A with file changes
         git_in(dir.path(), &["checkout", "-b", "branch-a"])?;
         std::fs::write(dir.path().join("file-a.txt"), "branch a content")?;
         git_in(dir.path(), &["add", "file-a.txt"])?;
         git_in(dir.path(), &["commit", "-m", "add file-a"])?;
 
-        // Go back to main and create branch B
-        git_in(dir.path(), &["checkout", "main"])?;
+        // Go back to the initial branch and create branch B
+        git_in(dir.path(), &["checkout", &initial_branch])?;
         git_in(dir.path(), &["checkout", "-b", "branch-b"])?;
         std::fs::write(dir.path().join("file-b.txt"), "branch b content")?;
         git_in(dir.path(), &["add", "file-b.txt"])?;
