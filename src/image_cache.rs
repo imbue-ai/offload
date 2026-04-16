@@ -1,14 +1,15 @@
-//! Image cache resolution logic for sandbox image caching via git notes.
+//! Image cache resolution and orchestration for sandbox image caching via git notes.
 //!
 //! This module resolves checkpoint commits and their cached images by reading
-//! git notes. It does NOT build images or call providers -- it only reads
-//! existing cached data. Building and caching (writing notes, pushing) is
-//! done by the caller.
+//! git notes, resolves base commits for the caching pipeline, and writes
+//! cache notes after image builds.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use tracing::{info, warn};
 
+use crate::config::Config;
 use crate::config::schema::CheckpointConfig;
 use crate::git;
 
@@ -165,6 +166,153 @@ pub struct ResolvedBase {
     pub base_sha: String,
     pub cached_image_id: Option<String>,
     pub kind: BaseKind,
+}
+
+/// Resolve the base commit before provider dispatch.
+///
+/// When `no_cache` is false, fetches git notes and includes cached image IDs.
+/// When `no_cache` is true, resolves only the base SHA (no notes fetch/lookup).
+///
+/// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
+/// there are no commits (non-checkpoint workflow).
+pub async fn resolve_base(
+    repo: &Path,
+    config_path: &Path,
+    config: &Config,
+    no_cache: bool,
+) -> Option<ResolvedBase> {
+    // Check if we're in a git repo
+    if git::repo_root(repo).await.is_err() {
+        info!("Not in a git repo, skipping checkpoint/cache resolution");
+        return None;
+    }
+
+    if !no_cache {
+        // Best-effort fetch and configure notes
+        if let Err(e) = git::fetch_notes(repo, "origin").await {
+            warn!("Failed to fetch notes: {}", e);
+        }
+        if let Err(e) = git::configure_notes_fetch(repo, "origin").await {
+            warn!("Failed to configure notes fetch: {}", e);
+        }
+    }
+
+    // Checkpoint caching: if we have a [checkpoint] section, use checkpoint-based caching
+    if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
+        if no_cache {
+            // Resolve SHA only, no notes lookup
+            return match find_checkpoint_sha(repo, checkpoint_cfg, 100).await {
+                Ok(Some(sha)) => Some(ResolvedBase {
+                    base_sha: sha,
+                    cached_image_id: None,
+                    kind: BaseKind::Checkpoint,
+                }),
+                Ok(None) => {
+                    info!("No checkpoint commit found in ancestor window");
+                    None
+                }
+                Err(e) => {
+                    warn!("Checkpoint resolution failed (--no-cache): {}", e);
+                    None
+                }
+            };
+        }
+
+        let config_path_str = config_path.to_string_lossy();
+        return match resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100).await {
+            Ok(Some(info)) => Some(ResolvedBase {
+                base_sha: info.checkpoint_sha,
+                cached_image_id: info.cached_image.map(|c| c.image_id),
+                kind: BaseKind::Checkpoint,
+            }),
+            Ok(None) => {
+                info!("No checkpoint commit found in ancestor window");
+                None
+            }
+            Err(e) => {
+                warn!("Checkpoint resolution failed: {}", e);
+                None
+            }
+        };
+    }
+
+    // Latest-commit caching: no [checkpoint] config — use HEAD as base
+    if no_cache {
+        // Resolve SHA only, no notes lookup
+        return match git::head_sha(repo).await {
+            Ok(sha) => Some(ResolvedBase {
+                base_sha: sha,
+                cached_image_id: None,
+                kind: BaseKind::LatestCommit,
+            }),
+            Err(e) => {
+                warn!("HEAD SHA resolution failed (--no-cache): {}", e);
+                None
+            }
+        };
+    }
+
+    let config_path_str = config_path.to_string_lossy();
+    match resolve_latest_commit(repo, &config_path_str).await {
+        Ok(Some(info)) => Some(ResolvedBase {
+            base_sha: info.head_sha,
+            cached_image_id: info.cached_image.map(|c| c.image_id),
+            kind: BaseKind::LatestCommit,
+        }),
+        Ok(None) => {
+            info!("No commits found, skipping latest-commit caching");
+            None
+        }
+        Err(e) => {
+            warn!("Latest-commit resolution failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Write a git note for an image on a specific commit (best-effort).
+pub async fn write_note_for_commit(
+    repo: &Path,
+    commit_sha: &str,
+    image_id: &str,
+    config_path: &Path,
+) {
+    let config_path_str = config_path.to_string_lossy();
+
+    let config_key = match git::repo_root(repo).await {
+        Ok(root) => match git::canonicalize_config_path(&config_path_str, &root) {
+            Ok(key) => key,
+            Err(e) => {
+                warn!("Failed to canonicalize config path for note: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            warn!("Failed to get repo root for note: {}", e);
+            return;
+        }
+    };
+
+    let mut contents = git::NoteContents::new();
+    contents.insert(
+        config_key,
+        git::ImageEntry {
+            image_id: image_id.to_string(),
+        },
+    );
+
+    if let Err(e) = git::write_note(repo, commit_sha, &contents).await {
+        warn!("Failed to write note: {}", e);
+        return;
+    }
+    info!(
+        "Wrote image cache note on {}",
+        &commit_sha[..8.min(commit_sha.len())]
+    );
+
+    if let Err(e) = git::push_notes(repo, "origin").await {
+        warn!("Failed to push notes: {}", e);
+    }
 }
 
 #[cfg(test)]
