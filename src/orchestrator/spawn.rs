@@ -120,6 +120,22 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             continue;
         }
 
+        // Per-batch cancellation: create child token and register with incomplete tests
+        let child_token = cfg.cancellation_token.child_token();
+        let test_num_ids: Vec<usize> = batch
+            .tests
+            .iter()
+            .filter_map(|t| cfg.test_index.get(t.id()))
+            .collect();
+        if let Ok(mut registry) = cfg.incomplete_tests.lock() {
+            registry.register(
+                batch_idx,
+                &test_num_ids,
+                child_token.clone(),
+                &cfg.decided_flags,
+            );
+        }
+
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
         let _batch_span = cfg
             .tracer
@@ -142,7 +158,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             parts_dir,
             junit_report: Arc::clone(&cfg.junit_report),
             tracker: Arc::clone(&cfg.tracker),
-            cancellation_token: cfg.cancellation_token.clone(),
+            cancellation_token: child_token.clone(),
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
@@ -200,7 +216,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
         let outcome = tokio::select! {
             result = cfg.scheduler.register_running_batch(&batch, runner.run_tests(&batch.tests)) => result,
-            () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
+            () = child_token.cancelled() => Ok(BatchOutcome::Cancelled),
         };
 
         info!(
