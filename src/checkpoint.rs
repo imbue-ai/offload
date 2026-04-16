@@ -28,33 +28,36 @@ pub struct CheckpointInfo {
     pub cached_image: Option<CachedImage>,
 }
 
-/// Information about a resolved parent-commit base.
+/// Information about a resolved latest-commit base.
 #[derive(Debug, Clone)]
-pub struct ParentBaseInfo {
-    /// The SHA of the parent commit (HEAD~1).
-    pub parent_sha: String,
-    /// The cached image for this parent, if one exists in git notes.
+pub struct LatestCommitInfo {
+    /// The SHA of the latest commit (HEAD).
+    pub head_sha: String,
+    /// The cached image for this commit, if one exists in git notes.
     pub cached_image: Option<CachedImage>,
 }
 
-/// In non-checkpoint mode: resolve the parent commit and its cached image (if any).
+/// In non-checkpoint mode: resolve the latest commit (HEAD) and its cached image (if any).
 ///
-/// Returns `None` if this is the initial commit (no parent).
-/// Returns `Some(ParentBaseInfo { cached_image: None })` if the parent exists
+/// Returns `None` if there are no commits (empty repo).
+/// Returns `Some(LatestCommitInfo { cached_image: None })` if HEAD exists
 /// but has no cached image in git notes.
-pub async fn resolve_parent_base(repo: &Path, config_path: &str) -> Result<Option<ParentBaseInfo>> {
-    let parent = git::parent_sha(repo).await?;
-    let Some(parent_sha) = parent else {
-        return Ok(None);
+pub async fn resolve_latest_commit(
+    repo: &Path,
+    config_path: &str,
+) -> Result<Option<LatestCommitInfo>> {
+    let head_sha = match git::head_sha(repo).await {
+        Ok(sha) => sha,
+        Err(_) => return Ok(None),
     };
 
     let repo_root = git::repo_root(repo).await?;
     let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
 
-    let cached_image = read_cached_image_for_commit(repo, &parent_sha, &config_key).await?;
+    let cached_image = read_cached_image_for_commit(repo, &head_sha, &config_key).await?;
 
-    Ok(Some(ParentBaseInfo {
-        parent_sha,
+    Ok(Some(LatestCommitInfo {
+        head_sha,
         cached_image,
     }))
 }
@@ -325,66 +328,58 @@ mod tests {
         Ok(())
     }
 
-    // ---- Tests for resolve_parent_base ----
+    // ---- Tests for resolve_latest_commit ----
 
     #[tokio::test]
-    async fn test_resolve_parent_base_hit() -> Result<()> {
+    async fn test_resolve_latest_commit_hit() -> Result<()> {
         let dir = init_temp_repo()?;
-        let initial_sha = head_sha_in(dir.path())?;
+        let head = head_sha_in(dir.path())?;
 
-        // Write a note on the initial commit
+        // Write a note on HEAD
         let mut contents = NoteContents::new();
         contents.insert(
             "offload.toml".to_string(),
             ImageEntry {
-                image_id: "im-parent-cached".to_string(),
+                image_id: "im-head-cached".to_string(),
             },
         );
-        write_note_in(dir.path(), &initial_sha, &contents)?;
+        write_note_in(dir.path(), &head, &contents)?;
 
-        // Create a second commit so HEAD~1 = initial commit
-        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
-        git_cmd(dir.path(), &["add", "app.py"])?;
-        git_cmd(dir.path(), &["commit", "-m", "add app"])?;
+        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
 
-        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
-
-        let info = result.context("should find parent base")?;
-        assert_eq!(info.parent_sha, initial_sha);
+        let info = result.context("should find latest commit")?;
+        assert_eq!(info.head_sha, head);
         let cached = info.cached_image.context("should have cached image")?;
-        assert_eq!(cached.image_id, "im-parent-cached");
+        assert_eq!(cached.image_id, "im-head-cached");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_resolve_parent_base_miss() -> Result<()> {
+    async fn test_resolve_latest_commit_miss() -> Result<()> {
         let dir = init_temp_repo()?;
-        let initial_sha = head_sha_in(dir.path())?;
+        let head = head_sha_in(dir.path())?;
 
-        // Create a second commit (no note on initial commit)
-        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
-        git_cmd(dir.path(), &["add", "app.py"])?;
-        git_cmd(dir.path(), &["commit", "-m", "add app"])?;
+        // No note on HEAD
+        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
 
-        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
-
-        let info = result.context("should find parent base (miss still returns info)")?;
-        assert_eq!(info.parent_sha, initial_sha);
+        let info = result.context("should find latest commit (miss still returns info)")?;
+        assert_eq!(info.head_sha, head);
         assert!(
             info.cached_image.is_none(),
-            "no note on parent means no cached image"
+            "no note on HEAD means no cached image"
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_resolve_parent_base_initial_commit() -> Result<()> {
-        let dir = init_temp_repo()?;
-        // Only one commit — no parent
+    async fn test_resolve_latest_commit_empty_repo() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        git_cmd(dir.path(), &["init"])?;
+        // Empty repo — no commits
 
-        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
+        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
 
-        assert!(result.is_none(), "initial commit has no parent");
+        assert!(result.is_none(), "empty repo has no HEAD");
         Ok(())
     }
 }

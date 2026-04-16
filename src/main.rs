@@ -1054,15 +1054,15 @@ async fn run_tests(
 enum BaseKind {
     /// Nearest ancestor touching `build_inputs` (from `[checkpoint]` config).
     Checkpoint,
-    /// Parent commit (HEAD~1).
-    ParentBase,
+    /// Latest commit (HEAD).
+    LatestCommit,
 }
 
 impl BaseKind {
     fn label(&self) -> &'static str {
         match self {
             Self::Checkpoint => "Checkpoint",
-            Self::ParentBase => "Parent-commit",
+            Self::LatestCommit => "Latest-commit",
         }
     }
 }
@@ -1080,7 +1080,7 @@ struct ResolvedBase {
 /// When `no_cache` is true, resolves only the base SHA (no notes fetch/lookup).
 ///
 /// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
-/// this is an initial commit with no parent (non-checkpoint workflow).
+/// there are no commits (non-checkpoint workflow).
 async fn resolve_base(
     repo: &Path,
     config_path: &Path,
@@ -1144,39 +1144,35 @@ async fn resolve_base(
         };
     }
 
-    // Parent-commit caching: no [checkpoint] config — use parent commit as base
+    // Latest-commit caching: no [checkpoint] config — use HEAD as base
     if no_cache {
         // Resolve SHA only, no notes lookup
-        return match git::parent_sha(repo).await {
-            Ok(Some(sha)) => Some(ResolvedBase {
+        return match git::head_sha(repo).await {
+            Ok(sha) => Some(ResolvedBase {
                 base_sha: sha,
                 cached_image_id: None,
-                kind: BaseKind::ParentBase,
+                kind: BaseKind::LatestCommit,
             }),
-            Ok(None) => {
-                info!("Initial commit (no parent), skipping parent-commit caching");
-                None
-            }
             Err(e) => {
-                warn!("Parent SHA resolution failed (--no-cache): {}", e);
+                warn!("HEAD SHA resolution failed (--no-cache): {}", e);
                 None
             }
         };
     }
 
     let config_path_str = config_path.to_string_lossy();
-    match checkpoint::resolve_parent_base(repo, &config_path_str).await {
+    match checkpoint::resolve_latest_commit(repo, &config_path_str).await {
         Ok(Some(info)) => Some(ResolvedBase {
-            base_sha: info.parent_sha,
+            base_sha: info.head_sha,
             cached_image_id: info.cached_image.map(|c| c.image_id),
-            kind: BaseKind::ParentBase,
+            kind: BaseKind::LatestCommit,
         }),
         Ok(None) => {
-            info!("Initial commit (no parent), skipping parent-commit caching");
+            info!("No commits found, skipping latest-commit caching");
             None
         }
         Err(e) => {
-            warn!("Parent base resolution failed: {}", e);
+            warn!("Latest-commit resolution failed: {}", e);
             None
         }
     }
@@ -1294,39 +1290,31 @@ async fn checkpoint_status_handler(repo: &Path, config_path: &str, remote: &str)
             }
         }
     } else {
-        // Parent-commit mode: use HEAD~1 as base
-        let info = checkpoint::resolve_parent_base(repo, config_path)
+        // Latest-commit mode: use HEAD as base
+        let info = checkpoint::resolve_latest_commit(repo, config_path)
             .await
-            .context("Failed to resolve parent base")?;
+            .context("Failed to resolve latest commit")?;
 
         let Some(info) = info else {
-            println!("HEAD:               {}", short_head);
-            println!("Base commit:        (none -- initial commit)");
+            println!("HEAD:               (none -- empty repo)");
             println!("Next run mode:      full build");
             return Ok(());
         };
 
-        let short_base = &info.parent_sha[..8.min(info.parent_sha.len())];
+        let short_base = &info.head_sha[..8.min(info.head_sha.len())];
 
         match info.cached_image {
             Some(cached) => {
-                let run_mode = match git::diff_file_count(repo, &info.parent_sha, &head).await {
-                    Ok(count) => {
-                        format!("thin diff ({} files changed since parent)", count)
-                    }
-                    Err(_) => "thin diff".to_string(),
-                };
-
                 println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (parent, HEAD~1)", short_base);
+                println!("Base commit:        {} (latest commit, HEAD)", short_base);
                 println!("Cached image:       {}", cached.image_id);
-                println!("Next run mode:      {}", run_mode);
+                println!("Next run mode:      thin diff (uncommitted changes only)");
             }
             None => {
                 println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (parent, HEAD~1)", short_base);
+                println!("Base commit:        {} (latest commit, HEAD)", short_base);
                 println!("Cached image:       (none)");
-                println!("Next run mode:      full build (no cached parent image)");
+                println!("Next run mode:      full build (no cached image for HEAD)");
             }
         }
     }
