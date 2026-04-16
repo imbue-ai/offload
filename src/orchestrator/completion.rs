@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Tracks which tests have a decided outcome.
 ///
-/// Call [`record_batch`] after each batch returns to increment attempt counts
-/// and update the decided set. Owns [`DecidedFlags`] internally so that
+/// Call [`newly_complete_tests`] after each batch returns to increment attempt
+/// counts and update the decided set. Owns [`DecidedFlags`] internally so that
 /// lock-free decided-status checks stay in sync with the authoritative state.
 pub struct CompletionTracker {
     index: Arc<TestIndex>,
@@ -22,6 +22,7 @@ pub struct CompletionTracker {
     decided: Arc<DecidedFlags>,
     decided_count: usize,
     total_expected: usize,
+    incomplete: IncompleteTestsRegistry,
 }
 
 impl CompletionTracker {
@@ -35,6 +36,7 @@ impl CompletionTracker {
             decided,
             decided_count: 0,
             total_expected,
+            incomplete: IncompleteTestsRegistry::new(),
         }
     }
 
@@ -49,7 +51,9 @@ impl CompletionTracker {
     ///
     /// `is_passed` should return true if the test has passed or is flaky.
     /// Returns the numeric indices of tests that became newly decided.
-    pub fn record_batch(
+    /// Also notifies the internal [`IncompleteTestsRegistry`] so that
+    /// per-batch cancellation tokens fire when all tests are decided.
+    pub fn newly_complete_tests(
         &mut self,
         test_ids: &[&str],
         is_passed: impl Fn(&str) -> bool,
@@ -77,7 +81,24 @@ impl CompletionTracker {
                 newly_decided.push(num_id);
             }
         }
+        for &num_id in &newly_decided {
+            self.incomplete.notify_decided(num_id);
+        }
         newly_decided
+    }
+
+    /// Registers a running batch for per-batch cancellation.
+    ///
+    /// Already-decided tests are filtered out. If all tests are already
+    /// decided, the token is cancelled immediately.
+    pub fn register_batch(
+        &mut self,
+        batch_idx: usize,
+        test_num_ids: &[usize],
+        token: CancellationToken,
+    ) {
+        self.incomplete
+            .register(batch_idx, test_num_ids, token, &self.decided);
     }
 
     /// Number of tests with a decided outcome.
@@ -164,6 +185,11 @@ impl DecidedFlags {
 /// Shared via `Arc` between all incomplete tests in the batch. When the
 /// last test is decided and removed from the registry, the final clone
 /// drops and cancellation fires automatically.
+///
+/// Uses `Arc` (not `Rc`) because `CompletionTracker` is shared across worker
+/// tasks via `Arc<Mutex<...>>`, which requires the inner type to be `Send`.
+/// `Rc` is `!Send`. The atomic overhead is negligible since all access is
+/// serialized by the outer `Mutex`.
 struct BatchGuard {
     batch_idx: usize,
     token: CancellationToken,
@@ -187,18 +213,12 @@ impl Drop for BatchGuard {
 /// cancelled so the sandbox can be reclaimed early. This is achieved via
 /// `Arc<BatchGuard>`: each undecided test holds a clone, and when the last
 /// clone is dropped the `Drop` impl fires cancellation.
-pub struct IncompleteTestsRegistry {
+struct IncompleteTestsRegistry {
     test_to_guards: HashMap<usize, Vec<Arc<BatchGuard>>>,
 }
 
-impl Default for IncompleteTestsRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl IncompleteTestsRegistry {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             test_to_guards: HashMap::new(),
         }
@@ -208,7 +228,7 @@ impl IncompleteTestsRegistry {
     ///
     /// Already-decided tests (according to `decided`) are filtered out. If all
     /// tests are already decided, the token is cancelled immediately.
-    pub fn register(
+    fn register(
         &mut self,
         batch_idx: usize,
         test_num_ids: &[usize],
@@ -240,7 +260,7 @@ impl IncompleteTestsRegistry {
     ///
     /// Removes all guard references for this test. When a guard's last
     /// reference is dropped, its `Drop` impl cancels the batch token.
-    pub fn notify_decided(&mut self, test_num_id: usize) {
+    fn notify_decided(&mut self, test_num_id: usize) {
         self.test_to_guards.remove(&test_num_id);
     }
 }
@@ -256,7 +276,7 @@ mod tests {
         tracker.register_retries("test_a", 3);
         tracker.register_retries("test_b", 3);
 
-        let _ = tracker.record_batch(&["test_a", "test_b"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);
 
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
@@ -270,7 +290,7 @@ mod tests {
         tracker.register_retries("test_b", 3);
 
         // test_a passes, test_b fails (has retries remaining)
-        let _ = tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -284,11 +304,11 @@ mod tests {
         tracker.register_retries("test_b", 2);
 
         // Attempt 1: test_a passes, test_b fails
-        let _ = tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
         assert_eq!(tracker.decided_count(), 1);
 
         // Attempt 2: test_b fails again, retries exhausted
-        let _ = tracker.record_batch(&["test_b"], |_| false);
+        let _ = tracker.newly_complete_tests(&["test_b"], |_| false);
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
     }
@@ -300,7 +320,7 @@ mod tests {
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);
 
-        let _ = tracker.record_batch(&["test_a"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -312,8 +332,8 @@ mod tests {
         let mut tracker = CompletionTracker::new(1, index);
         tracker.register_retries("test_a", 1);
 
-        let _ = tracker.record_batch(&["test_a"], |_| true);
-        let _ = tracker.record_batch(&["test_a"], |_| true); // duplicate
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true); // duplicate
 
         assert_eq!(tracker.decided_count(), 1);
     }

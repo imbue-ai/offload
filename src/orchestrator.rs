@@ -349,9 +349,6 @@ where
         }
         let decided_flags = tracker.decided_flags();
         let tracker = Arc::new(std::sync::Mutex::new(tracker));
-        let incomplete_tests = Arc::new(std::sync::Mutex::new(
-            completion::IncompleteTestsRegistry::new(),
-        ));
         let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
@@ -420,7 +417,6 @@ where
                     tracker: Arc::clone(&tracker),
                     decided_flags: Arc::clone(&decided_flags),
                     test_index: Arc::clone(&test_index),
-                    incomplete_tests: Arc::clone(&incomplete_tests),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }

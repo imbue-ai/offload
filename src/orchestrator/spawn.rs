@@ -18,7 +18,7 @@ use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
-use super::completion::{CompletionTracker, DecidedFlags, IncompleteTestsRegistry, TestIndex};
+use super::completion::{CompletionTracker, DecidedFlags, TestIndex};
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 use super::scheduler::Scheduler;
 
@@ -46,7 +46,6 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub tracker: Arc<Mutex<CompletionTracker>>,
     pub decided_flags: Arc<DecidedFlags>,
     pub test_index: Arc<TestIndex>,
-    pub incomplete_tests: Arc<Mutex<IncompleteTestsRegistry>>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -127,13 +126,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             .iter()
             .filter_map(|t| cfg.test_index.get(t.id()))
             .collect();
-        if let Ok(mut registry) = cfg.incomplete_tests.lock() {
-            registry.register(
-                batch_idx,
-                &test_num_ids,
-                child_token.clone(),
-                &cfg.decided_flags,
-            );
+        if let Ok(mut tracker) = cfg.tracker.lock() {
+            tracker.register_batch(batch_idx, &test_num_ids, child_token.clone());
         }
 
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
@@ -163,7 +157,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
             },
-            incomplete_tests: Arc::clone(&cfg.incomplete_tests),
         };
         let mut runner = TestRunner::new(
             sandbox,
@@ -271,7 +264,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Update progress from tracker (record_batch already called inside runner)
+        // Update progress from tracker (newly_complete_tests already called inside runner)
         if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);

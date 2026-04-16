@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::orchestrator::completion::{CompletionTracker, IncompleteTestsRegistry};
+use crate::orchestrator::completion::CompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
@@ -58,7 +58,6 @@ pub struct RunnerConfig {
     pub tracker: Arc<Mutex<CompletionTracker>>,
     pub cancellation_token: CancellationToken,
     pub artifacts: ArtifactConfig,
-    pub incomplete_tests: Arc<Mutex<IncompleteTestsRegistry>>,
 }
 
 /// Executes tests within a single sandbox.
@@ -90,8 +89,6 @@ pub struct TestRunner<'a, S, D> {
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
     tracker: Arc<Mutex<CompletionTracker>>,
-    /// Registry of incomplete tests for per-batch cancellation.
-    incomplete_tests: Arc<Mutex<IncompleteTestsRegistry>>,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -145,7 +142,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             fail_fast: config.fail_fast,
             artifact_config: config.artifacts,
             tracker: config.tracker,
-            incomplete_tests: config.incomplete_tests,
         }
     }
 
@@ -415,22 +411,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                             after - before
                         );
 
-                        // Record batch results and get newly decided test indices
-                        let newly_decided = if let Ok(mut t) = self.tracker.lock() {
-                            t.record_batch(
+                        // Record batch results (registry notification is internal)
+                        if let Ok(mut t) = self.tracker.lock() {
+                            t.newly_complete_tests(
                                 &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                                 |id| report.has_test_passed(id),
-                            )
-                        } else {
-                            Vec::new()
-                        };
-                        // Notify incomplete-tests registry (tracker lock released)
-                        if !newly_decided.is_empty()
-                            && let Ok(mut reg) = self.incomplete_tests.lock()
-                        {
-                            for idx in newly_decided {
-                                reg.notify_decided(idx);
-                            }
+                            );
                         }
                     }
                     Err(e) => {
