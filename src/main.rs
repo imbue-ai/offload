@@ -251,6 +251,75 @@ async fn discover_all_tests(
     Ok(all_tests)
 }
 
+/// Read `.dockerignore` patterns from the current directory.
+///
+/// Returns an empty vec if the file does not exist. Skips blank lines and
+/// comments (lines starting with `#`), matching the behaviour of
+/// `read_dockerignore_patterns()` in `modal_sandbox.py`.
+fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
+    let path = cwd.join(".dockerignore");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    contents
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Copy the working directory into a temporary directory for use as build context.
+///
+/// This produces a frozen snapshot so that files modified by other processes
+/// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
+/// when Modal uploads the context.
+///
+/// If a `.dockerignore` file is present, its patterns are passed as `--exclude`
+/// rules to `rsync` so that large ignored trees (`.git`, `.venv`, etc.) are
+/// never copied, keeping the snapshot fast.
+fn snapshot_working_directory(tracer: &offload::trace::Tracer) -> Result<tempfile::TempDir> {
+    let _span = tracer.span(
+        "snapshot_cwd",
+        "local",
+        offload::trace::PID_LOCAL,
+        offload::trace::TID_MAIN,
+    );
+
+    let snapshot = tempfile::tempdir()
+        .context("Failed to create temporary directory for build context snapshot")?;
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+
+    let ignore_patterns = read_dockerignore_patterns(&cwd);
+
+    // rsync requires a trailing slash on the source to copy *contents* into dest.
+    let mut src = cwd.as_os_str().to_os_string();
+    src.push("/");
+
+    let mut cmd = std::process::Command::new("rsync");
+    cmd.arg("-a");
+    for pattern in &ignore_patterns {
+        cmd.arg(format!("--exclude={pattern}"));
+    }
+    cmd.arg("--");
+    cmd.arg(&src);
+    cmd.arg(snapshot.path());
+
+    let status = cmd
+        .status()
+        .context("Failed to spawn rsync for working directory snapshot")?;
+    if !status.success() {
+        return Err(anyhow!("rsync failed with exit code {:?}", status.code()));
+    }
+    info!(
+        "Snapshotted working directory into {} (excluded {} .dockerignore pattern(s))",
+        snapshot.path().display(),
+        ignore_patterns.len(),
+    );
+    Ok(snapshot)
+}
+
 /// Discover tests concurrently with provider preparation, signalling completion.
 async fn discover_with_signal(
     framework: &FrameworkConfig,
@@ -795,6 +864,10 @@ async fn run_with_caching<P: SandboxProvider>(
         ProviderConfig::Modal(_) => "Modal",
     };
 
+    // Snapshot the working directory so the upload operates on a frozen
+    // copy, avoiding races where files are modified during upload.
+    let context_snapshot = snapshot_working_directory(tracer)?;
+
     let (all_tests, _prepare_result) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
         async {
@@ -809,7 +882,7 @@ async fn run_with_caching<P: SandboxProvider>(
                 no_cache,
                 config.offload.sandbox_init_cmd.as_deref(),
                 Some(&discovery_done),
-                None,
+                Some(context_snapshot.path()),
             ))
             .context(format!("Failed to prepare {} provider", label))
         }
