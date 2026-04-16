@@ -524,6 +524,74 @@ mod tests {
         Ok(())
     }
 
+    // ---- generate_checkpoint_diff tests ----
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_no_changes() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
+
+        let result = generate_checkpoint_diff(&sha).await?;
+        assert!(
+            result.is_none(),
+            "expected None when working tree matches commit"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_tracked_modification() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Modify a tracked file without committing
+        std::fs::write(dir.path().join("README.md"), "# modified content")?;
+
+        let _guard = CwdGuard::set(dir.path())?;
+        let result = generate_checkpoint_diff(&sha).await?;
+
+        let patch_file = result.context("expected Some patch for tracked modification")?;
+        let patch_content = std::fs::read_to_string(patch_file.path())?;
+        assert!(!patch_content.is_empty(), "patch should be non-empty");
+        assert!(
+            patch_content.contains("README.md"),
+            "patch should reference the modified file"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_untracked_file() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Add a new untracked file (not git-added)
+        std::fs::write(dir.path().join("untracked.txt"), "new file content")?;
+
+        let _guard = CwdGuard::set(dir.path())?;
+        let result = generate_checkpoint_diff(&sha).await?;
+
+        let patch_file = result.context("expected Some patch for untracked file")?;
+        let patch_content = std::fs::read_to_string(patch_file.path())?;
+        assert!(!patch_content.is_empty(), "patch should be non-empty");
+        assert!(
+            patch_content.contains("untracked.txt"),
+            "patch should reference the untracked file"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_invalid_sha() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let _guard = CwdGuard::set(dir.path())?;
+
+        let result = generate_checkpoint_diff("0000000000000000000000000000000000000000").await;
+        assert!(result.is_err(), "expected error for invalid SHA");
+        Ok(())
+    }
+
     // ---- Integration tests (temp git repos) ----
 
     #[tokio::test]
