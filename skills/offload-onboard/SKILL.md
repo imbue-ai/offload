@@ -320,9 +320,11 @@ The optimal `max_parallel` depends on the number of test files and per-test dura
 
 Report the results as a table to the user and set the optimal values in `offload.toml`.
 
-### Step 11: Enable Checkpoint Mode (optional)
+### Step 11: Enable Checkpoint Mode
 
-**Skip this step if the project has fast dependency installs (under ~30 seconds).** Checkpoint mode is most useful for repositories where dependency installation or build steps are expensive (e.g. large `requirements.txt`, monorepo `uv sync --all-packages`, heavy `cargo build`).
+Checkpoint mode enables fast incremental image builds by caching a base image at the most recent commit that changed dependency files, then applying a thin diff for subsequent runs. This avoids full image rebuilds on every run and is **recommended for all projects**.
+
+**Skip this step only if** the project's build inputs cannot be reliably determined — for example, if dependency files are dynamically generated, scattered across many locations with no fixed pattern, or the project uses an unusual build system where it is unclear which files affect the sandbox image.
 
 To enable checkpoint mode, add a `[checkpoint]` section to `offload.toml` listing the files whose changes should trigger a full image rebuild:
 
@@ -343,12 +345,13 @@ Common `build_inputs` patterns:
 | Python (poetry) | `Dockerfile`, `pyproject.toml`, `poetry.lock` |
 | Rust | `Dockerfile`, `Cargo.toml`, `Cargo.lock` |
 | Node.js | `Dockerfile`, `package.json`, `package-lock.json` |
+| Monorepo | `Dockerfile`, plus the relevant lockfile(s) and manifest(s) for the package under test |
+
+Include the Dockerfile itself in `build_inputs` — changes to the base image should always trigger a full rebuild. Also include lockfiles (e.g. `uv.lock`, `Cargo.lock`, `package-lock.json`) since they pin exact dependency versions.
 
 **Dockerfile requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs on top of the checkpoint image. The Dockerfile must install `git` in the image. If `git` is not installed, thin diff will fail and Offload falls back to a full build (with a warning). The Dockerfile templates in Step 3 already include `git`, but if you are using an existing Dockerfile, verify that `git` is present.
 
 After adding the section, run `offload validate` to check the config and `offload checkpoint-status` to verify checkpoint detection.
-
-This step is optional. Repositories without a `[checkpoint]` section still benefit from per-commit image caching via git notes -- every `offload run` caches its image so that repeated runs against the same commit reuse the cached image.
 
 ### Step 12: Update Agent/Project Instructions (if desired)
 
