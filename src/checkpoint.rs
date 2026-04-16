@@ -26,13 +26,21 @@ pub struct CheckpointInfo {
     pub cached_image: Option<CachedImage>,
 }
 
-/// In non-checkpoint mode: look up the parent commit's cached image.
+/// Information about a resolved parent-commit base.
+#[derive(Debug, Clone)]
+pub struct ParentBaseInfo {
+    /// The SHA of the parent commit (HEAD~1).
+    pub parent_sha: String,
+    /// The cached image for this parent, if one exists in git notes.
+    pub cached_image: Option<CachedImage>,
+}
+
+/// In non-checkpoint mode: resolve the parent commit and its cached image (if any).
 ///
-/// Returns `Some((parent_sha, image_id))` if the parent commit (HEAD~1)
-/// has a cached image in git notes for the given config path.
-/// Returns `None` if this is the initial commit (no parent) or the parent
-/// has no cached image.
-pub async fn resolve_parent_base(config_path: &str) -> Result<Option<(String, String)>> {
+/// Returns `None` if this is the initial commit (no parent).
+/// Returns `Some(ParentBaseInfo { cached_image: None })` if the parent exists
+/// but has no cached image in git notes.
+pub async fn resolve_parent_base(config_path: &str) -> Result<Option<ParentBaseInfo>> {
     let parent = git::parent_sha().await?;
     let Some(parent_sha) = parent else {
         return Ok(None);
@@ -41,15 +49,12 @@ pub async fn resolve_parent_base(config_path: &str) -> Result<Option<(String, St
     let repo_root = git::repo_root().await?;
     let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
 
-    let note = git::read_note(&parent_sha).await?;
-    let Some(contents) = note else {
-        return Ok(None);
-    };
+    let cached_image = read_cached_image_for_commit(&parent_sha, &config_key).await?;
 
-    match contents.get(&config_key) {
-        Some(entry) if !entry.image_id.is_empty() => Ok(Some((parent_sha, entry.image_id.clone()))),
-        _ => Ok(None),
-    }
+    Ok(Some(ParentBaseInfo {
+        parent_sha,
+        cached_image,
+    }))
 }
 
 /// Find the nearest checkpoint ancestor SHA without reading git notes.
@@ -366,15 +371,17 @@ mod tests {
         let _guard = CwdGuard::set(dir.path())?;
         let result = resolve_parent_base("offload.toml").await?;
 
-        let (parent_sha, image_id) = result.context("should find parent base")?;
-        assert_eq!(parent_sha, initial_sha);
-        assert_eq!(image_id, "im-parent-cached");
+        let info = result.context("should find parent base")?;
+        assert_eq!(info.parent_sha, initial_sha);
+        let cached = info.cached_image.context("should have cached image")?;
+        assert_eq!(cached.image_id, "im-parent-cached");
         Ok(())
     }
 
     #[tokio::test]
     async fn test_resolve_parent_base_miss() -> Result<()> {
         let dir = init_temp_repo()?;
+        let initial_sha = head_sha_in(dir.path())?;
 
         // Create a second commit (no note on initial commit)
         std::fs::write(dir.path().join("app.py"), "print('hello')")?;
@@ -384,7 +391,12 @@ mod tests {
         let _guard = CwdGuard::set(dir.path())?;
         let result = resolve_parent_base("offload.toml").await?;
 
-        assert!(result.is_none(), "no note on parent means no cached base");
+        let info = result.context("should find parent base (miss still returns info)")?;
+        assert_eq!(info.parent_sha, initial_sha);
+        assert!(
+            info.cached_image.is_none(),
+            "no note on parent means no cached image"
+        );
         Ok(())
     }
 
