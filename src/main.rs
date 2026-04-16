@@ -22,7 +22,7 @@ use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
     SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
 };
-use offload::{git, image_cache, with_retry};
+use offload::{image_cache, with_retry};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
         Commands::CheckpointStatus { remote } => {
             let cwd = std::env::current_dir().context("failed to get current directory")?;
             let config_path_str = cli.config.to_string_lossy().to_string();
-            checkpoint_status_handler(&cwd, &config_path_str, &remote).await
+            image_cache::status_handler(&cwd, &config_path_str, &remote).await
         }
         Commands::Logs {
             failures,
@@ -417,226 +417,13 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
-/// Build a thin-diff image on top of a checkpoint base image.
-///
-/// Generates a git diff on the Rust side, then calls the Python script with
-/// `--patch-file` if there are changes. If no changes exist, returns the
-/// base image ID directly without invoking Python.
-async fn build_thin_diff_image(
-    repo: &Path,
-    base_image_id: &str,
-    checkpoint_sha: &str,
-    sandbox_project_root: &str,
-    discovery_done: Option<&AtomicBool>,
-) -> Result<String, offload::provider::ProviderError> {
-    use futures::StreamExt;
-    use offload::connector::Connector;
-    use offload::provider::{OutputLine, ProviderError};
-
-    // Generate diff on the Rust side
-    let patch_file = git::generate_checkpoint_diff(repo, checkpoint_sha)
-        .await
-        .map_err(|e| {
-            ProviderError::ExecFailed(format!("failed to generate checkpoint diff: {e}"))
-        })?;
-
-    // If no changes, reuse the base image directly -- no Python call needed
-    let patch_file = match patch_file {
-        Some(f) => f,
-        None => {
-            if let Some(flag) = discovery_done {
-                // Wait for discovery to finish before printing
-                while !flag.load(Ordering::Acquire) {
-                    tokio::task::yield_now().await;
-                }
-            }
-            eprintln!("[prepare] No changes since checkpoint, reusing image");
-            return Ok(base_image_id.to_string());
-        }
-    };
-
-    let patch_path = patch_file.path().to_string_lossy().to_string();
-
-    let cmd = format!(
-        "uv run @modal_sandbox.py prepare --from-checkpoint={} --patch-file={} --sandbox-project-root={}",
-        base_image_id, patch_path, sandbox_project_root
-    );
-    let connector = offload::connector::ShellConnector::new();
-
-    // Buffer output while discovery is in progress, then flush
-    let mut buffer: Vec<String> = Vec::new();
-    let emit = |msg: String, buf: &mut Vec<String>| {
-        if discovery_done.is_some_and(|flag| !flag.load(Ordering::Acquire)) {
-            buf.push(msg);
-        } else {
-            for buffered in buf.drain(..) {
-                eprintln!("{}", buffered);
-            }
-            eprintln!("{}", msg);
-        }
-    };
-
-    emit(
-        "[prepare] Building thin diff image...".to_string(),
-        &mut buffer,
-    );
-
-    let mut stream = connector.run_stream(&cmd).await?;
-    let mut last_stdout_line = String::new();
-    let mut exit_code = 0;
-
-    while let Some(line) = stream.next().await {
-        match line {
-            OutputLine::Stdout(s) => {
-                emit(format!("[prepare]   {}", s), &mut buffer);
-                last_stdout_line = s;
-            }
-            OutputLine::Stderr(s) => {
-                emit(format!("[prepare]   {}", s), &mut buffer);
-            }
-            OutputLine::ExitCode(code) => {
-                exit_code = code;
-            }
-        }
-    }
-
-    // Flush any remaining buffered output
-    for buffered in buffer.drain(..) {
-        eprintln!("{}", buffered);
-    }
-
-    // patch_file is dropped here, cleaning up the temp file
-
-    if exit_code != 0 {
-        return Err(ProviderError::ExecFailed(format!(
-            "thin diff prepare command failed with exit code {}",
-            exit_code
-        )));
-    }
-
-    let image_id = last_stdout_line.trim().to_string();
-
-    if image_id.is_empty() {
-        return Err(ProviderError::ExecFailed(
-            "thin diff prepare command returned empty image_id".to_string(),
-        ));
-    }
-
-    Ok(image_id)
-}
-
-/// Outcome of the base-build pipeline (export tree + build base + thin diff).
-///
-/// Used to communicate results back to the caller without consuming the provider.
-enum BaseBuildOutcome {
-    /// Pipeline succeeded: contains the target image ID and discovered tests.
-    Success {
-        target_id: String,
-        all_tests: Vec<TestRecord>,
-    },
-    /// Pipeline completed but thin diff failed. Caller should fall through to full build.
-    ThinDiffFailed,
-    /// Base build returned no image_id.
-    NoBuild,
-}
-
-/// Run the base-build pipeline: export tree, build base image, optionally write note, thin diff.
-///
-/// Used by both cache-miss and `--no-cache` paths. When `note_config_path` is `Some`,
-/// a git note is written after the base build. When `None`, note writing is skipped.
+/// Shared logic for Default and Modal provider arms: prewarm image cache,
+/// concurrent discovery, fallback to full build, and framework dispatch.
 #[allow(clippy::too_many_arguments)]
-async fn run_base_build_pipeline<P: SandboxProvider>(
-    repo: &Path,
-    provider: &mut P,
-    config: &Config,
-    base_sha: &str,
-    copy_dir_tuples: &[(PathBuf, PathBuf)],
-    no_cache: bool,
-    tracer: &offload::trace::Tracer,
-    note_config_path: Option<&Path>,
-    discovery_done: &AtomicBool,
-) -> Result<BaseBuildOutcome> {
-    // Export base tree
-    let tree_dir = tempfile::tempdir().context("failed to create temp dir for base tree")?;
-    git::export_tree(repo, base_sha, tree_dir.path())
-        .await
-        .with_context(|| format!("failed to export tree for {}", base_sha))?;
-
-    // Build base image from exported tree (normal prepare with context_dir)
-    eprintln!("[prepare] Building base image...");
-    let base_image_id = {
-        let _span = tracer.span(
-            "checkpoint_base_prepare",
-            "local",
-            offload::trace::PID_LOCAL,
-            offload::trace::TID_MAIN,
-        );
-        with_retry!(provider.prepare(
-            copy_dir_tuples,
-            no_cache,
-            config.offload.sandbox_init_cmd.as_deref(),
-            None,
-            Some(tree_dir.path()),
-        ))
-        .context("Failed to build base image")?
-    };
-
-    // Write note if config_path provided (i.e. not --no-cache)
-    if let (Some(cfg_path), Some(base_id)) = (note_config_path, &base_image_id) {
-        image_cache::write_note_for_commit(repo, base_sha, base_id, cfg_path).await;
-    }
-
-    // Build thin diff on top
-    let Some(base_id) = base_image_id else {
-        return Ok(BaseBuildOutcome::NoBuild);
-    };
-
-    let (all_tests, thin_diff_result) = tokio::try_join!(
-        discover_with_signal(&config.framework, &config.groups, discovery_done),
-        async {
-            let _span = tracer.span(
-                "thin_diff",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            Ok::<_, anyhow::Error>(
-                build_thin_diff_image(
-                    repo,
-                    &base_id,
-                    base_sha,
-                    &config.offload.sandbox_project_root,
-                    Some(discovery_done),
-                )
-                .await,
-            )
-        }
-    )?;
-
-    match thin_diff_result {
-        Ok(target_id) => Ok(BaseBuildOutcome::Success {
-            target_id,
-            all_tests,
-        }),
-        Err(e) => {
-            warn!(
-                "Thin diff failed after base build, falling back to full build: {}",
-                e
-            );
-            eprintln!("[cache] Thin diff failed, falling back to full build");
-            Ok(BaseBuildOutcome::ThinDiffFailed)
-        }
-    }
-}
-
-/// Shared logic for Default and Modal provider arms: checkpoint caching pipeline,
-/// concurrent discovery + prepare, and framework dispatch.
-#[allow(clippy::too_many_arguments)]
-async fn run_with_caching<P: SandboxProvider>(
+async fn run_remote_provider<P: SandboxProvider>(
     repo: &Path,
     mut provider: P,
     config: &Config,
-    resolved_base: &Option<ResolvedBase>,
     copy_dir_tuples: &[(PathBuf, PathBuf)],
     copy_dirs: &[CopyDir],
     no_cache: bool,
@@ -647,186 +434,92 @@ async fn run_with_caching<P: SandboxProvider>(
     config_path: &Path,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
-    // Note-writing config path: only write notes when caching is enabled.
-    let note_config = if no_cache { None } else { Some(config_path) };
 
-    if let Some(resolved) = resolved_base.as_ref() {
-        let base_sha = resolved.base_sha.as_str();
-        let label = resolved.kind.label();
-
-        // --- Stage 1: Cache hit — thin diff on cached image ---
-        if let Some(image_id) = resolved.cached_image_id.as_deref() {
-            eprintln!(
-                "[cache] {} hit: using cached image from {}",
-                label,
-                &base_sha[..8.min(base_sha.len())]
-            );
-
-            let (all_tests, thin_diff_result) = tokio::try_join!(
-                discover_with_signal(&config.framework, &config.groups, &discovery_done),
-                async {
-                    let _span = tracer.span(
-                        "thin_diff",
-                        "local",
-                        offload::trace::PID_LOCAL,
-                        offload::trace::TID_MAIN,
-                    );
-                    Ok::<_, anyhow::Error>(
-                        build_thin_diff_image(
-                            repo,
-                            image_id,
-                            base_sha,
-                            &config.offload.sandbox_project_root,
-                            Some(&discovery_done),
-                        )
-                        .await,
-                    )
-                }
-            )?;
-
-            match thin_diff_result {
-                Ok(target_id) => {
-                    provider.set_image_id(target_id);
-                    if all_tests.is_empty() {
-                        return Ok(None);
-                    }
-                    return dispatch_framework(
-                        config,
-                        &all_tests,
-                        provider,
-                        copy_dirs,
-                        verbose,
-                        tracer,
-                        show_estimated_cost,
-                        fail_fast,
-                    )
-                    .await
-                    .map(Some);
-                }
-                Err(e) => {
-                    warn!(
-                        "{} thin diff failed, falling back to base build: {}",
-                        label, e
-                    );
-                    eprintln!(
-                        "[cache] {} thin diff failed, falling back to base build",
-                        label
-                    );
-                    // Fall through to stage 2
-                }
-            }
-        }
-
-        // --- Stage 2: Base build — export tree, build base, write note, thin diff ---
-        if no_cache {
-            eprintln!(
-                "[prepare] --no-cache with {}: building from {} (no cache lookup)",
-                label,
-                &base_sha[..8.min(base_sha.len())]
-            );
-        } else {
-            eprintln!(
-                "[cache] {} miss: no cached image for {} — building base",
-                label,
-                &base_sha[..8.min(base_sha.len())]
-            );
-        }
-
-        match run_base_build_pipeline(
-            repo,
-            &mut provider,
-            config,
-            base_sha,
-            copy_dir_tuples,
-            no_cache,
-            tracer,
-            note_config,
-            &discovery_done,
-        )
-        .await?
-        {
-            BaseBuildOutcome::Success {
-                target_id,
-                all_tests,
-            } => {
-                provider.set_image_id(target_id);
-                if all_tests.is_empty() {
-                    return Ok(None);
-                }
-                return dispatch_framework(
-                    config,
-                    &all_tests,
-                    provider,
-                    copy_dirs,
-                    verbose,
-                    tracer,
-                    show_estimated_cost,
-                    fail_fast,
-                )
-                .await
-                .map(Some);
-            }
-            BaseBuildOutcome::ThinDiffFailed | BaseBuildOutcome::NoBuild => {
-                // Fall through to stage 3
-            }
-        }
-    }
-
-    // --- Stage 3: Full build — snapshot working dir, prepare from scratch ---
-    let provider_label = match &config.provider {
-        ProviderConfig::Local(_) => "Local",
-        ProviderConfig::Default(_) => "Default",
-        ProviderConfig::Modal(_) => "Modal",
+    let prewarm_ctx = image_cache::PrewarmContext {
+        repo,
+        config,
+        config_path,
+        copy_dir_tuples,
+        no_cache,
+        tracer,
+        discovery_done: &discovery_done,
     };
 
-    // Snapshot the working directory so the upload operates on a frozen
-    // copy, avoiding races where files are modified during upload.
-    let context_snapshot = snapshot_working_directory(tracer)?;
-
-    let (all_tests, prepare_result) = tokio::try_join!(
+    // Run discovery concurrently with the prewarm pipeline
+    let (all_tests, prewarm_result) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
-        async {
-            let _span = tracer.span(
-                "image_prepare",
-                "local",
-                offload::trace::PID_LOCAL,
-                offload::trace::TID_MAIN,
-            );
-            with_retry!(provider.prepare(
-                copy_dir_tuples,
-                no_cache,
-                config.offload.sandbox_init_cmd.as_deref(),
-                Some(&discovery_done),
-                Some(context_snapshot.path()),
-            ))
-            .context(format!("Failed to prepare {} provider", provider_label))
-        }
+        provider.prewarm_image_cache(&prewarm_ctx),
     )?;
 
-    // Write cache note for the full build if caching is enabled and we have a base SHA.
-    if let (Some(cfg_path), Some(resolved), Some(image_id)) = (
-        note_config,
-        resolved_base.as_ref(),
-        prepare_result.as_deref(),
-    ) {
-        image_cache::write_note_for_commit(repo, &resolved.base_sha, image_id, cfg_path).await;
-    }
+    match prewarm_result {
+        image_cache::PrewarmOutcome::Resolved { .. } => {
+            // Provider already has image_id set internally
+            if all_tests.is_empty() {
+                return Ok(None);
+            }
+            dispatch_framework(
+                config,
+                &all_tests,
+                provider,
+                copy_dirs,
+                verbose,
+                tracer,
+                show_estimated_cost,
+                fail_fast,
+            )
+            .await
+            .map(Some)
+        }
+        image_cache::PrewarmOutcome::CacheMiss { base_sha } => {
+            // Stage 3: Full build -- snapshot working dir, prepare from scratch
+            let provider_label = match &config.provider {
+                ProviderConfig::Local(_) => "Local",
+                ProviderConfig::Default(_) => "Default",
+                ProviderConfig::Modal(_) => "Modal",
+            };
 
-    if all_tests.is_empty() {
-        return Ok(None);
+            let context_snapshot = snapshot_working_directory(tracer)?;
+
+            let prepare_result = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                with_retry!(provider.prepare(
+                    copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                    Some(&discovery_done),
+                    Some(context_snapshot.path()),
+                ))
+                .context(format!("Failed to prepare {} provider", provider_label))?
+            };
+
+            // Write cache note for the full build if caching is enabled.
+            if !no_cache && let (Some(sha), Some(image_id)) = (&base_sha, prepare_result.as_deref())
+            {
+                image_cache::write_note_for_commit(repo, sha, image_id, config_path).await;
+            }
+
+            if all_tests.is_empty() {
+                return Ok(None);
+            }
+            dispatch_framework(
+                config,
+                &all_tests,
+                provider,
+                copy_dirs,
+                verbose,
+                tracer,
+                show_estimated_cost,
+                fail_fast,
+            )
+            .await
+            .map(Some)
+        }
     }
-    dispatch_framework(
-        config,
-        &all_tests,
-        provider,
-        copy_dirs,
-        verbose,
-        tracer,
-        show_estimated_cost,
-        fail_fast,
-    )
-    .await
-    .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -947,25 +640,10 @@ async fn run_tests(
     // Resolve cwd once for threading through git/checkpoint calls
     let cwd = std::env::current_dir().context("failed to get current directory")?;
 
-    // Resolve base commit for non-local providers.
-    // When --no-cache, resolves the base SHA without fetching/reading notes.
-    // When caching is enabled, also fetches notes and reads cached image IDs.
-    let resolved_base = if !matches!(&config.provider, ProviderConfig::Local(_)) {
-        let _span = tracer.span(
-            "resolve_base",
-            "local",
-            offload::trace::PID_LOCAL,
-            offload::trace::TID_MAIN,
-        );
-        image_cache::resolve_base(&cwd, config_path, &config, no_cache).await
-    } else {
-        None
-    };
-
     // Phase 1+2: Discover tests and prepare provider (concurrently where possible)
     let exit_code = match &config.provider {
         ProviderConfig::Local(p_cfg) => {
-            // Local provider is synchronous — no concurrency benefit
+            // Local provider is synchronous -- no concurrency benefit
             eprint!("Discovering tests... ");
             let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
             eprintln!(
@@ -991,11 +669,10 @@ async fn run_tests(
         }
         ProviderConfig::Default(p_cfg) => {
             let provider = DefaultProvider::from_config(p_cfg.clone());
-            match run_with_caching(
+            match run_remote_provider(
                 &cwd,
                 provider,
                 &config,
-                &resolved_base,
                 &copy_dir_tuples,
                 &copy_dirs,
                 no_cache,
@@ -1013,11 +690,10 @@ async fn run_tests(
         }
         ProviderConfig::Modal(p_cfg) => {
             let provider = ModalProvider::from_config(p_cfg.clone());
-            match run_with_caching(
+            match run_remote_provider(
                 &cwd,
                 provider,
                 &config,
-                &resolved_base,
                 &copy_dir_tuples,
                 &copy_dirs,
                 no_cache,
@@ -1045,112 +721,6 @@ async fn run_tests(
 
     if exit_code != 0 {
         std::process::exit(exit_code);
-    }
-
-    Ok(())
-}
-
-use image_cache::ResolvedBase;
-
-/// Show checkpoint/cache status for the current HEAD.
-async fn checkpoint_status_handler(repo: &Path, config_path: &str, remote: &str) -> Result<()> {
-    let path = Path::new(config_path);
-    let config = config::load_config(path)
-        .with_context(|| format!("Failed to load config from {}", config_path))?;
-
-    // Best-effort fetch and configure notes
-    let _ = git::fetch_notes(repo, remote).await;
-    let _ = git::configure_notes_fetch(repo, remote).await;
-
-    let head = git::head_sha(repo)
-        .await
-        .context("Failed to get HEAD SHA")?;
-    let short_head = &head[..8.min(head.len())];
-
-    if let Some(ref checkpoint_cfg) = config.checkpoint {
-        // Checkpoint mode: find nearest ancestor touching build_inputs
-        let info = image_cache::resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
-            .await
-            .context("Failed to resolve checkpoint")?;
-
-        let Some(info) = info else {
-            println!("HEAD:               {}", short_head);
-            println!("Base commit:        (no checkpoint found in last 100 commits)");
-            println!("Next run mode:      full build (no checkpoint found)");
-            return Ok(());
-        };
-
-        let short_base = &info.checkpoint_sha[..8.min(info.checkpoint_sha.len())];
-
-        // Compute distance by finding the checkpoint SHA in the ancestor list
-        let distance = match git::ancestors(repo, 100).await {
-            Ok(ancestors) => ancestors.iter().position(|sha| sha == &info.checkpoint_sha),
-            Err(_) => None,
-        };
-        let distance_label = match distance {
-            Some(d) => format!("{} commits back", d),
-            None => "unknown distance".to_string(),
-        };
-
-        match info.cached_image {
-            Some(cached) => {
-                let run_mode = if info.checkpoint_sha == head {
-                    "use checkpoint image directly (HEAD is the checkpoint)".to_string()
-                } else {
-                    match git::diff_file_count(repo, &info.checkpoint_sha, &head).await {
-                        Ok(count) => {
-                            format!("thin diff ({} files changed since checkpoint)", count)
-                        }
-                        Err(_) => "thin diff".to_string(),
-                    }
-                };
-
-                println!("HEAD:               {}", short_head);
-                println!(
-                    "Base commit:        {} (checkpoint, {})",
-                    short_base, distance_label
-                );
-                println!("Cached image:       {}", cached.image_id);
-                println!("Next run mode:      {}", run_mode);
-            }
-            None => {
-                println!("HEAD:               {}", short_head);
-                println!(
-                    "Base commit:        {} (checkpoint, {})",
-                    short_base, distance_label
-                );
-                println!("Cached image:       (none)");
-                println!("Next run mode:      full build (no cached checkpoint image)");
-            }
-        }
-    } else {
-        // Latest-commit mode: use HEAD as base
-        let info = image_cache::resolve_latest_commit(repo, config_path)
-            .await
-            .context("Failed to resolve latest commit")?;
-
-        let Some(info) = info else {
-            println!("HEAD:               (none -- empty repo)");
-            println!("Next run mode:      full build");
-            return Ok(());
-        };
-
-        let short_base = &info.head_sha[..8.min(info.head_sha.len())];
-
-        match info.cached_image {
-            Some(cached) => {
-                println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (latest commit, HEAD)", short_base);
-                println!("Cached image:       {}", cached.image_id);
-                println!("Next run mode:      thin diff (uncommitted changes only)");
-            }
-            None => {
-                println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (latest commit, HEAD)", short_base);
-                println!("Cached image:       (none)");
-                println!("Next run mode:      full build (no cached image for HEAD)");
-            }
-        }
     }
 
     Ok(())

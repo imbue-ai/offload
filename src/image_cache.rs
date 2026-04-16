@@ -4,7 +4,8 @@
 //! git notes, resolves base commits for the caching pipeline, and writes
 //! cache notes after image builds.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
@@ -12,6 +13,9 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::config::schema::CheckpointConfig;
 use crate::git;
+use crate::provider::SandboxProvider;
+use crate::trace::Tracer;
+use crate::with_retry;
 
 /// A cached image entry found in a git note for a checkpoint commit.
 #[derive(Debug, Clone)]
@@ -168,6 +172,27 @@ pub struct ResolvedBase {
     pub kind: BaseKind,
 }
 
+/// Context for the image cache prewarm pipeline.
+pub struct PrewarmContext<'a> {
+    pub repo: &'a Path,
+    pub config: &'a crate::config::Config,
+    pub config_path: &'a Path,
+    pub copy_dir_tuples: &'a [(PathBuf, PathBuf)],
+    pub no_cache: bool,
+    pub tracer: &'a Tracer,
+    pub discovery_done: &'a AtomicBool,
+}
+
+/// Outcome of the image cache prewarm pipeline.
+pub enum PrewarmOutcome {
+    /// An image was resolved (from cache hit + thin diff, or base build + thin diff).
+    Resolved { image_id: String },
+    /// Prewarm could not produce an image. Caller should fall back to full build.
+    /// Contains the resolved base SHA (if any) so the caller can write a cache
+    /// note after a full build without re-resolving.
+    CacheMiss { base_sha: Option<String> },
+}
+
 /// Resolve the base commit before provider dispatch.
 ///
 /// When `no_cache` is false, fetches git notes and includes cached image IDs.
@@ -313,6 +338,304 @@ pub async fn write_note_for_commit(
     if let Err(e) = git::push_notes(repo, "origin").await {
         warn!("Failed to push notes: {}", e);
     }
+}
+
+/// Run the image cache prewarm pipeline (stages 1 and 2).
+///
+/// Stage 1: If a cached image exists, generate a thin diff and build on top.
+/// Stage 2: If no cache, export the base tree, build a base image via
+///          `provider.prepare()`, write a cache note, then build a thin diff.
+///
+/// Returns `Resolved` if an image was produced, `CacheMiss` if the caller
+/// should fall through to a full build.
+pub async fn run_prewarm_pipeline<P: SandboxProvider>(
+    provider: &mut P,
+    ctx: &PrewarmContext<'_>,
+) -> anyhow::Result<PrewarmOutcome> {
+    let resolved = match resolve_base(ctx.repo, ctx.config_path, ctx.config, ctx.no_cache).await {
+        Some(r) => r,
+        None => {
+            return Ok(PrewarmOutcome::CacheMiss { base_sha: None });
+        }
+    };
+
+    let base_sha = resolved.base_sha.as_str();
+    let label = resolved.kind.label();
+    let note_config = if ctx.no_cache {
+        None
+    } else {
+        Some(ctx.config_path)
+    };
+
+    // --- Stage 1: Cache hit -- thin diff on cached image ---
+    if let Some(cached_id) = resolved.cached_image_id.as_deref() {
+        eprintln!(
+            "[cache] {} hit: using cached image from {}",
+            label,
+            &base_sha[..8.min(base_sha.len())]
+        );
+
+        match try_thin_diff(
+            provider,
+            ctx.repo,
+            cached_id,
+            base_sha,
+            &ctx.config.offload.sandbox_project_root,
+            ctx.discovery_done,
+            ctx.tracer,
+        )
+        .await
+        {
+            Ok(image_id) => return Ok(PrewarmOutcome::Resolved { image_id }),
+            Err(e) => {
+                warn!(
+                    "{} thin diff failed, falling back to base build: {}",
+                    label, e
+                );
+                eprintln!(
+                    "[cache] {} thin diff failed, falling back to base build",
+                    label
+                );
+            }
+        }
+    }
+
+    // --- Stage 2: Base build -- export tree, build base, write note, thin diff ---
+    if ctx.no_cache {
+        eprintln!(
+            "[prepare] --no-cache with {}: building from {} (no cache lookup)",
+            label,
+            &base_sha[..8.min(base_sha.len())]
+        );
+    } else {
+        eprintln!(
+            "[cache] {} miss: no cached image for {} -- building base",
+            label,
+            &base_sha[..8.min(base_sha.len())]
+        );
+    }
+
+    // Export base tree
+    let tree_dir = tempfile::tempdir().context("failed to create temp dir for base tree")?;
+    git::export_tree(ctx.repo, base_sha, tree_dir.path())
+        .await
+        .with_context(|| format!("failed to export tree for {}", base_sha))?;
+
+    // Build base image from exported tree
+    eprintln!("[prepare] Building base image...");
+    let base_image_id = {
+        let _span = ctx.tracer.span(
+            "checkpoint_base_prepare",
+            "local",
+            crate::trace::PID_LOCAL,
+            crate::trace::TID_MAIN,
+        );
+        with_retry!(provider.prepare(
+            ctx.copy_dir_tuples,
+            ctx.no_cache,
+            ctx.config.offload.sandbox_init_cmd.as_deref(),
+            None,
+            Some(tree_dir.path()),
+        ))
+        .context("Failed to build base image")?
+    };
+
+    // Write note if caching enabled
+    if let (Some(cfg_path), Some(base_id)) = (note_config, &base_image_id) {
+        write_note_for_commit(ctx.repo, base_sha, base_id, cfg_path).await;
+    }
+
+    // Build thin diff on top of base
+    let Some(base_id) = base_image_id else {
+        return Ok(PrewarmOutcome::CacheMiss {
+            base_sha: Some(base_sha.to_string()),
+        });
+    };
+
+    match try_thin_diff(
+        provider,
+        ctx.repo,
+        &base_id,
+        base_sha,
+        &ctx.config.offload.sandbox_project_root,
+        ctx.discovery_done,
+        ctx.tracer,
+    )
+    .await
+    {
+        Ok(image_id) => Ok(PrewarmOutcome::Resolved { image_id }),
+        Err(e) => {
+            warn!(
+                "Thin diff failed after base build, falling back to full build: {}",
+                e
+            );
+            eprintln!("[cache] Thin diff failed, falling back to full build");
+            Ok(PrewarmOutcome::CacheMiss {
+                base_sha: Some(base_sha.to_string()),
+            })
+        }
+    }
+}
+
+/// Generate a checkpoint diff and build a thin-diff image via the provider.
+///
+/// Returns the final image ID on success, or a `ProviderError` on failure.
+async fn try_thin_diff<P: SandboxProvider>(
+    provider: &mut P,
+    repo: &Path,
+    base_image_id: &str,
+    checkpoint_sha: &str,
+    sandbox_project_root: &str,
+    discovery_done: &AtomicBool,
+    tracer: &Tracer,
+) -> Result<String, crate::provider::ProviderError> {
+    let _span = tracer.span(
+        "thin_diff",
+        "local",
+        crate::trace::PID_LOCAL,
+        crate::trace::TID_MAIN,
+    );
+
+    // Generate diff on the Rust side
+    let patch_file = git::generate_checkpoint_diff(repo, checkpoint_sha)
+        .await
+        .map_err(|e| {
+            crate::provider::ProviderError::ExecFailed(format!(
+                "failed to generate checkpoint diff: {e}"
+            ))
+        })?;
+
+    // If no changes, reuse the base image directly
+    let patch_file = match patch_file {
+        Some(f) => f,
+        None => {
+            // Wait for discovery to finish before printing
+            while !discovery_done.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+            eprintln!("[prepare] No changes since checkpoint, reusing image");
+            return Ok(base_image_id.to_string());
+        }
+    };
+
+    eprintln!("[prepare] Building thin diff image...");
+
+    // Route through provider's prepare_from_checkpoint
+    match provider
+        .prepare_from_checkpoint(
+            base_image_id,
+            patch_file.path(),
+            sandbox_project_root,
+            Some(discovery_done),
+        )
+        .await?
+    {
+        Some(image_id) => Ok(image_id),
+        None => Err(crate::provider::ProviderError::ExecFailed(
+            "prepare_from_checkpoint returned no image ID".to_string(),
+        )),
+    }
+}
+
+/// Show checkpoint/cache status for the current HEAD.
+pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> anyhow::Result<()> {
+    let path = Path::new(config_path);
+    let config = crate::config::load_config(path)
+        .with_context(|| format!("Failed to load config from {}", config_path))?;
+
+    // Best-effort fetch and configure notes
+    let _ = git::fetch_notes(repo, remote).await;
+    let _ = git::configure_notes_fetch(repo, remote).await;
+
+    let head = git::head_sha(repo)
+        .await
+        .context("Failed to get HEAD SHA")?;
+    let short_head = &head[..8.min(head.len())];
+
+    if let Some(ref checkpoint_cfg) = config.checkpoint {
+        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
+            .await
+            .context("Failed to resolve checkpoint")?;
+
+        let Some(info) = info else {
+            println!("HEAD:               {}", short_head);
+            println!("Base commit:        (no checkpoint found in last 100 commits)");
+            println!("Next run mode:      full build (no checkpoint found)");
+            return Ok(());
+        };
+
+        let short_base = &info.checkpoint_sha[..8.min(info.checkpoint_sha.len())];
+
+        let distance = match git::ancestors(repo, 100).await {
+            Ok(ancestors) => ancestors.iter().position(|sha| sha == &info.checkpoint_sha),
+            Err(_) => None,
+        };
+        let distance_label = match distance {
+            Some(d) => format!("{} commits back", d),
+            None => "unknown distance".to_string(),
+        };
+
+        match info.cached_image {
+            Some(cached) => {
+                let run_mode = if info.checkpoint_sha == head {
+                    "use checkpoint image directly (HEAD is the checkpoint)".to_string()
+                } else {
+                    match git::diff_file_count(repo, &info.checkpoint_sha, &head).await {
+                        Ok(count) => {
+                            format!("thin diff ({} files changed since checkpoint)", count)
+                        }
+                        Err(_) => "thin diff".to_string(),
+                    }
+                };
+
+                println!("HEAD:               {}", short_head);
+                println!(
+                    "Base commit:        {} (checkpoint, {})",
+                    short_base, distance_label
+                );
+                println!("Cached image:       {}", cached.image_id);
+                println!("Next run mode:      {}", run_mode);
+            }
+            None => {
+                println!("HEAD:               {}", short_head);
+                println!(
+                    "Base commit:        {} (checkpoint, {})",
+                    short_base, distance_label
+                );
+                println!("Cached image:       (none)");
+                println!("Next run mode:      full build (no cached checkpoint image)");
+            }
+        }
+    } else {
+        let info = resolve_latest_commit(repo, config_path)
+            .await
+            .context("Failed to resolve latest commit")?;
+
+        let Some(info) = info else {
+            println!("HEAD:               (none -- empty repo)");
+            println!("Next run mode:      full build");
+            return Ok(());
+        };
+
+        let short_base = &info.head_sha[..8.min(info.head_sha.len())];
+
+        match info.cached_image {
+            Some(cached) => {
+                println!("HEAD:               {}", short_head);
+                println!("Base commit:        {} (latest commit, HEAD)", short_base);
+                println!("Cached image:       {}", cached.image_id);
+                println!("Next run mode:      thin diff (uncommitted changes only)");
+            }
+            None => {
+                println!("HEAD:               {}", short_head);
+                println!("Base commit:        {} (latest commit, HEAD)", short_base);
+                println!("Cached image:       (none)");
+                println!("Next run mode:      full build (no cached image for HEAD)");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

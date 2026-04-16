@@ -212,8 +212,34 @@ impl SandboxProvider for DefaultProvider {
             .collect()
     }
 
-    fn set_image_id(&mut self, id: String) {
-        self.image_id = Some(id);
+    async fn prewarm_image_cache(
+        &mut self,
+        ctx: &crate::image_cache::PrewarmContext<'_>,
+    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
+        let outcome = crate::image_cache::run_prewarm_pipeline(self, ctx).await?;
+        if let crate::image_cache::PrewarmOutcome::Resolved { ref image_id } = outcome {
+            self.image_id = Some(image_id.clone());
+        }
+        Ok(outcome)
+    }
+
+    async fn prepare_from_checkpoint(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &std::path::Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let cmd = format!(
+            "uv run @modal_sandbox.py prepare --from-checkpoint={} --patch-file={} --sandbox-project-root={}",
+            base_image_id,
+            patch_file.display(),
+            sandbox_project_root
+        );
+        let image_id =
+            run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
     }
 }
 
