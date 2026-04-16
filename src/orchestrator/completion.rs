@@ -5,10 +5,22 @@
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+use tokio_util::sync::CancellationToken;
 
 /// Shared completion tracker, protected by a mutex for concurrent access.
 pub type SharedCompletionTracker = Arc<Mutex<CompletionTracker>>;
+
+/// Shared decided flags for lock-free decided-status checks.
+pub type SharedDecidedFlags = Arc<DecidedFlags>;
+
+/// Shared test index for mapping string test IDs to numeric indices.
+pub type SharedTestIndex = Arc<TestIndex>;
+
+/// Shared running batch registry, protected by a mutex for concurrent access.
+pub type SharedRunningBatchRegistry = Arc<Mutex<RunningBatchRegistry>>;
 
 /// Tracks which tests have a decided outcome.
 ///
@@ -74,6 +86,159 @@ impl CompletionTracker {
     /// True when every expected test has a decided outcome.
     pub fn all_complete(&self) -> bool {
         self.decided_count() == self.total_expected
+    }
+}
+
+/// Maps string test IDs to compact `usize` indices for cache-friendly lookups.
+pub struct TestIndex {
+    id_to_idx: HashMap<String, usize>,
+}
+
+impl TestIndex {
+    /// Builds an index from a slice of test ID strings, assigning contiguous
+    /// indices. Duplicate IDs are deduplicated (they share the same index).
+    pub fn new(test_ids: &[&str]) -> Self {
+        let mut id_to_idx = HashMap::new();
+        for &id in test_ids {
+            let next = id_to_idx.len();
+            id_to_idx.entry(id.to_string()).or_insert(next);
+        }
+        Self { id_to_idx }
+    }
+
+    /// Returns the numeric index for `test_id`, or `None` if unknown.
+    pub fn get(&self, test_id: &str) -> Option<usize> {
+        self.id_to_idx.get(test_id).copied()
+    }
+
+    /// Number of distinct test IDs in the index.
+    pub fn len(&self) -> usize {
+        self.id_to_idx.len()
+    }
+
+    /// Returns true if the index contains no test IDs.
+    pub fn is_empty(&self) -> bool {
+        self.id_to_idx.is_empty()
+    }
+}
+
+/// Lock-free decided-status array indexed by numeric test ID.
+///
+/// Uses interior mutability via `AtomicBool` (pre-authorized by coordinator
+/// for per-batch cancellation).
+pub struct DecidedFlags {
+    flags: Vec<AtomicBool>,
+}
+
+impl DecidedFlags {
+    /// Creates a new flags array with `count` entries, all initially `false`.
+    pub fn new(count: usize) -> Self {
+        let flags = (0..count).map(|_| AtomicBool::new(false)).collect();
+        Self { flags }
+    }
+
+    /// Marks the test at `idx` as decided. No-op if `idx` is out of bounds.
+    pub fn mark_decided(&self, idx: usize) {
+        if let Some(flag) = self.flags.get(idx) {
+            flag.store(true, Ordering::Release);
+        }
+    }
+
+    /// Returns whether the test at `idx` is decided. Returns `false` if out of bounds.
+    pub fn is_decided(&self, idx: usize) -> bool {
+        self.flags
+            .get(idx)
+            .is_some_and(|f| f.load(Ordering::Acquire))
+    }
+}
+
+struct RunningBatchEntry {
+    remaining: usize,
+    token: CancellationToken,
+}
+
+/// Tracks running batches and enables efficient per-test cancellation notification.
+///
+/// When all tests in a batch become decided, the batch's cancellation token is
+/// cancelled so the sandbox can be reclaimed early.
+pub struct RunningBatchRegistry {
+    entries: HashMap<usize, RunningBatchEntry>,
+    test_to_batches: HashMap<usize, Vec<usize>>,
+}
+
+impl Default for RunningBatchRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RunningBatchRegistry {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            test_to_batches: HashMap::new(),
+        }
+    }
+
+    /// Registers a batch with the given test numeric IDs.
+    ///
+    /// Already-decided tests (according to `decided`) are filtered out. If all
+    /// tests are already decided, the token is cancelled immediately and the
+    /// batch is not added to the registry.
+    pub fn register(
+        &mut self,
+        batch_idx: usize,
+        test_num_ids: &[usize],
+        token: CancellationToken,
+        decided: &DecidedFlags,
+    ) {
+        let undecided: Vec<usize> = test_num_ids
+            .iter()
+            .copied()
+            .filter(|&id| !decided.is_decided(id))
+            .collect();
+
+        if undecided.is_empty() {
+            token.cancel();
+            return;
+        }
+
+        self.entries.insert(
+            batch_idx,
+            RunningBatchEntry {
+                remaining: undecided.len(),
+                token,
+            },
+        );
+
+        for &test_id in &undecided {
+            self.test_to_batches
+                .entry(test_id)
+                .or_default()
+                .push(batch_idx);
+        }
+    }
+
+    /// Removes a batch from the registry. Stale reverse-index refs are harmless.
+    pub fn unregister(&mut self, batch_idx: usize) {
+        self.entries.remove(&batch_idx);
+    }
+
+    /// Notifies the registry that a test has been decided.
+    ///
+    /// Decrements the remaining count for each batch containing this test.
+    /// When a batch's remaining count reaches zero, its token is cancelled.
+    pub fn notify_decided(&mut self, test_num_id: usize) {
+        if let Some(batch_idxs) = self.test_to_batches.remove(&test_num_id) {
+            for batch_idx in batch_idxs {
+                if let Some(entry) = self.entries.get_mut(&batch_idx) {
+                    entry.remaining = entry.remaining.saturating_sub(1);
+                    if entry.remaining == 0 {
+                        entry.token.cancel();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -143,5 +308,120 @@ mod tests {
         tracker.record_batch(&["test_a"], |_| true); // duplicate
 
         assert_eq!(tracker.decided_count(), 1);
+    }
+
+    // --- TestIndex tests ---
+
+    #[test]
+    fn test_index_basic_lookup() {
+        let idx = TestIndex::new(&["a", "b", "c"]);
+        assert_eq!(idx.len(), 3);
+        assert!(idx.get("a").is_some());
+        assert!(idx.get("b").is_some());
+        assert!(idx.get("c").is_some());
+        // All indices should be distinct
+        let a = idx.get("a");
+        let b = idx.get("b");
+        let c = idx.get("c");
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_index_unknown_returns_none() {
+        let idx = TestIndex::new(&["a", "b"]);
+        assert_eq!(idx.get("unknown"), None);
+    }
+
+    #[test]
+    fn test_index_dedup() {
+        let idx = TestIndex::new(&["a", "b", "a"]);
+        assert_eq!(idx.len(), 2);
+        assert!(idx.get("a").is_some());
+        assert!(idx.get("b").is_some());
+    }
+
+    // --- DecidedFlags tests ---
+
+    #[test]
+    fn test_decided_flags_initially_false() {
+        let flags = DecidedFlags::new(3);
+        assert!(!flags.is_decided(0));
+        assert!(!flags.is_decided(1));
+        assert!(!flags.is_decided(2));
+    }
+
+    #[test]
+    fn test_decided_flags_mark_and_check() {
+        let flags = DecidedFlags::new(3);
+        flags.mark_decided(1);
+        assert!(flags.is_decided(1));
+        assert!(!flags.is_decided(0));
+    }
+
+    #[test]
+    fn test_decided_flags_out_of_bounds() {
+        let flags = DecidedFlags::new(3);
+        flags.mark_decided(999); // no-op
+        assert!(!flags.is_decided(999));
+    }
+
+    // --- RunningBatchRegistry tests ---
+
+    #[test]
+    fn test_registry_cancel_when_all_decided() {
+        let decided = DecidedFlags::new(2);
+        let mut registry = RunningBatchRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone(), &decided);
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(0);
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(1);
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn test_registry_no_cancel_when_partial() {
+        let decided = DecidedFlags::new(2);
+        let mut registry = RunningBatchRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone(), &decided);
+
+        registry.notify_decided(0);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn test_registry_register_all_already_decided() {
+        let decided = DecidedFlags::new(2);
+        decided.mark_decided(0);
+        decided.mark_decided(1);
+
+        let mut registry = RunningBatchRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone(), &decided);
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn test_registry_unregister_removes_entry() {
+        let decided = DecidedFlags::new(2);
+        let mut registry = RunningBatchRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone(), &decided);
+        registry.unregister(0);
+
+        // notify_decided for removed batch should not panic or cancel
+        registry.notify_decided(0);
+        registry.notify_decided(1);
+        assert!(!token.is_cancelled());
     }
 }
