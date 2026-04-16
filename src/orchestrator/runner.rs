@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
 use crate::orchestrator::completion::{
-    SharedCompletionTracker, SharedDecidedFlags, SharedRunningBatchRegistry, SharedTestIndex,
+    SharedCompletionTracker, SharedDecidedFlags, SharedIncompleteTestsRegistry, SharedTestIndex,
 };
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
@@ -61,7 +61,7 @@ pub struct RunnerConfig {
     pub artifacts: ArtifactConfig,
     pub decided_flags: SharedDecidedFlags,
     pub test_index: SharedTestIndex,
-    pub running_batch_registry: SharedRunningBatchRegistry,
+    pub incomplete_tests: SharedIncompleteTestsRegistry,
 }
 
 /// Executes tests within a single sandbox.
@@ -97,8 +97,8 @@ pub struct TestRunner<'a, S, D> {
     decided_flags: SharedDecidedFlags,
     /// Maps string test IDs to numeric indices.
     test_index: SharedTestIndex,
-    /// Registry of running batches for per-batch cancellation.
-    running_batch_registry: SharedRunningBatchRegistry,
+    /// Registry of incomplete tests for per-batch cancellation.
+    incomplete_tests: SharedIncompleteTestsRegistry,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -154,7 +154,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             tracker: config.tracker,
             decided_flags: config.decided_flags,
             test_index: config.test_index,
-            running_batch_registry: config.running_batch_registry,
+            incomplete_tests: config.incomplete_tests,
         }
     }
 
@@ -444,7 +444,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         }
                         // Notify registry (tracker lock released, no deadlock risk)
                         if !newly_decided.is_empty() {
-                            if let Ok(mut reg) = self.running_batch_registry.lock() {
+                            if let Ok(mut reg) = self.incomplete_tests.lock() {
                                 for idx in newly_decided {
                                     reg.notify_decided(idx);
                                 }

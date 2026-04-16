@@ -19,8 +19,8 @@ pub type SharedDecidedFlags = Arc<DecidedFlags>;
 /// Shared test index for mapping string test IDs to numeric indices.
 pub type SharedTestIndex = Arc<TestIndex>;
 
-/// Shared running batch registry, protected by a mutex for concurrent access.
-pub type SharedRunningBatchRegistry = Arc<Mutex<RunningBatchRegistry>>;
+/// Shared incomplete-tests registry, protected by a mutex for concurrent access.
+pub type SharedIncompleteTestsRegistry = Arc<Mutex<IncompleteTestsRegistry>>;
 
 /// Tracks which tests have a decided outcome.
 ///
@@ -152,27 +152,27 @@ impl DecidedFlags {
     }
 }
 
-struct RunningBatchEntry {
+struct IncompleteEntry {
     remaining: usize,
     token: CancellationToken,
 }
 
-/// Tracks running batches and enables efficient per-test cancellation notification.
+/// Tracks incomplete tests and enables efficient per-test cancellation notification.
 ///
 /// When all tests in a batch become decided, the batch's cancellation token is
 /// cancelled so the sandbox can be reclaimed early.
-pub struct RunningBatchRegistry {
-    entries: HashMap<usize, RunningBatchEntry>,
+pub struct IncompleteTestsRegistry {
+    entries: HashMap<usize, IncompleteEntry>,
     test_to_batches: HashMap<usize, Vec<usize>>,
 }
 
-impl Default for RunningBatchRegistry {
+impl Default for IncompleteTestsRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RunningBatchRegistry {
+impl IncompleteTestsRegistry {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -205,7 +205,7 @@ impl RunningBatchRegistry {
 
         self.entries.insert(
             batch_idx,
-            RunningBatchEntry {
+            IncompleteEntry {
                 remaining: undecided.len(),
                 token,
             },
@@ -367,12 +367,12 @@ mod tests {
         assert!(!flags.is_decided(999));
     }
 
-    // --- RunningBatchRegistry tests ---
+    // --- IncompleteTestsRegistry tests ---
 
     #[test]
     fn test_registry_cancel_when_all_decided() {
         let decided = DecidedFlags::new(2);
-        let mut registry = RunningBatchRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone(), &decided);
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn test_registry_no_cancel_when_partial() {
         let decided = DecidedFlags::new(2);
-        let mut registry = RunningBatchRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone(), &decided);
@@ -403,7 +403,7 @@ mod tests {
         decided.mark_decided(0);
         decided.mark_decided(1);
 
-        let mut registry = RunningBatchRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone(), &decided);
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn test_registry_unregister_removes_entry() {
         let decided = DecidedFlags::new(2);
-        let mut registry = RunningBatchRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone(), &decided);
