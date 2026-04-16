@@ -176,7 +176,7 @@ impl Scheduler {
                 (t.clone(), duration)
             })
             .collect();
-        tests_with_duration.sort_by(|a, b| b.1.cmp(&a.1));
+        tests_with_duration.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         // Initialize batches
         let num_batches = max_parallel.min(normal_tests.len());
@@ -199,7 +199,7 @@ impl Scheduler {
         }
 
         // Sort by load descending (heaviest first) for optimal Modal scheduling
-        batches.sort_by(|a, b| b.load.cmp(&a.load));
+        batches.sort_by_key(|b| std::cmp::Reverse(b.load));
 
         // Prepend individually-scheduled batches before LPT batches
         let mut result = individual_batches;
