@@ -143,6 +143,30 @@ async fn read_cached_image_for_commit(
     }
 }
 
+/// How the base commit was determined.
+pub enum BaseKind {
+    /// Nearest ancestor touching `build_inputs` (from `[checkpoint]` config).
+    Checkpoint,
+    /// Latest commit (HEAD).
+    LatestCommit,
+}
+
+impl BaseKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Checkpoint => "Checkpoint",
+            Self::LatestCommit => "Latest-commit",
+        }
+    }
+}
+
+/// Pre-resolved base commit and its cached image, determined before provider dispatch.
+pub struct ResolvedBase {
+    pub base_sha: String,
+    pub cached_image_id: Option<String>,
+    pub kind: BaseKind,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
