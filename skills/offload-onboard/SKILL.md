@@ -344,6 +344,8 @@ Common `build_inputs` patterns:
 | Rust | `Dockerfile`, `Cargo.toml`, `Cargo.lock` |
 | Node.js | `Dockerfile`, `package.json`, `package-lock.json` |
 
+**Dockerfile requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs on top of the checkpoint image. The Dockerfile must install `git` in the image. If `git` is not installed, thin diff will fail and Offload falls back to a full build (with a warning). The Dockerfile templates in Step 3 already include `git`, but if you are using an existing Dockerfile, verify that `git` is present.
+
 After adding the section, run `offload validate` to check the config and `offload checkpoint-status` to verify checkpoint detection.
 
 This step is optional. Repositories without a `[checkpoint]` section still benefit from per-commit image caching via git notes -- every `offload run` caches its image so that repeated runs against the same commit reuse the cached image.

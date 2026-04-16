@@ -144,15 +144,26 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | Slow sandbox creation | Docker image not cached | Pass `--no-cache` to force a fresh image build |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
 
-## Checkpoint Mode
+## Image Cache
 
-Checkpoint mode speeds up sandbox image builds by caching a full image at "checkpoint" commits (commits that change dependency manifests, Dockerfiles, etc.) and applying a thin `git diff` for subsequent commits.
+Offload caches image IDs in git notes (`refs/notes/offload-images`). Notes are keyed by commit SHA and TOML config path, so multiple configs in the same repo do not collide. Notes are fetched from and pushed to the remote automatically. Pass `--no-cache` to `offload run` to skip reading and writing the cache; `--no-cache` preserves the same build procedure (tree export, base image build, thin diff) -- it only suppresses note interactions.
 
-### When to use it
+## Image Caching Modes
 
-Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, every `offload run` rebuilds everything. With checkpoints, only the first run after a dependency change is slow -- subsequent runs apply a lightweight diff on top of the cached image.
+Offload uses a unified pipeline for image caching. Both modes follow identical steps after resolving the base commit: cache lookup, tree export, base image build, thin diff application, and note write. The only difference is how the base commit is selected.
 
-### Configuration
+### Parent-commit mode (default)
+
+When no `[checkpoint]` section is present, Offload uses the parent commit (HEAD~1) as the base:
+
+1. Look up HEAD~1 in git notes for a cached base image.
+2. **Cache hit**: generate a binary diff from parent to HEAD and apply it on top of the cached image.
+3. **Cache miss**: export the parent commit tree, build a base image from it, cache the result in git notes on HEAD~1, then apply thin diff.
+4. **Initial commit** (no parent): fall through to a full build, no caching.
+
+### Checkpoint mode (opt-in)
+
+When a `[checkpoint]` section is present, Offload walks git ancestors to find the nearest commit that touched any `build_inputs` file. That commit is the base instead of HEAD~1. The rest of the pipeline (cache lookup, tree export, build, thin diff, note write) is the same as parent-commit mode.
 
 Add a `[checkpoint]` section to `offload.toml`:
 
@@ -165,16 +176,13 @@ build_inputs = [
 ]
 ```
 
-The `build_inputs` list contains repo-relative file paths. A commit that modifies any of these files is automatically detected as a checkpoint. The list must be non-empty when the section is present.
+`build_inputs` lists repo-relative file paths. A commit that modifies any of these files is automatically detected as a checkpoint. The list must be non-empty when the section is present. For merge commits, diffs against all parents are checked.
 
-### How it works
+Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, every parent commit change requires a new base image build. With checkpoints, only commits that change dependency manifests trigger full rebuilds -- subsequent runs apply a lightweight diff on top of the cached checkpoint image.
 
-1. On `offload run`, Offload walks the git history looking for the nearest commit that changed any `build_inputs` file.
-2. If a cached image exists for that checkpoint (stored in git notes), Offload generates a `git diff` from the checkpoint to HEAD and applies it on top of the cached image.
-3. If no cached image exists, Offload does a full build, caches the result in git notes, and pushes the notes to the remote.
-4. Without a `[checkpoint]` section, Offload caches a per-commit image in git notes instead.
+### Thin diff details
 
-Git notes (`refs/notes/offload-images`) are used to store commit-to-image mappings. They are fetched and pushed automatically. Users do not need to interact with git notes directly.
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` plus untracked files detected via `git ls-files`). The patch file is passed to the Python script, which applies it inside the sandbox image via `git apply`. The Dockerfile must install `git` for this to work. If the diff is empty and there are no untracked files, the base image is used directly (zero overhead).
 
 ### Checking status
 
@@ -200,10 +208,11 @@ This command requires a `[checkpoint]` section in the config. If absent, it repo
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Build inputs hash mismatch warning | A `build_inputs` file was modified without a checkpoint commit (e.g. manual edit or merge) | Commit the changes to create a new checkpoint, or revert to use the cached image |
-| Cached image expired | Modal garbage-collected the image | Offload rebuilds automatically on the next run; no action needed |
-| No checkpoint found in last N commits | No recent commit touched any `build_inputs` file | The search window is limited; a full build runs instead |
-| `git apply` failure inside sandbox | Diff cannot apply (e.g. conflicts, missing `git` in image) | Ensure the Dockerfile installs `git`; Offload falls back to a full build with a warning |
+| Cached image expired | Modal garbage-collected the image | Self-healing: Offload rebuilds automatically on the next run, updates the note, and pushes. One slow run, then cached again for everyone |
+| `git apply` failure inside sandbox | Diff cannot apply (e.g. missing `git` in image, conflicts) | Ensure the Dockerfile installs `git`. Offload falls back to a full build with a warning |
+| No checkpoint found in last N commits | No recent commit touched any `build_inputs` file | The ancestor walk has a depth limit; a full build runs instead |
+| Thin diff failure (general) | Various causes (binary incompatibility, corrupt patch) | Offload falls back to a full build with a warning. If persistent, run `--no-cache` to force a clean rebuild |
+| Notes not shared across team | Remote does not have the notes ref | Notes are pushed automatically. Verify with `git ls-remote origin refs/notes/offload-images` |
 
 ## CLI Quick Reference
 
