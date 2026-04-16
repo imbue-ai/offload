@@ -338,6 +338,12 @@ def _derive_image_from_checkpoint(
     help="Docker build context directory",
 )
 @click.option(
+    "--cached",
+    is_flag=True,
+    hidden=True,
+    help="Deprecated no-op kept for backward compatibility",
+)
+@click.option(
     "--from-checkpoint",
     default=None,
     help="Modal image ID of the checkpoint image",
@@ -358,6 +364,7 @@ def prepare(
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
     context_dir: str,
+    cached: bool,
     from_checkpoint: str | None,
     patch_file: str | None,
     sandbox_project_root: str,
