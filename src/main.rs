@@ -349,8 +349,9 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
 
 /// Build a thin-diff image on top of a checkpoint base image.
 ///
-/// Calls the Python script directly with --from-checkpoint flags, bypassing
-/// the provider's prepare() method. Returns the target image ID on success.
+/// Generates a git diff on the Rust side, then calls the Python script with
+/// `--patch-file` if there are changes. If no changes exist, returns the
+/// base image ID directly without invoking Python.
 async fn build_thin_diff_image(
     base_image_id: &str,
     checkpoint_sha: &str,
@@ -361,9 +362,33 @@ async fn build_thin_diff_image(
     use offload::connector::Connector;
     use offload::provider::{OutputLine, ProviderError};
 
+    // Generate diff on the Rust side
+    let patch_file = git::generate_checkpoint_diff(checkpoint_sha)
+        .await
+        .map_err(|e| {
+            ProviderError::ExecFailed(format!("failed to generate checkpoint diff: {e}"))
+        })?;
+
+    // If no changes, reuse the base image directly -- no Python call needed
+    let patch_file = match patch_file {
+        Some(f) => f,
+        None => {
+            if let Some(flag) = discovery_done {
+                // Wait for discovery to finish before printing
+                while !flag.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+            }
+            eprintln!("[prepare] No changes since checkpoint, reusing image");
+            return Ok(base_image_id.to_string());
+        }
+    };
+
+    let patch_path = patch_file.path().to_string_lossy().to_string();
+
     let cmd = format!(
-        "uv run @modal_sandbox.py prepare --from-checkpoint={} --checkpoint-sha={} --sandbox-project-root={}",
-        base_image_id, checkpoint_sha, sandbox_project_root
+        "uv run @modal_sandbox.py prepare --from-checkpoint={} --patch-file={} --sandbox-project-root={}",
+        base_image_id, patch_path, sandbox_project_root
     );
     let connector = offload::connector::ShellConnector::new();
 
@@ -408,6 +433,8 @@ async fn build_thin_diff_image(
     for buffered in buffer.drain(..) {
         eprintln!("{}", buffered);
     }
+
+    // patch_file is dropped here, cleaning up the temp file
 
     if exit_code != 0 {
         return Err(ProviderError::ExecFailed(format!(

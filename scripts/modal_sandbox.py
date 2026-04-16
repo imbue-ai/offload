@@ -21,7 +21,6 @@ import json
 import logging
 import math
 import os
-import subprocess
 import tarfile
 import tempfile
 import threading
@@ -294,66 +293,17 @@ def _build_final_image(
         return base_img_id
 
 
-def _generate_full_diff(checkpoint_sha: str) -> bytes | None:
-    """Generate a single binary patch capturing all working-tree changes since checkpoint_sha.
-
-    Uses a temporary git index so that both tracked modifications and untracked
-    (non-ignored) files are included in one unified diff.  The real index is
-    never touched.
-    """
-    with tempfile.NamedTemporaryFile(suffix=".idx", delete=True) as tmp:
-        tmp_index = tmp.name
-
-    env = {**os.environ, "GIT_INDEX_FILE": tmp_index}
-
-    try:
-        # Seed the temp index with the checkpoint tree
-        r = subprocess.run(
-            ["git", "read-tree", checkpoint_sha], env=env, capture_output=True
-        )
-        if r.returncode != 0:
-            logger.error("git read-tree failed: %s", r.stderr.decode())
-            sys.exit(1)
-
-        # Stage the entire current working tree (tracked + untracked) into it
-        r = subprocess.run(
-            ["git", "add", "-A"], env=env, capture_output=True
-        )
-        if r.returncode != 0:
-            logger.error("git add -A failed: %s", r.stderr.decode())
-            sys.exit(1)
-
-        # Diff the checkpoint against the staged state → single patch
-        r = subprocess.run(
-            ["git", "diff", "--cached", "--binary", checkpoint_sha],
-            env=env,
-            capture_output=True,
-        )
-        if r.returncode != 0:
-            logger.error("git diff --cached failed: %s", r.stderr.decode())
-            sys.exit(1)
-    finally:
-        # Clean up temp index
-        if os.path.exists(tmp_index):
-            os.unlink(tmp_index)
-
-    patch = r.stdout
-    if not patch.strip():
-        return None
-    return patch
-
-
 def _derive_image_from_checkpoint(
     app,
     checkpoint_img: modal.Image,
-    diff_path: str | None,
+    patch_file: str | None,
     project_root: str,
 ) -> str:
-    """Apply a unified diff to the checkpoint image and return the new image ID."""
+    """Apply a binary patch to the checkpoint image and return the new image ID."""
     img = checkpoint_img
 
-    if diff_path is not None:
-        img = img.add_local_file(diff_path, "/tmp/offload.patch", copy=True)
+    if patch_file is not None:
+        img = img.add_local_file(patch_file, "/tmp/offload.patch", copy=True)
         img = img.run_commands(
             f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
         )
@@ -393,9 +343,9 @@ def _derive_image_from_checkpoint(
     help="Modal image ID of the checkpoint image",
 )
 @click.option(
-    "--checkpoint-sha",
+    "--patch-file",
     default=None,
-    help="Git commit SHA of the checkpoint",
+    help="Path to a binary patch file to apply on top of the checkpoint image",
 )
 @click.option(
     "--sandbox-project-root",
@@ -409,7 +359,7 @@ def prepare(
     sandbox_init_cmd: str | None,
     context_dir: str,
     from_checkpoint: str | None,
-    checkpoint_sha: str | None,
+    patch_file: str | None,
     sandbox_project_root: str,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
@@ -420,42 +370,26 @@ def prepare(
     The --include-cwd and --copy-dir options add source code to the image.
 
     When --from-checkpoint is set, builds incrementally from the checkpoint
-    image by applying a git diff and any untracked files.
+    image by applying the patch file (if provided) on top of it.
 
     Prints the image_id to stdout for use with 'create'.
     """
     # Checkpoint mode
     if from_checkpoint is not None:
-        if checkpoint_sha is None:
-            logger.error("--checkpoint-sha is required when --from-checkpoint is set")
-            sys.exit(1)
-
         with modal.enable_output():
             app_name = "offload-checkpoint-sandbox"
             app = modal.App.lookup(app_name, create_if_missing=True)
 
             checkpoint_img = modal.Image.from_id(from_checkpoint)
 
-            diff = _generate_full_diff(checkpoint_sha)
+            logger.info("Building incremental image from checkpoint")
 
-            if diff is None:
-                logger.info("No changes since checkpoint, reusing image")
-                sys.stdout.write("%s\n" % from_checkpoint)
-                return
-
-            logger.info("Building incremental image from checkpoint %s", checkpoint_sha)
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                diff_path = os.path.join(tmpdir, "offload.patch")
-                with open(diff_path, "wb") as f:
-                    f.write(diff)
-
-                image_id = _derive_image_from_checkpoint(
-                    app,
-                    checkpoint_img,
-                    diff_path,
-                    sandbox_project_root,
-                )
+            image_id = _derive_image_from_checkpoint(
+                app,
+                checkpoint_img,
+                patch_file,
+                sandbox_project_root,
+            )
 
         sys.stdout.write("%s\n" % image_id)
         return
