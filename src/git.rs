@@ -255,13 +255,15 @@ pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String
     Ok(paths.iter().any(|p| changed.contains(p.as_str())))
 }
 
-/// Export a commit's tree into an existing directory as a shallow git clone.
+/// Export a commit's tree plus untracked files into `dest` as a shallow clone.
 ///
-/// Creates a shallow clone (depth=1) of the current repo at the given commit
-/// SHA in `dest`. The result is a proper git repository whose HEAD points to
-/// the real commit, preserving the actual SHA, author, and message. This is
-/// needed so that `COPY . /app` in a Dockerfile includes `.git/`, which many
-/// repos require and which the thin-diff `git apply` step depends on.
+/// First creates a shallow clone with tracked files and `.git/`, then copies
+/// untracked files from the working tree filtered by `.dockerignore` (not
+/// `.gitignore`). This includes gitignored files like generated tarballs that
+/// the Docker build needs but git doesn't track.
+///
+/// The thin diff applies with `git apply --3way` to handle overlapping
+/// "new file" hunks for files present in both the export and the patch.
 pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<()> {
     let repo_root = repo_root(repo).await?;
     let sha = commit_sha.to_string();
@@ -298,9 +300,75 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
         // refs/heads/ directory is missing.
         run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
 
+        // Copy untracked files from the working tree, using .dockerignore
+        // (not .gitignore) as the filter. This ensures gitignored files
+        // like generated tarballs are included in the base image.
+        copy_untracked_files(&repo_root, &dest)?;
+
         Ok(())
     })
     .await?
+}
+
+/// Copy gitignored-but-not-dockerignored files from the working tree into
+/// `dest`.
+///
+/// The thin diff (`generate_checkpoint_diff`) captures non-gitignored changes
+/// via `git add -A`, but gitignored files are invisible to it. Files that are
+/// gitignored yet needed by the Docker build (e.g. generated tarballs) must
+/// be baked into the base image here instead.
+///
+/// Only gitignored files are copied to avoid conflicts with the thin diff,
+/// which contains "new file" hunks for non-gitignored untracked files.
+fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
+    let dockerignore = repo_root.join(".dockerignore");
+
+    // All untracked files (including gitignored), minus dockerignored ones.
+    let mut all_args = vec![
+        "ls-files".to_string(),
+        "--others".to_string(),
+        "--exclude=.git".to_string(),
+    ];
+    if dockerignore.exists() {
+        all_args.push(format!("--exclude-from={}", dockerignore.to_string_lossy()));
+    }
+    let all_output = std::process::Command::new("git")
+        .args(&all_args)
+        .current_dir(repo_root)
+        .output()
+        .context("failed to list untracked files")?;
+    if !all_output.status.success() {
+        return Ok(());
+    }
+
+    // Non-gitignored untracked files — these are in the thin diff already.
+    let ngi_output = std::process::Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to list non-gitignored untracked files")?;
+    let ngi_stdout = if ngi_output.status.success() {
+        String::from_utf8_lossy(&ngi_output.stdout).into_owned()
+    } else {
+        String::new()
+    };
+    let non_gitignored: std::collections::HashSet<&str> = ngi_stdout.lines().collect();
+
+    // Copy only the gitignored files (set difference).
+    let all_stdout = String::from_utf8_lossy(&all_output.stdout).into_owned();
+    for relpath in all_stdout.lines() {
+        if relpath.is_empty() || non_gitignored.contains(relpath) {
+            continue;
+        }
+        let src = repo_root.join(relpath);
+        let dst = dest.join(relpath);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::copy(&src, &dst).ok();
+    }
+
+    Ok(())
 }
 
 /// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
@@ -671,6 +739,60 @@ mod tests {
         assert!(dest.path().join(".git").exists(), ".git should exist");
         let exported_head = git_in(dest.path(), &["rev-parse", "HEAD"])?;
         assert_eq!(exported_head, sha, "HEAD should match the exported SHA");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_tree_copies_gitignored_not_dockerignored() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        // Add a file and commit
+        std::fs::write(dir.path().join("hello.txt"), "world")?;
+        git_in(dir.path(), &["add", "hello.txt"])?;
+        git_in(dir.path(), &["commit", "-m", "add hello"])?;
+
+        // Create .gitignore that ignores *.tar.gz files
+        std::fs::write(dir.path().join(".gitignore"), "*.tar.gz\n")?;
+        git_in(dir.path(), &["add", ".gitignore"])?;
+        git_in(dir.path(), &["commit", "-m", "add gitignore"])?;
+
+        // Create .dockerignore that ignores *.log but NOT *.tar.gz
+        std::fs::write(dir.path().join(".dockerignore"), "*.log\n")?;
+        git_in(dir.path(), &["add", ".dockerignore"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerignore"])?;
+
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Create a gitignored file (not dockerignored) in the working tree
+        std::fs::write(dir.path().join("base-commit.tar.gz"), "tarball content")?;
+        // Create a dockerignored file (should NOT appear in export)
+        std::fs::write(dir.path().join("debug.log"), "log content")?;
+
+        // Export the tree
+        let dest = tempfile::tempdir()?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
+
+        // Tracked file from the commit should exist
+        assert!(
+            dest.path().join("hello.txt").exists(),
+            "tracked file hello.txt should be in the export"
+        );
+        // Gitignored-but-not-dockerignored file should be copied
+        assert!(
+            dest.path().join("base-commit.tar.gz").exists(),
+            "gitignored-but-not-dockerignored file should be copied"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("base-commit.tar.gz"))?,
+            "tarball content"
+        );
+        // Dockerignored file should NOT be present
+        assert!(
+            !dest.path().join("debug.log").exists(),
+            "dockerignored file should not be in the export"
+        );
+        // Should be a git repo
+        assert!(dest.path().join(".git").exists(), ".git should exist");
         Ok(())
     }
 
