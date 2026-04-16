@@ -454,13 +454,115 @@ async fn build_thin_diff_image(
     Ok(image_id)
 }
 
+/// Outcome of the base-build pipeline (export tree + build base + thin diff).
+///
+/// Used to communicate results back to the caller without consuming the provider.
+enum BaseBuildOutcome {
+    /// Pipeline succeeded: contains the target image ID and discovered tests.
+    Success {
+        target_id: String,
+        all_tests: Vec<TestRecord>,
+    },
+    /// Pipeline completed but thin diff failed. Caller should fall through to full build.
+    ThinDiffFailed,
+    /// Base build returned no image_id.
+    NoBuild,
+}
+
+/// Run the base-build pipeline: export tree, build base image, optionally write note, thin diff.
+///
+/// Used by both cache-miss and `--no-cache` paths. When `note_config_path` is `Some`,
+/// a git note is written after the base build. When `None`, note writing is skipped.
+#[allow(clippy::too_many_arguments)]
+async fn run_base_build_pipeline<P: SandboxProvider>(
+    provider: &mut P,
+    config: &Config,
+    base_sha: &str,
+    copy_dir_tuples: &[(PathBuf, PathBuf)],
+    no_cache: bool,
+    tracer: &offload::trace::Tracer,
+    note_config_path: Option<&Path>,
+    discovery_done: &AtomicBool,
+) -> Result<BaseBuildOutcome> {
+    // Export base tree
+    let tree_dir = tempfile::tempdir().context("failed to create temp dir for base tree")?;
+    git::export_tree(base_sha, tree_dir.path())
+        .await
+        .with_context(|| format!("failed to export tree for {}", base_sha))?;
+
+    // Build base image from exported tree (normal prepare with context_dir)
+    eprintln!("[prepare] Building base image...");
+    let base_image_id = {
+        let _span = tracer.span(
+            "checkpoint_base_prepare",
+            "local",
+            offload::trace::PID_LOCAL,
+            offload::trace::TID_MAIN,
+        );
+        with_retry!(provider.prepare(
+            copy_dir_tuples,
+            no_cache,
+            config.offload.sandbox_init_cmd.as_deref(),
+            None,
+            Some(tree_dir.path()),
+        ))
+        .context("Failed to build base image")?
+    };
+
+    // Write note if config_path provided (i.e. not --no-cache)
+    if let (Some(cfg_path), Some(base_id)) = (note_config_path, &base_image_id) {
+        write_note_for_commit(base_sha, base_id, cfg_path).await;
+    }
+
+    // Build thin diff on top
+    let Some(base_id) = base_image_id else {
+        return Ok(BaseBuildOutcome::NoBuild);
+    };
+
+    let (all_tests, thin_diff_result) = tokio::try_join!(
+        discover_with_signal(&config.framework, &config.groups, discovery_done),
+        async {
+            let _span = tracer.span(
+                "thin_diff",
+                "local",
+                offload::trace::PID_LOCAL,
+                offload::trace::TID_MAIN,
+            );
+            Ok::<_, anyhow::Error>(
+                build_thin_diff_image(
+                    &base_id,
+                    base_sha,
+                    &config.offload.sandbox_project_root,
+                    Some(discovery_done),
+                )
+                .await,
+            )
+        }
+    )?;
+
+    match thin_diff_result {
+        Ok(target_id) => Ok(BaseBuildOutcome::Success {
+            target_id,
+            all_tests,
+        }),
+        Err(e) => {
+            warn!(
+                "Thin diff failed after base build, falling back to full build: {}",
+                e
+            );
+            eprintln!("[cache] Thin diff failed, falling back to full build");
+            Ok(BaseBuildOutcome::ThinDiffFailed)
+        }
+    }
+}
+
 /// Shared logic for Default and Modal provider arms: checkpoint caching pipeline,
 /// concurrent discovery + prepare, and framework dispatch.
 #[allow(clippy::too_many_arguments)]
 async fn run_with_caching<P: SandboxProvider>(
     mut provider: P,
     config: &Config,
-    cache_state: &Option<CacheState>,
+    resolved_base: &Option<ResolvedBase>,
     copy_dir_tuples: &[(PathBuf, PathBuf)],
     copy_dirs: &[CopyDir],
     no_cache: bool,
@@ -471,153 +573,67 @@ async fn run_with_caching<P: SandboxProvider>(
     config_path: &Path,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
-    let mut parent_base_sha: Option<String> = None;
 
-    // --no-cache with [checkpoint]: use checkpoint build procedure without cache.
-    // This still exports a clean tree and builds via context_dir + thin diff,
-    // but skips all note reading/writing.
-    if let Some(checkpoint_cfg) = config.checkpoint.as_ref().filter(|_| no_cache) {
-        // Resolve checkpoint SHA (walks git log + checks build_inputs, no notes)
-        let checkpoint_sha = if git::repo_root().await.is_ok() {
-            match checkpoint::find_checkpoint_sha(checkpoint_cfg, 100).await {
-                Ok(sha) => sha,
-                Err(e) => {
-                    warn!("Checkpoint resolution failed (--no-cache): {}", e);
-                    None
+    // --no-cache: skip all note interactions but preserve build procedure.
+    // Both Checkpoint and ParentBase follow the same path here.
+    if no_cache {
+        // Resolve base SHA without reading notes
+        let base_sha = if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
+            // With [checkpoint]: walk ancestors looking for checkpoint commit
+            if git::repo_root().await.is_ok() {
+                match checkpoint::find_checkpoint_sha(checkpoint_cfg, 100).await {
+                    Ok(sha) => sha,
+                    Err(e) => {
+                        warn!("Checkpoint resolution failed (--no-cache): {}", e);
+                        None
+                    }
                 }
+            } else {
+                None
             }
         } else {
-            None
+            // Without [checkpoint]: use parent SHA (HEAD~1)
+            if git::repo_root().await.is_ok() {
+                match git::parent_sha().await {
+                    Ok(sha) => sha,
+                    Err(e) => {
+                        warn!("Parent SHA resolution failed (--no-cache): {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         };
 
-        if let Some(checkpoint_sha) = checkpoint_sha {
-            eprintln!(
-                "[prepare] --no-cache with checkpoint: building from {} (no cache lookup)",
-                &checkpoint_sha[..8.min(checkpoint_sha.len())]
-            );
-
-            // Export checkpoint tree
-            let tree_dir =
-                tempfile::tempdir().context("failed to create temp dir for checkpoint tree")?;
-            git::export_tree(&checkpoint_sha, tree_dir.path())
-                .await
-                .with_context(|| format!("failed to export tree for {}", checkpoint_sha))?;
-
-            // Build base image from checkpoint source (normal prepare with context_dir)
-            eprintln!("[prepare] Building checkpoint base image (--no-cache)...");
-            let base_image_id = {
-                let _span = tracer.span(
-                    "checkpoint_base_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                with_retry!(provider.prepare(
-                    copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                    None,
-                    Some(tree_dir.path()),
-                ))
-                .context("Failed to build checkpoint base image")?
+        if let Some(base_sha) = base_sha {
+            let label = if config.checkpoint.is_some() {
+                "checkpoint"
+            } else {
+                "parent"
             };
-
-            // No note writing -- this is --no-cache
-
-            // Build thin diff on top
-            if let Some(base_id) = base_image_id {
-                let (all_tests, thin_diff_result) = tokio::try_join!(
-                    discover_with_signal(&config.framework, &config.groups, &discovery_done),
-                    async {
-                        let _span = tracer.span(
-                            "thin_diff",
-                            "local",
-                            offload::trace::PID_LOCAL,
-                            offload::trace::TID_MAIN,
-                        );
-                        Ok::<_, anyhow::Error>(
-                            build_thin_diff_image(
-                                &base_id,
-                                &checkpoint_sha,
-                                &config.offload.sandbox_project_root,
-                                Some(&discovery_done),
-                            )
-                            .await,
-                        )
-                    }
-                )?;
-
-                match thin_diff_result {
-                    Ok(target_id) => {
-                        provider.set_image_id(target_id);
-                        if all_tests.is_empty() {
-                            return Ok(None);
-                        }
-                        return dispatch_framework(
-                            config,
-                            &all_tests,
-                            provider,
-                            copy_dirs,
-                            verbose,
-                            tracer,
-                            show_estimated_cost,
-                            fail_fast,
-                        )
-                        .await
-                        .map(Some);
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Thin diff failed after --no-cache base build, falling back to full build: {}",
-                            e
-                        );
-                        eprintln!("[prepare] Thin diff failed, falling back to full build");
-                        // Fall through to full build below
-                    }
-                }
-            }
-            // Fall through to full build if base build failed or thin diff failed
-        }
-        // If no checkpoint found, fall through to full build (same as today)
-    }
-
-    // Step 1: Handle cache states that bypass or modify prepare
-    match cache_state {
-        // Checkpoint cache hit: build thin diff on existing base
-        Some(CacheState::Checkpoint {
-            checkpoint_sha,
-            cached_image: Some(cached),
-        }) => {
             eprintln!(
-                "[cache] Using checkpoint image from {}",
-                &checkpoint_sha[..8.min(checkpoint_sha.len())]
+                "[prepare] --no-cache with {}: building from {} (no cache lookup)",
+                label,
+                &base_sha[..8.min(base_sha.len())]
             );
 
-            // Try thin diff; on failure, fall through to full build
-            let (all_tests, thin_diff_result) = tokio::try_join!(
-                discover_with_signal(&config.framework, &config.groups, &discovery_done),
-                async {
-                    let _span = tracer.span(
-                        "thin_diff",
-                        "local",
-                        offload::trace::PID_LOCAL,
-                        offload::trace::TID_MAIN,
-                    );
-                    // Return the result as a value, not using ?
-                    Ok::<_, anyhow::Error>(
-                        build_thin_diff_image(
-                            &cached.image_id,
-                            checkpoint_sha,
-                            &config.offload.sandbox_project_root,
-                            Some(&discovery_done),
-                        )
-                        .await,
-                    )
-                }
-            )?;
-
-            match thin_diff_result {
-                Ok(target_id) => {
+            match run_base_build_pipeline(
+                &mut provider,
+                config,
+                &base_sha,
+                copy_dir_tuples,
+                no_cache,
+                tracer,
+                None, // no note writing for --no-cache
+                &discovery_done,
+            )
+            .await?
+            {
+                BaseBuildOutcome::Success {
+                    target_id,
+                    all_tests,
+                } => {
                     provider.set_image_id(target_id);
                     if all_tests.is_empty() {
                         return Ok(None);
@@ -635,56 +651,40 @@ async fn run_with_caching<P: SandboxProvider>(
                     .await
                     .map(Some);
                 }
-                Err(e) => {
-                    warn!("Thin diff failed, falling back to full build: {}", e);
-                    eprintln!("[cache] Thin diff failed, falling back to full build");
+                BaseBuildOutcome::ThinDiffFailed | BaseBuildOutcome::NoBuild => {
                     // Fall through to full build below
                 }
             }
         }
+        // If no base found or pipeline fell through, fall through to full build below
+    }
 
-        // Checkpoint cache miss: build base image, cache it, then thin diff
-        Some(CacheState::Checkpoint {
-            checkpoint_sha,
-            cached_image: None,
-        }) => {
-            eprintln!(
-                "[cache] No cached checkpoint image for {} — building base",
-                &checkpoint_sha[..8.min(checkpoint_sha.len())]
-            );
+    // Handle resolved base states (normal caching, not --no-cache)
+    if !no_cache && let Some(resolved) = resolved_base {
+        let (base_sha, cached_image_id, label) = match resolved {
+            ResolvedBase::Checkpoint {
+                base_sha,
+                cached_image_id,
+            } => (base_sha.as_str(), cached_image_id.as_deref(), "Checkpoint"),
+            ResolvedBase::ParentBase {
+                base_sha,
+                cached_image_id,
+            } => (
+                base_sha.as_str(),
+                cached_image_id.as_deref(),
+                "Parent-commit",
+            ),
+        };
 
-            // Export checkpoint tree
-            let tree_dir =
-                tempfile::tempdir().context("failed to create temp dir for checkpoint tree")?;
-            git::export_tree(checkpoint_sha, tree_dir.path())
-                .await
-                .with_context(|| format!("failed to export tree for {}", checkpoint_sha))?;
-
-            // Build base image from checkpoint source (normal prepare with context_dir)
-            eprintln!("[prepare] Building checkpoint base image...");
-            let base_image_id = {
-                let _span = tracer.span(
-                    "checkpoint_base_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
+        match cached_image_id {
+            // Cache hit: base image exists, build thin diff on top
+            Some(image_id) => {
+                eprintln!(
+                    "[cache] {} hit: using cached image from {}",
+                    label,
+                    &base_sha[..8.min(base_sha.len())]
                 );
-                with_retry!(provider.prepare(
-                    copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                    None,
-                    Some(tree_dir.path()),
-                ))
-                .context("Failed to build checkpoint base image")?
-            };
 
-            if let Some(ref base_id) = base_image_id {
-                write_note_for_commit(checkpoint_sha, base_id, config_path).await;
-            }
-
-            // Now build thin diff on top
-            if let Some(base_id) = base_image_id {
                 let (all_tests, thin_diff_result) = tokio::try_join!(
                     discover_with_signal(&config.framework, &config.groups, &discovery_done),
                     async {
@@ -696,8 +696,8 @@ async fn run_with_caching<P: SandboxProvider>(
                         );
                         Ok::<_, anyhow::Error>(
                             build_thin_diff_image(
-                                &base_id,
-                                checkpoint_sha,
+                                image_id,
+                                base_sha,
                                 &config.offload.sandbox_project_root,
                                 Some(&discovery_done),
                             )
@@ -727,90 +727,65 @@ async fn run_with_caching<P: SandboxProvider>(
                     }
                     Err(e) => {
                         warn!(
-                            "Thin diff failed after base build, falling back to full build: {}",
-                            e
+                            "{} thin diff failed, falling back to full build: {}",
+                            label, e
                         );
-                        eprintln!("[cache] Thin diff failed, falling back to full build");
+                        eprintln!(
+                            "[cache] {} thin diff failed, falling back to full build",
+                            label
+                        );
+                        // Fall through to full build below
                     }
                 }
             }
-            // Fall through to full build if base build failed or thin diff failed
-        }
 
-        // Parent-commit cache hit: parent has a cached base image, build thin diff on top
-        Some(CacheState::ParentBase {
-            parent_sha,
-            cached_image_id: Some(image_id),
-        }) => {
-            eprintln!(
-                "[cache] Parent-commit caching: using cached parent image from {}",
-                &parent_sha[..8.min(parent_sha.len())]
-            );
-
-            // Try thin diff from parent; on failure, fall through to full build
-            let thin_diff_result = {
-                let _span = tracer.span(
-                    "thin_diff",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
+            // Cache miss: export tree, build base, cache it, then thin diff
+            None => {
+                eprintln!(
+                    "[cache] {} miss: no cached image for {} — building base",
+                    label,
+                    &base_sha[..8.min(base_sha.len())]
                 );
-                build_thin_diff_image(
-                    image_id,
-                    parent_sha,
-                    &config.offload.sandbox_project_root,
-                    Some(&discovery_done),
-                )
-                .await
-            };
 
-            match thin_diff_result {
-                Ok(target_id) => {
-                    provider.set_image_id(target_id);
-                    let all_tests =
-                        discover_with_signal(&config.framework, &config.groups, &discovery_done)
-                            .await?;
-                    if all_tests.is_empty() {
-                        return Ok(None);
+                match run_base_build_pipeline(
+                    &mut provider,
+                    config,
+                    base_sha,
+                    copy_dir_tuples,
+                    no_cache,
+                    tracer,
+                    Some(config_path), // write note after build
+                    &discovery_done,
+                )
+                .await?
+                {
+                    BaseBuildOutcome::Success {
+                        target_id,
+                        all_tests,
+                    } => {
+                        provider.set_image_id(target_id);
+                        if all_tests.is_empty() {
+                            return Ok(None);
+                        }
+                        return dispatch_framework(
+                            config,
+                            &all_tests,
+                            provider,
+                            copy_dirs,
+                            verbose,
+                            tracer,
+                            show_estimated_cost,
+                            fail_fast,
+                        )
+                        .await
+                        .map(Some);
                     }
-                    return dispatch_framework(
-                        config,
-                        &all_tests,
-                        provider,
-                        copy_dirs,
-                        verbose,
-                        tracer,
-                        show_estimated_cost,
-                        fail_fast,
-                    )
-                    .await
-                    .map(Some);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[cache] Thin diff from parent failed, falling back to full build: {}",
-                        e
-                    );
-                    // Fall through to full build
+                    BaseBuildOutcome::ThinDiffFailed | BaseBuildOutcome::NoBuild => {
+                        // Fall through to full build below
+                    }
                 }
             }
         }
-
-        // Parent-commit cache miss: no cached parent image, do full build and cache on parent
-        Some(CacheState::ParentBase {
-            parent_sha,
-            cached_image_id: None,
-        }) => {
-            eprintln!(
-                "[cache] Parent-commit caching: no cached image for parent {}, will cache after build",
-                &parent_sha[..8.min(parent_sha.len())]
-            );
-            // Fall through to full build; after build, cache the image on parent_sha
-            parent_base_sha = Some(parent_sha.clone());
-        }
-
-        // No cache state: full build
-        None => {}
     }
 
     // Full build fallthrough: concurrent discover + prepare
@@ -820,7 +795,7 @@ async fn run_with_caching<P: SandboxProvider>(
         ProviderConfig::Modal(_) => "Modal",
     };
 
-    let (all_tests, prepare_result) = tokio::try_join!(
+    let (all_tests, _prepare_result) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
         async {
             let _span = tracer.span(
@@ -839,11 +814,6 @@ async fn run_with_caching<P: SandboxProvider>(
             .context(format!("Failed to prepare {} provider", label))
         }
     )?;
-
-    // Cache image on parent commit (parent-commit cache miss)
-    if let (Some(parent_sha), Some(image_id)) = (&parent_base_sha, &prepare_result) {
-        write_note_for_commit(parent_sha, image_id, config_path).await;
-    }
 
     if all_tests.is_empty() {
         return Ok(None);
@@ -977,17 +947,17 @@ async fn run_tests(
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
         .collect();
 
-    // Resolve checkpoint / cache state if not --no-cache and not local provider.
-    // We fetch notes and resolve checkpoint info upfront so the provider arms
+    // Resolve base commit if not --no-cache and not local provider.
+    // We fetch notes and resolve checkpoint/parent info upfront so the provider arms
     // can use it during the concurrent discover+prepare phase.
-    let cache_state = if !no_cache && !matches!(&config.provider, ProviderConfig::Local(_)) {
+    let resolved_base = if !no_cache && !matches!(&config.provider, ProviderConfig::Local(_)) {
         let _span = tracer.span(
-            "resolve_cache_state",
+            "resolve_base",
             "local",
             offload::trace::PID_LOCAL,
             offload::trace::TID_MAIN,
         );
-        resolve_cache_state(config_path, &config).await
+        resolve_base(config_path, &config).await
     } else {
         None
     };
@@ -1024,7 +994,7 @@ async fn run_tests(
             match run_with_caching(
                 provider,
                 &config,
-                &cache_state,
+                &resolved_base,
                 &copy_dir_tuples,
                 &copy_dirs,
                 no_cache,
@@ -1045,7 +1015,7 @@ async fn run_tests(
             match run_with_caching(
                 provider,
                 &config,
-                &cache_state,
+                &resolved_base,
                 &copy_dir_tuples,
                 &copy_dirs,
                 no_cache,
@@ -1078,25 +1048,28 @@ async fn run_tests(
     Ok(())
 }
 
-/// Pre-resolved cache/checkpoint state, determined before provider dispatch.
-enum CacheState {
-    /// Checkpoint image caching: A checkpoint commit was found (with `[checkpoint]` section).
+/// Pre-resolved base commit and its cached image, determined before provider dispatch.
+///
+/// Both variants have identical structure. The variant name is kept for
+/// logging/diagnostics (e.g. "[cache] Checkpoint hit" vs "[cache] Parent-commit hit").
+enum ResolvedBase {
+    /// Base commit from `[checkpoint]` config: nearest ancestor touching `build_inputs`.
     Checkpoint {
-        checkpoint_sha: String,
-        cached_image: Option<checkpoint::CachedImage>,
+        base_sha: String,
+        cached_image_id: Option<String>,
     },
-    /// Parent-commit image caching: parent commit base image (non-checkpoint mode).
+    /// Base commit from parent: HEAD~1.
     ParentBase {
-        parent_sha: String,
+        base_sha: String,
         cached_image_id: Option<String>,
     },
 }
 
-/// Fetch notes and resolve checkpoint/cache state before provider dispatch.
+/// Fetch notes and resolve the base commit before provider dispatch.
 ///
 /// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
 /// this is an initial commit with no parent (non-checkpoint workflow).
-async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<CacheState> {
+async fn resolve_base(config_path: &Path, config: &Config) -> Option<ResolvedBase> {
     // Check if we're in a git repo
     if git::repo_root().await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
@@ -1116,9 +1089,9 @@ async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<Cach
     // Checkpoint caching: if we have a [checkpoint] section, use checkpoint-based caching
     if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
         return match checkpoint::resolve_checkpoint(&config_path_str, checkpoint_cfg, 100).await {
-            Ok(Some(info)) => Some(CacheState::Checkpoint {
-                checkpoint_sha: info.checkpoint_sha,
-                cached_image: info.cached_image,
+            Ok(Some(info)) => Some(ResolvedBase::Checkpoint {
+                base_sha: info.checkpoint_sha,
+                cached_image_id: info.cached_image.map(|c| c.image_id),
             }),
             Ok(None) => {
                 info!("No checkpoint commit found in ancestor window");
@@ -1132,33 +1105,18 @@ async fn resolve_cache_state(config_path: &Path, config: &Config) -> Option<Cach
     }
 
     // Parent-commit caching: no [checkpoint] config — use parent commit as base
-    let parent_base =
-        match checkpoint::resolve_parent_base(config_path.to_str().unwrap_or("offload.toml")).await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                warn!("Parent base resolution failed: {}", e);
-                return None;
-            }
-        };
-    match parent_base {
-        Some((parent_sha, image_id)) => Some(CacheState::ParentBase {
-            parent_sha,
-            cached_image_id: Some(image_id),
+    match checkpoint::resolve_parent_base(&config_path_str).await {
+        Ok(Some(info)) => Some(ResolvedBase::ParentBase {
+            base_sha: info.parent_sha,
+            cached_image_id: info.cached_image.map(|c| c.image_id),
         }),
-        None => {
-            // Check if we have a parent at all (for caching after full build)
-            let parent = match git::parent_sha().await {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to get parent SHA: {}", e);
-                    return None;
-                }
-            };
-            parent.map(|parent_sha| CacheState::ParentBase {
-                parent_sha,
-                cached_image_id: None,
-            })
+        Ok(None) => {
+            info!("Initial commit (no parent), skipping parent-commit caching");
+            None
+        }
+        Err(e) => {
+            warn!("Parent base resolution failed: {}", e);
+            None
         }
     }
 }
