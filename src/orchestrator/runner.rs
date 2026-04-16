@@ -1,5 +1,6 @@
 //! Test runner — executes test batches within a single sandbox.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::orchestrator::completion::SharedCompletionTracker;
+use crate::orchestrator::completion::CompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
@@ -54,7 +55,7 @@ pub struct RunnerConfig {
     pub fail_fast: bool,
     pub parts_dir: std::path::PathBuf,
     pub junit_report: SharedJunitReport,
-    pub tracker: SharedCompletionTracker,
+    pub tracker: Arc<Mutex<CompletionTracker>>,
     pub cancellation_token: CancellationToken,
     pub artifacts: ArtifactConfig,
 }
@@ -87,7 +88,7 @@ pub struct TestRunner<'a, S, D> {
     /// Configuration for downloading artifacts after batch execution.
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
-    tracker: SharedCompletionTracker,
+    tracker: Arc<Mutex<CompletionTracker>>,
 }
 
 /// Build a `find` command string from glob patterns.

@@ -5,10 +5,6 @@
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-
-/// Shared completion tracker, protected by a mutex for concurrent access.
-pub type SharedCompletionTracker = Arc<Mutex<CompletionTracker>>;
 
 /// Tracks which tests have a decided outcome.
 ///
