@@ -5,6 +5,8 @@
 //! existing cached data. Building and caching (writing notes, pushing) is
 //! done by the caller.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 
 use crate::config::schema::CheckpointConfig;
@@ -40,16 +42,16 @@ pub struct ParentBaseInfo {
 /// Returns `None` if this is the initial commit (no parent).
 /// Returns `Some(ParentBaseInfo { cached_image: None })` if the parent exists
 /// but has no cached image in git notes.
-pub async fn resolve_parent_base(config_path: &str) -> Result<Option<ParentBaseInfo>> {
-    let parent = git::parent_sha().await?;
+pub async fn resolve_parent_base(repo: &Path, config_path: &str) -> Result<Option<ParentBaseInfo>> {
+    let parent = git::parent_sha(repo).await?;
     let Some(parent_sha) = parent else {
         return Ok(None);
     };
 
-    let repo_root = git::repo_root().await?;
+    let repo_root = git::repo_root(repo).await?;
     let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
 
-    let cached_image = read_cached_image_for_commit(&parent_sha, &config_key).await?;
+    let cached_image = read_cached_image_for_commit(repo, &parent_sha, &config_key).await?;
 
     Ok(Some(ParentBaseInfo {
         parent_sha,
@@ -64,13 +66,14 @@ pub async fn resolve_parent_base(config_path: &str) -> Result<Option<ParentBaseI
 ///
 /// Returns `None` if no checkpoint commit is found within the ancestor window.
 pub async fn find_checkpoint_sha(
+    repo: &Path,
     checkpoint_cfg: &CheckpointConfig,
     max_depth: usize,
 ) -> Result<Option<String>> {
-    let ancestors = git::ancestors(max_depth).await?;
+    let ancestors = git::ancestors(repo, max_depth).await?;
 
     for sha in &ancestors {
-        let touches = git::commit_touches_paths(sha, &checkpoint_cfg.build_inputs).await?;
+        let touches = git::commit_touches_paths(repo, sha, &checkpoint_cfg.build_inputs).await?;
         if touches {
             return Ok(Some(sha.clone()));
         }
@@ -89,22 +92,23 @@ pub async fn find_checkpoint_sha(
 /// Returns `Some(CheckpointInfo { cached_image: None })` if a checkpoint commit
 /// is found but has no cached image in git notes.
 pub async fn resolve_checkpoint(
+    repo: &Path,
     config_path: &str,
     checkpoint_cfg: &CheckpointConfig,
     max_depth: usize,
 ) -> Result<Option<CheckpointInfo>> {
-    let repo_root = git::repo_root().await?;
+    let repo_root = git::repo_root(repo).await?;
     let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-    let ancestors = git::ancestors(max_depth).await?;
+    let ancestors = git::ancestors(repo, max_depth).await?;
 
     for sha in &ancestors {
-        let touches = git::commit_touches_paths(sha, &checkpoint_cfg.build_inputs).await?;
+        let touches = git::commit_touches_paths(repo, sha, &checkpoint_cfg.build_inputs).await?;
         if !touches {
             continue;
         }
 
         // Found a checkpoint commit -- check for cached image
-        let cached_image = read_cached_image_for_commit(sha, &config_key).await?;
+        let cached_image = read_cached_image_for_commit(repo, sha, &config_key).await?;
         return Ok(Some(CheckpointInfo {
             checkpoint_sha: sha.clone(),
             cached_image,
@@ -116,10 +120,11 @@ pub async fn resolve_checkpoint(
 
 /// Read the cached image entry from a git note for a specific commit and config key.
 async fn read_cached_image_for_commit(
+    repo: &Path,
     commit_sha: &str,
     config_key: &str,
 ) -> Result<Option<CachedImage>> {
-    let note = git::read_note(commit_sha)
+    let note = git::read_note(repo, commit_sha)
         .await
         .context("failed to read git note for checkpoint commit")?;
 
