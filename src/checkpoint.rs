@@ -229,29 +229,6 @@ mod tests {
 
     // ---- Tests for resolve_checkpoint ----
 
-    // These tests use set_current_dir to point at temp repos, since the
-    // production git functions operate on cwd. Each test saves and restores
-    // cwd around the async calls.
-
-    /// RAII guard that restores the working directory when dropped.
-    struct CwdGuard {
-        original: std::path::PathBuf,
-    }
-
-    impl CwdGuard {
-        fn set(dir: &Path) -> Result<Self> {
-            let original = std::env::current_dir()?;
-            std::env::set_current_dir(dir)?;
-            Ok(Self { original })
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original);
-        }
-    }
-
     #[tokio::test]
     async fn test_resolve_checkpoint_finds_nearest() -> Result<()> {
         let dir = init_temp_repo()?;
@@ -277,8 +254,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_checkpoint("offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -300,8 +276,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_checkpoint("offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
 
         assert!(result.is_none(), "no commit touches Dockerfile");
         Ok(())
@@ -336,8 +311,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_checkpoint("offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -368,8 +342,7 @@ mod tests {
         git_cmd(dir.path(), &["add", "app.py"])?;
         git_cmd(dir.path(), &["commit", "-m", "add app"])?;
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_parent_base("offload.toml").await?;
+        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
 
         let info = result.context("should find parent base")?;
         assert_eq!(info.parent_sha, initial_sha);
@@ -388,8 +361,7 @@ mod tests {
         git_cmd(dir.path(), &["add", "app.py"])?;
         git_cmd(dir.path(), &["commit", "-m", "add app"])?;
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_parent_base("offload.toml").await?;
+        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
 
         let info = result.context("should find parent base (miss still returns info)")?;
         assert_eq!(info.parent_sha, initial_sha);
@@ -405,8 +377,7 @@ mod tests {
         let dir = init_temp_repo()?;
         // Only one commit — no parent
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = resolve_parent_base("offload.toml").await?;
+        let result = resolve_parent_base(dir.path(), "offload.toml").await?;
 
         assert!(result.is_none(), "initial commit has no parent");
         Ok(())
