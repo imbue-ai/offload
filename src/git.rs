@@ -19,11 +19,13 @@ pub struct ImageEntry {
 pub type NoteContents = HashMap<String, ImageEntry>;
 
 /// Run a git command and return its stdout as a trimmed string.
-async fn run_git(args: &[&str]) -> Result<String> {
+async fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
+    let repo = repo.to_path_buf();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
             .args(&args)
+            .current_dir(&repo)
             .output()
             .context("failed to run git")?;
         if !output.status.success() {
@@ -42,14 +44,14 @@ async fn run_git(args: &[&str]) -> Result<String> {
 }
 
 /// Return the SHA of HEAD.
-pub async fn head_sha() -> Result<String> {
-    run_git(&["rev-parse", "HEAD"]).await
+pub async fn head_sha(repo: &Path) -> Result<String> {
+    run_git(repo, &["rev-parse", "HEAD"]).await
 }
 
 /// Return the SHA of HEAD's parent (HEAD~1).
 /// Returns `Ok(None)` if HEAD is the initial commit (no parent).
-pub async fn parent_sha() -> Result<Option<String>> {
-    let result = run_git(&["rev-parse", "--verify", "HEAD~1"]).await;
+pub async fn parent_sha(repo: &Path) -> Result<Option<String>> {
+    let result = run_git(repo, &["rev-parse", "--verify", "HEAD~1"]).await;
     match result {
         Ok(sha) => Ok(Some(sha)),
         Err(e) => {
@@ -68,15 +70,16 @@ pub async fn parent_sha() -> Result<Option<String>> {
 }
 
 /// Return the repository root directory.
-pub async fn repo_root() -> Result<PathBuf> {
-    let root = run_git(&["rev-parse", "--show-toplevel"]).await?;
+pub async fn repo_root(repo: &Path) -> Result<PathBuf> {
+    let root = run_git(repo, &["rev-parse", "--show-toplevel"]).await?;
     Ok(PathBuf::from(root))
 }
 
 /// Read the offload-images note for a given commit.
 ///
 /// Returns `Ok(None)` if the notes ref or the note for this commit doesn't exist.
-pub async fn read_note(commit_sha: &str) -> Result<Option<NoteContents>> {
+pub async fn read_note(repo: &Path, commit_sha: &str) -> Result<Option<NoteContents>> {
+    let repo = repo.to_path_buf();
     let sha = commit_sha.to_string();
     let args = vec![
         "notes".to_string(),
@@ -88,6 +91,7 @@ pub async fn read_note(commit_sha: &str) -> Result<Option<NoteContents>> {
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
             .args(&args)
+            .current_dir(&repo)
             .output()
             .context("failed to run git notes show")?;
         if !output.status.success() {
@@ -112,9 +116,9 @@ pub async fn read_note(commit_sha: &str) -> Result<Option<NoteContents>> {
 ///
 /// Performs a read-modify-write: existing entries for other config keys are
 /// preserved. The note is pretty-printed JSON with 4-space indentation.
-pub async fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()> {
+pub async fn write_note(repo: &Path, commit_sha: &str, contents: &NoteContents) -> Result<()> {
     // Read existing note to merge
-    let existing = read_note(commit_sha).await?.unwrap_or_default();
+    let existing = read_note(repo, commit_sha).await?.unwrap_or_default();
     let mut merged = existing;
     for (key, value) in contents {
         merged.insert(key.clone(), value.clone());
@@ -122,6 +126,7 @@ pub async fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>
 
     let json = serde_json::to_string_pretty(&merged).context("failed to serialize note JSON")?;
     let sha = commit_sha.to_string();
+    let repo = repo.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
         // Write JSON to a temp file and use -F to pass it to git notes add
@@ -141,6 +146,7 @@ pub async fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>
                 &tmp.path().to_string_lossy(),
                 &sha,
             ])
+            .current_dir(&repo)
             .output()
             .context("failed to run git notes add")?;
 
@@ -156,11 +162,13 @@ pub async fn write_note(commit_sha: &str, contents: &NoteContents) -> Result<()>
 /// Force-push notes to a remote.
 ///
 /// Returns `Ok(())` even if the remote ref doesn't exist yet (first push creates it).
-pub async fn push_notes(remote: &str) -> Result<()> {
+pub async fn push_notes(repo: &Path, remote: &str) -> Result<()> {
+    let repo = repo.to_path_buf();
     let remote = remote.to_string();
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
             .args(["push", &remote, NOTES_REF, "--force"])
+            .current_dir(&repo)
             .output()
             .context("failed to run git push")?;
         if !output.status.success() {
@@ -175,12 +183,14 @@ pub async fn push_notes(remote: &str) -> Result<()> {
 /// Fetch notes from a remote.
 ///
 /// Returns `Ok(())` even if the remote ref doesn't exist.
-pub async fn fetch_notes(remote: &str) -> Result<()> {
+pub async fn fetch_notes(repo: &Path, remote: &str) -> Result<()> {
+    let repo = repo.to_path_buf();
     let remote = remote.to_string();
     let refspec = format!("{NOTES_REF}:{NOTES_REF}");
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
             .args(["fetch", &remote, &refspec])
+            .current_dir(&repo)
             .output()
             .context("failed to run git fetch")?;
         if !output.status.success() {
@@ -203,7 +213,8 @@ pub async fn fetch_notes(remote: &str) -> Result<()> {
 ///
 /// Adds `+refs/notes/offload-images:refs/notes/offload-images` to
 /// `remote.<remote>.fetch` if not already present.
-pub async fn configure_notes_fetch(remote: &str) -> Result<()> {
+pub async fn configure_notes_fetch(repo: &Path, remote: &str) -> Result<()> {
+    let repo = repo.to_path_buf();
     let remote = remote.to_string();
     let refspec = format!("+{NOTES_REF}:{NOTES_REF}");
 
@@ -211,6 +222,7 @@ pub async fn configure_notes_fetch(remote: &str) -> Result<()> {
         // Check existing fetch refspecs
         let output = std::process::Command::new("git")
             .args(["config", "--get-all", &format!("remote.{remote}.fetch")])
+            .current_dir(&repo)
             .output()
             .context("failed to run git config")?;
 
@@ -227,6 +239,7 @@ pub async fn configure_notes_fetch(remote: &str) -> Result<()> {
                 &format!("remote.{remote}.fetch"),
                 &refspec,
             ])
+            .current_dir(&repo)
             .output()
             .context("failed to run git config --add")?;
 
@@ -242,18 +255,21 @@ pub async fn configure_notes_fetch(remote: &str) -> Result<()> {
 /// Check whether a commit touches any of the given paths.
 ///
 /// Uses `git diff-tree` with `-m` to handle merge commits (checks all parents).
-pub async fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<bool> {
+pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String]) -> Result<bool> {
     let sha = commit_sha.to_string();
     let paths = paths.to_vec();
 
-    let output = run_git(&[
-        "diff-tree",
-        "--no-commit-id",
-        "--name-only",
-        "-r",
-        "-m",
-        &sha,
-    ])
+    let output = run_git(
+        repo,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-m",
+            &sha,
+        ],
+    )
     .await?;
 
     let changed: std::collections::HashSet<&str> = output.lines().collect();
@@ -267,8 +283,8 @@ pub async fn commit_touches_paths(commit_sha: &str, paths: &[String]) -> Result<
 /// the real commit, preserving the actual SHA, author, and message. This is
 /// needed so that `COPY . /app` in a Dockerfile includes `.git/`, which many
 /// repos require and which the thin-diff `git apply` step depends on.
-pub async fn export_tree(commit_sha: &str, dest: &Path) -> Result<()> {
-    let repo_root = repo_root().await?;
+pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<()> {
+    let repo_root = repo_root(repo).await?;
     let sha = commit_sha.to_string();
     let dest = dest.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -318,8 +334,10 @@ pub async fn export_tree(commit_sha: &str, dest: &Path) -> Result<()> {
 /// where path is a `NamedTempFile` containing the binary patch. The caller
 /// owns the temp file and is responsible for its lifetime.
 pub async fn generate_checkpoint_diff(
+    repo: &Path,
     checkpoint_sha: &str,
 ) -> Result<Option<tempfile::NamedTempFile>> {
+    let repo = repo.to_path_buf();
     let sha = checkpoint_sha.to_string();
     tokio::task::spawn_blocking(move || {
         // Create a temporary index file
@@ -330,6 +348,7 @@ pub async fn generate_checkpoint_diff(
         let run_git_with_index = |args: &[&str]| -> Result<std::process::Output> {
             let output = std::process::Command::new("git")
                 .args(args)
+                .current_dir(&repo)
                 .env("GIT_INDEX_FILE", &tmp_index_path)
                 .output()
                 .with_context(|| format!("failed to run git {}", args.join(" ")))?;
@@ -369,8 +388,8 @@ pub async fn generate_checkpoint_diff(
 }
 
 /// Count the number of files changed between two commits.
-pub async fn diff_file_count(from_sha: &str, to_sha: &str) -> Result<usize> {
-    let output = run_git(&["diff", "--name-only", from_sha, to_sha]).await?;
+pub async fn diff_file_count(repo: &Path, from_sha: &str, to_sha: &str) -> Result<usize> {
+    let output = run_git(repo, &["diff", "--name-only", from_sha, to_sha]).await?;
     if output.is_empty() {
         return Ok(0);
     }
@@ -378,9 +397,9 @@ pub async fn diff_file_count(from_sha: &str, to_sha: &str) -> Result<usize> {
 }
 
 /// Return the SHAs of the last `max_depth` ancestors of HEAD (including HEAD).
-pub async fn ancestors(max_depth: usize) -> Result<Vec<String>> {
+pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
     let n = max_depth.to_string();
-    let output = run_git(&["log", "--format=%H", "-n", &n]).await?;
+    let output = run_git(repo, &["log", "--format=%H", "-n", &n]).await?;
     Ok(output.lines().map(|s| s.to_string()).collect())
 }
 
