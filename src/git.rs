@@ -475,25 +475,6 @@ mod tests {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    /// RAII guard that restores the working directory when dropped.
-    struct CwdGuard {
-        original: std::path::PathBuf,
-    }
-
-    impl CwdGuard {
-        fn set(dir: &Path) -> Result<Self> {
-            let original = std::env::current_dir()?;
-            std::env::set_current_dir(dir)?;
-            Ok(Self { original })
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original);
-        }
-    }
-
     // ---- Unit tests ----
 
     #[test]
@@ -549,9 +530,8 @@ mod tests {
     async fn test_generate_checkpoint_diff_no_changes() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
-        let result = generate_checkpoint_diff(&sha).await?;
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
         assert!(
             result.is_none(),
             "expected None when working tree matches commit"
@@ -567,8 +547,7 @@ mod tests {
         // Modify a tracked file without committing
         std::fs::write(dir.path().join("README.md"), "# modified content")?;
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = generate_checkpoint_diff(&sha).await?;
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
 
         let patch_file = result.context("expected Some patch for tracked modification")?;
         let patch_content = std::fs::read_to_string(patch_file.path())?;
@@ -588,8 +567,7 @@ mod tests {
         // Add a new untracked file (not git-added)
         std::fs::write(dir.path().join("untracked.txt"), "new file content")?;
 
-        let _guard = CwdGuard::set(dir.path())?;
-        let result = generate_checkpoint_diff(&sha).await?;
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
 
         let patch_file = result.context("expected Some patch for untracked file")?;
         let patch_content = std::fs::read_to_string(patch_file.path())?;
@@ -604,9 +582,9 @@ mod tests {
     #[tokio::test]
     async fn test_generate_checkpoint_diff_invalid_sha() -> Result<()> {
         let dir = init_temp_repo()?;
-        let _guard = CwdGuard::set(dir.path())?;
 
-        let result = generate_checkpoint_diff("0000000000000000000000000000000000000000").await;
+        let result =
+            generate_checkpoint_diff(dir.path(), "0000000000000000000000000000000000000000").await;
         assert!(result.is_err(), "expected error for invalid SHA");
         Ok(())
     }
@@ -617,7 +595,6 @@ mod tests {
     async fn test_write_and_read_note() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
         let mut contents = NoteContents::new();
         contents.insert(
@@ -627,8 +604,8 @@ mod tests {
             },
         );
 
-        write_note(&sha, &contents).await?;
-        let read_back = read_note(&sha).await?;
+        write_note(dir.path(), &sha, &contents).await?;
+        let read_back = read_note(dir.path(), &sha).await?;
 
         let note = read_back.context("expected note to exist")?;
         assert_eq!(
@@ -642,7 +619,6 @@ mod tests {
     async fn test_write_note_merges_configs() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
         // Write first config
         let mut contents_a = NoteContents::new();
@@ -652,7 +628,7 @@ mod tests {
                 image_id: "im-aaa".to_string(),
             },
         );
-        write_note(&sha, &contents_a).await?;
+        write_note(dir.path(), &sha, &contents_a).await?;
 
         // Write second config -- should merge, not overwrite
         let mut contents_b = NoteContents::new();
@@ -662,9 +638,11 @@ mod tests {
                 image_id: "im-bbb".to_string(),
             },
         );
-        write_note(&sha, &contents_b).await?;
+        write_note(dir.path(), &sha, &contents_b).await?;
 
-        let read_back = read_note(&sha).await?.context("expected note")?;
+        let read_back = read_note(dir.path(), &sha)
+            .await?
+            .context("expected note")?;
         assert_eq!(read_back.len(), 2);
         assert_eq!(
             read_back
@@ -700,8 +678,7 @@ mod tests {
 
         // Export the earlier commit's tree
         let dest = tempfile::tempdir()?;
-        let _guard = CwdGuard::set(dir.path())?;
-        export_tree(&sha, dest.path()).await?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
 
         // The exported tree should contain hello.txt and README.md
         assert_eq!(
@@ -727,12 +704,12 @@ mod tests {
         git_in(dir.path(), &["add", "Dockerfile"])?;
         git_in(dir.path(), &["commit", "-m", "add dockerfile"])?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
-        let touches = commit_touches_paths(&sha, &["Dockerfile".to_string()]).await?;
+        let touches = commit_touches_paths(dir.path(), &sha, &["Dockerfile".to_string()]).await?;
         assert!(touches);
 
-        let no_touch = commit_touches_paths(&sha, &["nonexistent.txt".to_string()]).await?;
+        let no_touch =
+            commit_touches_paths(dir.path(), &sha, &["nonexistent.txt".to_string()]).await?;
         assert!(!no_touch);
         Ok(())
     }
@@ -760,14 +737,15 @@ mod tests {
         // Merge branch-a into branch-b
         git_in(dir.path(), &["merge", "branch-a", "-m", "merge"])?;
         let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
         // The merge commit should touch files from branch-a (via -m flag)
-        let touches_a = commit_touches_paths(&merge_sha, &["file-a.txt".to_string()]).await?;
+        let touches_a =
+            commit_touches_paths(dir.path(), &merge_sha, &["file-a.txt".to_string()]).await?;
         assert!(touches_a);
 
         // And files from branch-b
-        let touches_b = commit_touches_paths(&merge_sha, &["file-b.txt".to_string()]).await?;
+        let touches_b =
+            commit_touches_paths(dir.path(), &merge_sha, &["file-b.txt".to_string()]).await?;
         assert!(touches_b);
         Ok(())
     }
@@ -798,11 +776,10 @@ mod tests {
         )?;
 
         let refspec = format!("+{NOTES_REF}:{NOTES_REF}");
-        let _guard = CwdGuard::set(dir.path())?;
 
         // Call configure twice
-        configure_notes_fetch("origin").await?;
-        configure_notes_fetch("origin").await?;
+        configure_notes_fetch(dir.path(), "origin").await?;
+        configure_notes_fetch(dir.path(), "origin").await?;
 
         // Check that refspec appears exactly once
         let output = git_in(dir.path(), &["config", "--get-all", "remote.origin.fetch"])?;
@@ -815,9 +792,8 @@ mod tests {
     async fn test_read_note_missing_ref_returns_none() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
-        let result = read_note(&sha).await?;
+        let result = read_note(dir.path(), &sha).await?;
         assert!(result.is_none());
         Ok(())
     }
@@ -846,10 +822,8 @@ mod tests {
             ],
         )?;
 
-        let _guard = CwdGuard::set(dir.path())?;
-
         // fetch_notes should return Ok(()) even though remote has no notes ref
-        fetch_notes("origin").await?;
+        fetch_notes(dir.path(), "origin").await?;
         Ok(())
     }
 
@@ -860,9 +834,8 @@ mod tests {
         std::fs::write(dir.path().join("second.txt"), "second")?;
         git_in(dir.path(), &["add", "second.txt"])?;
         git_in(dir.path(), &["commit", "-m", "second commit"])?;
-        let _guard = CwdGuard::set(dir.path())?;
 
-        let parent = parent_sha().await?;
+        let parent = parent_sha(dir.path()).await?;
         assert!(parent.is_some(), "should have a parent");
 
         // Parent should be the initial commit, not the current HEAD
@@ -874,9 +847,8 @@ mod tests {
     #[tokio::test]
     async fn test_parent_sha_initial_commit() -> Result<()> {
         let dir = init_temp_repo()?;
-        let _guard = CwdGuard::set(dir.path())?;
         // init_temp_repo creates exactly one commit -- it has no parent
-        let parent = parent_sha().await?;
+        let parent = parent_sha(dir.path()).await?;
         assert!(parent.is_none(), "initial commit should have no parent");
         Ok(())
     }
