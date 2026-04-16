@@ -41,32 +41,6 @@ async fn run_git(args: &[&str]) -> Result<String> {
     .await?
 }
 
-/// Run a git command in a specific directory.
-#[cfg(test)]
-async fn run_git_in(dir: &Path, args: &[&str]) -> Result<String> {
-    let dir = dir.to_path_buf();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(&dir)
-            .output()
-            .context("failed to run git")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "git {} failed (exit {}): {}",
-                args.join(" "),
-                output.status,
-                stderr.trim()
-            );
-        }
-        let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
-        Ok(stdout.trim().to_string())
-    })
-    .await?
-}
-
 /// Return the SHA of HEAD.
 pub async fn head_sha() -> Result<String> {
     run_git(&["rev-parse", "HEAD"]).await
@@ -482,6 +456,25 @@ mod tests {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
+    /// RAII guard that restores the working directory when dropped.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn set(dir: &Path) -> Result<Self> {
+            let original = std::env::current_dir()?;
+            std::env::set_current_dir(dir)?;
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
     // ---- Unit tests ----
 
     #[test]
@@ -537,6 +530,7 @@ mod tests {
     async fn test_write_and_read_note() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
         let mut contents = NoteContents::new();
         contents.insert(
@@ -546,8 +540,8 @@ mod tests {
             },
         );
 
-        write_note_in(dir.path(), &sha, &contents).await?;
-        let read_back = read_note_in(dir.path(), &sha).await?;
+        write_note(&sha, &contents).await?;
+        let read_back = read_note(&sha).await?;
 
         let note = read_back.context("expected note to exist")?;
         assert_eq!(
@@ -561,6 +555,7 @@ mod tests {
     async fn test_write_note_merges_configs() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
         // Write first config
         let mut contents_a = NoteContents::new();
@@ -570,7 +565,7 @@ mod tests {
                 image_id: "im-aaa".to_string(),
             },
         );
-        write_note_in(dir.path(), &sha, &contents_a).await?;
+        write_note(&sha, &contents_a).await?;
 
         // Write second config -- should merge, not overwrite
         let mut contents_b = NoteContents::new();
@@ -580,11 +575,9 @@ mod tests {
                 image_id: "im-bbb".to_string(),
             },
         );
-        write_note_in(dir.path(), &sha, &contents_b).await?;
+        write_note(&sha, &contents_b).await?;
 
-        let read_back = read_note_in(dir.path(), &sha)
-            .await?
-            .context("expected note")?;
+        let read_back = read_note(&sha).await?.context("expected note")?;
         assert_eq!(read_back.len(), 2);
         assert_eq!(
             read_back
@@ -620,7 +613,8 @@ mod tests {
 
         // Export the earlier commit's tree
         let dest = tempfile::tempdir()?;
-        export_tree_in(dir.path(), &sha, dest.path()).await?;
+        let _guard = CwdGuard::set(dir.path())?;
+        export_tree(&sha, dest.path()).await?;
 
         // The exported tree should contain hello.txt and README.md
         assert_eq!(
@@ -646,13 +640,12 @@ mod tests {
         git_in(dir.path(), &["add", "Dockerfile"])?;
         git_in(dir.path(), &["commit", "-m", "add dockerfile"])?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
-        let touches =
-            commit_touches_paths_in(dir.path(), &sha, &["Dockerfile".to_string()]).await?;
+        let touches = commit_touches_paths(&sha, &["Dockerfile".to_string()]).await?;
         assert!(touches);
 
-        let no_touch =
-            commit_touches_paths_in(dir.path(), &sha, &["nonexistent.txt".to_string()]).await?;
+        let no_touch = commit_touches_paths(&sha, &["nonexistent.txt".to_string()]).await?;
         assert!(!no_touch);
         Ok(())
     }
@@ -677,15 +670,14 @@ mod tests {
         // Merge branch-a into branch-b
         git_in(dir.path(), &["merge", "branch-a", "-m", "merge"])?;
         let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
         // The merge commit should touch files from branch-a (via -m flag)
-        let touches_a =
-            commit_touches_paths_in(dir.path(), &merge_sha, &["file-a.txt".to_string()]).await?;
+        let touches_a = commit_touches_paths(&merge_sha, &["file-a.txt".to_string()]).await?;
         assert!(touches_a);
 
         // And files from branch-b
-        let touches_b =
-            commit_touches_paths_in(dir.path(), &merge_sha, &["file-b.txt".to_string()]).await?;
+        let touches_b = commit_touches_paths(&merge_sha, &["file-b.txt".to_string()]).await?;
         assert!(touches_b);
         Ok(())
     }
@@ -716,10 +708,11 @@ mod tests {
         )?;
 
         let refspec = format!("+{NOTES_REF}:{NOTES_REF}");
+        let _guard = CwdGuard::set(dir.path())?;
 
         // Call configure twice
-        configure_notes_fetch_in(dir.path(), "origin").await?;
-        configure_notes_fetch_in(dir.path(), "origin").await?;
+        configure_notes_fetch("origin").await?;
+        configure_notes_fetch("origin").await?;
 
         // Check that refspec appears exactly once
         let output = git_in(dir.path(), &["config", "--get-all", "remote.origin.fetch"])?;
@@ -732,8 +725,9 @@ mod tests {
     async fn test_read_note_missing_ref_returns_none() -> Result<()> {
         let dir = init_temp_repo()?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
-        let result = read_note_in(dir.path(), &sha).await?;
+        let result = read_note(&sha).await?;
         assert!(result.is_none());
         Ok(())
     }
@@ -762,226 +756,11 @@ mod tests {
             ],
         )?;
 
+        let _guard = CwdGuard::set(dir.path())?;
+
         // fetch_notes should return Ok(()) even though remote has no notes ref
-        fetch_notes_in(dir.path(), "origin").await?;
+        fetch_notes("origin").await?;
         Ok(())
-    }
-
-    // ---- Test helpers that operate on a specific directory ----
-    // These avoid global GIT_DIR/GIT_WORK_TREE pollution between tests.
-
-    async fn read_note_in(dir: &Path, commit_sha: &str) -> Result<Option<NoteContents>> {
-        let dir = dir.to_path_buf();
-        let sha = commit_sha.to_string();
-        let args = vec![
-            "notes".to_string(),
-            "--ref".to_string(),
-            NOTES_REF.to_string(),
-            "show".to_string(),
-            sha,
-        ];
-        tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&dir)
-                .output()
-                .context("failed to run git notes show")?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stderr_lower = stderr.to_lowercase();
-                if stderr_lower.contains("no note found")
-                    || stderr_lower.contains("not a valid ref")
-                {
-                    return Ok(None);
-                }
-                bail!("git notes show failed: {}", stderr.trim());
-            }
-            let json =
-                String::from_utf8(output.stdout).context("git notes output was not valid UTF-8")?;
-            let contents: NoteContents =
-                serde_json::from_str(&json).context("failed to parse note JSON")?;
-            Ok(Some(contents))
-        })
-        .await?
-    }
-
-    async fn write_note_in(dir: &Path, commit_sha: &str, contents: &NoteContents) -> Result<()> {
-        // Read existing to merge
-        let existing = read_note_in(dir, commit_sha).await?.unwrap_or_default();
-        let mut merged = existing;
-        for (key, value) in contents {
-            merged.insert(key.clone(), value.clone());
-        }
-        let json = serde_json::to_string_pretty(&merged)?;
-
-        let dir = dir.to_path_buf();
-        let sha = commit_sha.to_string();
-        tokio::task::spawn_blocking(move || {
-            let mut tmp = tempfile::NamedTempFile::new()?;
-            std::io::Write::write_all(&mut tmp, json.as_bytes())?;
-            std::io::Write::flush(&mut tmp)?;
-
-            let output = std::process::Command::new("git")
-                .args([
-                    "notes",
-                    "--ref",
-                    NOTES_REF,
-                    "add",
-                    "-f",
-                    "-F",
-                    &tmp.path().to_string_lossy(),
-                    &sha,
-                ])
-                .current_dir(&dir)
-                .output()
-                .context("failed to run git notes add")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("git notes add failed: {}", stderr.trim());
-            }
-            Ok(())
-        })
-        .await?
-    }
-
-    async fn commit_touches_paths_in(
-        dir: &Path,
-        commit_sha: &str,
-        paths: &[String],
-    ) -> Result<bool> {
-        let sha = commit_sha.to_string();
-        let output = run_git_in(
-            dir,
-            &[
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "-r",
-                "-m",
-                &sha,
-            ],
-        )
-        .await?;
-
-        let changed: std::collections::HashSet<&str> = output.lines().collect();
-        Ok(paths.iter().any(|p| changed.contains(p.as_str())))
-    }
-
-    async fn configure_notes_fetch_in(dir: &Path, remote: &str) -> Result<()> {
-        let dir = dir.to_path_buf();
-        let remote = remote.to_string();
-        let refspec = format!("+{NOTES_REF}:{NOTES_REF}");
-
-        tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("git")
-                .args(["config", "--get-all", &format!("remote.{remote}.fetch")])
-                .current_dir(&dir)
-                .output()
-                .context("failed to run git config")?;
-
-            let existing = String::from_utf8_lossy(&output.stdout);
-            if existing.lines().any(|line| line.trim() == refspec) {
-                return Ok(());
-            }
-
-            let add_output = std::process::Command::new("git")
-                .args([
-                    "config",
-                    "--add",
-                    &format!("remote.{remote}.fetch"),
-                    &refspec,
-                ])
-                .current_dir(&dir)
-                .output()
-                .context("failed to run git config --add")?;
-
-            if !add_output.status.success() {
-                let stderr = String::from_utf8_lossy(&add_output.stderr);
-                bail!("git config --add failed: {}", stderr.trim());
-            }
-            Ok(())
-        })
-        .await?
-    }
-
-    async fn export_tree_in(repo_dir: &Path, commit_sha: &str, dest: &Path) -> Result<()> {
-        let repo_dir = repo_dir.to_path_buf();
-        let sha = commit_sha.to_string();
-        let dest = dest.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let repo_url = format!("file://{}", repo_dir.display());
-
-            let run = |args: &[&str]| -> Result<()> {
-                let output = std::process::Command::new("git")
-                    .args(args)
-                    .output()
-                    .with_context(|| format!("failed to run git {}", args.join(" ")))?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    bail!("git {} failed: {}", args.join(" "), stderr.trim());
-                }
-                Ok(())
-            };
-
-            run(&["init", &dest.to_string_lossy()])?;
-            run(&[
-                "-C",
-                &dest.to_string_lossy(),
-                "fetch",
-                "--depth=1",
-                &repo_url,
-                &sha,
-            ])?;
-            run(&["-C", &dest.to_string_lossy(), "checkout", "FETCH_HEAD"])?;
-            run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
-
-            Ok(())
-        })
-        .await?
-    }
-
-    async fn fetch_notes_in(dir: &Path, remote: &str) -> Result<()> {
-        let dir = dir.to_path_buf();
-        let remote = remote.to_string();
-        let refspec = format!("{NOTES_REF}:{NOTES_REF}");
-        tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("git")
-                .args(["fetch", &remote, &refspec])
-                .current_dir(&dir)
-                .output()
-                .context("failed to run git fetch")?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("couldn't find remote ref")
-                    || stderr.contains("no such ref")
-                    || stderr.contains("does not appear to be a git repository")
-                {
-                    return Ok(());
-                }
-                bail!("git fetch notes failed: {}", stderr.trim());
-            }
-            Ok(())
-        })
-        .await?
-    }
-
-    async fn parent_sha_in(dir: &Path) -> Result<Option<String>> {
-        let result = run_git_in(dir, &["rev-parse", "--verify", "HEAD~1"]).await;
-        match result {
-            Ok(sha) => Ok(Some(sha)),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("unknown revision")
-                    || msg.contains("bad revision")
-                    || msg.contains("Needed a single revision")
-                {
-                    Ok(None)
-                } else {
-                    Err(e)
-                }
-            }
-        }
     }
 
     #[tokio::test]
@@ -991,8 +770,9 @@ mod tests {
         std::fs::write(dir.path().join("second.txt"), "second")?;
         git_in(dir.path(), &["add", "second.txt"])?;
         git_in(dir.path(), &["commit", "-m", "second commit"])?;
+        let _guard = CwdGuard::set(dir.path())?;
 
-        let parent = parent_sha_in(dir.path()).await?;
+        let parent = parent_sha().await?;
         assert!(parent.is_some(), "should have a parent");
 
         // Parent should be the initial commit, not the current HEAD
@@ -1004,8 +784,9 @@ mod tests {
     #[tokio::test]
     async fn test_parent_sha_initial_commit() -> Result<()> {
         let dir = init_temp_repo()?;
-        // init_temp_repo creates exactly one commit — it has no parent
-        let parent = parent_sha_in(dir.path()).await?;
+        let _guard = CwdGuard::set(dir.path())?;
+        // init_temp_repo creates exactly one commit -- it has no parent
+        let parent = parent_sha().await?;
         assert!(parent.is_none(), "initial commit should have no parent");
         Ok(())
     }
