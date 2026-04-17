@@ -30,23 +30,19 @@ pub struct CompletionTracker {
 }
 
 impl CompletionTracker {
-    pub fn new(total_expected: usize, index: TestToIdxMap) -> Self {
+    /// `max_attempts` is indexed by test position in `index` and gives the
+    /// total number of attempts (1 = no retries).
+    pub fn new(total_expected: usize, index: TestToIdxMap, max_attempts: Vec<usize>) -> Self {
         let len = index.len();
+        assert_eq!(max_attempts.len(), len);
         Self {
             index,
-            max_attempts: vec![1; len],
+            max_attempts,
             attempt_counts: vec![0; len],
             decided: vec![false; len],
             decided_count: 0,
             total_expected,
             incomplete: IncompleteTestsRegistry::new(),
-        }
-    }
-
-    /// Registers the maximum number of attempts for a test.
-    pub fn register_retries(&mut self, test_id: &str, max_attempts: usize) {
-        if let Some(idx) = self.index.get_index_of(test_id) {
-            self.max_attempts[idx] = max_attempts;
         }
     }
 
@@ -210,9 +206,7 @@ mod tests {
     #[test]
     fn test_all_passed_immediately_decided() {
         let index = test_to_idx(&["test_a", "test_b"]);
-        let mut tracker = CompletionTracker::new(2, index);
-        tracker.register_retries("test_a", 3);
-        tracker.register_retries("test_b", 3);
+        let mut tracker = CompletionTracker::new(2, index, vec![3, 3]);
 
         let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);
 
@@ -223,9 +217,7 @@ mod tests {
     #[test]
     fn test_failure_with_retries_remaining() {
         let index = test_to_idx(&["test_a", "test_b"]);
-        let mut tracker = CompletionTracker::new(2, index);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 3);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 3]);
 
         // test_a passes, test_b fails (has retries remaining)
         let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
@@ -237,9 +229,7 @@ mod tests {
     #[test]
     fn test_failure_retries_exhausted() {
         let index = test_to_idx(&["test_a", "test_b"]);
-        let mut tracker = CompletionTracker::new(2, index);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 2);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 2]);
 
         // Attempt 1: test_a passes, test_b fails
         let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
@@ -254,9 +244,7 @@ mod tests {
     #[test]
     fn test_missing_test_not_complete() {
         let index = test_to_idx(&["test_a", "test_b"]);
-        let mut tracker = CompletionTracker::new(2, index);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 1);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 1]);
 
         let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
 
@@ -267,8 +255,7 @@ mod tests {
     #[test]
     fn test_already_decided_not_double_counted() {
         let index = test_to_idx(&["test_a"]);
-        let mut tracker = CompletionTracker::new(1, index);
-        tracker.register_retries("test_a", 1);
+        let mut tracker = CompletionTracker::new(1, index, vec![1]);
 
         let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
         let _ = tracker.newly_complete_tests(&["test_a"], |_| true); // duplicate
@@ -307,9 +294,7 @@ mod tests {
     #[test]
     fn test_register_batch_all_already_decided_cancels_immediately() {
         let index = test_to_idx(&["test_a", "test_b"]);
-        let mut tracker = CompletionTracker::new(2, index);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 1);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 1]);
 
         // Decide all tests
         let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);

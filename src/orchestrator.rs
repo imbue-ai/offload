@@ -341,11 +341,19 @@ where
         // Build TestToIdxMap first (CompletionTracker needs it).
         // IndexSet deduplicates automatically.
         let test_to_idx: completion::TestToIdxMap = tests.iter().map(|t| t.id.clone()).collect();
+        let max_attempts: Vec<usize> = test_to_idx
+            .iter()
+            .map(|id| {
+                tests
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .map(|t| t.retry_count + 1)
+                    .unwrap_or(1)
+            })
+            .collect();
 
-        let mut tracker = completion::CompletionTracker::new(total_tests_to_run, test_to_idx);
-        for test in tests {
-            tracker.register_retries(&test.id, test.retry_count + 1);
-        }
+        let tracker =
+            completion::CompletionTracker::new(total_tests_to_run, test_to_idx, max_attempts);
         let tracker = Arc::new(std::sync::RwLock::new(tracker));
         let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
