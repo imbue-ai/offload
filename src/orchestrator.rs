@@ -353,7 +353,7 @@ where
 
         let tracker =
             completion::CompletionTracker::new(total_tests_to_run, test_to_idx, max_attempts);
-        let tracker = Arc::new(std::sync::RwLock::new(tracker));
+        let tracker = Arc::new(parking_lot::RwLock::new(tracker));
         let cancellation_token = CancellationToken::new();
 
         // Collect sandboxes back after use for termination

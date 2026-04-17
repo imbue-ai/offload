@@ -6,7 +6,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+
+use parking_lot::RwLock;
 use std::time::Duration;
 
 use indicatif::ProgressBar;
@@ -86,8 +88,10 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         }
 
         // Skip if all tests already decided (read lock — concurrent with other workers)
-        if let Ok(tracker) = cfg.tracker.read()
-            && tracker.all_decided_by_name(batch.tests.iter().map(|t| t.id()))
+        if cfg
+            .tracker
+            .read()
+            .all_decided_by_name(batch.tests.iter().map(|t| t.id()))
         {
             info!(
                 "SKIP: Batch {} ({} tests) all already decided",
@@ -100,11 +104,9 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Register per-batch cancellation token (write lock)
         let child_token = cfg.cancellation_token.child_token();
         let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
-        if let Ok(mut tracker) = cfg.tracker.write() {
-            tracker.register_batch(batch_idx, &test_ids, child_token.clone());
-        } else {
-            warn!("tracker lock poisoned during batch registration");
-        }
+        cfg.tracker
+            .write()
+            .register_batch(batch_idx, &test_ids, child_token.clone());
 
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
         let _batch_span = cfg
@@ -245,7 +247,8 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         }
 
         // Update progress from tracker (newly_complete_tests already called inside runner)
-        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.read()) {
+        if let Ok(report) = cfg.junit_report.lock() {
+            let tracker = cfg.tracker.read();
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();

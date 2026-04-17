@@ -568,6 +568,7 @@ dependencies = [
  "include_dir",
  "indexmap",
  "indicatif",
+ "parking_lot",
  "predicates",
  "quick-xml",
  "regex",

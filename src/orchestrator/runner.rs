@@ -1,6 +1,8 @@
 //! Test runner — executes test batches within a single sandbox.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -383,12 +385,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         );
 
                         // Record batch results (registry notification is internal)
-                        if let Ok(mut t) = self.tracker.write() {
-                            t.newly_complete_tests(
-                                &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                                |id| report.has_test_passed(id),
-                            );
-                        }
+                        self.tracker.write().newly_complete_tests(
+                            &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            |id| report.has_test_passed(id),
+                        );
                     }
                     Err(e) => {
                         error!(
