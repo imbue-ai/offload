@@ -181,7 +181,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
-        let mut _child_token_fired = false;
         let outcome = {
             let exec_fut = cfg
                 .scheduler
@@ -191,11 +190,15 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             tokio::select! {
                 result = &mut exec_fut => result,
                 () = child_token.cancelled() => {
-                    // All tests in this batch have been decided by other batches.
-                    // TODO: Once validated, return BatchOutcome::Cancelled here
-                    // instead of waiting — this will free the sandbox immediately.
-                    _child_token_fired = true;
-                    exec_fut.await
+                    if cfg.cancellation_token.is_cancelled() {
+                        // Global cancel (fail-fast / all-complete) — abort immediately
+                        Ok(BatchOutcome::Cancelled)
+                    } else {
+                        // Per-batch: all tests decided by other batches.
+                        // TODO: Return BatchOutcome::Cancelled here once validated,
+                        // to free the sandbox immediately.
+                        exec_fut.await
+                    }
                 }
             }
         };
