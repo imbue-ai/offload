@@ -338,9 +338,9 @@ where
             total_tests_to_run,
             self.config.framework.test_id_format(),
         )));
-        // Build TestIndex first (CompletionTracker needs it).
+        // Build TestToIdxMap first (CompletionTracker needs it).
         // IndexSet deduplicates automatically.
-        let test_index: completion::TestIndex = tests.iter().map(|t| t.id.clone()).collect();
+        let test_index: completion::TestToIdxMap = tests.iter().map(|t| t.id.clone()).collect();
 
         let mut tracker = completion::CompletionTracker::new(total_tests_to_run, test_index);
         for test in tests {

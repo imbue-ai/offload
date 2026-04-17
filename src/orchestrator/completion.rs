@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 /// Maps string test IDs to contiguous numeric indices.
-pub type TestIndex = indexmap::IndexSet<String>;
+pub type TestToIdxMap = indexmap::IndexSet<String>;
 
-/// Numeric index for a test within the [`TestIndex`].
+/// Numeric index for a test within the [`TestToIdxMap`].
 pub type TestIdx = usize;
 
 /// Numeric index for a batch, assigned atomically by the orchestrator.
@@ -22,7 +22,7 @@ pub type BatchIdx = usize;
 /// Call [`newly_complete_tests`] after each batch returns to increment attempt
 /// counts and update the decided set.
 pub struct CompletionTracker {
-    index: TestIndex,
+    index: TestToIdxMap,
     max_attempts: Vec<usize>,
     attempt_counts: Vec<usize>,
     decided: Vec<bool>,
@@ -32,7 +32,7 @@ pub struct CompletionTracker {
 }
 
 impl CompletionTracker {
-    pub fn new(total_expected: usize, index: TestIndex) -> Self {
+    pub fn new(total_expected: usize, index: TestToIdxMap) -> Self {
         let len = index.len();
         Self {
             index,
@@ -198,7 +198,7 @@ impl IncompleteTestsRegistry {
 mod tests {
     use super::*;
 
-    fn test_index(ids: &[&str]) -> TestIndex {
+    fn test_index(ids: &[&str]) -> TestToIdxMap {
         ids.iter().map(|s| s.to_string()).collect()
     }
 
