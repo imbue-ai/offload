@@ -10,6 +10,32 @@ use tracing::debug;
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
+/// RAII guard that kills a child process on drop.
+///
+/// When a `ChildGuard` is dropped, it sends SIGKILL to the tracked PID.
+/// This ensures orphaned child processes are cleaned up automatically.
+pub struct ChildGuard {
+    pid: u32,
+}
+
+impl ChildGuard {
+    /// Creates a new guard for the given process ID.
+    pub fn new(pid: u32) -> Self {
+        Self { pid }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if self.pid != 0 {
+            // Best-effort kill -- ignore errors (process may have already exited)
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &self.pid.to_string()])
+                .output();
+        }
+    }
+}
+
 use futures::stream::StreamExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -159,6 +185,66 @@ impl ShellConnector {
 impl Default for ShellConnector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ShellConnector {
+    /// Like `Connector::run_stream` but also returns a [`ChildGuard`] for the spawned process.
+    ///
+    /// The guard kills the child process when dropped, preventing orphaned processes.
+    pub async fn run_stream_with_guard(
+        &self,
+        command: &str,
+    ) -> ProviderResult<(OutputStream, ChildGuard)> {
+        let expanded_command = bundled::expand_command(command)
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
+
+        debug!("Streaming: {}", expanded_command);
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &expanded_command]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
+
+        let pid = child.id().unwrap_or(0);
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
+            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
+
+        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
+            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
+
+        let combined = futures::stream::select(stdout_stream, stderr_stream);
+
+        let exit_stream = futures::stream::once(async move {
+            let exit_code = match child.wait().await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -1,
+            };
+            OutputLine::ExitCode(exit_code)
+        });
+
+        Ok((Box::pin(combined.chain(exit_stream)), ChildGuard::new(pid)))
     }
 }
 

@@ -16,7 +16,7 @@ use super::{
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
 use crate::config::{DefaultProviderConfig, SandboxConfig};
-use crate::connector::{Connector, ShellConnector};
+use crate::connector::{ChildGuard, Connector, ShellConnector};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -201,6 +201,7 @@ impl SandboxProvider for DefaultProvider {
             env,
             created_at: Instant::now(),
             cpu_cores,
+            child_guards: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -269,6 +270,8 @@ pub struct DefaultSandbox {
     env: Vec<(String, String)>,
     created_at: Instant,
     cpu_cores: f64,
+    /// RAII guards for child processes spawned by `exec_stream`, killed on drop.
+    child_guards: std::sync::Mutex<Vec<ChildGuard>>,
 }
 
 impl DefaultSandbox {
@@ -294,6 +297,7 @@ impl DefaultSandbox {
             env,
             created_at,
             cpu_cores,
+            child_guards: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -371,7 +375,11 @@ impl Sandbox for DefaultSandbox {
     async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
-        self.connector.run_stream(&shell_cmd).await
+        let (stream, guard) = self.connector.run_stream_with_guard(&shell_cmd).await?;
+        if let Ok(mut guards) = self.child_guards.lock() {
+            guards.push(guard);
+        }
+        Ok(stream)
     }
 
     async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
@@ -410,6 +418,11 @@ impl Sandbox for DefaultSandbox {
     }
 
     async fn terminate(&self) -> ProviderResult<()> {
+        // Kill tracked child processes by dropping their guards
+        if let Ok(mut guards) = self.child_guards.lock() {
+            guards.clear();
+        }
+
         let shell_cmd = self.build_destroy_command();
         debug!("Terminating sandbox {}", self.id);
 
@@ -448,6 +461,7 @@ mod tests {
             env,
             created_at: Instant::now(),
             cpu_cores: 1.0,
+            child_guards: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -716,6 +730,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 2.0,
+            child_guards: std::sync::Mutex::new(Vec::new()),
         };
 
         let cost = sandbox.cost_estimate();
@@ -745,6 +760,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 0.125,
+            child_guards: std::sync::Mutex::new(Vec::new()),
         };
 
         let cost = sandbox.cost_estimate();
