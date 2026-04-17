@@ -198,13 +198,13 @@ impl IncompleteTestsRegistry {
 mod tests {
     use super::*;
 
-    fn test_index(ids: &[&str]) -> TestToIdxMap {
+    fn test_to_idx(ids: &[&str]) -> TestToIdxMap {
         ids.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
     fn test_all_passed_immediately_decided() {
-        let index = test_index(&["test_a", "test_b"]);
+        let index = test_to_idx(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 3);
         tracker.register_retries("test_b", 3);
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_failure_with_retries_remaining() {
-        let index = test_index(&["test_a", "test_b"]);
+        let index = test_to_idx(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 3);
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_failure_retries_exhausted() {
-        let index = test_index(&["test_a", "test_b"]);
+        let index = test_to_idx(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 2);
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_missing_test_not_complete() {
-        let index = test_index(&["test_a", "test_b"]);
+        let index = test_to_idx(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_already_decided_not_double_counted() {
-        let index = test_index(&["test_a"]);
+        let index = test_to_idx(&["test_a"]);
         let mut tracker = CompletionTracker::new(1, index);
         tracker.register_retries("test_a", 1);
 
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_register_batch_all_already_decided_cancels_immediately() {
-        let index = test_index(&["test_a", "test_b"]);
+        let index = test_to_idx(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);

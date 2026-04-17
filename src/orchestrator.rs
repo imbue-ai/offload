@@ -340,9 +340,9 @@ where
         )));
         // Build TestToIdxMap first (CompletionTracker needs it).
         // IndexSet deduplicates automatically.
-        let test_index: completion::TestToIdxMap = tests.iter().map(|t| t.id.clone()).collect();
+        let test_to_idx: completion::TestToIdxMap = tests.iter().map(|t| t.id.clone()).collect();
 
-        let mut tracker = completion::CompletionTracker::new(total_tests_to_run, test_index);
+        let mut tracker = completion::CompletionTracker::new(total_tests_to_run, test_to_idx);
         for test in tests {
             tracker.register_retries(&test.id, test.retry_count + 1);
         }
