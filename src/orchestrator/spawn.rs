@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -33,7 +33,6 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub scheduler: &'a Scheduler,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
-    pub all_complete: Arc<AtomicBool>,
     pub cancellation_token: CancellationToken,
     pub sandboxes_for_cleanup: Arc<Mutex<Vec<S>>>,
     pub junit_report: Arc<Mutex<MasterJunitReport>>,
@@ -71,28 +70,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             batch.tests.len()
         );
 
-        // Early exit if all tests have completed or fail-fast triggered
-        if cfg.all_complete.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
-            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
+        // Early exit if cancelled (fail-fast or all tests decided)
+        if cfg.cancellation_token.is_cancelled() {
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
                 batch_idx,
                 batch.tests.len()
             );
-            debug!("Skipped tests: {:?}", test_ids);
-
-            for suffix in ["stdout", "stderr"] {
-                let log_src = cfg.logs_dir.join(format!("batch-{}.{}", batch_idx, suffix));
-                if log_src.exists() {
-                    let log_dst = cfg
-                        .logs_dir
-                        .join(format!("batch-{}.{}.cancelled", batch_idx, suffix));
-                    if let Err(e) = std::fs::rename(&log_src, &log_dst) {
-                        warn!("Failed to rename batch log: {}", e);
-                    }
-                }
-            }
-
             if let Ok(mut cleanups) = cfg.sandboxes_for_cleanup.lock() {
                 cleanups.push(sandbox);
             } else {
@@ -101,28 +85,19 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip batches where all tests have a decided outcome
-        if let Ok(tracker) = cfg.tracker.read()
-            && tracker.all_decided_by_name(batch.tests.iter().map(|t| t.id()))
-        {
-            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
-            info!(
-                "SKIP: Batch {} ({} tests) all already decided, skipping",
-                batch_idx,
-                batch.tests.len()
-            );
-            debug!("Skipped tests: {:?}", test_ids);
-            continue;
-        }
-
-        // Per-batch cancellation: create child token and register with incomplete tests
+        // Create per-batch child token; skip if all tests already decided
         let child_token = cfg.cancellation_token.child_token();
+        let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
         if let Ok(mut tracker) = cfg.tracker.write() {
-            tracker.register_batch(
-                batch_idx,
-                &batch.tests.iter().map(|t| t.id()).collect::<Vec<_>>(),
-                child_token.clone(),
-            );
+            if tracker.all_decided_by_name(test_ids.iter().copied()) {
+                info!(
+                    "SKIP: Batch {} ({} tests) all already decided",
+                    batch_idx,
+                    batch.tests.len()
+                );
+                continue;
+            }
+            tracker.register_batch(batch_idx, &test_ids, child_token.clone());
         } else {
             warn!("tracker lock poisoned during batch registration");
         }
@@ -238,27 +213,19 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Handle outcome
-        match &outcome {
-            Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
-                // Fail-fast: cancel on first failure
-                if cfg.fail_fast
-                    && matches!(&outcome, Ok(BatchOutcome::Failure))
-                    && !cfg.cancellation_token.is_cancelled()
-                {
-                    info!(
-                        "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
-                        batch_idx
-                    );
-                    cfg.cancellation_token.cancel();
-                }
-            }
-            Ok(BatchOutcome::Cancelled) => {
-                debug!("Batch {} was cancelled", batch_idx);
-            }
-            Err(e) => {
-                error!("Batch execution error: {}", e);
-            }
+        // Fail-fast: cancel all on first failure
+        if cfg.fail_fast
+            && matches!(&outcome, Ok(BatchOutcome::Failure))
+            && !cfg.cancellation_token.is_cancelled()
+        {
+            info!(
+                "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
+                batch_idx
+            );
+            cfg.cancellation_token.cancel();
+        }
+        if let Err(e) = &outcome {
+            error!("Batch execution error: {}", e);
         }
 
         // Update progress from tracker (newly_complete_tests already called inside runner)
@@ -277,13 +244,12 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 console::style(format!("awaiting: {awaiting}")).dim(),
             ));
 
-            // Early stop: all tests have a decided outcome
-            if tracker.all_complete() && !cfg.all_complete.load(Ordering::SeqCst) {
+            // Early stop: all tests decided — cancel remaining batches
+            if tracker.all_complete() && !cfg.cancellation_token.is_cancelled() {
                 info!(
-                    "EARLY STOP TRIGGERED: All {} tests have completed after batch {} completed. Cancelling remaining batches.",
+                    "All {} tests decided after batch {}. Cancelling remaining batches.",
                     cfg.total_tests_to_run, batch_idx
                 );
-                cfg.all_complete.store(true, Ordering::SeqCst);
                 cfg.cancellation_token.cancel();
             }
         }

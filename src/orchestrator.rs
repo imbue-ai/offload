@@ -7,7 +7,6 @@ pub mod spawn;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -355,7 +354,6 @@ where
         let tracker =
             completion::CompletionTracker::new(total_tests_to_run, test_to_idx, max_attempts);
         let tracker = Arc::new(std::sync::RwLock::new(tracker));
-        let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
         // Collect sandboxes back after use for termination
@@ -410,7 +408,6 @@ where
                     scheduler: &scheduler,
                     progress: &progress,
                     total_tests_to_run,
-                    all_complete: Arc::clone(&all_complete),
                     cancellation_token: cancellation_token.clone(),
                     sandboxes_for_cleanup: Arc::clone(&sandboxes_for_cleanup),
                     junit_report: Arc::clone(&junit_report),
