@@ -187,17 +187,23 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 .register_running_batch(&batch, runner.run_tests(&batch.tests));
             tokio::pin!(exec_fut);
 
-            tokio::select! {
-                result = &mut exec_fut => result,
-                () = child_token.cancelled() => {
-                    if cfg.cancellation_token.is_cancelled() {
-                        // Global cancel (fail-fast / all-complete) — abort immediately
-                        Ok(BatchOutcome::Cancelled)
-                    } else {
-                        // Per-batch: all tests decided by other batches.
-                        // TODO: Return BatchOutcome::Cancelled here once validated,
-                        // to free the sandbox immediately.
-                        exec_fut.await
+            // First await: race against per-batch child token
+            let first = tokio::select! {
+                result = &mut exec_fut => Some(result),
+                () = child_token.cancelled() => None,
+            };
+
+            match first {
+                Some(result) => result,
+                None => {
+                    // Per-batch token fired — tests decided by other batches.
+                    // TODO: Return BatchOutcome::Cancelled here once validated,
+                    // to free the sandbox immediately.
+                    // Second await: still race against global token so we don't
+                    // block on a batch that will never finish.
+                    tokio::select! {
+                        result = exec_fut => result,
+                        () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
                     }
                 }
             }
