@@ -35,7 +35,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub scheduler: &'a Scheduler,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
-    pub cancellation_token: CancellationToken,
+    /// Fires on fail-fast or all-complete. Cancels all workers.
+    pub global_cancel: CancellationToken,
     pub sandboxes_for_cleanup: Arc<Mutex<Vec<S>>>,
     pub junit_report: Arc<Mutex<MasterJunitReport>>,
     pub logs_dir: PathBuf,
@@ -58,7 +59,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
     loop {
         let batch = tokio::select! {
             batch = cfg.scheduler.pop() => batch,
-            () = cfg.cancellation_token.cancelled() => None,
+            () = cfg.global_cancel.cancelled() => None,
         };
         let Some(batch) = batch else {
             break;
@@ -73,7 +74,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         );
 
         // Early exit if cancelled (fail-fast or all tests decided)
-        if cfg.cancellation_token.is_cancelled() {
+        if cfg.global_cancel.is_cancelled() {
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
                 batch_idx,
@@ -102,11 +103,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         }
 
         // Register per-batch cancellation token (write lock)
-        let child_token = cfg.cancellation_token.child_token();
+        let batch_cancel = cfg.global_cancel.child_token();
         let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
         cfg.tracker
             .write()
-            .register_batch(batch_idx, &test_ids, child_token.clone());
+            .register_batch(batch_idx, &test_ids, batch_cancel.clone());
 
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
         let _batch_span = cfg
@@ -190,7 +191,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             // First await: race against per-batch child token
             let first = tokio::select! {
                 result = &mut exec_fut => Some(result),
-                () = child_token.cancelled() => None,
+                () = batch_cancel.cancelled() => None,
             };
 
             match first {
@@ -203,7 +204,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                     // block on a batch that will never finish.
                     tokio::select! {
                         result = exec_fut => result,
-                        () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
+                        () = cfg.global_cancel.cancelled() => Ok(BatchOutcome::Cancelled),
                     }
                 }
             }
@@ -243,13 +244,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         // Fail-fast: cancel all on first failure
         if cfg.fail_fast
             && matches!(&outcome, Ok(BatchOutcome::Failure))
-            && !cfg.cancellation_token.is_cancelled()
+            && !cfg.global_cancel.is_cancelled()
         {
             info!(
                 "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
                 batch_idx
             );
-            cfg.cancellation_token.cancel();
+            cfg.global_cancel.cancel();
         }
         if let Err(e) = &outcome {
             error!("Batch execution error: {}", e);
@@ -273,12 +274,12 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             ));
 
             // Early stop: all tests decided — cancel remaining batches
-            if tracker.all_complete() && !cfg.cancellation_token.is_cancelled() {
+            if tracker.all_complete() && !cfg.global_cancel.is_cancelled() {
                 info!(
                     "All {} tests decided after batch {}. Cancelling remaining batches.",
                     cfg.total_tests_to_run, batch_idx
                 );
-                cfg.cancellation_token.cancel();
+                cfg.global_cancel.cancel();
             }
         }
         drop(_batch_span);

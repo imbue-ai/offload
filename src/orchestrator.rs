@@ -354,7 +354,7 @@ where
         let tracker =
             completion::CompletionTracker::new(total_tests_to_run, test_to_idx, max_attempts);
         let tracker = Arc::new(parking_lot::RwLock::new(tracker));
-        let cancellation_token = CancellationToken::new();
+        let global_cancel = CancellationToken::new();
 
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -408,7 +408,7 @@ where
                     scheduler: &scheduler,
                     progress: &progress,
                     total_tests_to_run,
-                    cancellation_token: cancellation_token.clone(),
+                    global_cancel: global_cancel.clone(),
                     sandboxes_for_cleanup: Arc::clone(&sandboxes_for_cleanup),
                     junit_report: Arc::clone(&junit_report),
                     logs_dir: logs_dir.clone(),
