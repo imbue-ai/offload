@@ -4,8 +4,6 @@
 //! it has exhausted all retry attempts while still failing. The progress bar
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
-use std::collections::HashMap;
-
 use tokio_util::sync::CancellationToken;
 
 /// Maps string test IDs to contiguous numeric indices.
@@ -41,7 +39,7 @@ impl CompletionTracker {
             decided: vec![false; len],
             decided_count: 0,
             total_expected,
-            incomplete: IncompleteTestsRegistry::new(),
+            incomplete: IncompleteTestsRegistry::new(len),
         }
     }
 
@@ -142,17 +140,17 @@ impl CompletionTracker {
 /// token. When `notify_decided` decrements the count to zero, the token
 /// is cancelled so the sandbox can be reclaimed early.
 struct IncompleteTestsRegistry {
-    /// batch_idx -> (remaining undecided count, cancellation token)
-    batches: HashMap<BatchIdx, (usize, CancellationToken)>,
-    /// test_num_id -> list of batch indices containing this test
-    test_to_batches: HashMap<TestIdx, Vec<BatchIdx>>,
+    /// Indexed by batch_idx: (remaining undecided count, cancellation token)
+    batches: Vec<Option<(usize, CancellationToken)>>,
+    /// Indexed by test_idx: batch indices containing this test
+    test_to_batches: Vec<Vec<BatchIdx>>,
 }
 
 impl IncompleteTestsRegistry {
-    fn new() -> Self {
+    fn new(num_tests: usize) -> Self {
         Self {
-            batches: HashMap::new(),
-            test_to_batches: HashMap::new(),
+            batches: Vec::new(),
+            test_to_batches: vec![Vec::new(); num_tests],
         }
     }
 
@@ -163,12 +161,12 @@ impl IncompleteTestsRegistry {
         undecided_ids: &[TestIdx],
         token: CancellationToken,
     ) {
-        self.batches.insert(batch_idx, (undecided_ids.len(), token));
+        if batch_idx >= self.batches.len() {
+            self.batches.resize_with(batch_idx + 1, || None);
+        }
+        self.batches[batch_idx] = Some((undecided_ids.len(), token));
         for &test_id in undecided_ids {
-            self.test_to_batches
-                .entry(test_id)
-                .or_default()
-                .push(batch_idx);
+            self.test_to_batches[test_id].push(batch_idx);
         }
     }
 
@@ -177,17 +175,16 @@ impl IncompleteTestsRegistry {
     /// Decrements the remaining count for each batch containing this test.
     /// When a batch's count reaches zero, its token is cancelled.
     fn notify_decided(&mut self, test_num_id: TestIdx) {
-        if let Some(batch_idxs) = self.test_to_batches.remove(&test_num_id) {
-            for batch_idx in batch_idxs {
-                if let Some((remaining, token)) = self.batches.get_mut(&batch_idx) {
-                    *remaining = remaining.saturating_sub(1);
-                    if *remaining == 0 {
-                        tracing::info!(
-                            "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
-                            batch_idx,
-                        );
-                        token.cancel();
-                    }
+        let batch_idxs = std::mem::take(&mut self.test_to_batches[test_num_id]);
+        for batch_idx in batch_idxs {
+            if let Some((remaining, token)) = self.batches[batch_idx].as_mut() {
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    tracing::info!(
+                        "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
+                        batch_idx,
+                    );
+                    token.cancel();
                 }
             }
         }
@@ -275,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_registry_cancel_when_all_decided() {
-        let mut registry = IncompleteTestsRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new(3);
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone());
@@ -290,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_registry_no_cancel_when_partial() {
-        let mut registry = IncompleteTestsRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new(3);
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1], token.clone());
@@ -317,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_registry_counter_reaches_zero_cancels() {
-        let mut registry = IncompleteTestsRegistry::new();
+        let mut registry = IncompleteTestsRegistry::new(3);
         let token = CancellationToken::new();
 
         registry.register(0, &[0, 1, 2], token.clone());
