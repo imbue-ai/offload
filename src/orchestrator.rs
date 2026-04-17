@@ -532,7 +532,7 @@ where
         }
         term_progress.enable_steady_tick(std::time::Duration::from_millis(100));
         let term_progress_ref = &term_progress;
-        let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
+        let terminate_futures = sandboxes.into_iter().map(|mut sandbox| async move {
             match tokio::time::timeout(std::time::Duration::from_secs(30), sandbox.terminate())
                 .await
             {

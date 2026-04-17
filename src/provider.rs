@@ -250,7 +250,7 @@ pub trait Sandbox: Send {
     /// # Returns
     ///
     /// A stream of [`OutputLine`] items (stdout/stderr lines).
-    async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream>;
+    async fn exec_stream(&mut self, cmd: &Command) -> ProviderResult<OutputStream>;
 
     /// Downloads files or directories from the sandbox.
     ///
@@ -262,7 +262,7 @@ pub trait Sandbox: Send {
     ///
     /// * `paths` - Slice of (remote, local) path pairs where remote is the
     ///   path inside the sandbox and local is the destination path
-    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
+    async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
 
     /// Terminates the sandbox and releases resources.
     ///
@@ -270,7 +270,7 @@ pub trait Sandbox: Send {
     /// Resources (containers, connections, etc.) are cleaned up.
     ///
     /// This method is idempotent - calling it multiple times is safe.
-    async fn terminate(&self) -> ProviderResult<()>;
+    async fn terminate(&mut self) -> ProviderResult<()>;
 
     /// Returns the estimated cost incurred by this sandbox.
     ///

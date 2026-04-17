@@ -201,7 +201,7 @@ impl SandboxProvider for DefaultProvider {
             env,
             created_at: Instant::now(),
             cpu_cores,
-            child_guards: std::sync::Mutex::new(Vec::new()),
+            child_guards: Vec::new(),
         })
     }
 
@@ -271,7 +271,7 @@ pub struct DefaultSandbox {
     created_at: Instant,
     cpu_cores: f64,
     /// RAII guards for child processes spawned by `exec_stream`, killed on drop.
-    child_guards: std::sync::Mutex<Vec<ChildProcessGuard>>,
+    child_guards: Vec<ChildProcessGuard>,
 }
 
 impl DefaultSandbox {
@@ -297,7 +297,7 @@ impl DefaultSandbox {
             env,
             created_at,
             cpu_cores,
-            child_guards: std::sync::Mutex::new(Vec::new()),
+            child_guards: Vec::new(),
         }
     }
 
@@ -372,17 +372,15 @@ impl Sandbox for DefaultSandbox {
         &self.id
     }
 
-    async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
+    async fn exec_stream(&mut self, cmd: &Command) -> ProviderResult<OutputStream> {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
         let (stream, guard) = self.connector.run_stream_with_guard(&shell_cmd).await?;
-        if let Ok(mut guards) = self.child_guards.lock() {
-            guards.push(guard);
-        }
+        self.child_guards.push(guard);
         Ok(stream)
     }
 
-    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+    async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
         if paths.is_empty() {
             return Ok(());
         }
@@ -417,11 +415,9 @@ impl Sandbox for DefaultSandbox {
         }
     }
 
-    async fn terminate(&self) -> ProviderResult<()> {
+    async fn terminate(&mut self) -> ProviderResult<()> {
         // Kill tracked child processes by dropping their guards
-        if let Ok(mut guards) = self.child_guards.lock() {
-            guards.clear();
-        }
+        self.child_guards.clear();
 
         let shell_cmd = self.build_destroy_command();
         debug!("Terminating sandbox {}", self.id);
@@ -461,7 +457,7 @@ mod tests {
             env,
             created_at: Instant::now(),
             cpu_cores: 1.0,
-            child_guards: std::sync::Mutex::new(Vec::new()),
+            child_guards: Vec::new(),
         }
     }
 
@@ -730,7 +726,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 2.0,
-            child_guards: std::sync::Mutex::new(Vec::new()),
+            child_guards: Vec::new(),
         };
 
         let cost = sandbox.cost_estimate();
@@ -760,7 +756,7 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 0.125,
-            child_guards: std::sync::Mutex::new(Vec::new()),
+            child_guards: Vec::new(),
         };
 
         let cost = sandbox.cost_estimate();
@@ -828,7 +824,7 @@ mod tests {
             copy_dirs: vec![],
         };
 
-        let sandbox = provider.create_sandbox(&sandbox_config).await?;
+        let mut sandbox = provider.create_sandbox(&sandbox_config).await?;
 
         // Write test junit.xml content
         let test_content = r#"<?xml version="1.0" encoding="UTF-8"?>

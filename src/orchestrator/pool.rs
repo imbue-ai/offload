@@ -108,15 +108,15 @@ mod tests {
             &self.id
         }
         async fn exec_stream(
-            &self,
+            &mut self,
             _cmd: &crate::provider::Command,
         ) -> ProviderResult<OutputStream> {
             unimplemented!()
         }
-        async fn download(&self, _paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+        async fn download(&mut self, _paths: &[(&Path, &Path)]) -> ProviderResult<()> {
             unimplemented!()
         }
-        async fn terminate(&self) -> ProviderResult<()> {
+        async fn terminate(&mut self) -> ProviderResult<()> {
             Ok(())
         }
         fn cost_estimate(&self) -> CostEstimate {
