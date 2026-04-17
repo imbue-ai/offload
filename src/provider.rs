@@ -421,6 +421,34 @@ pub trait SandboxProvider: Send + Sync {
     fn base_env(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// Prewarm the image cache by resolving a base commit and building a thin-diff image.
+    ///
+    /// For providers that support image caching (Default, Modal), this resolves
+    /// the base commit, checks for a cached image, and attempts to build a
+    /// thin-diff image on top. If successful, the provider stores the image ID
+    /// internally for use by `create_sandbox()`.
+    ///
+    /// Providers that do not support image caching should return `CacheMiss`.
+    async fn prewarm_image_cache(
+        &mut self,
+        ctx: &crate::image_cache::PrewarmContext<'_>,
+    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome>;
+
+    /// Build a thin-diff image from a checkpoint base image and a patch file.
+    ///
+    /// Generates the appropriate provider-specific command to build an image
+    /// on top of `base_image_id` with the given `patch_file` applied.
+    ///
+    /// Returns the new image ID if successful, or `None` for providers that
+    /// do not support this operation.
+    async fn prepare_from_checkpoint(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>>;
 }
 
 #[cfg(test)]

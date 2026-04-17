@@ -141,8 +141,86 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | Tests discovered but "Not Run" | JUnit test IDs do not match discovery IDs | Check `test_id_format` or conftest JUnit hook |
 | "Exec format error" | Local `.venv` (macOS binaries) copied into Linux sandbox | Add `.venv` to `.dockerignore` |
 | "Token validation failed" | Modal credentials expired | Run `modal token new` |
-| Slow sandbox creation | Docker image not cached | Delete `.offload-image-cache` or pass `--no-cache` |
+| Slow sandbox creation | Docker image not cached | Pass `--no-cache` to force a fresh image build |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
+
+## Image Cache
+
+Offload caches image IDs in git notes (`refs/notes/offload-images`). Notes are keyed by commit SHA and TOML config path, so multiple configs in the same repo do not collide. Notes are fetched from and pushed to the remote automatically. Pass `--no-cache` to `offload run` to skip reading and writing the cache; `--no-cache` preserves the same build procedure (tree export, base image build, thin diff) -- it only suppresses note interactions.
+
+## Image Caching Modes
+
+Offload uses a unified pipeline for image caching. Both modes follow identical steps after resolving the base commit: cache lookup, tree export, base image build, thin diff application, and note write. The only difference is how the base commit is selected.
+
+### Latest-commit mode (default)
+
+When no `[checkpoint]` section is present, Offload uses the latest commit (HEAD) as the base:
+
+1. Look up HEAD in git notes for a cached base image.
+2. **Cache hit**: generate a binary diff from HEAD to the working tree and apply it on top of the cached image.
+3. **Cache miss**: export the HEAD tree, build a base image from it, cache the result in git notes on HEAD, then apply thin diff.
+4. **Empty repo** (no commits): fall through to a full build, no caching.
+
+### Checkpoint mode (opt-in)
+
+When a `[checkpoint]` section is present, Offload walks git ancestors to find the nearest commit that touched any `build_inputs` file. That commit is the base instead of HEAD. The rest of the pipeline (cache lookup, tree export, build, thin diff, note write) is the same as latest-commit mode.
+
+Add a `[checkpoint]` section to `offload.toml`:
+
+```toml
+[checkpoint]
+build_inputs = [
+    "Dockerfile",
+    "requirements.txt",
+    "pyproject.toml",
+]
+```
+
+`build_inputs` lists repo-relative file paths. A commit that modifies any of these files is automatically detected as a checkpoint. The list must be non-empty when the section is present. For merge commits, diffs against all parents are checked.
+
+Enable checkpoint mode for repositories where dependency installation or build steps are expensive (e.g. `pip install`, `uv sync`, `cargo build`). Without checkpoints, the base image is rebuilt from HEAD on every new commit. With checkpoints, only commits that change dependency manifests trigger full rebuilds -- subsequent runs apply a lightweight diff on top of the cached checkpoint image.
+
+### Thin diff details
+
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` plus untracked files detected via `git ls-files`). The patch file is passed to the Python script, which applies it inside the sandbox image via `git apply`. The Dockerfile must install `git` for this to work. If the diff is empty and there are no untracked files, the base image is used directly (zero overhead).
+
+### Checking status
+
+Use `offload checkpoint-status` to inspect the current checkpoint state:
+
+```bash
+offload checkpoint-status
+```
+
+Example output (with `[checkpoint]` section):
+
+```
+HEAD:               a1b2c3d4
+Base commit:        f5e6d7c8 (checkpoint, 3 commits back)
+Cached image:       im-abc123
+Next run mode:      thin diff (2 files changed since checkpoint)
+```
+
+Example output (without `[checkpoint]` section, latest-commit mode):
+
+```
+HEAD:               a1b2c3d4
+Base commit:        a1b2c3d4 (latest commit, HEAD)
+Cached image:       im-abc123
+Next run mode:      thin diff (uncommitted changes only)
+```
+
+This command works in both modes: with a `[checkpoint]` section it shows checkpoint info, without it shows latest-commit info.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Cached image expired | Modal garbage-collected the image | Self-healing: Offload rebuilds automatically on the next run, updates the note, and pushes. One slow run, then cached again for everyone |
+| `git apply` failure inside sandbox | Diff cannot apply (e.g. missing `git` in image, conflicts) | Ensure the Dockerfile installs `git`. Offload falls back to a full build with a warning |
+| No checkpoint found in last N commits | No recent commit touched any `build_inputs` file | The ancestor walk has a depth limit; a full build runs instead |
+| Thin diff failure (general) | Various causes (binary incompatibility, corrupt patch) | Offload falls back to a full build with a warning. If persistent, run `--no-cache` to force a clean rebuild |
+| Notes not shared across team | Remote does not have the notes ref | Notes are pushed automatically. Verify with `git ls-remote origin refs/notes/offload-images` |
 
 ## CLI Quick Reference
 
@@ -153,6 +231,7 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | `offload validate` | Validate `offload.toml` and print settings summary |
 | `offload init` | Generate a new `offload.toml` (`--provider`, `--framework`) |
 | `offload logs` | View per-test results from the most recent run |
+| `offload checkpoint-status` | Show checkpoint cache status for current HEAD |
 
 Global flags: `-c, --config PATH` (config file), `-v, --verbose` (verbose output).
 

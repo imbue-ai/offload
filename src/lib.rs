@@ -4,6 +4,8 @@ pub mod bundled;
 pub mod config;
 pub mod connector;
 pub mod framework;
+pub mod git;
+pub mod image_cache;
 pub mod orchestrator;
 pub mod provider;
 pub mod report;

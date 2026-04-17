@@ -146,6 +146,23 @@ mod tests {
                 id: config.id.clone(),
             })
         }
+
+        async fn prewarm_image_cache(
+            &mut self,
+            _ctx: &crate::image_cache::PrewarmContext<'_>,
+        ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
+            Ok(crate::image_cache::PrewarmOutcome::CacheMiss { base_sha: None })
+        }
+
+        async fn prepare_from_checkpoint(
+            &mut self,
+            _base_image_id: &str,
+            _patch_file: &std::path::Path,
+            _sandbox_project_root: &str,
+            _discovery_done: Option<&AtomicBool>,
+        ) -> ProviderResult<Option<String>> {
+            Ok(None)
+        }
     }
 
     #[tokio::test]

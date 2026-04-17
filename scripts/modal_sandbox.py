@@ -111,7 +111,6 @@ def cli():
     pass
 
 
-CACHE_FILE = ".offload-image-cache"
 DOCKERIGNORE_FILE = ".dockerignore"
 
 
@@ -127,33 +126,6 @@ def read_dockerignore_patterns() -> list[str]:
             if line and not line.startswith("#"):
                 patterns.append(line)
     return patterns
-
-
-def read_cached_image_id() -> str | None:
-    """Read cached image_id from cache file if it exists."""
-    if not os.path.isfile(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE) as f:
-            image_id = f.read().strip()
-            if image_id.startswith("im-"):
-                return image_id
-    except Exception:
-        pass
-    return None
-
-
-def write_cached_image_id(image_id: str) -> None:
-    """Write image_id to cache file."""
-    with open(CACHE_FILE, "w") as f:
-        f.write(image_id + "\n")
-
-
-def clear_image_cache() -> None:
-    """Clear the cached image ID file."""
-    if os.path.isfile(CACHE_FILE):
-        os.remove(CACHE_FILE)
-        logger.info("Cleared cached image from %s", CACHE_FILE)
 
 
 _LAYER_BOUNDARY_INSTRUCTIONS = frozenset({"RUN", "COPY", "ADD"})
@@ -180,7 +152,10 @@ def _build_image_from_dockerfile(
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpfile = Path(tmpdir) / "Dockerfile"
-        with open(dockerfile_path) as f:
+        # When context_dir is provided, resolve the Dockerfile relative to it
+        # so that checkpoint builds use the Dockerfile from the exported tree.
+        resolved_dockerfile = Path(context_dir) / dockerfile_path
+        with open(resolved_dockerfile) as f:
             dockerfile_contents = f.read()
         tmpfile.write_text(dockerfile_contents)
 
@@ -262,13 +237,10 @@ def _build_fresh_base_image(
         base_img = _build_image_from_dockerfile(dockerfile_path, context_dir=context_dir)
 
     base_img.build(app)
-    # Materialize to get base image_id for caching
+    # Materialize to get base image_id
     temp_sandbox = modal.Sandbox.create(app=app, image=base_img, timeout=10)
     temp_sandbox.terminate()
     base_img_id = base_img.object_id
-    # Cache the base image
-    write_cached_image_id(base_img_id)
-    logger.info("Cached base image_id to %s", CACHE_FILE)
     return base_img, base_img_id
 
 
@@ -321,9 +293,29 @@ def _build_final_image(
         return base_img_id
 
 
+def _derive_image_from_base(
+    app,
+    base_img: modal.Image,
+    patch_file: str | None,
+    project_root: str,
+) -> str:
+    """Apply a binary patch to a base image and return the new image ID."""
+    img = base_img
+
+    if patch_file is not None:
+        img = img.add_local_file(patch_file, "/tmp/offload.patch", copy=True)
+        img = img.run_commands(
+            f"cd {project_root} && git init -q . && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
+        )
+
+    img.build(app)
+    temp_sandbox = modal.Sandbox.create(app=app, image=img, timeout=10)
+    temp_sandbox.terminate()
+    return img.object_id
+
+
 @cli.command("prepare")
 @click.argument("dockerfile_path", required=False, default=None)
-@click.option("--cached", is_flag=True, help="Use cached BASE image if available")
 @click.option(
     "--include-cwd",
     is_flag=True,
@@ -345,25 +337,71 @@ def _build_final_image(
     default=".",
     help="Docker build context directory",
 )
+@click.option(
+    "--cached",
+    is_flag=True,
+    hidden=True,
+    help="Deprecated no-op kept for backward compatibility",
+)
+@click.option(
+    "--from-base-image",
+    default=None,
+    help="Modal image ID to build incrementally on top of",
+)
+@click.option(
+    "--patch-file",
+    default=None,
+    help="Path to a binary patch file to apply on top of the base image",
+)
+@click.option(
+    "--sandbox-project-root",
+    default="/app",
+    help="Project root path in sandbox",
+)
 def prepare(
     dockerfile_path: str | None,
-    cached: bool,
     include_cwd: bool,
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
     context_dir: str,
+    cached: bool,
+    from_base_image: str | None,
+    patch_file: str | None,
+    sandbox_project_root: str,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
     DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
     that Dockerfile. If omitted, builds the default pytest image.
 
-    The --cached flag caches only the BASE image (Dockerfile build). The --include-cwd
-    and --copy-dir options are applied AFTER cache lookup, ensuring fresh source code
-    is always used even when the base image is cached.
+    The --include-cwd and --copy-dir options add source code to the image.
+
+    When --from-base-image is set, builds incrementally from the given base
+    image by applying the patch file (if provided) on top of it.
 
     Prints the image_id to stdout for use with 'create'.
     """
+    # Incremental build mode
+    if from_base_image is not None:
+        with modal.enable_output():
+            app_name = "offload-checkpoint-sandbox"
+            app = modal.App.lookup(app_name, create_if_missing=True)
+
+            base_img = modal.Image.from_id(from_base_image)
+
+            logger.info("Building incremental image from base")
+
+            image_id = _derive_image_from_base(
+                app,
+                base_img,
+                patch_file,
+                sandbox_project_root,
+            )
+
+        sys.stdout.write("%s\n" % image_id)
+        return
+
+    # Standard (full build) mode
     # Read ignore patterns from .dockerignore
     ignore_patterns = read_dockerignore_patterns()
     if ignore_patterns:
@@ -383,48 +421,17 @@ def prepare(
     with modal.enable_output():
         app = modal.App.lookup(app_name, create_if_missing=True)
 
-        base_image = None
-        base_image_id = None
+        base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
 
-        # Step 1: Try to use cached base image if available
-        if cached:
-            cached_id = read_cached_image_id()
-            if cached_id:
-                logger.info("Found cached base image_id: %s", cached_id)
-                base_image = modal.Image.from_id(cached_id)
-                base_image_id = cached_id
-
-        # Step 2: Build fresh base image if no cache
-        if base_image is None:
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
-
-        # Step 3: Build final image, catching cache invalidation errors
-        try:
-            image_id = _build_final_image(
-                app,
-                base_image,
-                base_image_id,
-                include_cwd,
-                copy_dirs,
-                ignore_patterns,
-                sandbox_init_cmd=sandbox_init_cmd,
-            )
-        except Exception as e:
-            # Cached image no longer exists on Modal - rebuild from scratch
-            logger.warning(
-                "Failed to use cached image (%s), rebuilding from scratch...", e
-            )
-            clear_image_cache()
-            base_image, base_image_id = _build_fresh_base_image(app, dockerfile_path, context_dir)
-            image_id = _build_final_image(
-                app,
-                base_image,
-                base_image_id,
-                include_cwd,
-                copy_dirs,
-                ignore_patterns,
-                sandbox_init_cmd=sandbox_init_cmd,
-            )
+        image_id = _build_final_image(
+            app,
+            base_image,
+            base_image_id,
+            include_cwd,
+            copy_dirs,
+            ignore_patterns,
+            sandbox_init_cmd=sandbox_init_cmd,
+        )
 
     sys.stdout.write("%s\n" % image_id)
 
@@ -659,8 +666,7 @@ def create_from_image(
         logger.error("Failed to create sandbox with image %s: %s", image_id, e)
         logger.error(
             "The image may have been garbage collected. "
-            "Delete %s and run 'prepare' again to rebuild.",
-            CACHE_FILE,
+            "Run 'prepare' again to rebuild."
         )
         sys.exit(1)
     logger.debug("[%.2fs] Sandbox created", time.time() - t0)

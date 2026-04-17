@@ -62,6 +62,41 @@ impl DefaultProvider {
             image_id: None,
         }
     }
+
+    /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
+    fn build_prepare_command(
+        &self,
+        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+        context_dir: Option<&std::path::Path>,
+    ) -> Option<String> {
+        let prepare_cmd = self.config.prepare_command.as_ref()?;
+        let mut full = prepare_cmd.clone();
+
+        for copy_spec in &self.config.copy_dirs {
+            full.push_str(&format!(" --copy-dir={}", copy_spec));
+        }
+        for (local, remote) in copy_dirs {
+            full.push_str(&format!(
+                " --copy-dir={}:{}",
+                local.display(),
+                remote.display()
+            ));
+        }
+
+        if let Some(init_cmd) = sandbox_init_cmd {
+            full.push_str(&format!(
+                " --sandbox-init-cmd={}",
+                shell_words::quote(init_cmd)
+            ));
+        }
+
+        if let Some(dir) = context_dir {
+            full.push_str(&format!(" --context-dir={}", dir.display()));
+        }
+
+        Some(full)
+    }
 }
 
 #[async_trait]
@@ -71,40 +106,14 @@ impl SandboxProvider for DefaultProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        no_cache: bool,
+        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
-        let image_id = if let Some(prepare_cmd) = &self.config.prepare_command {
-            let mut full_prepare_cmd = prepare_cmd.clone();
-
-            if !no_cache {
-                full_prepare_cmd.push_str(" --cached");
-            }
-
-            for copy_spec in &self.config.copy_dirs {
-                full_prepare_cmd.push_str(&format!(" --copy-dir={}", copy_spec));
-            }
-            for (local, remote) in copy_dirs {
-                full_prepare_cmd.push_str(&format!(
-                    " --copy-dir={}:{}",
-                    local.display(),
-                    remote.display()
-                ));
-            }
-
-            if let Some(init_cmd) = sandbox_init_cmd {
-                full_prepare_cmd.push_str(&format!(
-                    " --sandbox-init-cmd={}",
-                    shell_words::quote(init_cmd)
-                ));
-            }
-
-            if let Some(dir) = context_dir {
-                full_prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
-            }
-
+        let image_id = if let Some(full_prepare_cmd) =
+            self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
+        {
             let image_id = run_prepare_command(
                 &self.connector,
                 &full_prepare_cmd,
@@ -201,6 +210,36 @@ impl SandboxProvider for DefaultProvider {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    async fn prewarm_image_cache(
+        &mut self,
+        ctx: &crate::image_cache::PrewarmContext<'_>,
+    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
+        let outcome = crate::image_cache::run_prewarm_pipeline(self, ctx).await?;
+        if let crate::image_cache::PrewarmOutcome::Resolved { ref image_id } = outcome {
+            self.image_id = Some(image_id.clone());
+        }
+        Ok(outcome)
+    }
+
+    async fn prepare_from_checkpoint(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &std::path::Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let cmd = format!(
+            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
+            base_image_id,
+            patch_file.display(),
+            sandbox_project_root
+        );
+        let image_id =
+            run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
     }
 }
 

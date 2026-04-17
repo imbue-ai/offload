@@ -75,7 +75,6 @@ impl ModalProvider {
     fn build_prepare_command(
         &self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
         sandbox_init_cmd: Option<&str>,
     ) -> String {
         let mut cmd = String::from("uv run @modal_sandbox.py prepare");
@@ -87,10 +86,6 @@ impl ModalProvider {
 
         if self.config.include_cwd {
             cmd.push_str(" --include-cwd");
-        }
-
-        if !no_cache {
-            cmd.push_str(" --cached");
         }
 
         for copy_spec in &self.config.copy_dirs {
@@ -147,12 +142,12 @@ impl SandboxProvider for ModalProvider {
     async fn prepare(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
+        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&std::path::Path>,
     ) -> ProviderResult<Option<String>> {
-        let mut prepare_cmd = self.build_prepare_command(copy_dirs, no_cache, sandbox_init_cmd);
+        let mut prepare_cmd = self.build_prepare_command(copy_dirs, sandbox_init_cmd);
 
         if let Some(dir) = context_dir {
             prepare_cmd.push_str(&format!(" --context-dir={}", dir.display()));
@@ -225,6 +220,35 @@ impl SandboxProvider for ModalProvider {
     fn base_env(&self) -> Vec<(String, String)> {
         self.env.clone()
     }
+
+    async fn prewarm_image_cache(
+        &mut self,
+        ctx: &crate::image_cache::PrewarmContext<'_>,
+    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
+        let outcome = crate::image_cache::run_prewarm_pipeline(self, ctx).await?;
+        if let crate::image_cache::PrewarmOutcome::Resolved { ref image_id } = outcome {
+            self.image_id = Some(image_id.clone());
+        }
+        Ok(outcome)
+    }
+
+    async fn prepare_from_checkpoint(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &std::path::Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let cmd = format!(
+            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
+            base_image_id,
+            patch_file.display(),
+            sandbox_project_root
+        );
+        let image_id = run_prepare_command(&self.connector, &cmd, "Modal", discovery_done).await?;
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
+    }
 }
 
 #[cfg(test)]
@@ -240,14 +264,7 @@ mod tests {
     #[test]
     fn test_prepare_command_defaults() {
         let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(&[], false, None);
-        assert_eq!(cmd, "uv run @modal_sandbox.py prepare --cached");
-    }
-
-    #[test]
-    fn test_prepare_command_no_cache() {
-        let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(&[], true, None);
+        let cmd = p.build_prepare_command(&[], None);
         assert_eq!(cmd, "uv run @modal_sandbox.py prepare");
     }
 
@@ -258,10 +275,10 @@ mod tests {
             include_cwd: true,
             ..Default::default()
         });
-        let cmd = p.build_prepare_command(&[], false, None);
+        let cmd = p.build_prepare_command(&[], None);
         assert_eq!(
             cmd,
-            "uv run @modal_sandbox.py prepare ./Dockerfile --include-cwd --cached"
+            "uv run @modal_sandbox.py prepare ./Dockerfile --include-cwd"
         );
     }
 
@@ -272,7 +289,7 @@ mod tests {
             ..Default::default()
         });
         let runtime_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
-        let cmd = p.build_prepare_command(&runtime_dirs, true, None);
+        let cmd = p.build_prepare_command(&runtime_dirs, None);
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare \
@@ -284,14 +301,10 @@ mod tests {
     #[test]
     fn test_prepare_command_with_sandbox_init_cmd() {
         let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(
-            &[],
-            false,
-            Some("apt-get update && apt-get install -y curl"),
-        );
+        let cmd = p.build_prepare_command(&[], Some("apt-get update && apt-get install -y curl"));
         assert_eq!(
             cmd,
-            "uv run @modal_sandbox.py prepare --cached \
+            "uv run @modal_sandbox.py prepare \
              --sandbox-init-cmd='apt-get update && apt-get install -y curl'"
         );
     }
@@ -305,7 +318,7 @@ mod tests {
             ..Default::default()
         });
         let runtime_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
-        let cmd = p.build_prepare_command(&runtime_dirs, true, Some("make setup"));
+        let cmd = p.build_prepare_command(&runtime_dirs, Some("make setup"));
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile.test --include-cwd \

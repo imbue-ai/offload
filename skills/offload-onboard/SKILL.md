@@ -246,7 +246,7 @@ Append Offload artifacts to `.gitignore`:
 test-results/
 ```
 
-NOTE: `.offload-image-cache` should be checked in to git — it tracks the base image ID and speeds up subsequent runs. Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
+NOTE: Do not confuse `.gitignore` (which controls what git tracks) with `.dockerignore` (which controls what gets copied into the sandbox image). The `.dockerignore` is only created if needed during troubleshooting — see the Troubleshooting section.
 
 ### Step 8: Run Offload Locally and Verify
 
@@ -320,11 +320,44 @@ The optimal `max_parallel` depends on the number of test files and per-test dura
 
 Report the results as a table to the user and set the optimal values in `offload.toml`.
 
-### Step 10: Update Agent/Project Instructions (if desired)
+### Step 11: Enable Checkpoint Mode
+
+Checkpoint mode enables fast incremental image builds by caching a base image at the most recent commit that changed dependency files, then applying a thin diff for subsequent runs. This avoids full image rebuilds on every run and is **recommended for all projects**.
+
+**Skip this step only if** the project's build inputs cannot be reliably determined — for example, if dependency files are dynamically generated, scattered across many locations with no fixed pattern, or the project uses an unusual build system where it is unclear which files affect the sandbox image.
+
+To enable checkpoint mode, add a `[checkpoint]` section to `offload.toml` listing the files whose changes should trigger a full image rebuild:
+
+```toml
+[checkpoint]
+build_inputs = [
+    "Dockerfile",
+    "requirements.txt",
+    "pyproject.toml",
+]
+```
+
+Common `build_inputs` patterns:
+
+| Project type | Typical build_inputs |
+|-------------|---------------------|
+| Python (pip/uv) | `Dockerfile`, `requirements.txt`, `pyproject.toml`, `uv.lock` |
+| Python (poetry) | `Dockerfile`, `pyproject.toml`, `poetry.lock` |
+| Rust | `Dockerfile`, `Cargo.toml`, `Cargo.lock` |
+| Node.js | `Dockerfile`, `package.json`, `package-lock.json` |
+| Monorepo | `Dockerfile`, plus the relevant lockfile(s) and manifest(s) for the package under test |
+
+Include the Dockerfile itself in `build_inputs` — changes to the base image should always trigger a full rebuild. Also include lockfiles (e.g. `uv.lock`, `Cargo.lock`, `package-lock.json`) since they pin exact dependency versions.
+
+**Dockerfile requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs on top of the checkpoint image. The Dockerfile must install `git` in the image. If `git` is not installed, thin diff will fail and Offload falls back to a full build (with a warning). The Dockerfile templates in Step 3 already include `git`, but if you are using an existing Dockerfile, verify that `git` is present.
+
+After adding the section, run `offload validate` to check the config and `offload checkpoint-status` to verify checkpoint detection.
+
+### Step 12: Update Agent/Project Instructions (if desired)
 
 **First, ask the user:** "Would you like to configure Offload as the default test runner for AI agents working in this repository? This requires agents to have access to Modal API credentials."
 
-**If the user declines**, skip this step entirely and proceed to Step 11.
+**If the user declines**, skip this step entirely and proceed to Step 13.
 
 **If the user agrees**, ensure that future AI agents working in this repository know to use Offload for running tests:
 
@@ -358,9 +391,9 @@ Report the results as a table to the user and set the optimal values in `offload
 
 6. Preserve the existing tone and formatting of the file. If it uses a digraph, bullet lists, or a specific heading style, match that style. Do not restructure or reformat existing content.
 
-### Step 11: Set Up CI Job (if desired)
+### Step 13: Set Up CI Job (if desired)
 
-Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 11 and 12.
+Ask the user if they want to set up a CI job to run Offload tests automatically on push/PR. If they decline, skip Steps 13 and 14.
 
 If they want CI, detect the CI system from the repository:
 - `.github/workflows/` → GitHub Actions
@@ -437,7 +470,7 @@ jobs:
 
 For other CI systems, adapt the same pattern: install Offload + Modal CLI, set Modal secrets as env vars, run `offload run`.
 
-### Step 12: Configure CI Secrets
+### Step 14: Configure CI Secrets
 
 Tell the user they need to add two repository secrets:
 - `MODAL_TOKEN_ID`: Their Modal API token ID
@@ -465,8 +498,7 @@ Wait for the run to succeed. If it fails, diagnose and fix the issue, then trigg
 | "Token validation failed" | Modal credentials expired | `modal token new` |
 | All tests "Not Run" / junit.xml missing | Test command failing inside sandbox | Check Dockerfile has correct runtime; debug with `modal sandbox create` |
 | "No such file or directory" on CI | Missing local discovery dependencies | Add language toolchain + dep install steps before Offload |
-| Slow sandbox creation | Docker image not cached | Run once to warm cache; `.offload-image-cache` tracks the base image ID |
-| Stale sandbox image | `.offload-image-cache` points to an outdated image | Delete `.offload-image-cache` to force a fresh image build on next run |
+| Slow sandbox creation | Docker image not cached | Run once to warm cache; image IDs are cached in git notes automatically |
 | High parallelism slower than low | Sandbox creation overhead dominates | Reduce `max_parallel`; optimal is usually 2-6 for small test suites |
 | Tests fail with unexpected errors in sandbox | Local artifacts (caches, build dirs) interfere with sandbox environment | Create a `.dockerignore` (see below) |
 
@@ -480,7 +512,6 @@ If tests fail due to local artifacts leaking into the sandbox (e.g. "Exec format
 .github
 __pycache__
 *.egg-info
-.offload-image-cache  # excluded from Docker build context, but should be checked in to git
 test-results
 build
 dist

@@ -22,7 +22,7 @@ use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
     SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
 };
-use offload::with_retry;
+use offload::{image_cache, with_retry};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -109,6 +109,12 @@ enum Commands {
         framework: String,
     },
 
+    /// Show checkpoint cache status for the current HEAD.
+    CheckpointStatus {
+        #[arg(long, default_value = "origin")]
+        remote: String,
+    },
+
     /// View test run logs
     Logs {
         /// Show only failure logs
@@ -176,6 +182,11 @@ async fn main() -> Result<()> {
             provider,
             framework,
         } => init_config(&provider, &framework),
+        Commands::CheckpointStatus { remote } => {
+            let cwd = std::env::current_dir().context("failed to get current directory")?;
+            let config_path_str = cli.config.to_string_lossy().to_string();
+            image_cache::status_handler(&cwd, &config_path_str, &remote).await
+        }
         Commands::Logs {
             failures,
             errors,
@@ -406,6 +417,111 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
+/// Shared logic for Default and Modal provider arms: prewarm image cache,
+/// concurrent discovery, fallback to full build, and framework dispatch.
+#[allow(clippy::too_many_arguments)]
+async fn run_remote_provider<P: SandboxProvider>(
+    repo: &Path,
+    mut provider: P,
+    config: &Config,
+    copy_dir_tuples: &[(PathBuf, PathBuf)],
+    copy_dirs: &[CopyDir],
+    no_cache: bool,
+    verbose: bool,
+    tracer: &offload::trace::Tracer,
+    show_estimated_cost: bool,
+    fail_fast: bool,
+    config_path: &Path,
+) -> Result<Option<i32>> {
+    let discovery_done = AtomicBool::new(false);
+
+    let prewarm_ctx = image_cache::PrewarmContext {
+        repo,
+        config,
+        config_path,
+        copy_dir_tuples,
+        no_cache,
+        tracer,
+        discovery_done: &discovery_done,
+    };
+
+    // Run discovery concurrently with the prewarm pipeline
+    let (all_tests, prewarm_result) = tokio::try_join!(
+        discover_with_signal(&config.framework, &config.groups, &discovery_done),
+        provider.prewarm_image_cache(&prewarm_ctx),
+    )?;
+
+    match prewarm_result {
+        image_cache::PrewarmOutcome::Resolved { .. } => {
+            // Provider already has image_id set internally
+            if all_tests.is_empty() {
+                return Ok(None);
+            }
+            dispatch_framework(
+                config,
+                &all_tests,
+                provider,
+                copy_dirs,
+                verbose,
+                tracer,
+                show_estimated_cost,
+                fail_fast,
+            )
+            .await
+            .map(Some)
+        }
+        image_cache::PrewarmOutcome::CacheMiss { base_sha } => {
+            // Stage 3: Full build -- snapshot working dir, prepare from scratch
+            let provider_label = match &config.provider {
+                ProviderConfig::Local(_) => "Local",
+                ProviderConfig::Default(_) => "Default",
+                ProviderConfig::Modal(_) => "Modal",
+            };
+
+            let context_snapshot = snapshot_working_directory(tracer)?;
+
+            let prepare_result = {
+                let _span = tracer.span(
+                    "image_prepare",
+                    "local",
+                    offload::trace::PID_LOCAL,
+                    offload::trace::TID_MAIN,
+                );
+                with_retry!(provider.prepare(
+                    copy_dir_tuples,
+                    no_cache,
+                    config.offload.sandbox_init_cmd.as_deref(),
+                    Some(&discovery_done),
+                    Some(context_snapshot.path()),
+                ))
+                .context(format!("Failed to prepare {} provider", provider_label))?
+            };
+
+            // Write cache note for the full build if caching is enabled.
+            if !no_cache && let (Some(sha), Some(image_id)) = (&base_sha, prepare_result.as_deref())
+            {
+                image_cache::write_note_for_commit(repo, sha, image_id, config_path).await;
+            }
+
+            if all_tests.is_empty() {
+                return Ok(None);
+            }
+            dispatch_framework(
+                config,
+                &all_tests,
+                provider,
+                copy_dirs,
+                verbose,
+                tracer,
+                show_estimated_cost,
+                fail_fast,
+            )
+            .await
+            .map(Some)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tests(
     config_path: &Path,
@@ -521,10 +637,13 @@ async fn run_tests(
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
         .collect();
 
+    // Resolve cwd once for threading through git/checkpoint calls
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+
     // Phase 1+2: Discover tests and prepare provider (concurrently where possible)
     let exit_code = match &config.provider {
         ProviderConfig::Local(p_cfg) => {
-            // Local provider is synchronous — no concurrency benefit
+            // Local provider is synchronous -- no concurrency benefit
             eprint!("Discovering tests... ");
             let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
             eprintln!(
@@ -549,92 +668,46 @@ async fn run_tests(
             .await?
         }
         ProviderConfig::Default(p_cfg) => {
-            // Run discovery and image preparation concurrently
-            let discovery_done = AtomicBool::new(false);
-            let mut provider = DefaultProvider::from_config(p_cfg.clone());
-            // Snapshot the working directory so the upload operates on a frozen
-            // copy, avoiding races where files are modified during upload.
-            let context_snapshot = snapshot_working_directory(&tracer)?;
-            let context_dir = context_snapshot.path();
-            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
-                discover_with_signal(&config.framework, &config.groups, &discovery_done),
-                async {
-                    let _span = tracer.span(
-                        "image_prepare",
-                        "local",
-                        offload::trace::PID_LOCAL,
-                        offload::trace::TID_MAIN,
-                    );
-                    let image_id = with_retry!(provider.prepare(
-                        &copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                        Some(context_dir),
-                    ))
-                    .context("Failed to prepare Default provider")?;
-                    Ok(image_id)
-                }
-            )?;
-            if all_tests.is_empty() {
-                info!("No tests to run");
-                return Ok(());
-            }
-            dispatch_framework(
-                &config,
-                &all_tests,
+            let provider = DefaultProvider::from_config(p_cfg.clone());
+            match run_remote_provider(
+                &cwd,
                 provider,
+                &config,
+                &copy_dir_tuples,
                 &copy_dirs,
+                no_cache,
                 verbose,
                 &tracer,
                 show_estimated_cost,
                 fail_fast,
+                config_path,
             )
             .await?
+            {
+                Some(code) => code,
+                None => return Ok(()),
+            }
         }
         ProviderConfig::Modal(p_cfg) => {
-            // Run discovery and image preparation concurrently
-            let discovery_done = AtomicBool::new(false);
-            let mut provider = ModalProvider::from_config(p_cfg.clone());
-            // Snapshot the working directory so the upload operates on a frozen
-            // copy, avoiding races where files are modified during upload.
-            let context_snapshot = snapshot_working_directory(&tracer)?;
-            let context_dir = context_snapshot.path();
-            let (all_tests, _image_id): (Vec<TestRecord>, Option<String>) = tokio::try_join!(
-                discover_with_signal(&config.framework, &config.groups, &discovery_done),
-                async {
-                    let _span = tracer.span(
-                        "image_prepare",
-                        "local",
-                        offload::trace::PID_LOCAL,
-                        offload::trace::TID_MAIN,
-                    );
-                    let image_id = with_retry!(provider.prepare(
-                        &copy_dir_tuples,
-                        no_cache,
-                        config.offload.sandbox_init_cmd.as_deref(),
-                        Some(&discovery_done),
-                        Some(context_dir),
-                    ))
-                    .context("Failed to prepare Modal provider")?;
-                    Ok(image_id)
-                }
-            )?;
-            if all_tests.is_empty() {
-                info!("No tests to run");
-                return Ok(());
-            }
-            dispatch_framework(
-                &config,
-                &all_tests,
+            let provider = ModalProvider::from_config(p_cfg.clone());
+            match run_remote_provider(
+                &cwd,
                 provider,
+                &config,
+                &copy_dir_tuples,
                 &copy_dirs,
+                no_cache,
                 verbose,
                 &tracer,
                 show_estimated_cost,
                 fail_fast,
+                config_path,
             )
             .await?
+            {
+                Some(code) => code,
+                None => return Ok(()),
+            }
         }
     };
 
@@ -872,6 +945,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             },
         )]),
         report: ReportConfig::default(),
+        checkpoint: None,
     };
 
     let toml_content = toml::to_string_pretty(&config)?;
