@@ -566,6 +566,7 @@ dependencies = [
  "console",
  "futures",
  "include_dir",
+ "indexmap",
  "indicatif",
  "predicates",
  "quick-xml",

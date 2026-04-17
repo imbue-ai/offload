@@ -10,6 +10,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
+/// Maps string test IDs to contiguous numeric indices.
+pub type TestIndex = indexmap::IndexSet<String>;
+
+/// Numeric index for a test within the [`TestIndex`].
+pub type TestIdx = usize;
+
+/// Numeric index for a batch, assigned atomically by the orchestrator.
+pub type BatchIdx = usize;
+
 /// Tracks which tests have a decided outcome.
 ///
 /// Call [`newly_complete_tests`] after each batch returns to increment attempt
@@ -42,7 +51,7 @@ impl CompletionTracker {
 
     /// Registers the maximum number of attempts for a test.
     pub fn register_retries(&mut self, test_id: &str, max_attempts: usize) {
-        if let Some(idx) = self.index.get(test_id) {
+        if let Some(idx) = self.index.get_index_of(test_id) {
             self.max_attempts[idx] = max_attempts;
         }
     }
@@ -57,10 +66,10 @@ impl CompletionTracker {
         &mut self,
         test_ids: &[&str],
         is_passed: impl Fn(&str) -> bool,
-    ) -> Vec<usize> {
+    ) -> Vec<TestIdx> {
         let mut newly_decided = Vec::new();
         for &test_id in test_ids {
-            let Some(num_id) = self.index.get(test_id) else {
+            let Some(num_id) = self.index.get_index_of(test_id) else {
                 continue;
             };
             if self.decided.is_decided(num_id) {
@@ -93,8 +102,8 @@ impl CompletionTracker {
     /// decided, the token is cancelled immediately.
     pub fn register_batch(
         &mut self,
-        batch_idx: usize,
-        test_num_ids: &[usize],
+        batch_idx: BatchIdx,
+        test_num_ids: &[TestIdx],
         token: CancellationToken,
     ) {
         self.incomplete
@@ -117,43 +126,7 @@ impl CompletionTracker {
     }
 }
 
-/// Maps string test IDs to compact `usize` indices for cache-friendly lookups.
-pub struct TestIndex {
-    id_to_idx: HashMap<String, usize>,
-}
-
-impl TestIndex {
-    /// Builds an index from a slice of test ID strings, assigning contiguous
-    /// indices. Duplicate IDs are deduplicated (they share the same index).
-    pub fn new(test_ids: &[&str]) -> Self {
-        let mut id_to_idx = HashMap::new();
-        for &id in test_ids {
-            let next = id_to_idx.len();
-            id_to_idx.entry(id.to_string()).or_insert(next);
-        }
-        Self { id_to_idx }
-    }
-
-    /// Returns the numeric index for `test_id`, or `None` if unknown.
-    pub fn get(&self, test_id: &str) -> Option<usize> {
-        self.id_to_idx.get(test_id).copied()
-    }
-
-    /// Number of distinct test IDs in the index.
-    pub fn len(&self) -> usize {
-        self.id_to_idx.len()
-    }
-
-    /// Returns true if the index contains no test IDs.
-    pub fn is_empty(&self) -> bool {
-        self.id_to_idx.is_empty()
-    }
-}
-
 /// Lock-free decided-status array indexed by numeric test ID.
-///
-/// Uses interior mutability via `AtomicBool` (pre-authorized by coordinator
-/// for per-batch cancellation).
 pub struct DecidedFlags {
     flags: Vec<AtomicBool>,
 }
@@ -166,14 +139,14 @@ impl DecidedFlags {
     }
 
     /// Marks the test at `idx` as decided. No-op if `idx` is out of bounds.
-    pub fn mark_decided(&self, idx: usize) {
+    pub fn mark_decided(&self, idx: TestIdx) {
         if let Some(flag) = self.flags.get(idx) {
             flag.store(true, Ordering::Release);
         }
     }
 
     /// Returns whether the test at `idx` is decided. Returns `false` if out of bounds.
-    pub fn is_decided(&self, idx: usize) -> bool {
+    pub fn is_decided(&self, idx: TestIdx) -> bool {
         self.flags
             .get(idx)
             .is_some_and(|f| f.load(Ordering::Acquire))
@@ -187,9 +160,9 @@ impl DecidedFlags {
 /// is cancelled so the sandbox can be reclaimed early.
 struct IncompleteTestsRegistry {
     /// batch_idx -> (remaining undecided count, cancellation token)
-    batches: HashMap<usize, (usize, CancellationToken)>,
+    batches: HashMap<BatchIdx, (usize, CancellationToken)>,
     /// test_num_id -> list of batch indices containing this test
-    test_to_batches: HashMap<usize, Vec<usize>>,
+    test_to_batches: HashMap<TestIdx, Vec<BatchIdx>>,
 }
 
 impl IncompleteTestsRegistry {
@@ -204,12 +177,12 @@ impl IncompleteTestsRegistry {
     /// If all tests are already decided, the token is cancelled immediately.
     fn register(
         &mut self,
-        batch_idx: usize,
-        test_num_ids: &[usize],
+        batch_idx: BatchIdx,
+        test_num_ids: &[TestIdx],
         token: CancellationToken,
         decided: &DecidedFlags,
     ) {
-        let undecided: Vec<usize> = test_num_ids
+        let undecided: Vec<TestIdx> = test_num_ids
             .iter()
             .copied()
             .filter(|&id| !decided.is_decided(id))
@@ -234,7 +207,7 @@ impl IncompleteTestsRegistry {
     ///
     /// Decrements the remaining count for each batch containing this test.
     /// When a batch's count reaches zero, its token is cancelled.
-    fn notify_decided(&mut self, test_num_id: usize) {
+    fn notify_decided(&mut self, test_num_id: TestIdx) {
         if let Some(batch_idxs) = self.test_to_batches.remove(&test_num_id) {
             for batch_idx in batch_idxs {
                 if let Some((remaining, token)) = self.batches.get_mut(&batch_idx) {
@@ -256,9 +229,13 @@ impl IncompleteTestsRegistry {
 mod tests {
     use super::*;
 
+    fn test_index(ids: &[&str]) -> TestIndex {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn test_all_passed_immediately_decided() {
-        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let index = Arc::new(test_index(&["test_a", "test_b"]));
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 3);
         tracker.register_retries("test_b", 3);
@@ -271,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_failure_with_retries_remaining() {
-        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let index = Arc::new(test_index(&["test_a", "test_b"]));
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 3);
@@ -285,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_failure_retries_exhausted() {
-        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let index = Arc::new(test_index(&["test_a", "test_b"]));
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 2);
@@ -302,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_missing_test_not_complete() {
-        let index = Arc::new(TestIndex::new(&["test_a", "test_b"]));
+        let index = Arc::new(test_index(&["test_a", "test_b"]));
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);
@@ -315,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_already_decided_not_double_counted() {
-        let index = Arc::new(TestIndex::new(&["test_a"]));
+        let index = Arc::new(test_index(&["test_a"]));
         let mut tracker = CompletionTracker::new(1, index);
         tracker.register_retries("test_a", 1);
 
@@ -323,38 +300,6 @@ mod tests {
         let _ = tracker.newly_complete_tests(&["test_a"], |_| true); // duplicate
 
         assert_eq!(tracker.decided_count(), 1);
-    }
-
-    // --- TestIndex tests ---
-
-    #[test]
-    fn test_index_basic_lookup() {
-        let idx = TestIndex::new(&["a", "b", "c"]);
-        assert_eq!(idx.len(), 3);
-        assert!(idx.get("a").is_some());
-        assert!(idx.get("b").is_some());
-        assert!(idx.get("c").is_some());
-        // All indices should be distinct
-        let a = idx.get("a");
-        let b = idx.get("b");
-        let c = idx.get("c");
-        assert_ne!(a, b);
-        assert_ne!(b, c);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn test_index_unknown_returns_none() {
-        let idx = TestIndex::new(&["a", "b"]);
-        assert_eq!(idx.get("unknown"), None);
-    }
-
-    #[test]
-    fn test_index_dedup() {
-        let idx = TestIndex::new(&["a", "b", "a"]);
-        assert_eq!(idx.len(), 2);
-        assert!(idx.get("a").is_some());
-        assert!(idx.get("b").is_some());
     }
 
     // --- DecidedFlags tests ---

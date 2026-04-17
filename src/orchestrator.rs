@@ -338,9 +338,10 @@ where
             total_tests_to_run,
             self.config.framework.test_id_format(),
         )));
-        // Build TestIndex first (CompletionTracker needs it)
-        let unique_test_ids: Vec<&str> = tests.iter().map(|t| t.id.as_str()).collect();
-        let test_index = Arc::new(completion::TestIndex::new(&unique_test_ids));
+        // Build TestIndex first (CompletionTracker needs it).
+        // IndexSet deduplicates automatically.
+        let test_index: completion::TestIndex = tests.iter().map(|t| t.id.clone()).collect();
+        let test_index = Arc::new(test_index);
 
         let mut tracker =
             completion::CompletionTracker::new(total_tests_to_run, Arc::clone(&test_index));
