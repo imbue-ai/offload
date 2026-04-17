@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use indicatif::ProgressBar;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::framework::TestFramework;
@@ -85,18 +85,22 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Create per-batch child token; skip if all tests already decided
+        // Skip if all tests already decided (read lock — concurrent with other workers)
+        if let Ok(tracker) = cfg.tracker.read()
+            && tracker.all_decided_by_name(batch.tests.iter().map(|t| t.id()))
+        {
+            info!(
+                "SKIP: Batch {} ({} tests) all already decided",
+                batch_idx,
+                batch.tests.len()
+            );
+            continue;
+        }
+
+        // Register per-batch cancellation token (write lock)
         let child_token = cfg.cancellation_token.child_token();
         let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
         if let Ok(mut tracker) = cfg.tracker.write() {
-            if tracker.all_decided_by_name(test_ids.iter().copied()) {
-                info!(
-                    "SKIP: Batch {} ({} tests) all already decided",
-                    batch_idx,
-                    batch.tests.len()
-                );
-                continue;
-            }
             tracker.register_batch(batch_idx, &test_ids, child_token.clone());
         } else {
             warn!("tracker lock poisoned during batch registration");
@@ -124,7 +128,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             parts_dir,
             junit_report: Arc::clone(&cfg.junit_report),
             tracker: Arc::clone(&cfg.tracker),
-            cancellation_token: child_token.clone(),
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
@@ -174,12 +177,25 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Run tests, racing against cancellation
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
-        let outcome = tokio::select! {
-            result = cfg.scheduler.register_running_batch(&batch, runner.run_tests(&batch.tests)) => result,
-            () = child_token.cancelled() => Ok(BatchOutcome::Cancelled),
+        let mut _child_token_fired = false;
+        let outcome = {
+            let exec_fut = cfg
+                .scheduler
+                .register_running_batch(&batch, runner.run_tests(&batch.tests));
+            tokio::pin!(exec_fut);
+
+            tokio::select! {
+                result = &mut exec_fut => result,
+                () = child_token.cancelled() => {
+                    // All tests in this batch have been decided by other batches.
+                    // TODO: Once validated, return BatchOutcome::Cancelled here
+                    // instead of waiting — this will free the sandbox immediately.
+                    _child_token_fired = true;
+                    exec_fut.await
+                }
+            }
         };
 
         info!(
