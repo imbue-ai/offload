@@ -415,8 +415,9 @@ impl Sandbox for DefaultSandbox {
         }
     }
 
-    async fn terminate(&mut self) -> ProviderResult<()> {
+    async fn terminate(mut self) -> ProviderResult<()> {
         // Kill tracked child processes by dropping their guards
+        // explicitly before the destroy command runs
         self.child_guards.clear();
 
         let shell_cmd = self.build_destroy_command();

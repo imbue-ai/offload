@@ -532,12 +532,13 @@ where
         }
         term_progress.enable_steady_tick(std::time::Duration::from_millis(100));
         let term_progress_ref = &term_progress;
-        let terminate_futures = sandboxes.into_iter().map(|mut sandbox| async move {
+        let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
+            let id = sandbox.id().to_string();
             match tokio::time::timeout(std::time::Duration::from_secs(30), sandbox.terminate())
                 .await
             {
-                Ok(Err(e)) => warn!("Failed to terminate sandbox {}: {}", sandbox.id(), e),
-                Err(_) => warn!("Timeout terminating sandbox {}", sandbox.id()),
+                Ok(Err(e)) => warn!("Failed to terminate sandbox {}: {}", id, e),
+                Err(_) => warn!("Timeout terminating sandbox {}", id),
                 Ok(Ok(())) => {}
             }
             term_progress_ref.inc(1);

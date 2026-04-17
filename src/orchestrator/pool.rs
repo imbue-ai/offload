@@ -116,7 +116,7 @@ mod tests {
         async fn download(&mut self, _paths: &[(&Path, &Path)]) -> ProviderResult<()> {
             unimplemented!()
         }
-        async fn terminate(&mut self) -> ProviderResult<()> {
+        async fn terminate(self) -> ProviderResult<()> {
             Ok(())
         }
         fn cost_estimate(&self) -> CostEstimate {

@@ -200,7 +200,7 @@ impl Sandbox for LocalSandbox {
         Ok(())
     }
 
-    async fn terminate(&mut self) -> ProviderResult<()> {
+    async fn terminate(self) -> ProviderResult<()> {
         // Process sandboxes don't need explicit cleanup
         Ok(())
     }

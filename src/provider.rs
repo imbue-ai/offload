@@ -264,13 +264,10 @@ pub trait Sandbox: Send {
     ///   path inside the sandbox and local is the destination path
     async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
 
-    /// Terminates the sandbox and releases resources.
+    /// Terminates the sandbox and releases all resources.
     ///
-    /// After calling this method, the sandbox should not be used.
-    /// Resources (containers, connections, etc.) are cleaned up.
-    ///
-    /// This method is idempotent - calling it multiple times is safe.
-    async fn terminate(&mut self) -> ProviderResult<()>;
+    /// Consumes `self` so the sandbox cannot be used after termination.
+    async fn terminate(mut self) -> ProviderResult<()>;
 
     /// Returns the estimated cost incurred by this sandbox.
     ///
