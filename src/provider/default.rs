@@ -16,7 +16,7 @@ use super::{
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
 use crate::config::{DefaultProviderConfig, SandboxConfig};
-use crate::connector::{ChildGuard, Connector, ShellConnector};
+use crate::connector::{ChildProcessGuard, Connector, ShellConnector};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -271,7 +271,7 @@ pub struct DefaultSandbox {
     created_at: Instant,
     cpu_cores: f64,
     /// RAII guards for child processes spawned by `exec_stream`, killed on drop.
-    child_guards: std::sync::Mutex<Vec<ChildGuard>>,
+    child_guards: std::sync::Mutex<Vec<ChildProcessGuard>>,
 }
 
 impl DefaultSandbox {

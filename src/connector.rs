@@ -12,20 +12,20 @@ use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
 /// RAII guard that kills a child process on drop.
 ///
-/// When a `ChildGuard` is dropped, it sends SIGKILL to the tracked PID.
+/// When a `ChildProcessGuard` is dropped, it sends SIGKILL to the tracked PID.
 /// This ensures orphaned child processes are cleaned up automatically.
-pub struct ChildGuard {
+pub struct ChildProcessGuard {
     pid: u32,
 }
 
-impl ChildGuard {
+impl ChildProcessGuard {
     /// Creates a new guard for the given process ID.
     pub fn new(pid: u32) -> Self {
         Self { pid }
     }
 }
 
-impl Drop for ChildGuard {
+impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
         if self.pid != 0 {
             // Best-effort kill -- ignore errors (process may have already exited)
@@ -189,13 +189,13 @@ impl Default for ShellConnector {
 }
 
 impl ShellConnector {
-    /// Like `Connector::run_stream` but also returns a [`ChildGuard`] for the spawned process.
+    /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
     ///
     /// The guard kills the child process when dropped, preventing orphaned processes.
     pub async fn run_stream_with_guard(
         &self,
         command: &str,
-    ) -> ProviderResult<(OutputStream, ChildGuard)> {
+    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
@@ -244,7 +244,10 @@ impl ShellConnector {
             OutputLine::ExitCode(exit_code)
         });
 
-        Ok((Box::pin(combined.chain(exit_stream)), ChildGuard::new(pid)))
+        Ok((
+            Box::pin(combined.chain(exit_stream)),
+            ChildProcessGuard::new(pid),
+        ))
     }
 }
 
