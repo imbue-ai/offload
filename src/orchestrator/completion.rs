@@ -139,10 +139,15 @@ impl CompletionTracker {
 /// Each batch has a remaining count of undecided tests and a cancellation
 /// token. When `notify_decided` decrements the count to zero, the token
 /// is cancelled so the sandbox can be reclaimed early.
+struct BatchEntry {
+    remaining: usize,
+    token: CancellationToken,
+}
+
 struct IncompleteTestsRegistry {
-    /// Indexed by batch_idx: (remaining undecided count, cancellation token)
-    batches: Vec<Option<(usize, CancellationToken)>>,
-    /// Indexed by test_idx: batch indices containing this test
+    /// Sparse by batch index. Grows on demand as batches are registered.
+    batches: Vec<Option<BatchEntry>>,
+    /// Pre-allocated by test count. Each slot holds the batches containing that test.
     test_to_batches: Vec<Vec<BatchIdx>>,
 }
 
@@ -154,7 +159,6 @@ impl IncompleteTestsRegistry {
         }
     }
 
-    /// Registers a batch with its undecided test IDs.
     fn register(
         &mut self,
         batch_idx: BatchIdx,
@@ -164,27 +168,25 @@ impl IncompleteTestsRegistry {
         if batch_idx >= self.batches.len() {
             self.batches.resize_with(batch_idx + 1, || None);
         }
-        self.batches[batch_idx] = Some((undecided_ids.len(), token));
+        self.batches[batch_idx] = Some(BatchEntry {
+            remaining: undecided_ids.len(),
+            token,
+        });
         for &test_id in undecided_ids {
             self.test_to_batches[test_id].push(batch_idx);
         }
     }
 
-    /// Notifies the registry that a test has been decided.
-    ///
-    /// Decrements the remaining count for each batch containing this test.
-    /// When a batch's count reaches zero, its token is cancelled.
-    fn notify_decided(&mut self, test_num_id: TestIdx) {
-        let batch_idxs = std::mem::take(&mut self.test_to_batches[test_num_id]);
-        for batch_idx in batch_idxs {
-            if let Some((remaining, token)) = self.batches[batch_idx].as_mut() {
-                *remaining = remaining.saturating_sub(1);
-                if *remaining == 0 {
+    fn notify_decided(&mut self, test_idx: TestIdx) {
+        for batch_idx in std::mem::take(&mut self.test_to_batches[test_idx]) {
+            if let Some(entry) = self.batches[batch_idx].as_mut() {
+                entry.remaining = entry.remaining.saturating_sub(1);
+                if entry.remaining == 0 {
                     tracing::info!(
-                        "PER-BATCH CANCEL: Batch {} has all tests decided, cancelling",
+                        "PER-BATCH CANCEL: Batch {} all tests decided, cancelling",
                         batch_idx,
                     );
-                    token.cancel();
+                    entry.token.cancel();
                 }
             }
         }
