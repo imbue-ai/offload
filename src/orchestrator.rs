@@ -341,15 +341,12 @@ where
         // Build TestIndex first (CompletionTracker needs it).
         // IndexSet deduplicates automatically.
         let test_index: completion::TestIndex = tests.iter().map(|t| t.id.clone()).collect();
-        let test_index = Arc::new(test_index);
 
-        let mut tracker =
-            completion::CompletionTracker::new(total_tests_to_run, Arc::clone(&test_index));
+        let mut tracker = completion::CompletionTracker::new(total_tests_to_run, test_index);
         for test in tests {
             tracker.register_retries(&test.id, test.retry_count + 1);
         }
-        let decided_flags = tracker.decided_flags();
-        let tracker = Arc::new(std::sync::Mutex::new(tracker));
+        let tracker = Arc::new(std::sync::RwLock::new(tracker));
         let all_complete = Arc::new(AtomicBool::new(false));
         let cancellation_token = CancellationToken::new();
 
@@ -416,8 +413,6 @@ where
                     sandbox_index,
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
-                    decided_flags: Arc::clone(&decided_flags),
-                    test_index: Arc::clone(&test_index),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }

@@ -1,6 +1,6 @@
 //! Test runner — executes test batches within a single sandbox.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -55,7 +55,7 @@ pub struct RunnerConfig {
     pub fail_fast: bool,
     pub parts_dir: std::path::PathBuf,
     pub junit_report: SharedJunitReport,
-    pub tracker: Arc<Mutex<CompletionTracker>>,
+    pub tracker: Arc<RwLock<CompletionTracker>>,
     pub cancellation_token: CancellationToken,
     pub artifacts: ArtifactConfig,
 }
@@ -88,7 +88,7 @@ pub struct TestRunner<'a, S, D> {
     /// Configuration for downloading artifacts after batch execution.
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
-    tracker: Arc<Mutex<CompletionTracker>>,
+    tracker: Arc<RwLock<CompletionTracker>>,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -412,7 +412,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                         );
 
                         // Record batch results (registry notification is internal)
-                        if let Ok(mut t) = self.tracker.lock() {
+                        if let Ok(mut t) = self.tracker.write() {
                             t.newly_complete_tests(
                                 &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                                 |id| report.has_test_passed(id),

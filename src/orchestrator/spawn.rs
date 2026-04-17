@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use indicatif::ProgressBar;
@@ -18,7 +18,7 @@ use crate::framework::TestFramework;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::MasterJunitReport;
 
-use super::completion::{CompletionTracker, DecidedFlags, TestIdx, TestIndex};
+use super::completion::CompletionTracker;
 use super::runner::{ArtifactConfig, BatchOutcome, OutputCallback, RunnerConfig, TestRunner};
 use super::scheduler::Scheduler;
 
@@ -43,9 +43,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub tracer: crate::trace::Tracer,
     pub sandbox_index: usize,
     pub fail_fast: bool,
-    pub tracker: Arc<Mutex<CompletionTracker>>,
-    pub decided_flags: Arc<DecidedFlags>,
-    pub test_index: Arc<TestIndex>,
+    pub tracker: Arc<RwLock<CompletionTracker>>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -103,12 +101,10 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip batches where all tests have a decided outcome (lock-free check)
-        if batch.tests.iter().all(|t| {
-            cfg.test_index
-                .get_index_of(t.id())
-                .is_some_and(|idx| cfg.decided_flags.is_decided(idx))
-        }) {
+        // Skip batches where all tests have a decided outcome
+        if let Ok(tracker) = cfg.tracker.read()
+            && tracker.all_decided_by_name(batch.tests.iter().map(|t| t.id()))
+        {
             let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
                 "SKIP: Batch {} ({} tests) all already decided, skipping",
@@ -121,15 +117,14 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
 
         // Per-batch cancellation: create child token and register with incomplete tests
         let child_token = cfg.cancellation_token.child_token();
-        let test_num_ids: Vec<TestIdx> = batch
-            .tests
-            .iter()
-            .filter_map(|t| cfg.test_index.get_index_of(t.id()))
-            .collect();
-        if let Ok(mut tracker) = cfg.tracker.lock() {
-            tracker.register_batch(batch_idx, &test_num_ids, child_token.clone());
+        if let Ok(mut tracker) = cfg.tracker.write() {
+            tracker.register_batch(
+                batch_idx,
+                &batch.tests.iter().map(|t| t.id()).collect::<Vec<_>>(),
+                child_token.clone(),
+            );
         } else {
-            warn!("tracker mutex poisoned during batch registration");
+            warn!("tracker lock poisoned during batch registration");
         }
 
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
@@ -267,7 +262,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         }
 
         // Update progress from tracker (newly_complete_tests already called inside runner)
-        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
+        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.read()) {
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();

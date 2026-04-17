@@ -5,8 +5,6 @@
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
@@ -22,27 +20,25 @@ pub type BatchIdx = usize;
 /// Tracks which tests have a decided outcome.
 ///
 /// Call [`newly_complete_tests`] after each batch returns to increment attempt
-/// counts and update the decided set. Owns [`DecidedFlags`] internally so that
-/// lock-free decided-status checks stay in sync with the authoritative state.
+/// counts and update the decided set.
 pub struct CompletionTracker {
-    index: Arc<TestIndex>,
+    index: TestIndex,
     max_attempts: Vec<usize>,
     attempt_counts: Vec<usize>,
-    decided: Arc<DecidedFlags>,
+    decided: Vec<bool>,
     decided_count: usize,
     total_expected: usize,
     incomplete: IncompleteTestsRegistry,
 }
 
 impl CompletionTracker {
-    pub fn new(total_expected: usize, index: Arc<TestIndex>) -> Self {
+    pub fn new(total_expected: usize, index: TestIndex) -> Self {
         let len = index.len();
-        let decided = Arc::new(DecidedFlags::new(len));
         Self {
             index,
-            max_attempts: vec![1; len], // default 1 attempt
+            max_attempts: vec![1; len],
             attempt_counts: vec![0; len],
-            decided,
+            decided: vec![false; len],
             decided_count: 0,
             total_expected,
             incomplete: IncompleteTestsRegistry::new(),
@@ -72,7 +68,7 @@ impl CompletionTracker {
             let Some(num_id) = self.index.get_index_of(test_id) else {
                 continue;
             };
-            if self.decided.is_decided(num_id) {
+            if self.decided[num_id] {
                 continue;
             }
 
@@ -85,7 +81,7 @@ impl CompletionTracker {
             };
 
             if is_now_decided {
-                self.decided.mark_decided(num_id);
+                self.decided[num_id] = true;
                 self.decided_count += 1;
                 newly_decided.push(num_id);
             }
@@ -103,11 +99,30 @@ impl CompletionTracker {
     pub fn register_batch(
         &mut self,
         batch_idx: BatchIdx,
-        test_num_ids: &[TestIdx],
+        test_ids: &[&str],
         token: CancellationToken,
     ) {
-        self.incomplete
-            .register(batch_idx, test_num_ids, token, &self.decided);
+        let undecided: Vec<TestIdx> = test_ids
+            .iter()
+            .filter_map(|id| self.index.get_index_of(*id))
+            .filter(|&idx| !self.decided[idx])
+            .collect();
+
+        if undecided.is_empty() {
+            token.cancel();
+            return;
+        }
+
+        self.incomplete.register(batch_idx, &undecided, token);
+    }
+
+    /// Returns true if every named test has a decided outcome.
+    pub fn all_decided_by_name<'a>(&self, mut test_ids: impl Iterator<Item = &'a str>) -> bool {
+        test_ids.all(|id| {
+            self.index
+                .get_index_of(id)
+                .is_some_and(|idx| self.decided[idx])
+        })
     }
 
     /// Number of tests with a decided outcome.
@@ -118,38 +133,6 @@ impl CompletionTracker {
     /// True when every expected test has a decided outcome.
     pub fn all_complete(&self) -> bool {
         self.decided_count == self.total_expected
-    }
-
-    /// Returns the shared decided flags for lock-free access.
-    pub fn decided_flags(&self) -> Arc<DecidedFlags> {
-        Arc::clone(&self.decided)
-    }
-}
-
-/// Lock-free decided-status array indexed by numeric test ID.
-pub struct DecidedFlags {
-    flags: Vec<AtomicBool>,
-}
-
-impl DecidedFlags {
-    /// Creates a new flags array with `count` entries, all initially `false`.
-    pub fn new(count: usize) -> Self {
-        let flags = (0..count).map(|_| AtomicBool::new(false)).collect();
-        Self { flags }
-    }
-
-    /// Marks the test at `idx` as decided. No-op if `idx` is out of bounds.
-    pub fn mark_decided(&self, idx: TestIdx) {
-        if let Some(flag) = self.flags.get(idx) {
-            flag.store(true, Ordering::Release);
-        }
-    }
-
-    /// Returns whether the test at `idx` is decided. Returns `false` if out of bounds.
-    pub fn is_decided(&self, idx: TestIdx) -> bool {
-        self.flags
-            .get(idx)
-            .is_some_and(|f| f.load(Ordering::Acquire))
     }
 }
 
@@ -173,29 +156,15 @@ impl IncompleteTestsRegistry {
         }
     }
 
-    /// Registers a batch. Already-decided tests (per `decided`) are filtered out.
-    /// If all tests are already decided, the token is cancelled immediately.
+    /// Registers a batch with its undecided test IDs.
     fn register(
         &mut self,
         batch_idx: BatchIdx,
-        test_num_ids: &[TestIdx],
+        undecided_ids: &[TestIdx],
         token: CancellationToken,
-        decided: &DecidedFlags,
     ) {
-        let undecided: Vec<TestIdx> = test_num_ids
-            .iter()
-            .copied()
-            .filter(|&id| !decided.is_decided(id))
-            .collect();
-
-        if undecided.is_empty() {
-            token.cancel();
-            return;
-        }
-
-        self.batches.insert(batch_idx, (undecided.len(), token));
-
-        for &test_id in &undecided {
+        self.batches.insert(batch_idx, (undecided_ids.len(), token));
+        for &test_id in undecided_ids {
             self.test_to_batches
                 .entry(test_id)
                 .or_default()
@@ -235,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_all_passed_immediately_decided() {
-        let index = Arc::new(test_index(&["test_a", "test_b"]));
+        let index = test_index(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 3);
         tracker.register_retries("test_b", 3);
@@ -248,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_failure_with_retries_remaining() {
-        let index = Arc::new(test_index(&["test_a", "test_b"]));
+        let index = test_index(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 3);
@@ -262,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_failure_retries_exhausted() {
-        let index = Arc::new(test_index(&["test_a", "test_b"]));
+        let index = test_index(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 2);
@@ -279,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_missing_test_not_complete() {
-        let index = Arc::new(test_index(&["test_a", "test_b"]));
+        let index = test_index(&["test_a", "test_b"]);
         let mut tracker = CompletionTracker::new(2, index);
         tracker.register_retries("test_a", 1);
         tracker.register_retries("test_b", 1);
@@ -292,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_already_decided_not_double_counted() {
-        let index = Arc::new(test_index(&["test_a"]));
+        let index = test_index(&["test_a"]);
         let mut tracker = CompletionTracker::new(1, index);
         tracker.register_retries("test_a", 1);
 
@@ -302,40 +271,14 @@ mod tests {
         assert_eq!(tracker.decided_count(), 1);
     }
 
-    // --- DecidedFlags tests ---
-
-    #[test]
-    fn test_decided_flags_initially_false() {
-        let flags = DecidedFlags::new(3);
-        assert!(!flags.is_decided(0));
-        assert!(!flags.is_decided(1));
-        assert!(!flags.is_decided(2));
-    }
-
-    #[test]
-    fn test_decided_flags_mark_and_check() {
-        let flags = DecidedFlags::new(3);
-        flags.mark_decided(1);
-        assert!(flags.is_decided(1));
-        assert!(!flags.is_decided(0));
-    }
-
-    #[test]
-    fn test_decided_flags_out_of_bounds() {
-        let flags = DecidedFlags::new(3);
-        flags.mark_decided(999); // no-op
-        assert!(!flags.is_decided(999));
-    }
-
     // --- IncompleteTestsRegistry tests ---
 
     #[test]
     fn test_registry_cancel_when_all_decided() {
-        let decided = DecidedFlags::new(2);
         let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
-        registry.register(0, &[0, 1], token.clone(), &decided);
+        registry.register(0, &[0, 1], token.clone());
         assert!(!token.is_cancelled());
 
         registry.notify_decided(0);
@@ -347,36 +290,37 @@ mod tests {
 
     #[test]
     fn test_registry_no_cancel_when_partial() {
-        let decided = DecidedFlags::new(2);
         let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
-        registry.register(0, &[0, 1], token.clone(), &decided);
+        registry.register(0, &[0, 1], token.clone());
 
         registry.notify_decided(0);
         assert!(!token.is_cancelled());
     }
 
     #[test]
-    fn test_registry_register_all_already_decided() {
-        let decided = DecidedFlags::new(2);
-        decided.mark_decided(0);
-        decided.mark_decided(1);
+    fn test_register_batch_all_already_decided_cancels_immediately() {
+        let index = test_index(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index);
+        tracker.register_retries("test_a", 1);
+        tracker.register_retries("test_b", 1);
 
-        let mut registry = IncompleteTestsRegistry::new();
+        // Decide all tests
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);
+
+        // Register a batch for already-decided tests
         let token = CancellationToken::new();
-
-        registry.register(0, &[0, 1], token.clone(), &decided);
+        tracker.register_batch(0, &["test_a", "test_b"], token.clone());
         assert!(token.is_cancelled());
     }
 
     #[test]
     fn test_registry_counter_reaches_zero_cancels() {
-        let decided = DecidedFlags::new(3);
         let mut registry = IncompleteTestsRegistry::new();
         let token = CancellationToken::new();
 
-        registry.register(0, &[0, 1, 2], token.clone(), &decided);
+        registry.register(0, &[0, 1, 2], token.clone());
         assert!(!token.is_cancelled());
 
         registry.notify_decided(0);
