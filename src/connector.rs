@@ -189,13 +189,11 @@ impl Default for ShellConnector {
 }
 
 impl ShellConnector {
-    /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
+    /// Spawns a command and returns its output stream along with the raw PID.
     ///
-    /// The guard kills the child process when dropped, preventing orphaned processes.
-    pub async fn run_stream_with_guard(
-        &self,
-        command: &str,
-    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
+    /// This is the shared implementation behind both [`Connector::run_stream`] and
+    /// [`run_stream_with_guard`](Self::run_stream_with_guard).
+    async fn spawn_stream(&self, command: &str) -> ProviderResult<(OutputStream, u32)> {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
@@ -244,10 +242,18 @@ impl ShellConnector {
             OutputLine::ExitCode(exit_code)
         });
 
-        Ok((
-            Box::pin(combined.chain(exit_stream)),
-            ChildProcessGuard::new(pid),
-        ))
+        Ok((Box::pin(combined.chain(exit_stream)), pid))
+    }
+
+    /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
+    ///
+    /// The guard kills the child process when dropped, preventing orphaned processes.
+    pub async fn run_stream_with_guard(
+        &self,
+        command: &str,
+    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
+        let (stream, pid) = self.spawn_stream(command).await?;
+        Ok((stream, ChildProcessGuard::new(pid)))
     }
 }
 
@@ -332,55 +338,8 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        // Expand @filename.ext references to full paths
-        let expanded_command = bundled::expand_command(command)
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
-
-        debug!("Streaming: {}", expanded_command);
-
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", &expanded_command]);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        if let Some(dir) = &self.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
-
-        let stdout_reader = BufReader::new(stdout);
-        let stderr_reader = BufReader::new(stderr);
-
-        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
-            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
-
-        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
-            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
-
-        let combined = futures::stream::select(stdout_stream, stderr_stream);
-
-        // After stdout/stderr close, wait for child and yield exit code
-        let exit_stream = futures::stream::once(async move {
-            let exit_code = match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            OutputLine::ExitCode(exit_code)
-        });
-
-        Ok(Box::pin(combined.chain(exit_stream)))
+        let (stream, _pid) = self.spawn_stream(command).await?;
+        Ok(stream)
     }
 }
 
