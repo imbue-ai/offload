@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -12,22 +14,24 @@ use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
 /// RAII guard that kills a child process on drop.
 ///
-/// When a `ChildProcessGuard` is dropped, it sends SIGKILL to the tracked PID.
-/// This ensures orphaned child processes are cleaned up automatically.
+/// When a `ChildProcessGuard` is dropped, it sends SIGKILL to the tracked PID,
+/// but only if the child has not already exited. This prevents killing an
+/// unrelated process if the OS has reused the PID.
 pub struct ChildProcessGuard {
     pid: u32,
+    exited: Arc<AtomicBool>,
 }
 
 impl ChildProcessGuard {
     /// Creates a new guard for the given process ID.
-    pub fn new(pid: u32) -> Self {
-        Self { pid }
+    pub fn new(pid: u32, exited: Arc<AtomicBool>) -> Self {
+        Self { pid, exited }
     }
 }
 
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
-        if self.pid != 0 {
+        if self.pid != 0 && !self.exited.load(Ordering::Acquire) {
             // Best-effort kill -- ignore errors (process may have already exited)
             let _ = std::process::Command::new("kill")
                 .args(["-9", &self.pid.to_string()])
@@ -193,7 +197,10 @@ impl ShellConnector {
     ///
     /// This is the shared implementation behind both [`Connector::run_stream`] and
     /// [`run_stream_with_guard`](Self::run_stream_with_guard).
-    async fn spawn_stream(&self, command: &str) -> ProviderResult<(OutputStream, u32)> {
+    async fn spawn_stream(
+        &self,
+        command: &str,
+    ) -> ProviderResult<(OutputStream, u32, Arc<AtomicBool>)> {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
@@ -234,15 +241,19 @@ impl ShellConnector {
 
         let combined = futures::stream::select(stdout_stream, stderr_stream);
 
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_clone = Arc::clone(&exited);
+
         let exit_stream = futures::stream::once(async move {
             let exit_code = match child.wait().await {
                 Ok(status) => status.code().unwrap_or(-1),
                 Err(_) => -1,
             };
+            exited_clone.store(true, Ordering::Release);
             OutputLine::ExitCode(exit_code)
         });
 
-        Ok((Box::pin(combined.chain(exit_stream)), pid))
+        Ok((Box::pin(combined.chain(exit_stream)), pid, exited))
     }
 
     /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
@@ -252,8 +263,8 @@ impl ShellConnector {
         &self,
         command: &str,
     ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
-        let (stream, pid) = self.spawn_stream(command).await?;
-        Ok((stream, ChildProcessGuard::new(pid)))
+        let (stream, pid, exited) = self.spawn_stream(command).await?;
+        Ok((stream, ChildProcessGuard::new(pid, exited)))
     }
 }
 
@@ -338,7 +349,7 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        let (stream, _pid) = self.spawn_stream(command).await?;
+        let (stream, _pid, _exited) = self.spawn_stream(command).await?;
         Ok(stream)
     }
 }
