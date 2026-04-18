@@ -201,7 +201,6 @@ impl SandboxProvider for DefaultProvider {
             env,
             created_at: Instant::now(),
             cpu_cores,
-            child_guards: Vec::new(),
         })
     }
 
@@ -270,8 +269,6 @@ pub struct DefaultSandbox {
     env: Vec<(String, String)>,
     created_at: Instant,
     cpu_cores: f64,
-    /// RAII guards for child processes spawned by `exec_stream`, killed on drop.
-    child_guards: Vec<ChildProcessGuard>,
 }
 
 impl DefaultSandbox {
@@ -297,7 +294,6 @@ impl DefaultSandbox {
             env,
             created_at,
             cpu_cores,
-            child_guards: Vec::new(),
         }
     }
 
@@ -372,12 +368,13 @@ impl Sandbox for DefaultSandbox {
         &self.id
     }
 
-    async fn exec_stream(&mut self, cmd: &Command) -> ProviderResult<OutputStream> {
+    async fn exec_stream(
+        &mut self,
+        cmd: &Command,
+    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
-        let (stream, guard) = self.connector.run_stream_with_guard(&shell_cmd).await?;
-        self.child_guards.push(guard);
-        Ok(stream)
+        self.connector.run_stream_with_guard(&shell_cmd).await
     }
 
     async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
@@ -415,11 +412,7 @@ impl Sandbox for DefaultSandbox {
         }
     }
 
-    async fn terminate(mut self) -> ProviderResult<()> {
-        // Kill tracked child processes by dropping their guards
-        // explicitly before the destroy command runs
-        self.child_guards.clear();
-
+    async fn terminate(self) -> ProviderResult<()> {
         let shell_cmd = self.build_destroy_command();
         debug!("Terminating sandbox {}", self.id);
 
@@ -458,7 +451,6 @@ mod tests {
             env,
             created_at: Instant::now(),
             cpu_cores: 1.0,
-            child_guards: Vec::new(),
         }
     }
 
@@ -727,7 +719,6 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 2.0,
-            child_guards: Vec::new(),
         };
 
         let cost = sandbox.cost_estimate();
@@ -757,7 +748,6 @@ mod tests {
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 0.125,
-            child_guards: Vec::new(),
         };
 
         let cost = sandbox.cost_estimate();
@@ -842,7 +832,7 @@ mod tests {
             test_content
         ));
 
-        let mut stream = sandbox.exec_stream(&write_cmd).await?;
+        let (mut stream, _guard) = sandbox.exec_stream(&write_cmd).await?;
         while stream.next().await.is_some() {}
 
         // Download the file

@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,23 +10,40 @@ use tracing::debug;
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
-/// RAII guard that kills a child process on drop.
+/// RAII guard that owns a child process handle.
 ///
-/// Holds an `Arc` to the [`tokio::process::Child`] handle, so `start_kill()`
-/// is race-free even if the PID has been reused by the OS.
+/// Calls `start_kill()` on drop to prevent orphaned processes.
+/// The caller should call [`wait()`](Self::wait) to get the exit code.
 pub struct ChildProcessGuard {
-    child: Arc<tokio::sync::Mutex<tokio::process::Child>>,
+    child: Option<tokio::process::Child>,
 }
 
 impl ChildProcessGuard {
-    pub fn new(child: Arc<tokio::sync::Mutex<tokio::process::Child>>) -> Self {
-        Self { child }
+    /// Creates a guard that owns the given child process.
+    pub fn new(child: tokio::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    /// Creates a no-op guard (for sandboxes that don't spawn local processes).
+    pub fn noop() -> Self {
+        Self { child: None }
+    }
+
+    /// Waits for the child process to exit and returns its exit code.
+    pub async fn wait(&mut self) -> i32 {
+        match &mut self.child {
+            Some(child) => match child.wait().await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -1,
+            },
+            None => 0,
+        }
     }
 }
 
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.try_lock() {
+        if let Some(child) = &mut self.child {
             let _ = child.start_kill();
         }
     }
@@ -186,14 +202,14 @@ impl Default for ShellConnector {
 }
 
 impl ShellConnector {
-    /// Spawns a command and returns its output stream along with the shared child handle.
+    /// Spawns a command and returns its stdout/stderr stream along with the child handle.
     ///
-    /// This is the shared implementation behind both [`Connector::run_stream`] and
-    /// [`run_stream_with_guard`](Self::run_stream_with_guard).
+    /// The returned stream yields only `Stdout` and `Stderr` lines. The caller
+    /// is responsible for obtaining the exit code from the child handle.
     async fn spawn_stream(
         &self,
         command: &str,
-    ) -> ProviderResult<(OutputStream, Arc<tokio::sync::Mutex<tokio::process::Child>>)> {
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
@@ -232,24 +248,14 @@ impl ShellConnector {
 
         let combined = futures::stream::select(stdout_stream, stderr_stream);
 
-        let child = Arc::new(tokio::sync::Mutex::new(child));
-        let child_for_stream = Arc::clone(&child);
-
-        let exit_stream = futures::stream::once(async move {
-            let mut child = child_for_stream.lock().await;
-            let exit_code = match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            OutputLine::ExitCode(exit_code)
-        });
-
-        Ok((Box::pin(combined.chain(exit_stream)), child))
+        Ok((Box::pin(combined), child))
     }
 
     /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
     ///
-    /// The guard kills the child process when dropped, preventing orphaned processes.
+    /// The guard owns the child process and kills it on drop, preventing orphaned
+    /// processes. Call [`ChildProcessGuard::wait()`] to obtain the exit code after
+    /// the stream is drained.
     pub async fn run_stream_with_guard(
         &self,
         command: &str,
@@ -340,8 +346,15 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        let (stream, _child) = self.spawn_stream(command).await?;
-        Ok(stream)
+        let (stream, mut child) = self.spawn_stream(command).await?;
+        let exit_stream = futures::stream::once(async move {
+            let exit_code = match child.wait().await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -1,
+            };
+            OutputLine::ExitCode(exit_code)
+        });
+        Ok(Box::pin(stream.chain(exit_stream)))
     }
 }
 

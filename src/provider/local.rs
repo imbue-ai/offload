@@ -8,8 +8,8 @@ use futures::stream::{self, StreamExt};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{
-    Command, CostEstimate, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
-    SandboxProvider,
+    ChildProcessGuard, Command, CostEstimate, OutputLine, OutputStream, ProviderError,
+    ProviderResult, Sandbox, SandboxProvider,
 };
 use crate::config::{LocalProviderConfig, SandboxConfig};
 
@@ -125,7 +125,10 @@ impl Sandbox for LocalSandbox {
         &self.id
     }
 
-    async fn exec_stream(&mut self, cmd: &Command) -> ProviderResult<OutputStream> {
+    async fn exec_stream(
+        &mut self,
+        cmd: &Command,
+    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
         let shell_cmd = cmd.to_shell_string();
 
         let mut process = tokio::process::Command::new(&self.shell);
@@ -172,8 +175,9 @@ impl Sandbox for LocalSandbox {
 
         // Merge stdout and stderr streams
         let combined = stream::select(stdout_stream, stderr_stream);
+        let guard = ChildProcessGuard::new(child);
 
-        Ok(Box::pin(combined))
+        Ok((Box::pin(combined), guard))
     }
 
     async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
