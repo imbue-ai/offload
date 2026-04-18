@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,28 +13,22 @@ use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
 /// RAII guard that kills a child process on drop.
 ///
-/// When a `ChildProcessGuard` is dropped, it sends SIGKILL to the tracked PID,
-/// but only if the child has not already exited. This prevents killing an
-/// unrelated process if the OS has reused the PID.
+/// Holds an `Arc` to the [`tokio::process::Child`] handle, so `start_kill()`
+/// is race-free even if the PID has been reused by the OS.
 pub struct ChildProcessGuard {
-    pid: u32,
-    exited: Arc<AtomicBool>,
+    child: Arc<tokio::sync::Mutex<tokio::process::Child>>,
 }
 
 impl ChildProcessGuard {
-    /// Creates a new guard for the given process ID.
-    pub fn new(pid: u32, exited: Arc<AtomicBool>) -> Self {
-        Self { pid, exited }
+    pub fn new(child: Arc<tokio::sync::Mutex<tokio::process::Child>>) -> Self {
+        Self { child }
     }
 }
 
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
-        if self.pid != 0 && !self.exited.load(Ordering::Acquire) {
-            // Best-effort kill -- ignore errors (process may have already exited)
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &self.pid.to_string()])
-                .output();
+        if let Ok(mut child) = self.child.try_lock() {
+            let _ = child.start_kill();
         }
     }
 }
@@ -193,14 +186,14 @@ impl Default for ShellConnector {
 }
 
 impl ShellConnector {
-    /// Spawns a command and returns its output stream along with the raw PID.
+    /// Spawns a command and returns its output stream along with the shared child handle.
     ///
     /// This is the shared implementation behind both [`Connector::run_stream`] and
     /// [`run_stream_with_guard`](Self::run_stream_with_guard).
     async fn spawn_stream(
         &self,
         command: &str,
-    ) -> ProviderResult<(OutputStream, u32, Arc<AtomicBool>)> {
+    ) -> ProviderResult<(OutputStream, Arc<tokio::sync::Mutex<tokio::process::Child>>)> {
         let expanded_command = bundled::expand_command(command)
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
 
@@ -218,8 +211,6 @@ impl ShellConnector {
         let mut child = cmd
             .spawn()
             .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
-
-        let pid = child.id().unwrap_or(0);
 
         let stdout = child
             .stdout
@@ -241,19 +232,19 @@ impl ShellConnector {
 
         let combined = futures::stream::select(stdout_stream, stderr_stream);
 
-        let exited = Arc::new(AtomicBool::new(false));
-        let exited_clone = Arc::clone(&exited);
+        let child = Arc::new(tokio::sync::Mutex::new(child));
+        let child_for_stream = Arc::clone(&child);
 
         let exit_stream = futures::stream::once(async move {
+            let mut child = child_for_stream.lock().await;
             let exit_code = match child.wait().await {
                 Ok(status) => status.code().unwrap_or(-1),
                 Err(_) => -1,
             };
-            exited_clone.store(true, Ordering::Release);
             OutputLine::ExitCode(exit_code)
         });
 
-        Ok((Box::pin(combined.chain(exit_stream)), pid, exited))
+        Ok((Box::pin(combined.chain(exit_stream)), child))
     }
 
     /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
@@ -263,8 +254,8 @@ impl ShellConnector {
         &self,
         command: &str,
     ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
-        let (stream, pid, exited) = self.spawn_stream(command).await?;
-        Ok((stream, ChildProcessGuard::new(pid, exited)))
+        let (stream, child) = self.spawn_stream(command).await?;
+        Ok((stream, ChildProcessGuard::new(child)))
     }
 }
 
@@ -349,7 +340,7 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        let (stream, _pid, _exited) = self.spawn_stream(command).await?;
+        let (stream, _child) = self.spawn_stream(command).await?;
         Ok(stream)
     }
 }
