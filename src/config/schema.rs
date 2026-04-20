@@ -607,6 +607,13 @@ pub struct ReportConfig {
     /// Default: `[]` (no additional downloads)
     #[serde(default)]
     pub download_globs: Vec<String>,
+
+    /// When true, only download artifacts matching `download_globs` for
+    /// batches that had test failures or errors.
+    ///
+    /// Default: `false` (download for all batches)
+    #[serde(default)]
+    pub download_globs_failure_only: bool,
 }
 
 fn default_report_dir() -> PathBuf {
@@ -1071,6 +1078,60 @@ mod tests {
 
         let config: Config = toml::from_str(toml_str)?;
         assert!(config.report.download_globs.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_download_globs_failure_only_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+
+            [report]
+            download_globs = ["*.xml"]
+            download_globs_failure_only = true
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(config.report.download_globs_failure_only);
+
+        // Round-trip through serialization
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        assert!(round_tripped.report.download_globs_failure_only);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_download_globs_failure_only_defaults_to_false() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert!(!config.report.download_globs_failure_only);
 
         Ok(())
     }

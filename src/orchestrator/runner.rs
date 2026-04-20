@@ -47,6 +47,8 @@ pub struct ArtifactConfig {
     pub globs: Vec<String>,
     /// Base output directory for downloaded artifacts.
     pub output_dir: std::path::PathBuf,
+    /// When true, only download artifacts when the batch had failures.
+    pub on_failure_only: bool,
 }
 
 /// Configuration shared across all runners in a single Offload run.
@@ -439,7 +441,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         drop(_io_span);
 
         // Download artifacts matching configured glob patterns
-        self.try_download_artifacts().await;
+        if !self.artifact_config.on_failure_only || batch_had_failures {
+            self.try_download_artifacts().await;
+        }
 
         if batch_had_failures {
             Ok(BatchOutcome::Failure)
