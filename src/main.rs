@@ -127,6 +127,31 @@ enum Commands {
         #[arg(long)]
         test_regex: Option<String>,
     },
+
+    /// History management commands
+    History {
+        #[command(subcommand)]
+        subcommand: HistoryCommands,
+    },
+}
+
+/// Subcommands for history management.
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Git merge driver for history files.
+    ///
+    /// Usage: offload history merge <base> <ours> <theirs>
+    ///
+    /// This implements the git merge driver protocol. The merged result
+    /// is written to the "ours" file.
+    Merge {
+        /// Base/ancestor version (%O)
+        base: PathBuf,
+        /// Our version (%A) - modified in place with merge result
+        ours: PathBuf,
+        /// Their version (%B)
+        theirs: PathBuf,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -182,6 +207,13 @@ async fn main() -> Result<()> {
             test,
             test_regex,
         } => show_logs(&cli.config, failures, errors, &test, test_regex.as_deref()),
+        Commands::History { subcommand } => match subcommand {
+            HistoryCommands::Merge { base, ours, theirs } => {
+                // Default reservoir size matches the history config default
+                offload::history::merge::merge_history_files(&base, &ours, &theirs, 20)?;
+                Ok(())
+            }
+        },
     }
 }
 

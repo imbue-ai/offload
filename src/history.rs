@@ -4,6 +4,7 @@
 //! including failure rates, duration percentiles, and recent run results.
 
 pub mod jsonl;
+pub mod merge;
 pub mod reservoir;
 pub mod store;
 
