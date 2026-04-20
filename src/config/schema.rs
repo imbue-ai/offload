@@ -27,6 +27,10 @@ pub struct Config {
     /// Report configuration for output generation (optional, has defaults).
     #[serde(default)]
     pub report: ReportConfig,
+
+    /// History configuration for cross-run test statistics (optional, has defaults).
+    #[serde(default)]
+    pub history: HistoryConfig,
 }
 
 /// Core offload execution settings.
@@ -595,6 +599,61 @@ fn default_report_dir() -> PathBuf {
     PathBuf::from("test-results")
 }
 
+/// Configuration for test history storage.
+///
+/// History is a cross-run concern that tracks test statistics over time,
+/// enabling better scheduling decisions and flakiness detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    /// Enable/disable history storage.
+    ///
+    /// When enabled, test results are recorded to a local file after each run.
+    /// This data is used for duration estimation and flakiness tracking.
+    ///
+    /// Default: `true`
+    #[serde(default = "default_history_enabled")]
+    pub enabled: bool,
+
+    /// Path to history file.
+    ///
+    /// The history file is stored in JSONL format and can be checked into
+    /// source control for sharing across team members.
+    ///
+    /// Default: `"offload-history.jsonl"`
+    #[serde(default = "default_history_path")]
+    pub path: PathBuf,
+
+    /// Reservoir size per outcome per test.
+    ///
+    /// Each test stores up to this many success samples and this many failure
+    /// samples. Larger values provide better statistical estimates but increase
+    /// file size.
+    ///
+    /// Default: `20`
+    #[serde(default = "default_reservoir_size")]
+    pub reservoir_size: usize,
+
+    /// Default duration estimate when no history available (seconds).
+    ///
+    /// Used as the final fallback in the scheduling chain when no test-specific
+    /// or group-average duration data is available.
+    ///
+    /// Default: `1.0`
+    #[serde(default = "default_duration_secs")]
+    pub default_duration_secs: f64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_history_enabled(),
+            path: default_history_path(),
+            reservoir_size: default_reservoir_size(),
+            default_duration_secs: default_duration_secs(),
+        }
+    }
+}
+
 fn default_junit() -> bool {
     true
 }
@@ -605,6 +664,22 @@ fn default_junit_file() -> String {
 
 fn default_retry_count() -> usize {
     0
+}
+
+fn default_history_enabled() -> bool {
+    true
+}
+
+fn default_history_path() -> PathBuf {
+    PathBuf::from("offload-history.jsonl")
+}
+
+fn default_reservoir_size() -> usize {
+    20
+}
+
+fn default_duration_secs() -> f64 {
+    1.0
 }
 
 /// Runtime configuration passed to sandbox creation.
@@ -723,6 +798,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 
@@ -752,6 +828,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 
@@ -784,6 +861,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 
@@ -955,6 +1033,7 @@ mod tests {
                 },
             )]),
             report: ReportConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 
@@ -1125,6 +1204,64 @@ mod tests {
             return Err("Expected Modal provider".into());
         }
 
+        Ok(())
+    }
+
+    /// Test that history config uses defaults when not specified.
+    #[test]
+    fn test_history_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(config.history.enabled);
+        assert_eq!(config.history.path, PathBuf::from("offload-history.jsonl"));
+        assert_eq!(config.history.reservoir_size, 20);
+        assert!((config.history.default_duration_secs - 1.0).abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    /// Test that history config can be customized.
+    #[test]
+    fn test_history_config_custom() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+enabled = false
+path = "custom-history.jsonl"
+reservoir_size = 50
+default_duration_secs = 2.5
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(!config.history.enabled);
+        assert_eq!(config.history.path, PathBuf::from("custom-history.jsonl"));
+        assert_eq!(config.history.reservoir_size, 50);
+        assert!((config.history.default_duration_secs - 2.5).abs() < f64::EPSILON);
         Ok(())
     }
 }

@@ -11,8 +11,8 @@ use tracing_subscriber::FmtSubscriber;
 
 use offload::config::{
     self, CargoFrameworkConfig, Config, DefaultFrameworkConfig, DefaultProviderConfig,
-    FrameworkConfig, GroupConfig, LocalProviderConfig, OffloadConfig, ProviderConfig,
-    PytestFrameworkConfig, ReportConfig, SandboxConfig, VitestFrameworkConfig,
+    FrameworkConfig, GroupConfig, HistoryConfig, LocalProviderConfig, OffloadConfig,
+    ProviderConfig, PytestFrameworkConfig, ReportConfig, SandboxConfig, VitestFrameworkConfig,
 };
 use offload::framework::{
     TestFramework, TestRecord, cargo::CargoFramework, default::DefaultFramework,
@@ -795,6 +795,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             },
         )]),
         report: ReportConfig::default(),
+        history: HistoryConfig::default(),
     };
 
     let toml_content = toml::to_string_pretty(&config)?;
