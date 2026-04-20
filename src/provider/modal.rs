@@ -111,7 +111,8 @@ impl ModalProvider {
     fn build_create_command(&self, image_id: &str) -> ProviderResult<String> {
         let mut cmd = format!(
             "uv run @modal_sandbox.py create --cpu {} {}",
-            self.cpu_cores, image_id
+            self.cpu_cores,
+            shell_words::quote(image_id)
         );
 
         if let Some(gb) = self.memory_gb {
