@@ -407,4 +407,57 @@ mod tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_child_process_guard_wait_returns_exit_code() {
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 42"])
+            .spawn()
+            .ok();
+        if let Some(child) = child {
+            let mut guard = ChildProcessGuard::new(child);
+            let code = guard.wait().await;
+            assert_eq!(code, 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_child_process_guard_wait_success() {
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", "echo hello"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .ok();
+        if let Some(child) = child {
+            let mut guard = ChildProcessGuard::new(child);
+            let code = guard.wait().await;
+            assert_eq!(code, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_child_process_guard_drop_kills_child() {
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", "sleep 60"])
+            .spawn()
+            .ok();
+        if let Some(child) = child {
+            let pid = child.id().unwrap_or(0);
+            if pid == 0 {
+                return;
+            }
+            let guard = ChildProcessGuard::new(child);
+            drop(guard);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status();
+            if let Ok(s) = status {
+                assert!(
+                    !s.success(),
+                    "Process {pid} should no longer be running after guard is dropped"
+                );
+            }
+        }
+    }
 }
