@@ -81,7 +81,7 @@ impl ModalProvider {
 
         if let Some(dockerfile) = &self.config.dockerfile {
             cmd.push(' ');
-            cmd.push_str(dockerfile);
+            cmd.push_str(&shell_words::quote(dockerfile));
         }
 
         if self.config.include_cwd {
@@ -89,15 +89,12 @@ impl ModalProvider {
         }
 
         for copy_spec in &self.config.copy_dirs {
-            cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+            cmd.push_str(&format!(" --copy-dir={}", shell_words::quote(copy_spec)));
         }
 
         for (local, remote) in copy_dirs {
-            cmd.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            ));
+            let spec = format!("{}:{}", local.display(), remote.display());
+            cmd.push_str(&format!(" --copy-dir={}", shell_words::quote(&spec)));
         }
 
         if let Some(init_cmd) = sandbox_init_cmd {
