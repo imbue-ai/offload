@@ -239,9 +239,9 @@ impl SandboxProvider for ModalProvider {
     ) -> ProviderResult<Option<String>> {
         let cmd = format!(
             "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            base_image_id,
-            patch_file.display(),
-            sandbox_project_root
+            shell_words::quote(base_image_id),
+            shell_words::quote(&patch_file.display().to_string()),
+            shell_words::quote(sandbox_project_root)
         );
         let image_id = run_prepare_command(&self.connector, &cmd, "Modal", discovery_done).await?;
         self.image_id = Some(image_id.clone());
