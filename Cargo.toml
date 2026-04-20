@@ -61,6 +61,9 @@ console = "0.15"
 # Retry
 backon = "1"
 
+# Random number generation
+rand = "0.9"
+
 # Utilities
 edit-distance = "2"
 uuid = { version = "1", features = ["v4"] }
