@@ -1,5 +1,4 @@
-//! Low-level git helpers used by [`crate::image_cache`] for checkpoint
-//! resolution, tree export, diff generation, and git-notes storage.
+//! Git operations for resolving and caching images via git notes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// Git notes ref used to store checkpoint image metadata.
+/// Git ref for the notes used to store cached image metadata.
 pub const NOTES_REF: &str = "refs/notes/offload-images";
 
 /// A cached image entry stored in a git note.
@@ -453,24 +452,12 @@ pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
 
 /// Find the nearest ancestor of HEAD that touches any of the given paths.
 ///
-/// Collapses the `ancestors()` + per-commit `commit_touches_paths()` loop into
-/// at most two git subprocess calls:
-///   1. `git log --format=%H -n 1 --full-history -m -- <paths>` — finds the SHA.
-///   2. `git rev-list --count <sha>..HEAD` — verifies it is within `max_depth`.
-///
 /// Returns `None` if no ancestor within the window touches any of the paths.
-pub async fn nearest_ancestor_touching(
-    repo: &Path,
-    paths: &[String],
-    max_depth: usize,
-) -> Result<Option<String>> {
+pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<Option<String>> {
     if paths.is_empty() {
         return Ok(None);
     }
 
-    // Single git-log call: let git's internal diff machinery walk history.
-    // --full-history: don't simplify away merge commits.
-    // -m:             diff merges against each parent (matches commit_touches_paths semantics).
     let mut args: Vec<String> = vec![
         "log".into(),
         "--format=%H".into(),
@@ -490,18 +477,7 @@ pub async fn nearest_ancestor_touching(
         return Ok(None);
     }
 
-    // Verify the found commit is within the ancestor window.
-    // rev-list --count SHA..HEAD = number of commits between SHA (exclusive) and HEAD (inclusive).
-    // SHA == HEAD → 0, SHA == HEAD~1 → 1, etc.  Must be < max_depth.
-    let range = format!("{sha}..HEAD");
-    let count_output = run_git(repo, &["rev-list", "--count", &range]).await?;
-    let depth: usize = count_output.trim().parse().unwrap_or(usize::MAX);
-
-    if depth < max_depth {
-        Ok(Some(sha.to_string()))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(sha.to_string()))
 }
 
 /// Convert a config path to a canonical repo-relative form.
@@ -927,24 +903,16 @@ mod tests {
         git_in(dir.path(), &["commit", "-m", "add test"])?;
 
         // Should find the Dockerfile commit (2 commits back)
-        let result =
-            nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()], 100).await?;
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
         assert_eq!(result.as_deref(), Some(dockerfile_sha.as_str()));
 
         // Should return None for a file never committed
         let result =
-            nearest_ancestor_touching(dir.path(), &["nonexistent.txt".to_string()], 100).await?;
+            nearest_ancestor_touching(dir.path(), &["nonexistent.txt".to_string()]).await?;
         assert!(result.is_none());
 
-        // Should return None when max_depth is too shallow
-        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()], 1).await?;
-        assert!(
-            result.is_none(),
-            "Dockerfile commit is 2 back, depth=1 too shallow"
-        );
-
         // Should return None for empty paths
-        let result = nearest_ancestor_touching(dir.path(), &[], 100).await?;
+        let result = nearest_ancestor_touching(dir.path(), &[]).await?;
         assert!(result.is_none());
 
         Ok(())

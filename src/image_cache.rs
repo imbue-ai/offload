@@ -77,25 +77,19 @@ pub async fn resolve_latest_commit(
 
 /// Checkpoint mode: find the nearest ancestor that touches any `build_inputs` file.
 ///
-/// Returns `None` if no such ancestor exists within `max_depth`.
+/// Returns `None` if no such ancestor exists.
 /// Skips the git-note lookup when `no_cache` is true.
 pub async fn resolve_checkpoint(
     repo: &Path,
     config_path: &str,
     checkpoint_cfg: &CheckpointConfig,
-    max_depth: usize,
     no_cache: bool,
 ) -> Result<Option<CheckpointInfo>> {
-    let checkpoint_sha = match git::nearest_ancestor_touching(
-        repo,
-        &checkpoint_cfg.build_inputs,
-        max_depth,
-    )
-    .await?
-    {
-        Some(sha) => sha,
-        None => return Ok(None),
-    };
+    let checkpoint_sha =
+        match git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs).await? {
+            Some(sha) => sha,
+            None => return Ok(None),
+        };
 
     let cached_image = if no_cache {
         None
@@ -208,7 +202,7 @@ pub async fn resolve_base(
     // Resolve (base_sha, cached_image, kind) — one call per mode.
     let result: Result<Option<(String, Option<CachedImage>, BaseKind)>> =
         if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
-            resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100, no_cache)
+            resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, no_cache)
                 .await
                 .map(|opt| {
                     opt.map(|info| (info.checkpoint_sha, info.cached_image, BaseKind::Checkpoint))
@@ -496,7 +490,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
     let short_head = &head[..8.min(head.len())];
 
     if let Some(ref checkpoint_cfg) = config.checkpoint {
-        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, 100, false)
+        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, false)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -700,7 +694,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -722,7 +716,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
 
         assert!(result.is_none(), "no commit touches Dockerfile");
         Ok(())
@@ -757,7 +751,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
