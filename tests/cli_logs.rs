@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use assert_cmd::Command;
 use offload::config::{
-    CargoFrameworkConfig, Config, FrameworkConfig, GroupConfig, LocalProviderConfig, OffloadConfig,
-    ProviderConfig, PytestFrameworkConfig, ReportConfig,
+    CargoFrameworkConfig, Config, FrameworkConfig, GroupConfig, HistoryConfig, LocalProviderConfig,
+    OffloadConfig, ProviderConfig, PytestFrameworkConfig, ReportConfig,
 };
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -35,6 +35,7 @@ fn write_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
             junit_file: "junit.xml".to_string(),
             download_globs: vec![],
         },
+        history: HistoryConfig::default(),
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
     fs::write(config_path, content).context("failed to write config")?;
@@ -410,6 +411,7 @@ fn write_cargo_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
             junit_file: "junit.xml".to_string(),
             download_globs: vec![],
         },
+        history: HistoryConfig::default(),
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
     fs::write(config_path, content).context("failed to write config")?;
