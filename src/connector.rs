@@ -88,9 +88,8 @@ pub trait Connector: Send + Sync {
     ///
     /// # Note
     ///
-    /// The stream does not provide the exit code. If you need the exit code,
-    /// use [`run`](Self::run) instead or check command output for success/failure
-    /// indicators.
+    /// The stream yields [`OutputLine::ExitCode`] as its last item after all
+    /// stdout/stderr lines have been emitted.
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream>;
 }
 
@@ -154,20 +153,16 @@ impl ShellConnector {
         self.timeout_secs = secs;
         self
     }
-}
 
-impl Default for ShellConnector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ShellConnector {
     /// Spawns a command and returns its stdout/stderr stream along with the child handle.
     ///
     /// The returned stream yields only `Stdout` and `Stderr` lines. The caller
     /// is responsible for obtaining the exit code from the child handle.
-    async fn spawn_stream(
+    ///
+    /// The child has `kill_on_drop(true)` set, so dropping it kills the process
+    /// and prevents orphans. Call `child.wait().await` to obtain the exit status
+    /// after the stream is drained.
+    pub async fn run_stream_with_child(
         &self,
         command: &str,
     ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
@@ -212,17 +207,11 @@ impl ShellConnector {
 
         Ok((Box::pin(combined), child))
     }
+}
 
-    /// Like `Connector::run_stream` but also returns the child process handle.
-    ///
-    /// The child has `kill_on_drop(true)` set, so dropping it kills the process
-    /// and prevents orphans. Call `child.wait().await` to obtain the exit status
-    /// after the stream is drained.
-    pub async fn run_stream_with_child(
-        &self,
-        command: &str,
-    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
-        self.spawn_stream(command).await
+impl Default for ShellConnector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -307,7 +296,7 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        let (stream, mut child) = self.spawn_stream(command).await?;
+        let (stream, mut child) = self.run_stream_with_child(command).await?;
         let exit_stream = futures::stream::once(async move {
             let exit_code = match child.wait().await {
                 Ok(status) => status.code().unwrap_or(-1),
