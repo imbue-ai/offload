@@ -5,13 +5,15 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+use parking_lot::RwLock;
 use std::time::Duration;
 
 use indicatif::ProgressBar;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::framework::TestFramework;
@@ -33,8 +35,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub scheduler: &'a Scheduler,
     pub progress: &'a ProgressBar,
     pub total_tests_to_run: usize,
-    pub all_complete: Arc<AtomicBool>,
-    pub cancellation_token: CancellationToken,
+    /// Fires on fail-fast or all-complete. Cancels all workers.
+    pub global_cancel: CancellationToken,
     pub sandboxes_for_cleanup: Arc<Mutex<Vec<S>>>,
     pub junit_report: Arc<Mutex<MasterJunitReport>>,
     pub logs_dir: PathBuf,
@@ -43,7 +45,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub tracer: crate::trace::Tracer,
     pub sandbox_index: usize,
     pub fail_fast: bool,
-    pub tracker: Arc<Mutex<CompletionTracker>>,
+    pub tracker: Arc<RwLock<CompletionTracker>>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -57,7 +59,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
     loop {
         let batch = tokio::select! {
             batch = cfg.scheduler.pop() => batch,
-            () = cfg.cancellation_token.cancelled() => None,
+            () = cfg.global_cancel.cancelled() => None,
         };
         let Some(batch) = batch else {
             break;
@@ -71,28 +73,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             batch.tests.len()
         );
 
-        // Early exit if all tests have completed or fail-fast triggered
-        if cfg.all_complete.load(Ordering::SeqCst) || cfg.cancellation_token.is_cancelled() {
-            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
+        // Early exit if cancelled (fail-fast or all tests decided)
+        if cfg.global_cancel.is_cancelled() {
             info!(
                 "EARLY STOP: Skipping batch {} ({} tests) - cancelled",
                 batch_idx,
                 batch.tests.len()
             );
-            debug!("Skipped tests: {:?}", test_ids);
-
-            for suffix in ["stdout", "stderr"] {
-                let log_src = cfg.logs_dir.join(format!("batch-{}.{}", batch_idx, suffix));
-                if log_src.exists() {
-                    let log_dst = cfg
-                        .logs_dir
-                        .join(format!("batch-{}.{}.cancelled", batch_idx, suffix));
-                    if let Err(e) = std::fs::rename(&log_src, &log_dst) {
-                        warn!("Failed to rename batch log: {}", e);
-                    }
-                }
-            }
-
             if let Ok(mut cleanups) = cfg.sandboxes_for_cleanup.lock() {
                 cleanups.push(sandbox);
             } else {
@@ -101,19 +88,26 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             return;
         }
 
-        // Skip batches where all tests have a decided outcome (passed/flaky or retries exhausted)
-        if let Ok(tracker) = cfg.tracker.lock()
-            && batch.tests.iter().all(|t| tracker.is_decided(t.id()))
+        // Skip if all tests already decided (read lock — concurrent with other workers)
+        if cfg
+            .tracker
+            .read()
+            .all_decided_by_name(batch.tests.iter().map(|t| t.id()))
         {
-            let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
             info!(
-                "SKIP: Batch {} ({} tests) all already decided, skipping",
+                "SKIP: Batch {} ({} tests) all already decided",
                 batch_idx,
                 batch.tests.len()
             );
-            debug!("Skipped tests: {:?}", test_ids);
             continue;
         }
+
+        // Register per-batch cancellation token (write lock)
+        let batch_cancel = cfg.global_cancel.child_token();
+        let test_ids: Vec<_> = batch.tests.iter().map(|t| t.id()).collect();
+        cfg.tracker
+            .write()
+            .register_batch(batch_idx, &test_ids, batch_cancel.clone());
 
         let sandbox_pid = crate::trace::sandbox_pid(cfg.sandbox_index);
         let _batch_span = cfg
@@ -137,7 +131,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             parts_dir,
             junit_report: Arc::clone(&cfg.junit_report),
             tracker: Arc::clone(&cfg.tracker),
-            cancellation_token: cfg.cancellation_token.clone(),
             artifacts: ArtifactConfig {
                 globs: cfg.config.report.download_globs.clone(),
                 output_dir: cfg.config.report.output_dir.clone(),
@@ -187,12 +180,34 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Run tests, racing against cancellation
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
-        let outcome = tokio::select! {
-            result = cfg.scheduler.register_running_batch(&batch, runner.run_tests(&batch.tests)) => result,
-            () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
+        let outcome = {
+            let exec_fut = cfg
+                .scheduler
+                .register_running_batch(&batch, runner.run_tests(&batch.tests));
+            tokio::pin!(exec_fut);
+
+            // First await: race against per-batch child token
+            let first = tokio::select! {
+                result = &mut exec_fut => Some(result),
+                () = batch_cancel.cancelled() => None,
+            };
+
+            match first {
+                Some(result) => result,
+                None => {
+                    // Per-batch token fired — tests decided by other batches.
+                    // TODO: Return BatchOutcome::Cancelled here once validated,
+                    // to free the sandbox immediately.
+                    // Second await: still race against global token so we don't
+                    // block on a batch that will never finish.
+                    tokio::select! {
+                        result = exec_fut => result,
+                        () = cfg.global_cancel.cancelled() => Ok(BatchOutcome::Cancelled),
+                    }
+                }
+            }
         };
 
         info!(
@@ -226,31 +241,24 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             }
         }
 
-        // Handle outcome
-        match &outcome {
-            Ok(BatchOutcome::Success) | Ok(BatchOutcome::Failure) => {
-                // Fail-fast: cancel on first failure
-                if cfg.fail_fast
-                    && matches!(&outcome, Ok(BatchOutcome::Failure))
-                    && !cfg.cancellation_token.is_cancelled()
-                {
-                    info!(
-                        "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
-                        batch_idx
-                    );
-                    cfg.cancellation_token.cancel();
-                }
-            }
-            Ok(BatchOutcome::Cancelled) => {
-                debug!("Batch {} was cancelled", batch_idx);
-            }
-            Err(e) => {
-                error!("Batch execution error: {}", e);
-            }
+        // Fail-fast: cancel all on first failure
+        if cfg.fail_fast
+            && matches!(&outcome, Ok(BatchOutcome::Failure))
+            && !cfg.global_cancel.is_cancelled()
+        {
+            info!(
+                "FAIL-FAST: Batch {} had failures. Cancelling remaining batches.",
+                batch_idx
+            );
+            cfg.global_cancel.cancel();
+        }
+        if let Err(e) = &outcome {
+            error!("Batch execution error: {}", e);
         }
 
-        // Update progress from tracker (record_batch already called inside runner)
-        if let (Ok(report), Ok(tracker)) = (cfg.junit_report.lock(), cfg.tracker.lock()) {
+        // Update progress from tracker (newly_complete_tests already called inside runner)
+        if let Ok(report) = cfg.junit_report.lock() {
+            let tracker = cfg.tracker.read();
             let decided = tracker.decided_count();
             cfg.progress.set_position(decided as u64);
             let passed = report.passed_count();
@@ -265,14 +273,13 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 console::style(format!("awaiting: {awaiting}")).dim(),
             ));
 
-            // Early stop: all tests have a decided outcome
-            if tracker.all_complete() && !cfg.all_complete.load(Ordering::SeqCst) {
+            // Early stop: all tests decided — cancel remaining batches
+            if tracker.all_complete() && !cfg.global_cancel.is_cancelled() {
                 info!(
-                    "EARLY STOP TRIGGERED: All {} tests have completed after batch {} completed. Cancelling remaining batches.",
+                    "All {} tests decided after batch {}. Cancelling remaining batches.",
                     cfg.total_tests_to_run, batch_idx
                 );
-                cfg.all_complete.store(true, Ordering::SeqCst);
-                cfg.cancellation_token.cancel();
+                cfg.global_cancel.cancel();
             }
         }
         drop(_batch_span);

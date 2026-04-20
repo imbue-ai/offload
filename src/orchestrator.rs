@@ -7,7 +7,6 @@ pub mod spawn;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -338,13 +337,24 @@ where
             total_tests_to_run,
             self.config.framework.test_id_format(),
         )));
-        let mut tracker = completion::CompletionTracker::new(total_tests_to_run);
-        for test in tests {
-            tracker.register_retries(&test.id, test.retry_count + 1);
-        }
-        let tracker = Arc::new(std::sync::Mutex::new(tracker));
-        let all_complete = Arc::new(AtomicBool::new(false));
-        let cancellation_token = CancellationToken::new();
+        // Build TestToIdxMap first (CompletionTracker needs it).
+        // IndexSet deduplicates automatically.
+        let test_to_idx: completion::TestToIdxMap = tests.iter().map(|t| t.id.clone()).collect();
+        let max_attempts: Vec<usize> = test_to_idx
+            .iter()
+            .map(|id| {
+                tests
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .map(|t| t.retry_count + 1)
+                    .unwrap_or(1)
+            })
+            .collect();
+
+        let tracker =
+            completion::CompletionTracker::new(total_tests_to_run, test_to_idx, max_attempts);
+        let tracker = Arc::new(parking_lot::RwLock::new(tracker));
+        let global_cancel = CancellationToken::new();
 
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -398,8 +408,7 @@ where
                     scheduler: &scheduler,
                     progress: &progress,
                     total_tests_to_run,
-                    all_complete: Arc::clone(&all_complete),
-                    cancellation_token: cancellation_token.clone(),
+                    global_cancel: global_cancel.clone(),
                     sandboxes_for_cleanup: Arc::clone(&sandboxes_for_cleanup),
                     junit_report: Arc::clone(&junit_report),
                     logs_dir: logs_dir.clone(),

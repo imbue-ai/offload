@@ -1,15 +1,16 @@
 //! Test runner — executes test batches within a single sandbox.
 
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 use std::time::Duration;
 
 use anyhow::Result;
 use futures::StreamExt;
-use tokio::select;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::framework::{TestFramework, TestInstance};
-use crate::orchestrator::completion::SharedCompletionTracker;
+use crate::orchestrator::completion::CompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::SharedJunitReport;
@@ -54,8 +55,7 @@ pub struct RunnerConfig {
     pub fail_fast: bool,
     pub parts_dir: std::path::PathBuf,
     pub junit_report: SharedJunitReport,
-    pub tracker: SharedCompletionTracker,
-    pub cancellation_token: CancellationToken,
+    pub tracker: Arc<RwLock<CompletionTracker>>,
     pub artifacts: ArtifactConfig,
 }
 
@@ -74,7 +74,6 @@ pub struct TestRunner<'a, S, D> {
     framework: &'a D,
     timeout: Duration,
     output_callback: Option<OutputCallback>,
-    cancellation_token: CancellationToken,
     /// Shared JUnit report for accumulating results across batches.
     junit_report: SharedJunitReport,
     /// Directory to save individual batch JUnit XMLs for debugging.
@@ -87,7 +86,7 @@ pub struct TestRunner<'a, S, D> {
     /// Configuration for downloading artifacts after batch execution.
     artifact_config: ArtifactConfig,
     /// Shared completion tracker for decided-outcome counting.
-    tracker: SharedCompletionTracker,
+    tracker: Arc<RwLock<CompletionTracker>>,
 }
 
 /// Build a `find` command string from glob patterns.
@@ -132,7 +131,6 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             framework,
             timeout,
             output_callback: None,
-            cancellation_token: config.cancellation_token,
             junit_report: config.junit_report,
             parts_dir: config.parts_dir,
             tracer,
@@ -186,12 +184,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Execute command with streaming, collecting output.
     ///
     /// The `output_id` is passed to the output callback to identify the source.
-    /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
-    ) -> Result<Option<crate::provider::ExecResult>> {
+    ) -> Result<crate::provider::ExecResult> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -199,30 +196,17 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let mut stream = self.sandbox.exec_stream(cmd).await?;
 
-        loop {
-            select! {
-                _ = self.cancellation_token.cancelled() => {
-                    debug!("Test execution cancelled (all tests passed)");
-                    return Ok(None);
-                }
-                line = stream.next() => {
-                    match line {
-                        Some(line) => {
-                            if let OutputLine::ExitCode(code) = &line {
-                                exit_code = Some(*code);
-                            }
-                            Self::process_output_line(
-                                &line,
-                                output_id,
-                                &mut stdout,
-                                &mut stderr,
-                                &mut self.output_callback,
-                            );
-                        }
-                        None => break, // Stream ended
-                    }
-                }
+        while let Some(line) = stream.next().await {
+            if let OutputLine::ExitCode(code) = &line {
+                exit_code = Some(*code);
             }
+            Self::process_output_line(
+                &line,
+                output_id,
+                &mut stdout,
+                &mut stderr,
+                &mut self.output_callback,
+            );
         }
 
         let exit_code = exit_code.unwrap_or_else(|| {
@@ -235,12 +219,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         });
 
-        Ok(Some(crate::provider::ExecResult {
+        Ok(crate::provider::ExecResult {
             exit_code,
             stdout,
             stderr,
             duration: start.elapsed(),
-        }))
+        })
     }
 
     /// Runs multiple tests in a batch.
@@ -320,17 +304,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_EXEC,
         );
-        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
-            Some(result) => result,
-            None => {
-                // Cancelled - return early without recording results
-                warn!(
-                    "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
-                    sandbox_id, expected_count
-                );
-                return Ok(BatchOutcome::Cancelled);
-            }
-        };
+        let exec_result = self.exec_with_streaming(&cmd, "batch").await?;
         drop(_exec_span);
 
         let duration = start.elapsed();
@@ -410,14 +384,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                             after - before
                         );
 
-                        // Update completion tracker immediately so progress
-                        // stays in sync with the report.
-                        if let Ok(mut t) = self.tracker.lock() {
-                            t.record_batch(
-                                &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                                |id| report.has_test_passed(id),
-                            );
-                        }
+                        // Record batch results (registry notification is internal)
+                        self.tracker.write().newly_complete_tests(
+                            &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            |id| report.has_test_passed(id),
+                        );
                     }
                     Err(e) => {
                         error!(
@@ -559,16 +530,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 
         let tar_cmd = crate::provider::Command::new("sh").arg("-c").arg(&pipeline);
 
-        match self.exec_with_streaming(&tar_cmd, "artifacts").await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                debug!("[ARTIFACTS] Sandbox {} cancelled", sandbox_id);
-                return;
-            }
-            Err(e) => {
-                warn!("[ARTIFACTS] Sandbox {} find+tar failed: {}", sandbox_id, e);
-                return;
-            }
+        if let Err(e) = self.exec_with_streaming(&tar_cmd, "artifacts").await {
+            warn!("[ARTIFACTS] Sandbox {} find+tar failed: {}", sandbox_id, e);
+            return;
         }
 
         // Download the single tar archive

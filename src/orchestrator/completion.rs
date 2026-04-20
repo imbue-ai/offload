@@ -4,76 +4,194 @@
 //! it has exhausted all retry attempts while still failing. The progress bar
 //! and cancellation logic both use [`CompletionTracker::decided_count`].
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 
-/// Shared completion tracker, protected by a mutex for concurrent access.
-pub type SharedCompletionTracker = Arc<Mutex<CompletionTracker>>;
+/// Maps string test IDs to contiguous numeric indices.
+pub type TestToIdxMap = indexmap::IndexSet<String>;
+
+/// Numeric index for a test within the [`TestToIdxMap`].
+pub type TestIdx = usize;
+
+/// Numeric index for a batch, assigned atomically by the orchestrator.
+pub type BatchIdx = usize;
 
 /// Tracks which tests have a decided outcome.
 ///
-/// Call [`record_batch`] after each batch returns to increment attempt counts
-/// and update the decided set.
+/// Call [`newly_complete_tests`] after each batch returns to increment attempt
+/// counts and update the decided set.
 pub struct CompletionTracker {
-    max_attempts: HashMap<String, usize>,
-    attempt_counts: HashMap<String, usize>,
-    decided: HashSet<String>,
+    index: TestToIdxMap,
+    max_attempts: Vec<usize>,
+    attempt_counts: Vec<usize>,
+    decided: Vec<bool>,
+    decided_count: usize,
     total_expected: usize,
+    incomplete: IncompleteTestsRegistry,
 }
 
 impl CompletionTracker {
-    pub fn new(total_expected: usize) -> Self {
+    /// `max_attempts` is indexed by test position in `index` and gives the
+    /// total number of attempts (1 = no retries).
+    pub fn new(total_expected: usize, index: TestToIdxMap, max_attempts: Vec<usize>) -> Self {
+        let len = index.len();
+        assert_eq!(max_attempts.len(), len);
         Self {
-            max_attempts: HashMap::new(),
-            attempt_counts: HashMap::new(),
-            decided: HashSet::new(),
+            index,
+            max_attempts,
+            attempt_counts: vec![0; len],
+            decided: vec![false; len],
+            decided_count: 0,
             total_expected,
+            incomplete: IncompleteTestsRegistry::new(),
         }
-    }
-
-    /// Registers the maximum number of attempts for a test.
-    pub fn register_retries(&mut self, test_id: &str, max_attempts: usize) {
-        self.max_attempts.insert(test_id.to_string(), max_attempts);
     }
 
     /// Records one attempt for each test in the batch and updates decided set.
     ///
     /// `is_passed` should return true if the test has passed or is flaky.
-    pub fn record_batch(&mut self, test_ids: &[&str], is_passed: impl Fn(&str) -> bool) {
+    /// Returns the numeric indices of tests that became newly decided.
+    /// Also notifies the internal [`IncompleteTestsRegistry`] so that
+    /// per-batch cancellation tokens fire when all tests are decided.
+    pub fn newly_complete_tests(
+        &mut self,
+        test_ids: &[&str],
+        is_passed: impl Fn(&str) -> bool,
+    ) -> Vec<TestIdx> {
+        let mut newly_decided = Vec::new();
         for &test_id in test_ids {
-            if self.decided.contains(test_id) {
+            let Some(num_id) = self.index.get_index_of(test_id) else {
+                continue;
+            };
+            if self.decided[num_id] {
                 continue;
             }
 
-            *self.attempt_counts.entry(test_id.to_string()).or_insert(0) += 1;
+            self.attempt_counts[num_id] += 1;
 
-            let decided = if is_passed(test_id) {
+            let is_now_decided = if is_passed(test_id) {
                 true
             } else {
-                let attempts = self.attempt_counts[test_id];
-                let max = self.max_attempts.get(test_id).copied().unwrap_or(1);
-                attempts >= max
+                self.attempt_counts[num_id] >= self.max_attempts[num_id]
             };
 
-            if decided {
-                self.decided.insert(test_id.to_string());
+            if is_now_decided {
+                self.decided[num_id] = true;
+                self.decided_count += 1;
+                newly_decided.push(num_id);
             }
         }
+        for &num_id in &newly_decided {
+            self.incomplete.notify_decided(num_id);
+        }
+        newly_decided
     }
 
-    /// Returns true if this test has a decided outcome.
-    pub fn is_decided(&self, test_id: &str) -> bool {
-        self.decided.contains(test_id)
+    /// Registers a running batch for per-batch cancellation.
+    ///
+    /// Already-decided tests are filtered out. If all tests are already
+    /// decided, the token is cancelled immediately.
+    pub fn register_batch(
+        &mut self,
+        batch_idx: BatchIdx,
+        test_ids: &[&str],
+        token: CancellationToken,
+    ) {
+        let undecided: Vec<TestIdx> = test_ids
+            .iter()
+            .filter_map(|id| self.index.get_index_of(*id))
+            .filter(|&idx| !self.decided[idx])
+            .collect();
+
+        if undecided.is_empty() {
+            token.cancel();
+            return;
+        }
+
+        self.incomplete.register(batch_idx, &undecided, token);
+    }
+
+    /// Returns true if every named test has a decided outcome.
+    pub fn all_decided_by_name<'a>(&self, mut test_ids: impl Iterator<Item = &'a str>) -> bool {
+        test_ids.all(|id| {
+            self.index
+                .get_index_of(id)
+                .is_some_and(|idx| self.decided[idx])
+        })
     }
 
     /// Number of tests with a decided outcome.
     pub fn decided_count(&self) -> usize {
-        self.decided.len()
+        self.decided_count
     }
 
     /// True when every expected test has a decided outcome.
     pub fn all_complete(&self) -> bool {
-        self.decided_count() == self.total_expected
+        self.decided_count == self.total_expected
+    }
+}
+
+/// Tracks incomplete tests per batch for per-batch cancellation.
+///
+/// Each batch has a remaining count of undecided tests and a cancellation
+/// token. When `notify_decided` decrements the count to zero, the token
+/// is cancelled so the sandbox can be reclaimed early.
+struct BatchEntry {
+    remaining: usize,
+    token: CancellationToken,
+}
+
+struct IncompleteTestsRegistry {
+    /// Indexed by batch index. Grows on demand as batches are registered.
+    batches: Vec<Option<BatchEntry>>,
+    /// Indexed by test index. Each slot holds the batches containing that test.
+    test_to_batches: Vec<Vec<BatchIdx>>,
+}
+
+impl IncompleteTestsRegistry {
+    fn new() -> Self {
+        Self {
+            batches: Vec::new(),
+            test_to_batches: Vec::new(),
+        }
+    }
+
+    fn register(
+        &mut self,
+        batch_idx: BatchIdx,
+        undecided_ids: &[TestIdx],
+        token: CancellationToken,
+    ) {
+        if batch_idx >= self.batches.len() {
+            self.batches.resize_with(batch_idx + 1, || None);
+        }
+        self.batches[batch_idx] = Some(BatchEntry {
+            remaining: undecided_ids.len(),
+            token,
+        });
+        for &test_id in undecided_ids {
+            if test_id >= self.test_to_batches.len() {
+                self.test_to_batches.resize_with(test_id + 1, Vec::new);
+            }
+            self.test_to_batches[test_id].push(batch_idx);
+        }
+    }
+
+    fn notify_decided(&mut self, test_idx: TestIdx) {
+        if test_idx >= self.test_to_batches.len() {
+            return;
+        }
+        for batch_idx in std::mem::take(&mut self.test_to_batches[test_idx]) {
+            if let Some(entry) = self.batches[batch_idx].as_mut() {
+                entry.remaining = entry.remaining.saturating_sub(1);
+                if entry.remaining == 0 {
+                    tracing::info!(
+                        "PER-BATCH CANCEL: Batch {} all tests decided, cancelling",
+                        batch_idx,
+                    );
+                    entry.token.cancel();
+                }
+            }
+        }
     }
 }
 
@@ -81,13 +199,16 @@ impl CompletionTracker {
 mod tests {
     use super::*;
 
+    fn test_to_idx(ids: &[&str]) -> TestToIdxMap {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn test_all_passed_immediately_decided() {
-        let mut tracker = CompletionTracker::new(2);
-        tracker.register_retries("test_a", 3);
-        tracker.register_retries("test_b", 3);
+        let index = test_to_idx(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index, vec![3, 3]);
 
-        tracker.record_batch(&["test_a", "test_b"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);
 
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
@@ -95,12 +216,11 @@ mod tests {
 
     #[test]
     fn test_failure_with_retries_remaining() {
-        let mut tracker = CompletionTracker::new(2);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 3);
+        let index = test_to_idx(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 3]);
 
         // test_a passes, test_b fails (has retries remaining)
-        tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -108,27 +228,25 @@ mod tests {
 
     #[test]
     fn test_failure_retries_exhausted() {
-        let mut tracker = CompletionTracker::new(2);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 2);
+        let index = test_to_idx(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 2]);
 
         // Attempt 1: test_a passes, test_b fails
-        tracker.record_batch(&["test_a", "test_b"], |id| id == "test_a");
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |id| id == "test_a");
         assert_eq!(tracker.decided_count(), 1);
 
         // Attempt 2: test_b fails again, retries exhausted
-        tracker.record_batch(&["test_b"], |_| false);
+        let _ = tracker.newly_complete_tests(&["test_b"], |_| false);
         assert_eq!(tracker.decided_count(), 2);
         assert!(tracker.all_complete());
     }
 
     #[test]
     fn test_missing_test_not_complete() {
-        let mut tracker = CompletionTracker::new(2);
-        tracker.register_retries("test_a", 1);
-        tracker.register_retries("test_b", 1);
+        let index = test_to_idx(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 1]);
 
-        tracker.record_batch(&["test_a"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
 
         assert_eq!(tracker.decided_count(), 1);
         assert!(!tracker.all_complete());
@@ -136,12 +254,73 @@ mod tests {
 
     #[test]
     fn test_already_decided_not_double_counted() {
-        let mut tracker = CompletionTracker::new(1);
-        tracker.register_retries("test_a", 1);
+        let index = test_to_idx(&["test_a"]);
+        let mut tracker = CompletionTracker::new(1, index, vec![1]);
 
-        tracker.record_batch(&["test_a"], |_| true);
-        tracker.record_batch(&["test_a"], |_| true); // duplicate
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true);
+        let _ = tracker.newly_complete_tests(&["test_a"], |_| true); // duplicate
 
         assert_eq!(tracker.decided_count(), 1);
+    }
+
+    // --- IncompleteTestsRegistry tests ---
+
+    #[test]
+    fn test_registry_cancel_when_all_decided() {
+        let mut registry = IncompleteTestsRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone());
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(0);
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(1);
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn test_registry_no_cancel_when_partial() {
+        let mut registry = IncompleteTestsRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1], token.clone());
+
+        registry.notify_decided(0);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn test_register_batch_all_already_decided_cancels_immediately() {
+        let index = test_to_idx(&["test_a", "test_b"]);
+        let mut tracker = CompletionTracker::new(2, index, vec![1, 1]);
+
+        // Decide all tests
+        let _ = tracker.newly_complete_tests(&["test_a", "test_b"], |_| true);
+
+        // Register a batch for already-decided tests
+        let token = CancellationToken::new();
+        tracker.register_batch(0, &["test_a", "test_b"], token.clone());
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn test_registry_counter_reaches_zero_cancels() {
+        let mut registry = IncompleteTestsRegistry::new();
+        let token = CancellationToken::new();
+
+        registry.register(0, &[0, 1, 2], token.clone());
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(0);
+        assert!(!token.is_cancelled());
+
+        registry.notify_decided(1);
+        assert!(!token.is_cancelled());
+
+        // Counter reaches zero, token is cancelled
+        registry.notify_decided(2);
+        assert!(token.is_cancelled());
     }
 }
