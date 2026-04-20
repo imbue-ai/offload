@@ -5,6 +5,7 @@
 
 pub mod jsonl;
 pub mod reservoir;
+pub mod store;
 
 use std::time::Duration;
 
