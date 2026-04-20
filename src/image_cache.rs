@@ -1,8 +1,17 @@
-//! Image cache resolution and orchestration for sandbox image caching via git notes.
+//! Image caching for sandbox environments.
 //!
-//! This module resolves checkpoint commits and their cached images by reading
-//! git notes, resolves base commits for the caching pipeline, and writes
-//! cache notes after image builds.
+//! Building sandbox images is expensive.  This module speeds up repeated builds
+//! by identifying a **base commit** — a prior commit whose image we can build
+//! and cache — then applying only a thin diff on top.
+//!
+//! Two caching modes:
+//!
+//! - **Checkpoint** (`[checkpoint]` with `build_inputs` in config): the base
+//!   commit is the nearest ancestor that touches any `build_inputs` file.
+//! - **Latest-commit** (no `[checkpoint]`): the base commit is HEAD itself.
+//!
+//! Cached image IDs are stored as git notes (`refs/notes/offload-images`) so
+//! they travel with the repo and are shared across machines.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,35 +27,30 @@ use crate::provider::SandboxProvider;
 use crate::trace::Tracer;
 use crate::with_retry;
 
-/// A cached image entry found in a git note for a checkpoint commit.
+/// A provider-specific opaque image identifier read from a git note.
 #[derive(Debug, Clone)]
 pub struct CachedImage {
-    /// The cached image identifier.
     pub image_id: String,
 }
 
-/// Information about a resolved checkpoint commit.
+/// Result of checkpoint-mode resolution: the base commit and its cached image (if any).
 #[derive(Debug, Clone)]
 pub struct CheckpointInfo {
-    /// The SHA of the checkpoint commit.
     pub checkpoint_sha: String,
-    /// The cached image for this checkpoint, if one exists in git notes.
     pub cached_image: Option<CachedImage>,
 }
 
-/// Information about a resolved latest-commit base.
+/// Result of latest-commit-mode resolution: HEAD and its cached image (if any).
 #[derive(Debug, Clone)]
 pub struct LatestCommitInfo {
-    /// The SHA of the latest commit (HEAD).
     pub head_sha: String,
-    /// The cached image for this commit, if one exists in git notes.
     pub cached_image: Option<CachedImage>,
 }
 
-/// In non-checkpoint mode: resolve the latest commit (HEAD) and its cached image (if any).
+/// Latest-commit mode: use HEAD as the base commit.
 ///
-/// Returns `None` if there are no commits (empty repo).
-/// When `no_cache` is true the git-note read is skipped entirely.
+/// Returns `None` for an empty repo (no commits).
+/// Skips the git-note lookup when `no_cache` is true.
 pub async fn resolve_latest_commit(
     repo: &Path,
     config_path: &str,
@@ -71,10 +75,10 @@ pub async fn resolve_latest_commit(
     }))
 }
 
-/// Find the nearest checkpoint ancestor and its cached image information.
+/// Checkpoint mode: find the nearest ancestor that touches any `build_inputs` file.
 ///
-/// Returns `None` if no ancestor within `max_depth` touches any `build_inputs`.
-/// When `no_cache` is true the git-note read is skipped entirely.
+/// Returns `None` if no such ancestor exists within `max_depth`.
+/// Skips the git-note lookup when `no_cache` is true.
 pub async fn resolve_checkpoint(
     repo: &Path,
     config_path: &str,
@@ -107,7 +111,7 @@ pub async fn resolve_checkpoint(
     }))
 }
 
-/// Read the cached image entry from a git note for a specific commit and config key.
+/// Look up the cached image ID stored in a git note for `commit_sha`.
 async fn read_cached_image_for_commit(
     repo: &Path,
     commit_sha: &str,
@@ -129,11 +133,11 @@ async fn read_cached_image_for_commit(
     }
 }
 
-/// How the base commit was determined.
+/// Which caching mode determined the base commit.
 pub enum BaseKind {
-    /// Nearest ancestor touching `build_inputs` (from `[checkpoint]` config).
+    /// Base is the nearest ancestor touching a `build_inputs` file.
     Checkpoint,
-    /// Latest commit (HEAD).
+    /// Base is HEAD (no `build_inputs` configured).
     LatestCommit,
 }
 
@@ -146,14 +150,14 @@ impl fmt::Display for BaseKind {
     }
 }
 
-/// Pre-resolved base commit and its cached image, determined before provider dispatch.
+/// The base commit (and optional cached image) chosen before provider dispatch.
 pub struct ResolvedBase {
     pub base_sha: String,
     pub cached_image_id: Option<String>,
     pub kind: BaseKind,
 }
 
-/// Context for the image cache prewarm pipeline.
+/// Inputs to [`run_prewarm_pipeline`].
 pub struct PrewarmContext<'a> {
     pub repo: &'a Path,
     pub config: &'a crate::config::Config,
@@ -164,23 +168,21 @@ pub struct PrewarmContext<'a> {
     pub discovery_done: &'a AtomicBool,
 }
 
-/// Outcome of the image cache prewarm pipeline.
+/// Result of [`run_prewarm_pipeline`].
 pub enum PrewarmOutcome {
-    /// An image was resolved (from cache hit + thin diff, or base build + thin diff).
+    /// A usable image was produced (cache hit + thin diff, or base build + thin diff).
     Resolved { image_id: String },
-    /// Prewarm could not produce an image. Caller should fall back to full build.
-    /// Contains the resolved base SHA (if any) so the caller can write a cache
-    /// note after a full build without re-resolving.
+    /// No image produced — caller should fall back to a full build.
+    /// Carries the base SHA (if resolved) so the caller can write a cache note
+    /// after building without re-resolving.
     CacheMiss { base_sha: Option<String> },
 }
 
-/// Resolve the base commit before provider dispatch.
+/// Pick the base commit and (optionally) its cached image before provider dispatch.
 ///
-/// When `no_cache` is false, fetches git notes and includes cached image IDs.
-/// When `no_cache` is true, resolves only the base SHA (no notes fetch/lookup).
-///
-/// Returns `None` if not in a git repo, if resolution fails (best-effort), or if
-/// there are no commits (non-checkpoint workflow).
+/// Selects checkpoint or latest-commit mode based on the config, then returns
+/// the base SHA and any cached image ID.  Best-effort: returns `None` on
+/// failure, outside a git repo, or when no base commit can be identified.
 pub async fn resolve_base(
     repo: &Path,
     config_path: &Path,
@@ -236,7 +238,7 @@ pub async fn resolve_base(
     }
 }
 
-/// Write a git note for an image on a specific commit (best-effort).
+/// Persist a cached image ID as a git note on `commit_sha` and push (best-effort).
 pub async fn write_note_for_commit(
     repo: &Path,
     commit_sha: &str,
@@ -281,14 +283,14 @@ pub async fn write_note_for_commit(
     }
 }
 
-/// Run the image cache prewarm pipeline (stages 1 and 2).
+/// Try to produce a sandbox image cheaply before falling back to a full build.
 ///
-/// Stage 1: If a cached image exists, generate a thin diff and build on top.
-/// Stage 2: If no cache, export the base tree, build a base image via
-///          `provider.prepare()`, write a cache note, then build a thin diff.
+/// 1. **Cache hit** — a cached base image exists: apply a thin diff on top.
+/// 2. **Cache miss** — no cached image: export the base tree, build a base
+///    image via the provider, write a cache note, then apply a thin diff.
 ///
-/// Returns `Resolved` if an image was produced, `CacheMiss` if the caller
-/// should fall through to a full build.
+/// Returns [`PrewarmOutcome::Resolved`] with a usable image, or
+/// [`PrewarmOutcome::CacheMiss`] if the caller must do a full build.
 pub async fn run_prewarm_pipeline<P: SandboxProvider>(
     provider: &mut P,
     ctx: &PrewarmContext<'_>,
@@ -418,9 +420,9 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
     }
 }
 
-/// Generate a checkpoint diff and build a thin-diff image via the provider.
-///
-/// Returns the final image ID on success, or a `ProviderError` on failure.
+/// Apply the diff between `checkpoint_sha` and the working tree on top of
+/// `base_image_id` to produce a new image.  Returns the base image unchanged
+/// when there is no diff.
 async fn try_thin_diff<P: SandboxProvider>(
     provider: &mut P,
     repo: &Path,
@@ -478,7 +480,7 @@ async fn try_thin_diff<P: SandboxProvider>(
     }
 }
 
-/// Show checkpoint/cache status for the current HEAD.
+/// Print a human-readable summary of the cache state for the current HEAD.
 pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> anyhow::Result<()> {
     let path = Path::new(config_path);
     let config = crate::config::load_config(path)

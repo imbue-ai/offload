@@ -1,4 +1,5 @@
-//! Git operations for checkpoint image caching via git notes.
+//! Low-level git helpers used by [`crate::image_cache`] for checkpoint
+//! resolution, tree export, diff generation, and git-notes storage.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
