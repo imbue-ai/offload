@@ -69,34 +69,20 @@ pub async fn resolve_latest_commit(
 
 /// Find the nearest checkpoint ancestor SHA without reading git notes.
 ///
-/// Walks up to `max_depth` ancestors of HEAD looking for the first commit
-/// that touches any of the configured `build_inputs` paths.
-///
-/// Returns `None` if no checkpoint commit is found within the ancestor window.
+/// Returns the SHA of the most recent ancestor of HEAD (within `max_depth`)
+/// that touches any of the configured `build_inputs` paths, or `None` if no
+/// such commit exists.
 pub async fn find_checkpoint_sha(
     repo: &Path,
     checkpoint_cfg: &CheckpointConfig,
     max_depth: usize,
 ) -> Result<Option<String>> {
-    let ancestors = git::ancestors(repo, max_depth).await?;
-
-    for sha in &ancestors {
-        let touches = git::commit_touches_paths(repo, sha, &checkpoint_cfg.build_inputs).await?;
-        if touches {
-            return Ok(Some(sha.clone()));
-        }
-    }
-
-    Ok(None)
+    git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs, max_depth).await
 }
 
 /// Find the nearest checkpoint ancestor and its cached image information.
 ///
-/// Walks up to `max_depth` ancestors of HEAD looking for the first commit
-/// that touches any of the configured `build_inputs` paths. If found, reads
-/// the git note for that commit to check for a cached image.
-///
-/// Returns `None` if no checkpoint commit is found within the ancestor window.
+/// Returns `None` if no ancestor within `max_depth` touches any `build_inputs`.
 /// Returns `Some(CheckpointInfo { cached_image: None })` if a checkpoint commit
 /// is found but has no cached image in git notes.
 pub async fn resolve_checkpoint(
@@ -105,25 +91,25 @@ pub async fn resolve_checkpoint(
     checkpoint_cfg: &CheckpointConfig,
     max_depth: usize,
 ) -> Result<Option<CheckpointInfo>> {
+    let checkpoint_sha = match git::nearest_ancestor_touching(
+        repo,
+        &checkpoint_cfg.build_inputs,
+        max_depth,
+    )
+    .await?
+    {
+        Some(sha) => sha,
+        None => return Ok(None),
+    };
+
     let repo_root = git::repo_root(repo).await?;
     let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-    let ancestors = git::ancestors(repo, max_depth).await?;
+    let cached_image = read_cached_image_for_commit(repo, &checkpoint_sha, &config_key).await?;
 
-    for sha in &ancestors {
-        let touches = git::commit_touches_paths(repo, sha, &checkpoint_cfg.build_inputs).await?;
-        if !touches {
-            continue;
-        }
-
-        // Found a checkpoint commit -- check for cached image
-        let cached_image = read_cached_image_for_commit(repo, sha, &config_key).await?;
-        return Ok(Some(CheckpointInfo {
-            checkpoint_sha: sha.clone(),
-            cached_image,
-        }));
-    }
-
-    Ok(None)
+    Ok(Some(CheckpointInfo {
+        checkpoint_sha,
+        cached_image,
+    }))
 }
 
 /// Read the cached image entry from a git note for a specific commit and config key.

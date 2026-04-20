@@ -450,6 +450,59 @@ pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
     Ok(output.lines().map(|s| s.to_string()).collect())
 }
 
+/// Find the nearest ancestor of HEAD that touches any of the given paths.
+///
+/// Collapses the `ancestors()` + per-commit `commit_touches_paths()` loop into
+/// at most two git subprocess calls:
+///   1. `git log --format=%H -n 1 --full-history -m -- <paths>` — finds the SHA.
+///   2. `git rev-list --count <sha>..HEAD` — verifies it is within `max_depth`.
+///
+/// Returns `None` if no ancestor within the window touches any of the paths.
+pub async fn nearest_ancestor_touching(
+    repo: &Path,
+    paths: &[String],
+    max_depth: usize,
+) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    // Single git-log call: let git's internal diff machinery walk history.
+    // --full-history: don't simplify away merge commits.
+    // -m:             diff merges against each parent (matches commit_touches_paths semantics).
+    let mut args: Vec<String> = vec![
+        "log".into(),
+        "--format=%H".into(),
+        "-n".into(),
+        "1".into(),
+        "--full-history".into(),
+        "-m".into(),
+        "--".into(),
+    ];
+    args.extend(paths.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let output = run_git(repo, &refs).await?;
+    let sha = output.trim();
+
+    if sha.is_empty() {
+        return Ok(None);
+    }
+
+    // Verify the found commit is within the ancestor window.
+    // rev-list --count SHA..HEAD = number of commits between SHA (exclusive) and HEAD (inclusive).
+    // SHA == HEAD → 0, SHA == HEAD~1 → 1, etc.  Must be < max_depth.
+    let range = format!("{sha}..HEAD");
+    let count_output = run_git(repo, &["rev-list", "--count", &range]).await?;
+    let depth: usize = count_output.trim().parse().unwrap_or(usize::MAX);
+
+    if depth < max_depth {
+        Ok(Some(sha.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Convert a config path to a canonical repo-relative form.
 ///
 /// Strips `./` prefix and makes the path relative to the repo root.
@@ -848,6 +901,51 @@ mod tests {
         let touches_b =
             commit_touches_paths(dir.path(), &merge_sha, &["file-b.txt".to_string()]).await?;
         assert!(touches_b);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nearest_ancestor_touching() -> Result<()> {
+        let dir = init_temp_repo()?;
+        // init_temp_repo creates one commit with README.md
+
+        // Commit 2: touches Dockerfile
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile"])?;
+        let dockerfile_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Commit 3: touches only app.py
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_in(dir.path(), &["add", "app.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add app"])?;
+
+        // Commit 4: touches only test.py
+        std::fs::write(dir.path().join("test.py"), "assert True")?;
+        git_in(dir.path(), &["add", "test.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add test"])?;
+
+        // Should find the Dockerfile commit (2 commits back)
+        let result =
+            nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()], 100).await?;
+        assert_eq!(result.as_deref(), Some(dockerfile_sha.as_str()));
+
+        // Should return None for a file never committed
+        let result =
+            nearest_ancestor_touching(dir.path(), &["nonexistent.txt".to_string()], 100).await?;
+        assert!(result.is_none());
+
+        // Should return None when max_depth is too shallow
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()], 1).await?;
+        assert!(
+            result.is_none(),
+            "Dockerfile commit is 2 back, depth=1 too shallow"
+        );
+
+        // Should return None for empty paths
+        let result = nearest_ancestor_touching(dir.path(), &[], 100).await?;
+        assert!(result.is_none());
+
         Ok(())
     }
 
