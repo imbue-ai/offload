@@ -152,6 +152,12 @@ enum HistoryCommands {
         /// Their version (%B)
         theirs: PathBuf,
     },
+
+    /// Configure git merge driver for history files.
+    ///
+    /// Updates .gitattributes and configures the merge driver in .git/config.
+    /// This enables automatic merging of offload-history.jsonl during git operations.
+    SetupMergeDriver,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -213,6 +219,7 @@ async fn main() -> Result<()> {
                 offload::history::merge::merge_history_files(&base, &ours, &theirs, 20)?;
                 Ok(())
             }
+            HistoryCommands::SetupMergeDriver => setup_merge_driver(),
         },
     }
 }
@@ -873,6 +880,71 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
     println!("Edit the configuration as needed, then run:");
     println!("  offload run");
 
+    Ok(())
+}
+
+/// Configure git merge driver for history files.
+///
+/// Updates .gitattributes and configures the merge driver in .git/config.
+fn setup_merge_driver() -> Result<()> {
+    // Check if .git directory exists
+    if !Path::new(".git").exists() {
+        anyhow::bail!("Not a git repository (no .git directory found)");
+    }
+
+    // Update .gitattributes
+    let gitattributes_line = "offload-history.jsonl merge=offload-history";
+    let gitattributes_path = Path::new(".gitattributes");
+
+    let needs_update = if gitattributes_path.exists() {
+        let contents =
+            std::fs::read_to_string(gitattributes_path).context("Failed to read .gitattributes")?;
+        !contents.contains(gitattributes_line)
+    } else {
+        true
+    };
+
+    if needs_update {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(gitattributes_path)
+            .context("Failed to open .gitattributes")?;
+        writeln!(file, "{}", gitattributes_line)?;
+        println!("Updated .gitattributes");
+    } else {
+        println!(".gitattributes already configured");
+    }
+
+    // Configure git merge driver using git config
+    let name_status = std::process::Command::new("git")
+        .args([
+            "config",
+            "merge.offload-history.name",
+            "Offload test history merger",
+        ])
+        .status()
+        .context("Failed to run git config for merge driver name")?;
+
+    if !name_status.success() {
+        anyhow::bail!("Failed to configure merge driver name");
+    }
+
+    let driver_status = std::process::Command::new("git")
+        .args([
+            "config",
+            "merge.offload-history.driver",
+            "offload history merge %O %A %B",
+        ])
+        .status()
+        .context("Failed to run git config for merge driver")?;
+
+    if !driver_status.success() {
+        anyhow::bail!("Failed to configure merge driver command");
+    }
+
+    println!("Git merge driver configured");
     Ok(())
 }
 
