@@ -15,37 +15,27 @@ use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 /// Calls `start_kill()` on drop to prevent orphaned processes.
 /// The caller should call [`wait()`](Self::wait) to get the exit code.
 pub struct ChildProcessGuard {
-    child: Option<tokio::process::Child>,
+    child: tokio::process::Child,
 }
 
 impl ChildProcessGuard {
     /// Creates a guard that owns the given child process.
     pub fn new(child: tokio::process::Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    /// Creates a no-op guard (for sandboxes that don't spawn local processes).
-    pub fn noop() -> Self {
-        Self { child: None }
+        Self { child }
     }
 
     /// Waits for the child process to exit and returns its exit code.
     pub async fn wait(&mut self) -> i32 {
-        match &mut self.child {
-            Some(child) => match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => -1,
-            },
-            None => 0,
+        match self.child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
         }
     }
 }
 
 impl Drop for ChildProcessGuard {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.start_kill();
-        }
+        let _ = self.child.start_kill();
     }
 }
 
