@@ -353,7 +353,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_IO,
         );
-        let batch_had_failures = match self.try_download_results(&result_path, unique_count).await {
+        let (junit_xml, batch_had_failures) = match self
+            .try_download_results(&result_path, unique_count)
+            .await
+        {
             Some((raw_content, _raw_count)) => {
                 info!(
                     "[BATCH RESULTS] Sandbox {} downloaded result file: total={}, unique={}, bytes={}",
@@ -391,44 +394,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     }
                 }
 
-                match self.junit_report.lock() {
-                    Ok(mut report) => {
-                        let before = report.total_count();
-                        let batch_ids: Vec<String> =
-                            tests.iter().map(|t| t.id().to_string()).collect();
-                        if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
-                            error!(
-                                "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
-                                sandbox_id, e
-                            );
-                            return Ok(BatchOutcome::Failure);
-                        }
-                        let after = report.total_count();
-                        info!(
-                            "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
-                            sandbox_id,
-                            before,
-                            after,
-                            after - before
-                        );
-
-                        // Update completion tracker immediately so progress
-                        // stays in sync with the report.
-                        if let Ok(mut t) = self.tracker.lock() {
-                            t.record_batch(
-                                &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                                |id| report.has_test_passed(id),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "[BATCH ERROR] Failed to lock junit report for {}: {}",
-                            sandbox_id, e
-                        );
-                    }
-                }
-                has_failures_in_xml(&junit_xml)
+                let batch_had_failures = has_failures_in_xml(&junit_xml);
+                (junit_xml, batch_had_failures)
             }
             None => {
                 return Err(anyhow::anyhow!(
@@ -443,6 +410,45 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         // Download artifacts matching configured glob patterns
         if !self.artifact_config.on_failure_only || batch_had_failures {
             self.try_download_artifacts().await;
+        }
+
+        // Bookkeeping: update the master JUnit report and completion tracker
+        // after artifacts have been downloaded.
+        let batch_ids: Vec<String> = tests.iter().map(|t| t.id().to_string()).collect();
+        match self.junit_report.lock() {
+            Ok(mut report) => {
+                let before = report.total_count();
+                if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
+                    error!(
+                        "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
+                        sandbox_id, e
+                    );
+                    return Ok(BatchOutcome::Failure);
+                }
+                let after = report.total_count();
+                info!(
+                    "[BATCH ADDED] Sandbox {} added to master report: before={}, after={}, delta={}",
+                    sandbox_id,
+                    before,
+                    after,
+                    after - before
+                );
+
+                // Update completion tracker immediately so progress
+                // stays in sync with the report.
+                if let Ok(mut t) = self.tracker.lock() {
+                    t.record_batch(
+                        &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                        |id| report.has_test_passed(id),
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    "[BATCH ERROR] Failed to lock junit report for {}: {}",
+                    sandbox_id, e
+                );
+            }
         }
 
         if batch_had_failures {
