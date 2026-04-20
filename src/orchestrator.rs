@@ -186,7 +186,9 @@ where
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
-        // Load test durations from previous junit.xml for LPT scheduling
+        // Load test durations for LPT scheduling
+        // When history is enabled and the file exists, use history-based durations.
+        // Otherwise fall back to junit.xml.
         let _dur_span = self.tracer.span(
             "duration_loading",
             "orchestrator",
@@ -198,7 +200,35 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path, self.config.framework.test_id_format());
+        let durations = if self.config.history.enabled {
+            let history = JsonlHistoryStore::load(
+                &self.config.history.path,
+                self.config.history.reservoir_size,
+                self.config.history.default_duration_secs,
+            )
+            .ok();
+
+            if let Some(store) = history {
+                let history_durations = store.get_scheduling_durations(&self.config_filename);
+                if !history_durations.is_empty() {
+                    debug!(
+                        "Using history-based scheduling with {} durations from {}",
+                        history_durations.len(),
+                        self.config.history.path.display()
+                    );
+                    history_durations
+                } else {
+                    // History file exists but has no data for this config, fall back to junit.xml
+                    load_test_durations(&junit_path, self.config.framework.test_id_format())
+                }
+            } else {
+                // History file doesn't exist yet, fall back to junit.xml
+                load_test_durations(&junit_path, self.config.framework.test_id_format())
+            }
+        } else {
+            // History disabled, use existing behavior
+            load_test_durations(&junit_path, self.config.framework.test_id_format())
+        };
         drop(_dur_span);
 
         // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
@@ -293,17 +323,18 @@ where
             crate::trace::TID_MAIN,
         );
         if durations.is_empty() {
-            warn!(
-                "No historical test durations found at {}. \
-                 Run tests once to generate junit.xml for optimized LPT scheduling.",
-                junit_path.display()
-            );
-        } else {
-            debug!(
-                "Using LPT scheduling with {} historical durations from {}",
-                durations.len(),
-                junit_path.display()
-            );
+            if self.config.history.enabled {
+                warn!(
+                    "No historical test durations found. \
+                     Run tests once to generate history for optimized LPT scheduling.",
+                );
+            } else {
+                warn!(
+                    "No historical test durations found at {}. \
+                     Run tests once to generate junit.xml for optimized LPT scheduling.",
+                    junit_path.display()
+                );
+            }
         }
         // Compute per-group average durations for tests without historical data
         let group_to_default_duration = {
