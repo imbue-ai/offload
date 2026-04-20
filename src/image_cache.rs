@@ -46,21 +46,24 @@ pub struct LatestCommitInfo {
 /// In non-checkpoint mode: resolve the latest commit (HEAD) and its cached image (if any).
 ///
 /// Returns `None` if there are no commits (empty repo).
-/// Returns `Some(LatestCommitInfo { cached_image: None })` if HEAD exists
-/// but has no cached image in git notes.
+/// When `no_cache` is true the git-note read is skipped entirely.
 pub async fn resolve_latest_commit(
     repo: &Path,
     config_path: &str,
+    no_cache: bool,
 ) -> Result<Option<LatestCommitInfo>> {
     let head_sha = match git::head_sha(repo).await {
         Ok(sha) => sha,
         Err(_) => return Ok(None),
     };
 
-    let repo_root = git::repo_root(repo).await?;
-    let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-
-    let cached_image = read_cached_image_for_commit(repo, &head_sha, &config_key).await?;
+    let cached_image = if no_cache {
+        None
+    } else {
+        let repo_root = git::repo_root(repo).await?;
+        let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
+        read_cached_image_for_commit(repo, &head_sha, &config_key).await?
+    };
 
     Ok(Some(LatestCommitInfo {
         head_sha,
@@ -68,29 +71,16 @@ pub async fn resolve_latest_commit(
     }))
 }
 
-/// Find the nearest checkpoint ancestor SHA without reading git notes.
-///
-/// Returns the SHA of the most recent ancestor of HEAD (within `max_depth`)
-/// that touches any of the configured `build_inputs` paths, or `None` if no
-/// such commit exists.
-pub async fn find_checkpoint_sha(
-    repo: &Path,
-    checkpoint_cfg: &CheckpointConfig,
-    max_depth: usize,
-) -> Result<Option<String>> {
-    git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs, max_depth).await
-}
-
 /// Find the nearest checkpoint ancestor and its cached image information.
 ///
 /// Returns `None` if no ancestor within `max_depth` touches any `build_inputs`.
-/// Returns `Some(CheckpointInfo { cached_image: None })` if a checkpoint commit
-/// is found but has no cached image in git notes.
+/// When `no_cache` is true the git-note read is skipped entirely.
 pub async fn resolve_checkpoint(
     repo: &Path,
     config_path: &str,
     checkpoint_cfg: &CheckpointConfig,
     max_depth: usize,
+    no_cache: bool,
 ) -> Result<Option<CheckpointInfo>> {
     let checkpoint_sha = match git::nearest_ancestor_touching(
         repo,
@@ -103,9 +93,13 @@ pub async fn resolve_checkpoint(
         None => return Ok(None),
     };
 
-    let repo_root = git::repo_root(repo).await?;
-    let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-    let cached_image = read_cached_image_for_commit(repo, &checkpoint_sha, &config_key).await?;
+    let cached_image = if no_cache {
+        None
+    } else {
+        let repo_root = git::repo_root(repo).await?;
+        let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
+        read_cached_image_for_commit(repo, &checkpoint_sha, &config_key).await?
+    };
 
     Ok(Some(CheckpointInfo {
         checkpoint_sha,
@@ -193,14 +187,12 @@ pub async fn resolve_base(
     config: &Config,
     no_cache: bool,
 ) -> Option<ResolvedBase> {
-    // Check if we're in a git repo
     if git::repo_root(repo).await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
         return None;
     }
 
     if !no_cache {
-        // Best-effort fetch and configure notes
         if let Err(e) = git::fetch_notes(repo, "origin").await {
             warn!("Failed to fetch notes: {}", e);
         }
@@ -209,74 +201,36 @@ pub async fn resolve_base(
         }
     }
 
-    // Checkpoint caching: if we have a [checkpoint] section, use checkpoint-based caching
-    if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
-        if no_cache {
-            // Resolve SHA only, no notes lookup
-            return match find_checkpoint_sha(repo, checkpoint_cfg, 100).await {
-                Ok(Some(sha)) => Some(ResolvedBase {
-                    base_sha: sha,
-                    cached_image_id: None,
-                    kind: BaseKind::Checkpoint,
-                }),
-                Ok(None) => {
-                    info!("No checkpoint commit found in ancestor window");
-                    None
-                }
-                Err(e) => {
-                    warn!("Checkpoint resolution failed (--no-cache): {}", e);
-                    None
-                }
-            };
-        }
-
-        let config_path_str = config_path.to_string_lossy();
-        return match resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100).await {
-            Ok(Some(info)) => Some(ResolvedBase {
-                base_sha: info.checkpoint_sha,
-                cached_image_id: info.cached_image.map(|c| c.image_id),
-                kind: BaseKind::Checkpoint,
-            }),
-            Ok(None) => {
-                info!("No checkpoint commit found in ancestor window");
-                None
-            }
-            Err(e) => {
-                warn!("Checkpoint resolution failed: {}", e);
-                None
-            }
-        };
-    }
-
-    // Latest-commit caching: no [checkpoint] config — use HEAD as base
-    if no_cache {
-        // Resolve SHA only, no notes lookup
-        return match git::head_sha(repo).await {
-            Ok(sha) => Some(ResolvedBase {
-                base_sha: sha,
-                cached_image_id: None,
-                kind: BaseKind::LatestCommit,
-            }),
-            Err(e) => {
-                warn!("HEAD SHA resolution failed (--no-cache): {}", e);
-                None
-            }
-        };
-    }
-
     let config_path_str = config_path.to_string_lossy();
-    match resolve_latest_commit(repo, &config_path_str).await {
-        Ok(Some(info)) => Some(ResolvedBase {
-            base_sha: info.head_sha,
-            cached_image_id: info.cached_image.map(|c| c.image_id),
-            kind: BaseKind::LatestCommit,
+
+    // Resolve (base_sha, cached_image, kind) — one call per mode.
+    let result: Result<Option<(String, Option<CachedImage>, BaseKind)>> =
+        if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
+            resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, 100, no_cache)
+                .await
+                .map(|opt| {
+                    opt.map(|info| (info.checkpoint_sha, info.cached_image, BaseKind::Checkpoint))
+                })
+        } else {
+            resolve_latest_commit(repo, &config_path_str, no_cache)
+                .await
+                .map(|opt| {
+                    opt.map(|info| (info.head_sha, info.cached_image, BaseKind::LatestCommit))
+                })
+        };
+
+    match result {
+        Ok(Some((base_sha, cached_image, kind))) => Some(ResolvedBase {
+            base_sha,
+            cached_image_id: cached_image.map(|c| c.image_id),
+            kind,
         }),
         Ok(None) => {
-            info!("No commits found, skipping latest-commit caching");
+            info!("No base commit found");
             None
         }
         Err(e) => {
-            warn!("Latest-commit resolution failed: {}", e);
+            warn!("Base resolution failed: {}", e);
             None
         }
     }
@@ -540,7 +494,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
     let short_head = &head[..8.min(head.len())];
 
     if let Some(ref checkpoint_cfg) = config.checkpoint {
-        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, 100)
+        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, 100, false)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -594,7 +548,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
             }
         }
     } else {
-        let info = resolve_latest_commit(repo, config_path)
+        let info = resolve_latest_commit(repo, config_path, false)
             .await
             .context("Failed to resolve latest commit")?;
 
@@ -744,7 +698,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -766,7 +720,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
 
         assert!(result.is_none(), "no commit touches Dockerfile");
         Ok(())
@@ -801,7 +755,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10).await?;
+        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, 10, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -827,7 +781,7 @@ mod tests {
         );
         write_note_in(dir.path(), &head, &contents)?;
 
-        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
+        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
 
         let info = result.context("should find latest commit")?;
         assert_eq!(info.head_sha, head);
@@ -842,7 +796,7 @@ mod tests {
         let head = head_sha_in(dir.path())?;
 
         // No note on HEAD
-        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
+        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
 
         let info = result.context("should find latest commit (miss still returns info)")?;
         assert_eq!(info.head_sha, head);
@@ -859,7 +813,7 @@ mod tests {
         git_cmd(dir.path(), &["init"])?;
         // Empty repo — no commits
 
-        let result = resolve_latest_commit(dir.path(), "offload.toml").await?;
+        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
 
         assert!(result.is_none(), "empty repo has no HEAD");
         Ok(())
