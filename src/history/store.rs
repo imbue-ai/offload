@@ -38,6 +38,19 @@ impl JsonlHistoryStore {
         }
     }
 
+    /// Get scheduling durations for all tests in a config.
+    ///
+    /// Returns a HashMap mapping test_id -> expected_duration, suitable for
+    /// use with the LPT scheduler. Uses `expected_duration()` for each test,
+    /// which applies the weighted P75 fallback chain.
+    pub fn get_scheduling_durations(&self, config: &str) -> HashMap<String, Duration> {
+        self.records
+            .iter()
+            .filter(|((c, _), _)| c == config)
+            .map(|((_, test_id), _)| (test_id.clone(), self.expected_duration(config, test_id)))
+            .collect()
+    }
+
     /// Loads an existing store from disk, or creates an empty one if the file does not exist.
     pub fn load(
         path: &std::path::Path,

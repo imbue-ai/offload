@@ -184,7 +184,9 @@ where
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
-        // Load test durations from previous junit.xml for LPT scheduling
+        // Load test durations for LPT scheduling
+        // When history is enabled and the file exists, use history-based durations.
+        // Otherwise fall back to junit.xml.
         let _dur_span = self.tracer.span(
             "duration_loading",
             "orchestrator",
@@ -196,7 +198,32 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path);
+        let durations = if self.config.history.enabled {
+            let history = JsonlHistoryStore::load(
+                &self.config.history.path,
+                self.config.history.reservoir_size,
+                self.config.history.default_duration_secs,
+            )
+            .ok();
+
+            if let Some(store) = history {
+                let history_durations = store.get_scheduling_durations(&self.config_filename);
+                if !history_durations.is_empty() {
+                    debug!(
+                        "Using history-based scheduling with {} durations from {}",
+                        history_durations.len(),
+                        self.config.history.path.display()
+                    );
+                    history_durations
+                } else {
+                    load_test_durations(&junit_path)
+                }
+            } else {
+                load_test_durations(&junit_path)
+            }
+        } else {
+            load_test_durations(&junit_path)
+        };
         drop(_dur_span);
 
         // Ensure output directory exists
@@ -320,10 +347,16 @@ where
             crate::trace::TID_MAIN,
         );
         if durations.is_empty() {
-            info!(
-                "No historical test durations found at {}. Using default durations for scheduling.",
-                junit_path.display()
-            );
+            if self.config.history.enabled {
+                info!(
+                    "No historical test durations found. Using default durations for scheduling.",
+                );
+            } else {
+                info!(
+                    "No historical test durations found at {}. Using default durations for scheduling.",
+                    junit_path.display()
+                );
+            }
         } else {
             debug!(
                 "Using LPT scheduling with {} historical durations from {}",
