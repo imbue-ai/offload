@@ -4,6 +4,7 @@
 //! git notes, resolves base commits for the caching pipeline, and writes
 //! cache notes after image builds.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -142,11 +143,11 @@ pub enum BaseKind {
     LatestCommit,
 }
 
-impl BaseKind {
-    pub fn label(&self) -> &'static str {
+impl fmt::Display for BaseKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Checkpoint => "Checkpoint",
-            Self::LatestCommit => "Latest-commit",
+            Self::Checkpoint => f.write_str("Checkpoint"),
+            Self::LatestCommit => f.write_str("Latest-commit"),
         }
     }
 }
@@ -346,7 +347,7 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
     };
 
     let base_sha = resolved.base_sha.as_str();
-    let label = resolved.kind.label();
+    let label = &resolved.kind;
     let note_config = if ctx.no_cache {
         None
     } else {
