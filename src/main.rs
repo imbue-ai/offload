@@ -264,6 +264,8 @@ async fn discover_with_signal(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     config: &Config,
+    config_filename: &str,
+    run_id: &str,
     all_tests: &[TestRecord],
     provider: P,
     copy_dirs: &[CopyDir],
@@ -276,6 +278,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
         FrameworkConfig::Pytest(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 PytestFramework::new(f_cfg.clone())?,
@@ -290,6 +294,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
         FrameworkConfig::Cargo(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 CargoFramework::new(f_cfg.clone()),
@@ -309,6 +315,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
             }
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 DefaultFramework::new(f_cfg.clone()),
@@ -323,6 +331,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
         FrameworkConfig::Vitest(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 VitestFramework::new(f_cfg.clone())?,
@@ -372,6 +382,14 @@ async fn run_tests(
     // Load configuration
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    // Generate run ID for history recording
+    let run_id = offload::generate_run_id();
+    let config_filename = config_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("offload.toml")
+        .to_string();
 
     // Apply overrides
     if let Some(parallel) = parallel_override {
@@ -469,6 +487,8 @@ async fn run_tests(
             }
             dispatch_framework(
                 &config,
+                &config_filename,
+                &run_id,
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 &copy_dirs,
@@ -509,6 +529,8 @@ async fn run_tests(
             }
             dispatch_framework(
                 &config,
+                &config_filename,
+                &run_id,
                 &all_tests,
                 provider,
                 &copy_dirs,
@@ -549,6 +571,8 @@ async fn run_tests(
             }
             dispatch_framework(
                 &config,
+                &config_filename,
+                &run_id,
                 &all_tests,
                 provider,
                 &copy_dirs,
@@ -581,6 +605,8 @@ async fn run_tests(
 #[allow(clippy::too_many_arguments)]
 async fn run_all_tests<P, D>(
     config: &config::Config,
+    config_filename: &str,
+    run_id: &str,
     tests: &[TestRecord],
     provider: P,
     framework: D,
@@ -633,6 +659,8 @@ where
 
     let orchestrator = Orchestrator::new(
         config.clone(),
+        config_filename.to_string(),
+        run_id.to_string(),
         framework,
         verbose,
         tracer.clone(),

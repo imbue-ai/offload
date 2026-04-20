@@ -357,6 +357,16 @@ impl MasterJunitReport {
         let flaky = self.flaky_count();
         (passed, failed, flaky)
     }
+
+    /// Returns the test ID format used by this report.
+    pub fn test_id_format(&self) -> &str {
+        &self.test_id_format
+    }
+
+    /// Returns a reference to the parsed testsuites for iteration.
+    pub fn testsuites(&self) -> &[TestsuiteXml] {
+        &self.testsuites
+    }
 }
 
 /// Extracts a string attribute, decoding XML entities (`&gt;` -> `>`).
