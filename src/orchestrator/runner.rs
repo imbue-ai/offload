@@ -198,14 +198,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let mut stdout = String::new();
         let mut stderr = String::new();
 
-        let (mut stream, mut guard) = self.sandbox.exec_stream(cmd).await?;
+        let (mut stream, mut child) = self.sandbox.exec_stream(cmd).await?;
 
         loop {
             select! {
                 _ = self.cancellation_token.cancelled() => {
                     debug!("Test execution cancelled (all tests passed)");
                     return Ok(None);
-                    // guard is dropped here, killing the child
+                    // child is dropped here, killing the process (kill_on_drop)
                 }
                 line = stream.next() => {
                     match line {
@@ -224,7 +224,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        let exit_code = guard.wait().await;
+        let exit_code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        };
 
         Ok(Some(crate::provider::ExecResult {
             exit_code,

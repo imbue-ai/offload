@@ -16,7 +16,7 @@ use super::{
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
 use crate::config::{DefaultProviderConfig, SandboxConfig};
-use crate::connector::{ChildProcessGuard, Connector, ShellConnector};
+use crate::connector::{Connector, ShellConnector};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -371,10 +371,10 @@ impl Sandbox for DefaultSandbox {
     async fn exec_stream(
         &mut self,
         cmd: &Command,
-    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
-        self.connector.run_stream_with_guard(&shell_cmd).await
+        self.connector.run_stream_with_child(&shell_cmd).await
     }
 
     async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
@@ -832,7 +832,7 @@ mod tests {
             test_content
         ));
 
-        let (mut stream, _guard) = sandbox.exec_stream(&write_cmd).await?;
+        let (mut stream, _child) = sandbox.exec_stream(&write_cmd).await?;
         while stream.next().await.is_some() {}
 
         // Download the file

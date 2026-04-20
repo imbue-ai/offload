@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 
 use crate::config::SandboxConfig;
-pub use crate::connector::ChildProcessGuard;
 use crate::connector::{Connector, ShellConnector};
 
 /// Result type for provider operations.
@@ -254,7 +253,7 @@ pub trait Sandbox: Send {
     async fn exec_stream(
         &mut self,
         cmd: &Command,
-    ) -> ProviderResult<(OutputStream, ChildProcessGuard)>;
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)>;
 
     /// Downloads files or directories from the sandbox.
     ///

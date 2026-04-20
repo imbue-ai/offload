@@ -10,35 +10,6 @@ use tracing::debug;
 use crate::bundled;
 use crate::provider::{OutputLine, OutputStream, ProviderError, ProviderResult};
 
-/// RAII guard that owns a child process handle.
-///
-/// Calls `start_kill()` on drop to prevent orphaned processes.
-/// The caller should call [`wait()`](Self::wait) to get the exit code.
-pub struct ChildProcessGuard {
-    child: tokio::process::Child,
-}
-
-impl ChildProcessGuard {
-    /// Creates a guard that owns the given child process.
-    pub fn new(child: tokio::process::Child) -> Self {
-        Self { child }
-    }
-
-    /// Waits for the child process to exit and returns its exit code.
-    pub async fn wait(&mut self) -> i32 {
-        match self.child.wait().await {
-            Ok(status) => status.code().unwrap_or(-1),
-            Err(_) => -1,
-        }
-    }
-}
-
-impl Drop for ChildProcessGuard {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
-    }
-}
-
 use futures::stream::StreamExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -209,6 +180,7 @@ impl ShellConnector {
         cmd.args(["-c", &expanded_command]);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
 
         if let Some(dir) = &self.working_dir {
             cmd.current_dir(dir);
@@ -241,17 +213,16 @@ impl ShellConnector {
         Ok((Box::pin(combined), child))
     }
 
-    /// Like `Connector::run_stream` but also returns a [`ChildProcessGuard`] for the spawned process.
+    /// Like `Connector::run_stream` but also returns the child process handle.
     ///
-    /// The guard owns the child process and kills it on drop, preventing orphaned
-    /// processes. Call [`ChildProcessGuard::wait()`] to obtain the exit code after
-    /// the stream is drained.
-    pub async fn run_stream_with_guard(
+    /// The child has `kill_on_drop(true)` set, so dropping it kills the process
+    /// and prevents orphans. Call `child.wait().await` to obtain the exit status
+    /// after the stream is drained.
+    pub async fn run_stream_with_child(
         &self,
         command: &str,
-    ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
-        let (stream, child) = self.spawn_stream(command).await?;
-        Ok((stream, ChildProcessGuard::new(child)))
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
+        self.spawn_stream(command).await
     }
 }
 
@@ -406,58 +377,5 @@ mod tests {
             ));
         }
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_child_process_guard_wait_returns_exit_code() {
-        let child = tokio::process::Command::new("sh")
-            .args(["-c", "exit 42"])
-            .spawn()
-            .ok();
-        if let Some(child) = child {
-            let mut guard = ChildProcessGuard::new(child);
-            let code = guard.wait().await;
-            assert_eq!(code, 42);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_child_process_guard_wait_success() {
-        let child = tokio::process::Command::new("sh")
-            .args(["-c", "echo hello"])
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .ok();
-        if let Some(child) = child {
-            let mut guard = ChildProcessGuard::new(child);
-            let code = guard.wait().await;
-            assert_eq!(code, 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_child_process_guard_drop_kills_child() {
-        let child = tokio::process::Command::new("sh")
-            .args(["-c", "sleep 60"])
-            .spawn()
-            .ok();
-        if let Some(child) = child {
-            let pid = child.id().unwrap_or(0);
-            if pid == 0 {
-                return;
-            }
-            let guard = ChildProcessGuard::new(child);
-            drop(guard);
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let status = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status();
-            if let Ok(s) = status {
-                assert!(
-                    !s.success(),
-                    "Process {pid} should no longer be running after guard is dropped"
-                );
-            }
-        }
     }
 }

@@ -93,7 +93,6 @@ impl<S: Sandbox> Default for SandboxPool<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector::ChildProcessGuard;
     use crate::provider::{CostEstimate, OutputStream, ProviderResult};
     use async_trait::async_trait;
     use std::path::{Path, PathBuf};
@@ -111,7 +110,7 @@ mod tests {
         async fn exec_stream(
             &mut self,
             _cmd: &crate::provider::Command,
-        ) -> ProviderResult<(OutputStream, ChildProcessGuard)> {
+        ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
             unimplemented!()
         }
         async fn download(&mut self, _paths: &[(&Path, &Path)]) -> ProviderResult<()> {
