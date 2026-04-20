@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::jsonl::{CompactSample, TestRecord, TestValues, parse_line, serialize_record};
+use super::jsonl::{CompactSample, HistoryRecord, TestValues, parse_line, serialize_record};
 use super::reservoir::{Sample, WeightedReservoir};
 use super::{
     DurationStats, HistoryError, OutcomeStats, TestAttemptResult, TestHistoryStore, TestStatistics,
@@ -21,7 +21,7 @@ use super::{
 /// maintains weighted reservoirs for success and failure samples, enabling
 /// percentile estimation with bounded storage.
 pub struct JsonlHistoryStore {
-    records: HashMap<(String, String), TestRecord>,
+    records: HashMap<(String, String), HistoryRecord>,
     path: PathBuf,
     reservoir_size: usize,
     default_duration_secs: f64,
@@ -268,7 +268,7 @@ impl TestHistoryStore for JsonlHistoryStore {
             let record = self
                 .records
                 .entry(key.clone())
-                .or_insert_with(|| TestRecord {
+                .or_insert_with(|| HistoryRecord {
                     key,
                     values: TestValues {
                         total_attempts: 0,

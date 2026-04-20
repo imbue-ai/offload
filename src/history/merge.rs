@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use super::HistoryError;
-use super::jsonl::{CompactSample, TestRecord, TestValues, parse_line, serialize_record};
+use super::jsonl::{CompactSample, HistoryRecord, TestValues, parse_line, serialize_record};
 use super::reservoir::{Sample, WeightedReservoir};
 
 /// Merge three history files (base, ours, theirs) and write the result to ours.
@@ -43,7 +43,7 @@ pub fn merge_history_files(
 }
 
 /// Load records from a JSONL file into a HashMap keyed by (config, test_id).
-fn load_records(path: &Path) -> Result<HashMap<(String, String), TestRecord>, HistoryError> {
+fn load_records(path: &Path) -> Result<HashMap<(String, String), HistoryRecord>, HistoryError> {
     let mut records = HashMap::new();
     if !path.exists() {
         return Ok(records);
@@ -66,11 +66,11 @@ fn load_records(path: &Path) -> Result<HashMap<(String, String), TestRecord>, Hi
 /// The merge strategy is "surviving data wins": if a test is present in either
 /// branch, it is included in the result.
 fn merge_records(
-    base: &HashMap<(String, String), TestRecord>,
-    ours: &HashMap<(String, String), TestRecord>,
-    theirs: &HashMap<(String, String), TestRecord>,
+    base: &HashMap<(String, String), HistoryRecord>,
+    ours: &HashMap<(String, String), HistoryRecord>,
+    theirs: &HashMap<(String, String), HistoryRecord>,
     reservoir_size: usize,
-) -> HashMap<(String, String), TestRecord> {
+) -> HashMap<(String, String), HistoryRecord> {
     // Collect all keys from A union B
     let mut all_keys: HashSet<_> = ours.keys().cloned().collect();
     all_keys.extend(theirs.keys().cloned());
@@ -90,11 +90,11 @@ fn merge_records(
 
 /// Merge two test records, optionally using the base for counter merging.
 fn merge_test_records(
-    ours: &TestRecord,
-    theirs: &TestRecord,
-    base: Option<&TestRecord>,
+    ours: &HistoryRecord,
+    theirs: &HistoryRecord,
+    base: Option<&HistoryRecord>,
     reservoir_size: usize,
-) -> TestRecord {
+) -> HistoryRecord {
     // Merge ok reservoirs
     let merged_ok = merge_reservoirs(&ours.values.ok, &theirs.values.ok, reservoir_size);
 
@@ -164,7 +164,7 @@ fn merge_test_records(
         theirs.values.last_run.clone()
     };
 
-    TestRecord {
+    HistoryRecord {
         key: ours.key.clone(),
         values: TestValues {
             total_attempts: merged_n,
@@ -221,7 +221,7 @@ fn newest_timestamp(ok: &[CompactSample], fail: &[CompactSample]) -> u64 {
 /// Write records to a file atomically using temp file + rename.
 fn write_records(
     path: &Path,
-    records: &HashMap<(String, String), TestRecord>,
+    records: &HashMap<(String, String), HistoryRecord>,
 ) -> Result<(), HistoryError> {
     let temp_path = path.with_extension("jsonl.tmp");
 
@@ -259,8 +259,8 @@ mod tests {
         last_run: &str,
         ok: Vec<CompactSample>,
         fail: Vec<CompactSample>,
-    ) -> TestRecord {
-        TestRecord {
+    ) -> HistoryRecord {
+        HistoryRecord {
             key: (config.to_string(), test_id.to_string()),
             values: TestValues {
                 total_attempts: attempts,

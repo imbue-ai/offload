@@ -55,7 +55,7 @@ impl From<CompactSample> for super::reservoir::Sample {
 
 /// A single test's history record, stored in JSONL format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestRecord {
+pub struct HistoryRecord {
     /// Key tuple: (config_filename, test_id).
     #[serde(rename = "k")]
     pub key: (String, String),
@@ -88,13 +88,13 @@ pub struct TestValues {
     pub fail: Vec<CompactSample>,
 }
 
-/// Parse a single JSONL line into a TestRecord.
-pub fn parse_line(line: &str) -> Result<TestRecord, HistoryError> {
+/// Parse a single JSONL line into a HistoryRecord.
+pub fn parse_line(line: &str) -> Result<HistoryRecord, HistoryError> {
     serde_json::from_str(line).map_err(|e| HistoryError::Parse(e.to_string()))
 }
 
-/// Serialize a TestRecord to a JSONL line (no trailing newline).
-pub fn serialize_record(record: &TestRecord) -> Result<String, HistoryError> {
+/// Serialize a HistoryRecord to a JSONL line (no trailing newline).
+pub fn serialize_record(record: &HistoryRecord) -> Result<String, HistoryError> {
     serde_json::to_string(record).map_err(|e| HistoryError::Parse(e.to_string()))
 }
 
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_record_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
-        let record = TestRecord {
+        let record = HistoryRecord {
             key: ("offload.toml".into(), "tests/test.py::test_add".into()),
             values: TestValues {
                 total_attempts: 47,
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_json_format() -> Result<(), Box<dyn std::error::Error>> {
-        let record = TestRecord {
+        let record = HistoryRecord {
             key: ("config.toml".into(), "test::foo".into()),
             values: TestValues {
                 total_attempts: 10,
