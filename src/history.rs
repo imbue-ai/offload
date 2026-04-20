@@ -3,6 +3,9 @@
 //! This module provides types for storing and querying historical test behavior,
 //! including failure rates, duration percentiles, and recent run results.
 
+pub mod jsonl;
+pub mod reservoir;
+
 use std::time::Duration;
 
 /// Statistics about a single test's historical behavior.

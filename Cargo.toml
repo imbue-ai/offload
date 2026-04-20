@@ -61,6 +61,9 @@ console = "0.15"
 # Retry
 backon = "1"
 
+# Random number generation
+rand = "0.9"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
