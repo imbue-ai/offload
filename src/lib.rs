@@ -5,6 +5,7 @@ pub mod config;
 pub mod connector;
 pub mod framework;
 pub mod git;
+pub mod history;
 pub mod image_cache;
 pub mod orchestrator;
 pub mod provider;
