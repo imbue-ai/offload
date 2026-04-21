@@ -195,20 +195,27 @@ impl MasterJunitReport {
         let before_count = self.test_outcomes.len();
         let mut total_testcases = 0;
 
-        for testsuite in parsed_testsuites {
+        for mut testsuite in parsed_testsuites {
             total_testcases += testsuite.testcases.len();
 
             // Group testcases by test ID within this testsuite.
             // A test ID fails if ANY of its testcases failed.
             let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
-            for testcase in &testsuite.testcases {
+            for testcase in &mut testsuite.testcases {
                 let test_id = if !batch_test_ids.is_empty() {
                     match resolve_test_id(
                         &testcase.name,
                         testcase.classname.as_deref(),
                         batch_test_ids,
                     ) {
-                        Ok(resolved) => TestId::new(None, resolved),
+                        Ok(resolved) => {
+                            // Rewrite testcase to use the resolved discovered ID so
+                            // the master junit.xml contains canonical test IDs that
+                            // load_test_durations can match for LPT scheduling.
+                            testcase.name = resolved.clone();
+                            testcase.classname = None;
+                            TestId::new(None, resolved)
+                        }
                         Err(msg) => {
                             return Err(format!("Failed to resolve JUnit testcase: {}", msg));
                         }
