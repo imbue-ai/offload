@@ -1,7 +1,6 @@
 //! Test scheduling and distribution across parallel sandboxes.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -9,19 +8,15 @@ use crate::framework::TestInstance;
 
 /// A scheduled batch of tests ready for execution.
 ///
-/// Wraps a list of test instances along with their combined estimated duration.
-/// Workers pop these from the scheduler queue and pass them to `register_running_batch`.
+/// Wraps a list of test instances. Workers pop these from the scheduler queue;
+/// each pop re-queues the batch (split into halves for multi-test batches,
+/// or cloned with an incremented retry counter for single-test batches) so
+/// the batch can be retried.
 #[derive(Clone)]
 pub struct ScheduledBatch {
     pub tests: Vec<TestInstance>,
-    estimated_load: Duration,
-}
-
-impl ScheduledBatch {
-    /// Total estimated duration for all tests in this batch.
-    pub fn estimated_load(&self) -> Duration {
-        self.estimated_load
-    }
+    /// Re-queue count for single-test batches, checked against MAX_SINGLE_TEST_REQUEUES.
+    pub single_test_retry_counter: usize,
 }
 
 /// Maximum total length (in chars) of all test IDs in a single batch.
@@ -29,6 +24,10 @@ impl ScheduledBatch {
 /// Prevents command lines from exceeding OS or shell limits. A single test
 /// whose ID already exceeds this is still placed alone in its own batch.
 const MAX_BATCH_COMMAND_LEN: usize = 30_000;
+
+/// Maximum number of times a single-test batch can be re-queued before
+/// the scheduler stops re-queuing it.
+const MAX_SINGLE_TEST_REQUEUES: usize = 3;
 
 /// A batch of tests being built by the scheduler.
 ///
@@ -76,8 +75,11 @@ impl Batch {
 ///
 /// Performs LPT scheduling at construction time and exposes the resulting
 /// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
-/// to pull batches. The `register_running_batch` method provides hedged re-queuing when
-/// a batch takes too long.
+/// to pull batches. Each pop re-queues the batch (split into halves for
+/// multi-test batches, or cloned with an incremented retry counter for
+/// single-test batches) so the batch can be retried if needed; the
+/// `is_decided` check in the spawn loop skips batches whose tests already
+/// completed.
 pub struct Scheduler {
     queue: Mutex<VecDeque<ScheduledBatch>>,
     notify: tokio::sync::Notify,
@@ -126,19 +128,12 @@ impl Scheduler {
         let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
             tests.iter().cloned().partition(|t| t.schedule_individual());
 
-        // Build individual batches (one test per batch) with estimated load
+        // Build individual batches (one test per batch)
         let individual_batches: Vec<ScheduledBatch> = individual_tests
             .into_iter()
-            .map(|t| {
-                let load = durations
-                    .get(t.id())
-                    .copied()
-                    .or_else(|| group_to_default_duration.get(t.group()).copied())
-                    .unwrap_or(Duration::from_secs(1));
-                ScheduledBatch {
-                    tests: vec![t],
-                    estimated_load: load,
-                }
+            .map(|t| ScheduledBatch {
+                tests: vec![t],
+                single_test_retry_counter: 0,
             })
             .collect();
 
@@ -208,8 +203,8 @@ impl Scheduler {
                 .into_iter()
                 .filter(|b| !b.is_empty())
                 .map(|b| ScheduledBatch {
-                    estimated_load: b.load,
                     tests: b.tests,
+                    single_test_retry_counter: 0,
                 }),
         );
 
@@ -225,7 +220,11 @@ impl Scheduler {
 
     /// Removes and returns the next batch from the queue, blocking if empty.
     ///
-    /// Waits for a batch to become available via [`push`](Self::push).
+    /// Multi-test batches are split into two halves when re-queued; single-test
+    /// batches are re-queued with an incremented retry counter up to
+    /// `MAX_SINGLE_TEST_REQUEUES` times. The `is_decided` check in the spawn
+    /// loop skips batches whose tests already completed.
+    ///
     /// Returns `None` if the mutex is poisoned.
     ///
     /// This future is cancel-safe: callers should race it against a
@@ -238,6 +237,23 @@ impl Scheduler {
             match self.queue.lock() {
                 Ok(mut q) => {
                     if let Some(batch) = q.pop_front() {
+                        drop(q);
+                        if batch.tests.len() > 1 {
+                            let mid = batch.tests.len() / 2;
+                            self.push(ScheduledBatch {
+                                tests: batch.tests[..mid].to_vec(),
+                                single_test_retry_counter: 0,
+                            });
+                            self.push(ScheduledBatch {
+                                tests: batch.tests[mid..].to_vec(),
+                                single_test_retry_counter: 0,
+                            });
+                        } else if batch.single_test_retry_counter < MAX_SINGLE_TEST_REQUEUES {
+                            self.push(ScheduledBatch {
+                                tests: batch.tests.clone(),
+                                single_test_retry_counter: batch.single_test_retry_counter + 1,
+                            });
+                        }
                         return Some(batch);
                     }
                 }
@@ -247,12 +263,12 @@ impl Scheduler {
                 }
             }
 
-            // Queue is empty — wait for push()
+            // Queue is empty — wait for a notification
             notified.await;
         }
     }
 
-    /// Pushes a batch to the back of the queue.
+    /// Pushes a batch to the back of the queue and wakes one waiting worker.
     fn push(&self, batch: ScheduledBatch) {
         match self.queue.lock() {
             Ok(mut q) => {
@@ -261,51 +277,6 @@ impl Scheduler {
             }
             Err(e) => {
                 tracing::error!("batch queue mutex poisoned on push: {}", e);
-            }
-        }
-    }
-
-    /// Runs a future for a batch with hedged re-queuing.
-    ///
-    /// Computes a timeout of `2 * batch.estimated_load()`. If the future
-    /// completes before that deadline, its result is returned immediately.
-    /// If the timeout fires, the batch is split (or cloned if single-test)
-    /// and re-queued, then the original future is awaited to completion.
-    pub async fn register_running_batch<Fut, R>(&self, batch: &ScheduledBatch, fut: Fut) -> R
-    where
-        Fut: Future<Output = R>,
-    {
-        let requeue_after = 2 * batch.estimated_load();
-
-        tokio::pin!(fut);
-
-        match tokio::time::timeout(requeue_after, &mut fut).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::info!(
-                    "Batch of {} tests exceeded requeue threshold ({:?}); re-queuing",
-                    batch.tests.len(),
-                    requeue_after,
-                );
-
-                if batch.tests.len() > 1 {
-                    let mid = batch.tests.len() / 2;
-                    let first_load = batch.estimated_load * mid as u32 / batch.tests.len() as u32;
-                    let second_load = batch.estimated_load - first_load;
-
-                    self.push(ScheduledBatch {
-                        tests: batch.tests[..mid].to_vec(),
-                        estimated_load: first_load,
-                    });
-                    self.push(ScheduledBatch {
-                        tests: batch.tests[mid..].to_vec(),
-                        estimated_load: second_load,
-                    });
-                } else {
-                    self.push(batch.clone());
-                }
-
-                fut.await
             }
         }
     }
@@ -326,12 +297,14 @@ mod tests {
     use super::*;
     use crate::framework::TestRecord;
 
+    /// Pops exactly `scheduler.batch_count()` batches.
     async fn drain_batches(scheduler: &Scheduler) -> Vec<Vec<TestInstance>> {
-        let mut batches = Vec::new();
-        while let Ok(Some(batch)) =
-            tokio::time::timeout(Duration::from_millis(10), scheduler.pop()).await
-        {
-            batches.push(batch.tests);
+        let n = scheduler.batch_count();
+        let mut batches = Vec::with_capacity(n);
+        for _ in 0..n {
+            if let Some(batch) = scheduler.pop().await {
+                batches.push(batch.tests);
+            }
         }
         batches
     }
@@ -628,145 +601,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pop_returns_scheduled_batch_with_correct_estimated_load() -> anyhow::Result<()> {
+    async fn test_pop_requeues_batch() -> anyhow::Result<()> {
+        // --- Multi-test batch: should split into two halves ---
         let records = [
             TestRecord::new("test_a", "test-group"),
             TestRecord::new("test_b", "test-group"),
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let mut durations = HashMap::new();
-        durations.insert("test_a".to_string(), Duration::from_secs(3));
-        durations.insert("test_b".to_string(), Duration::from_secs(7));
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        assert_eq!(scheduler.batch_count(), 1);
 
-        // 1 worker => both tests in one batch with load = 3 + 7 = 10s
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
-
+        // Pop the original 2-test batch
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
-
-        assert_eq!(batch.estimated_load(), Duration::from_secs(10));
         assert_eq!(batch.tests.len(), 2);
-        Ok(())
-    }
+        assert_eq!(batch.single_test_retry_counter, 0);
 
-    #[tokio::test]
-    async fn test_register_running_batch_completes_normally_before_threshold() -> anyhow::Result<()>
-    {
-        let records = [TestRecord::new("test_a", "test-group")];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-
-        let mut durations = HashMap::new();
-        durations.insert("test_a".to_string(), Duration::from_secs(10));
-
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
-
-        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
-            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
-
-        // Future completes instantly, well within 2 * 10s threshold
-        let result = scheduler.register_running_batch(&batch, async { 42 }).await;
-        assert_eq!(result, 42);
-
-        // Queue should be empty — no re-queuing occurred
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
-                .await
-                .is_err(),
-            "queue should be empty"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_register_running_batch_requeues_and_splits_multi_test_batch() -> anyhow::Result<()>
-    {
-        let records = [
-            TestRecord::new("test_a", "test-group"),
-            TestRecord::new("test_b", "test-group"),
-            TestRecord::new("test_c", "test-group"),
-            TestRecord::new("test_d", "test-group"),
-        ];
-        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
-
-        let mut durations = HashMap::new();
-        for r in &records {
-            durations.insert(r.id.clone(), Duration::from_millis(1));
-        }
-
-        // 1 worker => all 4 tests in one batch, estimated_load = 4ms
-        // requeue_after = 2 * 4ms = 8ms — sleep of 50ms will exceed that
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
-
-        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
-            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
-        assert_eq!(batch.tests.len(), 4);
-
-        scheduler
-            .register_running_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
-            .await;
-
-        // Should have 2 halves re-queued
-        let first = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+        // First re-queued half: [test_a] — single-test, counter starts at 0
+        let first_half = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for first half"))?
             .ok_or_else(|| anyhow::anyhow!("expected first half"))?;
-        let second = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+        assert_eq!(first_half.tests.len(), 1);
+        assert_eq!(first_half.tests[0].id(), "test_a");
+        assert_eq!(first_half.single_test_retry_counter, 0);
+
+        // Second re-queued half: [test_b] — single-test, counter starts at 0
+        let second_half = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for second half"))?
             .ok_or_else(|| anyhow::anyhow!("expected second half"))?;
+        assert_eq!(second_half.tests.len(), 1);
+        assert_eq!(second_half.tests[0].id(), "test_b");
+        assert_eq!(second_half.single_test_retry_counter, 0);
 
-        assert_eq!(first.tests.len(), 2);
-        assert_eq!(second.tests.len(), 2);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
-                .await
-                .is_err(),
-            "queue should be empty after two pops"
-        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_register_running_batch_requeues_single_test_batch() -> anyhow::Result<()> {
-        let records = [TestRecord::new("test_a", "test-group")];
+    async fn test_pop_requeues_single_test_batch_as_clone() -> anyhow::Result<()> {
+        // --- Single-test batch: should clone with incrementing counter ---
+        let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let mut durations = HashMap::new();
-        durations.insert("test_a".to_string(), Duration::from_millis(1));
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        assert_eq!(scheduler.batch_count(), 1);
 
-        // 1 worker, 1 test, estimated_load = 1ms, requeue_after = 2ms
-        let scheduler = Scheduler::new(1, &tests, &durations, &HashMap::new());
-
+        // Pop the original single-test batch (counter = 0)
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
         assert_eq!(batch.tests.len(), 1);
+        assert_eq!(batch.tests[0].id(), "only_test");
+        assert_eq!(batch.single_test_retry_counter, 0);
 
-        scheduler
-            .register_running_batch(&batch, tokio::time::sleep(Duration::from_millis(50)))
-            .await;
-
-        // Single-test batch is cloned and re-queued as-is
+        // Re-queued batch should have counter incremented to 1
         let requeued = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for requeued batch"))?
             .ok_or_else(|| anyhow::anyhow!("expected requeued batch"))?;
         assert_eq!(requeued.tests.len(), 1);
-        assert_eq!(requeued.tests[0].id(), "test_a");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), scheduler.pop())
+        assert_eq!(requeued.tests[0].id(), "only_test");
+        assert_eq!(requeued.single_test_retry_counter, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pop_stops_requeuing_single_test_after_max() -> anyhow::Result<()> {
+        let records = [TestRecord::new("only_test", "test-group")];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+
+        // Pop the initial batch plus MAX_SINGLE_TEST_REQUEUES re-queued copies.
+        // The initial batch has counter=0, each re-queue increments by 1.
+        // After popping the batch with counter=MAX_SINGLE_TEST_REQUEUES, no
+        // further re-queue occurs and the queue should be empty.
+        for i in 0..=MAX_SINGLE_TEST_REQUEUES {
+            let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
                 .await
-                .is_err(),
-            "queue should be empty after one pop"
+                .map_err(|_| anyhow::anyhow!("timed out at iteration {i}"))?
+                .ok_or_else(|| anyhow::anyhow!("expected batch at iteration {i}"))?;
+            assert_eq!(batch.tests.len(), 1);
+            assert_eq!(batch.single_test_retry_counter, i);
+        }
+
+        // Queue should now be empty — next pop should time out
+        let result = tokio::time::timeout(Duration::from_millis(100), scheduler.pop()).await;
+        assert!(
+            result.is_err(),
+            "expected timeout (empty queue) after max requeues"
         );
+
         Ok(())
     }
 }

@@ -192,7 +192,7 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
         let stdout_src = cfg.logs_dir.join(format!("batch-{}.stdout", batch_idx));
         let stderr_src = cfg.logs_dir.join(format!("batch-{}.stderr", batch_idx));
         let outcome = tokio::select! {
-            result = cfg.scheduler.register_running_batch(&batch, runner.run_tests(&batch.tests)) => result,
+            result = runner.run_tests(&batch.tests) => result,
             () = cfg.cancellation_token.cancelled() => Ok(BatchOutcome::Cancelled),
         };
 
