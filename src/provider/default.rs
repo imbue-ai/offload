@@ -1,6 +1,6 @@
 //! Default provider — uses custom shell commands for sandbox lifecycle management.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -66,9 +66,9 @@ impl DefaultProvider {
     /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
     fn build_prepare_command(
         &self,
-        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        copy_dirs: &[(PathBuf, PathBuf)],
         sandbox_init_cmd: Option<&str>,
-        context_dir: Option<&std::path::Path>,
+        context_dir: Option<&Path>,
     ) -> Option<String> {
         let prepare_cmd = self.config.prepare_command.as_ref()?;
         let mut full = prepare_cmd.clone();
@@ -103,7 +103,7 @@ impl DefaultProvider {
 impl ImageBuilder for DefaultProvider {
     async fn build_full(
         &mut self,
-        copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
+        copy_dirs: &[(PathBuf, PathBuf)],
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
         context_dir: Option<&Path>,
@@ -111,13 +111,8 @@ impl ImageBuilder for DefaultProvider {
         let image_id = if let Some(full_prepare_cmd) =
             self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
         {
-            let image_id = run_prepare_command(
-                &self.connector,
-                &full_prepare_cmd,
-                "Default",
-                discovery_done,
-            )
-            .await?;
+            let image_id =
+                run_prepare_command(&self.connector, &full_prepare_cmd, discovery_done).await?;
             Some(image_id)
         } else {
             None
@@ -139,8 +134,7 @@ impl ImageBuilder for DefaultProvider {
             shell_words::quote(&patch_file.display().to_string()),
             shell_words::quote(sandbox_project_root)
         );
-        let image_id =
-            run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
+        let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
     }
@@ -838,7 +832,7 @@ mod tests {
         // Download the file
         let download_dir = tempfile::tempdir()?;
         let local_file = download_dir.path().join("downloaded.xml");
-        let remote_path = std::path::Path::new("/tmp/junit.xml");
+        let remote_path = Path::new("/tmp/junit.xml");
 
         sandbox
             .download(&[(remote_path, local_file.as_path())])

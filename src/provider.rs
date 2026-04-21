@@ -304,7 +304,6 @@ pub trait Sandbox: Send {
 pub(crate) async fn run_prepare_command(
     connector: &ShellConnector,
     command: &str,
-    label: &str,
     discovery_done: Option<&AtomicBool>,
 ) -> ProviderResult<String> {
     let mut buffer: Vec<String> = Vec::new();
@@ -320,7 +319,7 @@ pub(crate) async fn run_prepare_command(
     };
 
     emit(
-        format!("[prepare] Preparing {} environment...", label),
+        "[prepare] Preparing environment...".to_string(),
         &mut buffer,
     );
 
@@ -350,18 +349,17 @@ pub(crate) async fn run_prepare_command(
 
     if exit_code != 0 {
         return Err(ProviderError::ExecFailed(format!(
-            "{} prepare command failed with exit code {}",
-            label, exit_code
+            "prepare command failed with exit code {}",
+            exit_code
         )));
     }
 
     let image_id = last_stdout_line.trim().to_string();
 
     if image_id.is_empty() {
-        return Err(ProviderError::ExecFailed(format!(
-            "{} prepare command returned empty image_id",
-            label
-        )));
+        return Err(ProviderError::ExecFailed(
+            "prepare command returned empty image_id".to_string(),
+        ));
     }
 
     Ok(image_id)

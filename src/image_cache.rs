@@ -151,9 +151,7 @@ pub struct ResolvedBase {
     pub kind: BaseKind,
 }
 
-/// Internal trait that breaks the circularity between `prepare()` and
-/// `run_prewarm_pipeline`. Providers implement this to supply their
-/// build-from-scratch and incremental-build logic.
+/// Provider-specific image build operations.
 #[async_trait::async_trait]
 pub(crate) trait ImageBuilder: Send {
     /// Build an image from scratch (full prepare).
@@ -426,9 +424,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     }
 }
 
-/// Shared prepare logic: run the prewarm pipeline, then fall back to a full build.
-///
-/// Both `DefaultProvider` and `ModalProvider` delegate their `prepare()` to this.
+/// Run the prewarm pipeline, then fall back to a full build on miss.
 pub(crate) async fn prepare_with_prewarm<B: ImageBuilder>(
     builder: &mut B,
     ctx: &PrepareContext<'_>,
@@ -997,7 +993,7 @@ mod tests {
             &mut self,
             _copy_dirs: &[(PathBuf, PathBuf)],
             _sandbox_init_cmd: Option<&str>,
-            _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+            _discovery_done: Option<&AtomicBool>,
             _context_dir: Option<&Path>,
         ) -> crate::provider::ProviderResult<Option<String>> {
             self.build_full_calls += 1;
@@ -1011,7 +1007,7 @@ mod tests {
             _base_image_id: &str,
             _patch_file: &Path,
             _sandbox_project_root: &str,
-            _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+            _discovery_done: Option<&AtomicBool>,
         ) -> crate::provider::ProviderResult<Option<String>> {
             let id = "im-mock-incremental".to_string();
             self.image_id = Some(id.clone());
