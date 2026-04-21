@@ -37,11 +37,11 @@ pub struct CopyDir {
 #[command(version)]
 struct Cli {
     /// Configuration file path
-    #[arg(short, long, default_value = "offload.toml")]
+    #[arg(short, long, global = true, default_value = "offload.toml")]
     config: PathBuf,
 
     /// Verbose output
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     verbose: bool,
 
     #[command(subcommand)]
