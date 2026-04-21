@@ -81,7 +81,7 @@ impl ModalProvider {
 
         if let Some(dockerfile) = &self.config.dockerfile {
             cmd.push(' ');
-            cmd.push_str(dockerfile);
+            cmd.push_str(&shell_words::quote(dockerfile));
         }
 
         if self.config.include_cwd {
@@ -89,15 +89,12 @@ impl ModalProvider {
         }
 
         for copy_spec in &self.config.copy_dirs {
-            cmd.push_str(&format!(" --copy-dir={}", copy_spec));
+            cmd.push_str(&format!(" --copy-dir={}", shell_words::quote(copy_spec)));
         }
 
         for (local, remote) in copy_dirs {
-            cmd.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            ));
+            let spec = format!("{}:{}", local.display(), remote.display());
+            cmd.push_str(&format!(" --copy-dir={}", shell_words::quote(&spec)));
         }
 
         if let Some(init_cmd) = sandbox_init_cmd {
@@ -114,7 +111,8 @@ impl ModalProvider {
     fn build_create_command(&self, image_id: &str) -> ProviderResult<String> {
         let mut cmd = format!(
             "uv run @modal_sandbox.py create --cpu {} {}",
-            self.cpu_cores, image_id
+            self.cpu_cores,
+            shell_words::quote(image_id)
         );
 
         if let Some(gb) = self.memory_gb {
@@ -241,9 +239,9 @@ impl SandboxProvider for ModalProvider {
     ) -> ProviderResult<Option<String>> {
         let cmd = format!(
             "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            base_image_id,
-            patch_file.display(),
-            sandbox_project_root
+            shell_words::quote(base_image_id),
+            shell_words::quote(&patch_file.display().to_string()),
+            shell_words::quote(sandbox_project_root)
         );
         let image_id = run_prepare_command(&self.connector, &cmd, "Modal", discovery_done).await?;
         self.image_id = Some(image_id.clone());

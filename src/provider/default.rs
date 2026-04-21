@@ -74,14 +74,11 @@ impl DefaultProvider {
         let mut full = prepare_cmd.clone();
 
         for copy_spec in &self.config.copy_dirs {
-            full.push_str(&format!(" --copy-dir={}", copy_spec));
+            full.push_str(&format!(" --copy-dir={}", shell_words::quote(copy_spec)));
         }
         for (local, remote) in copy_dirs {
-            full.push_str(&format!(
-                " --copy-dir={}:{}",
-                local.display(),
-                remote.display()
-            ));
+            let spec = format!("{}:{}", local.display(), remote.display());
+            full.push_str(&format!(" --copy-dir={}", shell_words::quote(&spec)));
         }
 
         if let Some(init_cmd) = sandbox_init_cmd {
@@ -92,7 +89,10 @@ impl DefaultProvider {
         }
 
         if let Some(dir) = context_dir {
-            full.push_str(&format!(" --context-dir={}", dir.display()));
+            full.push_str(&format!(
+                " --context-dir={}",
+                shell_words::quote(&dir.display().to_string())
+            ));
         }
 
         Some(full)
@@ -232,9 +232,9 @@ impl SandboxProvider for DefaultProvider {
     ) -> ProviderResult<Option<String>> {
         let cmd = format!(
             "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            base_image_id,
-            patch_file.display(),
-            sandbox_project_root
+            shell_words::quote(base_image_id),
+            shell_words::quote(&patch_file.display().to_string()),
+            shell_words::quote(sandbox_project_root)
         );
         let image_id =
             run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
