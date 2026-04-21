@@ -125,7 +125,10 @@ impl Sandbox for LocalSandbox {
         &self.id
     }
 
-    async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
+    async fn exec_stream(
+        &mut self,
+        cmd: &Command,
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
         let shell_cmd = cmd.to_shell_string();
 
         let mut process = tokio::process::Command::new(&self.shell);
@@ -145,6 +148,7 @@ impl Sandbox for LocalSandbox {
 
         process.stdout(Stdio::piped());
         process.stderr(Stdio::piped());
+        process.kill_on_drop(true);
 
         let mut child = process
             .spawn()
@@ -173,10 +177,10 @@ impl Sandbox for LocalSandbox {
         // Merge stdout and stderr streams
         let combined = stream::select(stdout_stream, stderr_stream);
 
-        Ok(Box::pin(combined))
+        Ok((Box::pin(combined), child))
     }
 
-    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+    async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
         for (remote, local) in paths {
             let src = self.working_dir.join(remote);
 
@@ -200,7 +204,7 @@ impl Sandbox for LocalSandbox {
         Ok(())
     }
 
-    async fn terminate(&self) -> ProviderResult<()> {
+    async fn terminate(self) -> ProviderResult<()> {
         // Process sandboxes don't need explicit cleanup
         Ok(())
     }

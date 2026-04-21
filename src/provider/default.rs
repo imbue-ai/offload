@@ -368,13 +368,16 @@ impl Sandbox for DefaultSandbox {
         &self.id
     }
 
-    async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream> {
+    async fn exec_stream(
+        &mut self,
+        cmd: &Command,
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
         let shell_cmd = self.build_exec_command(cmd);
         debug!("Streaming on {}: {}", self.id, shell_cmd);
-        self.connector.run_stream(&shell_cmd).await
+        self.connector.run_stream_with_child(&shell_cmd).await
     }
 
-    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
+    async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()> {
         if paths.is_empty() {
             return Ok(());
         }
@@ -409,7 +412,7 @@ impl Sandbox for DefaultSandbox {
         }
     }
 
-    async fn terminate(&self) -> ProviderResult<()> {
+    async fn terminate(self) -> ProviderResult<()> {
         let shell_cmd = self.build_destroy_command();
         debug!("Terminating sandbox {}", self.id);
 
@@ -812,7 +815,7 @@ mod tests {
             copy_dirs: vec![],
         };
 
-        let sandbox = provider.create_sandbox(&sandbox_config).await?;
+        let mut sandbox = provider.create_sandbox(&sandbox_config).await?;
 
         // Write test junit.xml content
         let test_content = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -829,7 +832,7 @@ mod tests {
             test_content
         ));
 
-        let mut stream = sandbox.exec_stream(&write_cmd).await?;
+        let (mut stream, _child) = sandbox.exec_stream(&write_cmd).await?;
         while stream.next().await.is_some() {}
 
         // Download the file

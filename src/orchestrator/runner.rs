@@ -197,22 +197,19 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
-        let mut exit_code: Option<i32> = None;
 
-        let mut stream = self.sandbox.exec_stream(cmd).await?;
+        let (mut stream, mut child) = self.sandbox.exec_stream(cmd).await?;
 
         loop {
             select! {
                 _ = self.cancellation_token.cancelled() => {
                     debug!("Test execution cancelled (all tests passed)");
                     return Ok(None);
+                    // child is dropped here, killing the process (kill_on_drop)
                 }
                 line = stream.next() => {
                     match line {
                         Some(line) => {
-                            if let OutputLine::ExitCode(code) = &line {
-                                exit_code = Some(*code);
-                            }
                             Self::process_output_line(
                                 &line,
                                 output_id,
@@ -227,15 +224,10 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             }
         }
 
-        let exit_code = exit_code.unwrap_or_else(|| {
-            warn!("No exit code received from stream, inferring from output");
-            if stdout.contains("PASSED") && !stdout.contains("FAILED") && !stdout.contains("ERROR")
-            {
-                0
-            } else {
-                1
-            }
-        });
+        let exit_code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        };
 
         Ok(Some(crate::provider::ExecResult {
             exit_code,

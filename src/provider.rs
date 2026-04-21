@@ -250,7 +250,10 @@ pub trait Sandbox: Send {
     /// # Returns
     ///
     /// A stream of [`OutputLine`] items (stdout/stderr lines).
-    async fn exec_stream(&self, cmd: &Command) -> ProviderResult<OutputStream>;
+    async fn exec_stream(
+        &mut self,
+        cmd: &Command,
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)>;
 
     /// Downloads files or directories from the sandbox.
     ///
@@ -262,15 +265,12 @@ pub trait Sandbox: Send {
     ///
     /// * `paths` - Slice of (remote, local) path pairs where remote is the
     ///   path inside the sandbox and local is the destination path
-    async fn download(&self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
+    async fn download(&mut self, paths: &[(&Path, &Path)]) -> ProviderResult<()>;
 
-    /// Terminates the sandbox and releases resources.
+    /// Terminates the sandbox and releases all resources.
     ///
-    /// After calling this method, the sandbox should not be used.
-    /// Resources (containers, connections, etc.) are cleaned up.
-    ///
-    /// This method is idempotent - calling it multiple times is safe.
-    async fn terminate(&self) -> ProviderResult<()>;
+    /// Consumes `self` so the sandbox cannot be used after termination.
+    async fn terminate(mut self) -> ProviderResult<()>;
 
     /// Returns the estimated cost incurred by this sandbox.
     ///

@@ -88,9 +88,8 @@ pub trait Connector: Send + Sync {
     ///
     /// # Note
     ///
-    /// The stream does not provide the exit code. If you need the exit code,
-    /// use [`run`](Self::run) instead or check command output for success/failure
-    /// indicators.
+    /// The stream yields [`OutputLine::ExitCode`] as its last item after all
+    /// stdout/stderr lines have been emitted.
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream>;
 }
 
@@ -153,6 +152,60 @@ impl ShellConnector {
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
+    }
+
+    /// Spawns a command and returns its stdout/stderr stream along with the child handle.
+    ///
+    /// The returned stream yields only `Stdout` and `Stderr` lines. The caller
+    /// is responsible for obtaining the exit code from the child handle.
+    ///
+    /// The child has `kill_on_drop(true)` set, so dropping it kills the process
+    /// and prevents orphans. Call `child.wait().await` to obtain the exit status
+    /// after the stream is drained.
+    pub async fn run_stream_with_child(
+        &self,
+        command: &str,
+    ) -> ProviderResult<(OutputStream, tokio::process::Child)> {
+        let expanded_command = bundled::expand_command(command)
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
+
+        debug!("Streaming: {}", expanded_command);
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &expanded_command]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
+            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
+
+        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
+            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
+
+        let combined = futures::stream::select(stdout_stream, stderr_stream);
+
+        Ok((Box::pin(combined), child))
     }
 }
 
@@ -243,46 +296,7 @@ impl Connector for ShellConnector {
     }
 
     async fn run_stream(&self, command: &str) -> ProviderResult<OutputStream> {
-        // Expand @filename.ext references to full paths
-        let expanded_command = bundled::expand_command(command)
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to expand command: {}", e)))?;
-
-        debug!("Streaming: {}", expanded_command);
-
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", &expanded_command]);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        if let Some(dir) = &self.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
-
-        let stdout_reader = BufReader::new(stdout);
-        let stderr_reader = BufReader::new(stderr);
-
-        let stdout_stream = tokio_stream::wrappers::LinesStream::new(stdout_reader.lines())
-            .map(|line| OutputLine::Stdout(line.unwrap_or_default()));
-
-        let stderr_stream = tokio_stream::wrappers::LinesStream::new(stderr_reader.lines())
-            .map(|line| OutputLine::Stderr(line.unwrap_or_default()));
-
-        let combined = futures::stream::select(stdout_stream, stderr_stream);
-
-        // After stdout/stderr close, wait for child and yield exit code
+        let (stream, mut child) = self.run_stream_with_child(command).await?;
         let exit_stream = futures::stream::once(async move {
             let exit_code = match child.wait().await {
                 Ok(status) => status.code().unwrap_or(-1),
@@ -290,8 +304,7 @@ impl Connector for ShellConnector {
             };
             OutputLine::ExitCode(exit_code)
         });
-
-        Ok(Box::pin(combined.chain(exit_stream)))
+        Ok(Box::pin(stream.chain(exit_stream)))
     }
 }
 
