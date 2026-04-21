@@ -8,8 +8,8 @@ use futures::stream::{self, StreamExt};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{
-    Command, CostEstimate, OutputLine, OutputStream, ProviderError, ProviderResult, Sandbox,
-    SandboxProvider,
+    Command, CostEstimate, OutputLine, OutputStream, PrepareContext, ProviderError, ProviderResult,
+    Sandbox, SandboxProvider,
 };
 use crate::config::{LocalProviderConfig, SandboxConfig};
 
@@ -42,14 +42,7 @@ impl LocalProvider {
 impl SandboxProvider for LocalProvider {
     type Sandbox = LocalSandbox;
 
-    async fn prepare(
-        &mut self,
-        _copy_dirs: &[(PathBuf, PathBuf)],
-        _no_cache: bool,
-        _sandbox_init_cmd: Option<&str>,
-        _discovery_done: Option<&std::sync::atomic::AtomicBool>,
-        _context_dir: Option<&std::path::Path>,
-    ) -> ProviderResult<Option<String>> {
+    async fn prepare(&mut self, _ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
         // Local provider has no image preparation step.
         Ok(None)
     }
@@ -76,23 +69,6 @@ impl SandboxProvider for LocalProvider {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
-    }
-
-    async fn prewarm_image_cache(
-        &mut self,
-        _ctx: &crate::image_cache::PrewarmContext<'_>,
-    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
-        Ok(crate::image_cache::PrewarmOutcome::CacheMiss { base_sha: None })
-    }
-
-    async fn prepare_from_checkpoint(
-        &mut self,
-        _base_image_id: &str,
-        _patch_file: &std::path::Path,
-        _sandbox_project_root: &str,
-        _discovery_done: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ProviderResult<Option<String>> {
-        Ok(None)
     }
 }
 

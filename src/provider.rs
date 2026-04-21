@@ -15,6 +15,26 @@ use futures::{Stream, StreamExt};
 use crate::config::SandboxConfig;
 use crate::connector::{Connector, ShellConnector};
 
+/// Everything needed to prepare a sandbox image.
+pub struct PrepareContext<'a> {
+    /// Directories to copy into the image (local, remote) pairs.
+    pub copy_dirs: &'a [(PathBuf, PathBuf)],
+    /// Optional command to run during image build.
+    pub sandbox_init_cmd: Option<&'a str>,
+    /// Path to the git repository root.
+    pub repo: &'a Path,
+    /// Loaded configuration.
+    pub config: &'a crate::config::Config,
+    /// Path to the configuration file.
+    pub config_path: &'a Path,
+    /// Skip cached image lookup.
+    pub no_cache: bool,
+    /// Tracer for performance tracing.
+    pub tracer: &'a crate::trace::Tracer,
+    /// Signal flag set when test discovery is complete.
+    pub discovery_done: &'a AtomicBool,
+}
+
 /// Result type for provider operations.
 ///
 /// All provider methods return this type, wrapping either a success value
@@ -379,17 +399,10 @@ pub trait SandboxProvider: Send + Sync {
     /// Runs provider preparation (e.g. image build) and returns an image ID.
     ///
     /// For providers that build images (Modal, Default with `prepare_command`),
-    /// this runs the prepare command and caches the resulting image ID.
-    /// For providers that do not build images (Local, Default without
-    /// `prepare_command`), this is a no-op returning `None`.
-    async fn prepare(
-        &mut self,
-        copy_dirs: &[(PathBuf, PathBuf)],
-        no_cache: bool,
-        sandbox_init_cmd: Option<&str>,
-        discovery_done: Option<&AtomicBool>,
-        context_dir: Option<&std::path::Path>,
-    ) -> ProviderResult<Option<String>>;
+    /// this resolves the image cache, attempts a thin-diff build, and falls
+    /// back to a full build if needed. For providers that do not build images
+    /// (Local), this is a no-op returning `None`.
+    async fn prepare(&mut self, ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>>;
 
     /// Creates a new sandbox with the given configuration.
     ///
@@ -421,34 +434,6 @@ pub trait SandboxProvider: Send + Sync {
     fn base_env(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-
-    /// Prewarm the image cache by resolving a base commit and building a thin-diff image.
-    ///
-    /// For providers that support image caching (Default, Modal), this resolves
-    /// the base commit, checks for a cached image, and attempts to build a
-    /// thin-diff image on top. If successful, the provider stores the image ID
-    /// internally for use by `create_sandbox()`.
-    ///
-    /// Providers that do not support image caching should return `CacheMiss`.
-    async fn prewarm_image_cache(
-        &mut self,
-        ctx: &crate::image_cache::PrewarmContext<'_>,
-    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome>;
-
-    /// Build a thin-diff image from a checkpoint base image and a patch file.
-    ///
-    /// Generates the appropriate provider-specific command to build an image
-    /// on top of `base_image_id` with the given `patch_file` applied.
-    ///
-    /// Returns the new image ID if successful, or `None` for providers that
-    /// do not support this operation.
-    async fn prepare_from_checkpoint(
-        &mut self,
-        base_image_id: &str,
-        patch_file: &Path,
-        sandbox_project_root: &str,
-        discovery_done: Option<&AtomicBool>,
-    ) -> ProviderResult<Option<String>>;
 }
 
 #[cfg(test)]
@@ -544,5 +529,47 @@ mod tests {
 
         assert_eq!(total.cpu_seconds, 0.0);
         assert_eq!(total.estimated_cost_usd, 0.0);
+    }
+
+    #[test]
+    fn prepare_context_can_be_constructed() {
+        let discovery_done = AtomicBool::new(false);
+        let tracer = crate::trace::Tracer::noop();
+        let config = crate::config::Config {
+            offload: crate::config::schema::OffloadConfig {
+                max_parallel: 1,
+                test_timeout_secs: 60,
+                working_dir: None,
+                sandbox_project_root: "/app".to_string(),
+                sandbox_init_cmd: None,
+            },
+            provider: crate::config::schema::ProviderConfig::Local(Default::default()),
+            framework: crate::config::schema::FrameworkConfig::Default(
+                crate::config::schema::DefaultFrameworkConfig {
+                    discover_command: "echo test".to_string(),
+                    run_command: "run {tests}".to_string(),
+                    result_file: None,
+                    working_dir: None,
+                    test_id_format: "{name}".to_string(),
+                },
+            ),
+            groups: Default::default(),
+            report: Default::default(),
+            checkpoint: None,
+        };
+        let ctx = PrepareContext {
+            copy_dirs: &[],
+            sandbox_init_cmd: None,
+            repo: Path::new("/tmp"),
+            config: &config,
+            config_path: Path::new("offload.toml"),
+            no_cache: false,
+            tracer: &tracer,
+            discovery_done: &discovery_done,
+        };
+        assert_eq!(ctx.repo, Path::new("/tmp"));
+        assert!(!ctx.no_cache);
+        assert!(ctx.sandbox_init_cmd.is_none());
+        assert!(ctx.copy_dirs.is_empty());
     }
 }

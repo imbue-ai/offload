@@ -9,14 +9,14 @@ use async_trait::async_trait;
 use tracing::{debug, warn};
 
 use super::{
-    Command, CostEstimate, OutputStream, ProviderError, ProviderResult, Sandbox, SandboxProvider,
-    run_prepare_command,
+    Command, CostEstimate, OutputStream, PrepareContext, ProviderError, ProviderResult, Sandbox,
+    SandboxProvider, run_prepare_command,
 };
-
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
+use crate::image_cache::{ImageBuilder, prepare_with_prewarm};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -100,16 +100,13 @@ impl DefaultProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for DefaultProvider {
-    type Sandbox = DefaultSandbox;
-
-    async fn prepare(
+impl ImageBuilder for DefaultProvider {
+    async fn build_full(
         &mut self,
         copy_dirs: &[(std::path::PathBuf, std::path::PathBuf)],
-        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-        context_dir: Option<&std::path::Path>,
+        context_dir: Option<&Path>,
     ) -> ProviderResult<Option<String>> {
         let image_id = if let Some(full_prepare_cmd) =
             self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
@@ -121,14 +118,42 @@ impl SandboxProvider for DefaultProvider {
                 discovery_done,
             )
             .await?;
-
             Some(image_id)
         } else {
             None
         };
-
         self.image_id = image_id.clone();
         Ok(image_id)
+    }
+
+    async fn build_incremental(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let cmd = format!(
+            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
+            shell_words::quote(base_image_id),
+            shell_words::quote(&patch_file.display().to_string()),
+            shell_words::quote(sandbox_project_root)
+        );
+        let image_id =
+            run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for DefaultProvider {
+    type Sandbox = DefaultSandbox;
+
+    async fn prepare(&mut self, ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
+        let result = prepare_with_prewarm(self, ctx).await?;
+        self.image_id = result.clone();
+        Ok(result)
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
@@ -210,36 +235,6 @@ impl SandboxProvider for DefaultProvider {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
-    }
-
-    async fn prewarm_image_cache(
-        &mut self,
-        ctx: &crate::image_cache::PrewarmContext<'_>,
-    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
-        let outcome = crate::image_cache::run_prewarm_pipeline(self, ctx).await?;
-        if let crate::image_cache::PrewarmOutcome::Resolved { ref image_id } = outcome {
-            self.image_id = Some(image_id.clone());
-        }
-        Ok(outcome)
-    }
-
-    async fn prepare_from_checkpoint(
-        &mut self,
-        base_image_id: &str,
-        patch_file: &std::path::Path,
-        sandbox_project_root: &str,
-        discovery_done: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ProviderResult<Option<String>> {
-        let cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            shell_words::quote(base_image_id),
-            shell_words::quote(&patch_file.display().to_string()),
-            shell_words::quote(sandbox_project_root)
-        );
-        let image_id =
-            run_prepare_command(&self.connector, &cmd, "Default", discovery_done).await?;
-        self.image_id = Some(image_id.clone());
-        Ok(Some(image_id))
     }
 }
 
@@ -805,7 +800,12 @@ mod tests {
         };
 
         let mut provider = DefaultProvider::from_config(config);
-        provider.prepare(&[], false, None, None, None).await?;
+
+        // Build full image directly for this integration test (no prewarm context needed)
+        {
+            use crate::image_cache::ImageBuilder;
+            provider.build_full(&[], None, None, None).await?;
+        }
 
         // Create sandbox
         let sandbox_config = SandboxConfig {

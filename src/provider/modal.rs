@@ -1,6 +1,6 @@
 //! Modal provider — simplified configuration for running tests on Modal sandboxes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -9,9 +9,10 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::default::DefaultSandbox;
-use super::{ProviderError, ProviderResult, SandboxProvider, run_prepare_command};
+use super::{PrepareContext, ProviderError, ProviderResult, SandboxProvider, run_prepare_command};
 use crate::config::{ModalProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
+use crate::image_cache::{ImageBuilder, prepare_with_prewarm};
 
 /// Provider that runs tests on Modal sandboxes with simplified configuration.
 ///
@@ -134,16 +135,13 @@ impl ModalProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for ModalProvider {
-    type Sandbox = DefaultSandbox;
-
-    async fn prepare(
+impl ImageBuilder for ModalProvider {
+    async fn build_full(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
-        _no_cache: bool,
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-        context_dir: Option<&std::path::Path>,
+        context_dir: Option<&Path>,
     ) -> ProviderResult<Option<String>> {
         let mut prepare_cmd = self.build_prepare_command(copy_dirs, sandbox_init_cmd);
 
@@ -160,6 +158,35 @@ impl SandboxProvider for ModalProvider {
 
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
+    }
+
+    async fn build_incremental(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>> {
+        let cmd = format!(
+            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
+            shell_words::quote(base_image_id),
+            shell_words::quote(&patch_file.display().to_string()),
+            shell_words::quote(sandbox_project_root)
+        );
+        let image_id = run_prepare_command(&self.connector, &cmd, "Modal", discovery_done).await?;
+        self.image_id = Some(image_id.clone());
+        Ok(Some(image_id))
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for ModalProvider {
+    type Sandbox = DefaultSandbox;
+
+    async fn prepare(&mut self, ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
+        let result = prepare_with_prewarm(self, ctx).await?;
+        self.image_id = result.clone();
+        Ok(result)
     }
 
     async fn create_sandbox(&self, config: &SandboxConfig) -> ProviderResult<DefaultSandbox> {
@@ -217,35 +244,6 @@ impl SandboxProvider for ModalProvider {
 
     fn base_env(&self) -> Vec<(String, String)> {
         self.env.clone()
-    }
-
-    async fn prewarm_image_cache(
-        &mut self,
-        ctx: &crate::image_cache::PrewarmContext<'_>,
-    ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
-        let outcome = crate::image_cache::run_prewarm_pipeline(self, ctx).await?;
-        if let crate::image_cache::PrewarmOutcome::Resolved { ref image_id } = outcome {
-            self.image_id = Some(image_id.clone());
-        }
-        Ok(outcome)
-    }
-
-    async fn prepare_from_checkpoint(
-        &mut self,
-        base_image_id: &str,
-        patch_file: &std::path::Path,
-        sandbox_project_root: &str,
-        discovery_done: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ProviderResult<Option<String>> {
-        let cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            shell_words::quote(base_image_id),
-            shell_words::quote(&patch_file.display().to_string()),
-            shell_words::quote(sandbox_project_root)
-        );
-        let image_id = run_prepare_command(&self.connector, &cmd, "Modal", discovery_done).await?;
-        self.image_id = Some(image_id.clone());
-        Ok(Some(image_id))
     }
 }
 

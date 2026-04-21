@@ -17,13 +17,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::config::schema::CheckpointConfig;
 use crate::git;
-use crate::provider::SandboxProvider;
+use crate::provider::{PrepareContext, ProviderError, ProviderResult};
 use crate::trace::Tracer;
 use crate::with_retry;
 
@@ -151,19 +151,32 @@ pub struct ResolvedBase {
     pub kind: BaseKind,
 }
 
-/// Inputs to [`run_prewarm_pipeline`].
-pub struct PrewarmContext<'a> {
-    pub repo: &'a Path,
-    pub config: &'a crate::config::Config,
-    pub config_path: &'a Path,
-    pub copy_dir_tuples: &'a [(PathBuf, PathBuf)],
-    pub no_cache: bool,
-    pub tracer: &'a Tracer,
-    pub discovery_done: &'a AtomicBool,
+/// Internal trait that breaks the circularity between `prepare()` and
+/// `run_prewarm_pipeline`. Providers implement this to supply their
+/// build-from-scratch and incremental-build logic.
+#[async_trait::async_trait]
+pub(crate) trait ImageBuilder: Send {
+    /// Build an image from scratch (full prepare).
+    async fn build_full(
+        &mut self,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&Path>,
+    ) -> ProviderResult<Option<String>>;
+
+    /// Build a thin-diff image on top of a base image.
+    async fn build_incremental(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>>;
 }
 
 /// Result of [`run_prewarm_pipeline`].
-pub enum PrewarmOutcome {
+pub(crate) enum PrewarmOutcome {
     /// A usable image was produced (cache hit + thin diff, or base build + thin diff).
     Resolved { image_id: String },
     /// No image produced — caller should fall back to a full build.
@@ -279,15 +292,15 @@ pub async fn write_note_for_commit(
 
 /// Try to produce a sandbox image cheaply before falling back to a full build.
 ///
-/// 1. **Cache hit** — a cached base image exists: apply a thin diff on top.
-/// 2. **Cache miss** — no cached image: export the base tree, build a base
-///    image via the provider, write a cache note, then apply a thin diff.
+/// 1. **Cache hit** -- a cached base image exists: apply a thin diff on top.
+/// 2. **Cache miss** -- no cached image: export the base tree, build a base
+///    image via the builder, write a cache note, then apply a thin diff.
 ///
 /// Returns [`PrewarmOutcome::Resolved`] with a usable image, or
 /// [`PrewarmOutcome::CacheMiss`] if the caller must do a full build.
-pub async fn run_prewarm_pipeline<P: SandboxProvider>(
-    provider: &mut P,
-    ctx: &PrewarmContext<'_>,
+pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
+    builder: &mut B,
+    ctx: &PrepareContext<'_>,
 ) -> anyhow::Result<PrewarmOutcome> {
     let resolved = match resolve_base(ctx.repo, ctx.config_path, ctx.config, ctx.no_cache).await {
         Some(r) => r,
@@ -313,7 +326,7 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
         );
 
         match try_thin_diff(
-            provider,
+            builder,
             ctx.repo,
             cached_id,
             base_sha,
@@ -367,9 +380,8 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
             crate::trace::PID_LOCAL,
             crate::trace::TID_MAIN,
         );
-        with_retry!(provider.prepare(
-            ctx.copy_dir_tuples,
-            ctx.no_cache,
+        with_retry!(builder.build_full(
+            ctx.copy_dirs,
             ctx.config.offload.sandbox_init_cmd.as_deref(),
             None,
             Some(tree_dir.path()),
@@ -390,7 +402,7 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
     };
 
     match try_thin_diff(
-        provider,
+        builder,
         ctx.repo,
         &base_id,
         base_sha,
@@ -414,11 +426,69 @@ pub async fn run_prewarm_pipeline<P: SandboxProvider>(
     }
 }
 
+/// Shared prepare logic: run the prewarm pipeline, then fall back to a full build.
+///
+/// Both `DefaultProvider` and `ModalProvider` delegate their `prepare()` to this.
+pub(crate) async fn prepare_with_prewarm<B: ImageBuilder>(
+    builder: &mut B,
+    ctx: &PrepareContext<'_>,
+) -> ProviderResult<Option<String>> {
+    let prewarm = run_prewarm_pipeline(builder, ctx).await;
+    match prewarm {
+        Ok(PrewarmOutcome::Resolved { ref image_id }) => Ok(Some(image_id.clone())),
+        Ok(PrewarmOutcome::CacheMiss { base_sha }) => {
+            full_build_fallback(builder, ctx, base_sha).await
+        }
+        Err(e) => {
+            warn!("Prewarm pipeline failed: {}", e);
+            full_build_fallback(builder, ctx, None).await
+        }
+    }
+}
+
+/// Full-build fallback: snapshot working directory, build from scratch, write cache note.
+///
+/// Shared between `DefaultProvider` and `ModalProvider`.
+pub(crate) async fn full_build_fallback<B: ImageBuilder>(
+    builder: &mut B,
+    ctx: &PrepareContext<'_>,
+    base_sha: Option<String>,
+) -> ProviderResult<Option<String>> {
+    let context_snapshot = snapshot_working_directory(ctx.tracer).map_err(|e| {
+        ProviderError::ExecFailed(format!("failed to snapshot working directory: {e}"))
+    })?;
+
+    let image_id = {
+        let _span = ctx.tracer.span(
+            "image_prepare",
+            "local",
+            crate::trace::PID_LOCAL,
+            crate::trace::TID_MAIN,
+        );
+        with_retry!(builder.build_full(
+            ctx.copy_dirs,
+            ctx.sandbox_init_cmd,
+            Some(ctx.discovery_done),
+            Some(context_snapshot.path()),
+        ))
+        .map_err(|e| ProviderError::ExecFailed(format!("Failed to prepare provider: {e}")))?
+    };
+
+    // Write cache note if applicable
+    if !ctx.no_cache
+        && let (Some(sha), Some(id)) = (&base_sha, &image_id)
+    {
+        write_note_for_commit(ctx.repo, sha, id, ctx.config_path).await;
+    }
+
+    Ok(image_id)
+}
+
 /// Apply the diff between `checkpoint_sha` and the working tree on top of
 /// `base_image_id` to produce a new image.  Returns the base image unchanged
 /// when there is no diff.
-async fn try_thin_diff<P: SandboxProvider>(
-    provider: &mut P,
+async fn try_thin_diff<B: ImageBuilder>(
+    builder: &mut B,
     repo: &Path,
     base_image_id: &str,
     checkpoint_sha: &str,
@@ -457,9 +527,9 @@ async fn try_thin_diff<P: SandboxProvider>(
 
     eprintln!("[prepare] Building thin diff image...");
 
-    // Route through provider's prepare_from_checkpoint
-    match provider
-        .prepare_from_checkpoint(
+    // Route through builder's incremental build
+    match builder
+        .build_incremental(
             base_image_id,
             patch_file.path(),
             sandbox_project_root,
@@ -469,9 +539,77 @@ async fn try_thin_diff<P: SandboxProvider>(
     {
         Some(image_id) => Ok(image_id),
         None => Err(crate::provider::ProviderError::ExecFailed(
-            "prepare_from_checkpoint returned no image ID".to_string(),
+            "build_incremental returned no image ID".to_string(),
         )),
     }
+}
+
+/// Read `.dockerignore` patterns from the current directory.
+///
+/// Returns an empty vec if the file does not exist. Skips blank lines and
+/// comments (lines starting with `#`).
+fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
+    let path = cwd.join(".dockerignore");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    contents
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Copy the working directory into a temporary directory for use as build context.
+///
+/// This produces a frozen snapshot so that files modified by other processes
+/// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
+/// when Modal uploads the context.
+///
+/// If a `.dockerignore` file is present, its patterns are passed as `--exclude`
+/// rules to `rsync` so that large ignored trees (`.git`, `.venv`, etc.) are
+/// never copied, keeping the snapshot fast.
+pub(crate) fn snapshot_working_directory(tracer: &Tracer) -> Result<tempfile::TempDir> {
+    let _span = tracer.span(
+        "snapshot_cwd",
+        "local",
+        crate::trace::PID_LOCAL,
+        crate::trace::TID_MAIN,
+    );
+
+    let snapshot = tempfile::tempdir()
+        .context("Failed to create temporary directory for build context snapshot")?;
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+
+    let ignore_patterns = read_dockerignore_patterns(&cwd);
+
+    // rsync requires a trailing slash on the source to copy *contents* into dest.
+    let mut src = cwd.as_os_str().to_os_string();
+    src.push("/");
+
+    let mut cmd = std::process::Command::new("rsync");
+    cmd.arg("-a");
+    for pattern in &ignore_patterns {
+        cmd.arg(format!("--exclude={pattern}"));
+    }
+    cmd.arg("--");
+    cmd.arg(&src);
+    cmd.arg(snapshot.path());
+
+    let status = cmd
+        .status()
+        .context("Failed to spawn rsync for working directory snapshot")?;
+    if !status.success() {
+        return Err(anyhow!("rsync failed with exit code {:?}", status.code()));
+    }
+    info!(
+        "Snapshotted working directory into {} (excluded {} .dockerignore pattern(s))",
+        snapshot.path().display(),
+        ignore_patterns.len(),
+    );
+    Ok(snapshot)
 }
 
 /// Print a human-readable summary of the cache state for the current HEAD.
@@ -813,5 +951,91 @@ mod tests {
 
         assert!(result.is_none(), "empty repo has no HEAD");
         Ok(())
+    }
+
+    // ---- Tests for snapshot_working_directory ----
+
+    #[test]
+    fn test_snapshot_working_directory_creates_copy() {
+        let tracer = Tracer::noop();
+        // snapshot_working_directory copies the current working directory.
+        // We just verify it produces a non-empty temp dir without error.
+        let snapshot = snapshot_working_directory(&tracer);
+        assert!(snapshot.is_ok(), "snapshot should succeed");
+        if let Ok(ref snap) = snapshot {
+            let snap_path = snap.path();
+            assert!(snap_path.exists(), "snapshot directory should exist");
+            // The snapshot should contain at least one file (the cwd has files).
+            let has_entries = std::fs::read_dir(snap_path)
+                .ok()
+                .map(|mut rd| rd.next().is_some())
+                .unwrap_or(false);
+            assert!(has_entries, "snapshot should contain files from cwd");
+        }
+    }
+
+    // ---- Mock ImageBuilder for testing ----
+
+    /// A mock implementation of `ImageBuilder` that records calls.
+    struct MockImageBuilder {
+        image_id: Option<String>,
+        build_full_calls: u32,
+    }
+
+    impl MockImageBuilder {
+        fn new() -> Self {
+            Self {
+                image_id: None,
+                build_full_calls: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ImageBuilder for MockImageBuilder {
+        async fn build_full(
+            &mut self,
+            _copy_dirs: &[(PathBuf, PathBuf)],
+            _sandbox_init_cmd: Option<&str>,
+            _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+            _context_dir: Option<&Path>,
+        ) -> crate::provider::ProviderResult<Option<String>> {
+            self.build_full_calls += 1;
+            let id = format!("im-mock-{}", self.build_full_calls);
+            self.image_id = Some(id.clone());
+            Ok(Some(id))
+        }
+
+        async fn build_incremental(
+            &mut self,
+            _base_image_id: &str,
+            _patch_file: &Path,
+            _sandbox_project_root: &str,
+            _discovery_done: Option<&std::sync::atomic::AtomicBool>,
+        ) -> crate::provider::ProviderResult<Option<String>> {
+            let id = "im-mock-incremental".to_string();
+            self.image_id = Some(id.clone());
+            Ok(Some(id))
+        }
+    }
+
+    #[test]
+    fn test_mock_image_builder_initial_state() {
+        let builder = MockImageBuilder::new();
+        assert!(builder.image_id.is_none());
+        assert_eq!(builder.build_full_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mock_image_builder_build_full() {
+        let mut builder = MockImageBuilder::new();
+        let result = builder.build_full(&[], None, None, None).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            result.as_ref().ok().and_then(|r| r.as_deref()),
+            Some("im-mock-1")
+        );
+        assert_eq!(builder.build_full_calls, 1);
+        assert_eq!(builder.image_id.as_deref(), Some("im-mock-1"));
     }
 }

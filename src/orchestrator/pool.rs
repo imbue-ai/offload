@@ -93,10 +93,9 @@ impl<S: Sandbox> Default for SandboxPool<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{CostEstimate, OutputStream, ProviderResult};
+    use crate::provider::{CostEstimate, OutputStream, PrepareContext, ProviderResult};
     use async_trait::async_trait;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::AtomicBool;
+    use std::path::Path;
 
     struct FakeSandbox {
         id: String,
@@ -130,14 +129,7 @@ mod tests {
     impl SandboxProvider for FakeProvider {
         type Sandbox = FakeSandbox;
 
-        async fn prepare(
-            &mut self,
-            _copy_dirs: &[(PathBuf, PathBuf)],
-            _no_cache: bool,
-            _sandbox_init_cmd: Option<&str>,
-            _discovery_done: Option<&AtomicBool>,
-            _context_dir: Option<&std::path::Path>,
-        ) -> ProviderResult<Option<String>> {
+        async fn prepare(&mut self, _ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
             Ok(None)
         }
 
@@ -145,23 +137,6 @@ mod tests {
             Ok(FakeSandbox {
                 id: config.id.clone(),
             })
-        }
-
-        async fn prewarm_image_cache(
-            &mut self,
-            _ctx: &crate::image_cache::PrewarmContext<'_>,
-        ) -> anyhow::Result<crate::image_cache::PrewarmOutcome> {
-            Ok(crate::image_cache::PrewarmOutcome::CacheMiss { base_sha: None })
-        }
-
-        async fn prepare_from_checkpoint(
-            &mut self,
-            _base_image_id: &str,
-            _patch_file: &std::path::Path,
-            _sandbox_project_root: &str,
-            _discovery_done: Option<&AtomicBool>,
-        ) -> ProviderResult<Option<String>> {
-            Ok(None)
         }
     }
 
