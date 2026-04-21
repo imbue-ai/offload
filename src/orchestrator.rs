@@ -185,20 +185,38 @@ where
         let durations = load_test_durations(&junit_path, self.config.framework.test_id_format());
         drop(_dur_span);
 
-        // Ensure output directory exists (don't clear - junit.xml will be overwritten when ready)
+        // Ensure output directory exists
         let output_dir = &self.config.report.output_dir;
         std::fs::create_dir_all(output_dir).ok();
 
-        // Clear parts directory from previous run
-        let parts_dir = output_dir.join("junit-parts");
-        if parts_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&parts_dir) {
-                warn!("Failed to clear parts directory: {}", e);
-            } else {
-                debug!("Cleared parts directory: {:?}", parts_dir);
+        // Clean output directory from previous run, preserving only the junit XML
+        // (which was already read above for LPT scheduling)
+        let junit_filename = &self.config.report.junit_file;
+        if let Ok(entries) = std::fs::read_dir(output_dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && name == junit_filename
+                {
+                    continue;
+                }
+                let path = entry.path();
+                let result = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                match result {
+                    Ok(()) => debug!("Removed previous output: {}", path.display()),
+                    Err(e) => warn!("Failed to remove {}: {}", path.display(), e),
+                }
             }
         }
+
+        // Create subdirectories needed for this run
+        let parts_dir = output_dir.join("junit-parts");
         std::fs::create_dir_all(&parts_dir).ok();
+        let logs_dir = output_dir.join("logs");
+        std::fs::create_dir_all(&logs_dir).ok();
 
         if tests.is_empty() {
             warn!("No tests to run");
@@ -348,15 +366,6 @@ where
 
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
-
-        // Create/truncate logs directory for per-runner output
-        let logs_dir = output_dir.join("logs");
-        if logs_dir.exists()
-            && let Err(e) = std::fs::remove_dir_all(&logs_dir)
-        {
-            warn!("Failed to clear logs directory: {}", e);
-        }
-        std::fs::create_dir_all(&logs_dir).ok();
 
         let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
