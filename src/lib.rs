@@ -17,6 +17,6 @@ pub mod trace;
 pub use config::{Config, load_config};
 pub use framework::{TestFramework, TestInstance, TestOutcome, TestRecord, TestResult};
 pub use orchestrator::{Orchestrator, RunResult, SandboxPool};
-pub use provider::{Sandbox, SandboxProvider};
+pub use provider::{PrepareContext, Sandbox, SandboxProvider};
 pub use report::print_summary;
 pub use trace::Tracer;

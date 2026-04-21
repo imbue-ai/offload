@@ -18,11 +18,12 @@ use offload::framework::{
     TestFramework, TestRecord, cargo::CargoFramework, default::DefaultFramework,
     pytest::PytestFramework, vitest::VitestFramework,
 };
+use offload::image_cache;
 use offload::orchestrator::{Orchestrator, SandboxPool};
 use offload::provider::{
-    SandboxProvider, default::DefaultProvider, local::LocalProvider, modal::ModalProvider,
+    PrepareContext, SandboxProvider, default::DefaultProvider, local::LocalProvider,
+    modal::ModalProvider,
 };
-use offload::{image_cache, with_retry};
 
 /// A directory copy directive: local path -> sandbox path
 #[derive(Debug, Clone)]
@@ -252,75 +253,6 @@ async fn discover_all_tests(
     Ok(all_tests)
 }
 
-/// Read `.dockerignore` patterns from the current directory.
-///
-/// Returns an empty vec if the file does not exist. Skips blank lines and
-/// comments (lines starting with `#`), matching the behaviour of
-/// `read_dockerignore_patterns()` in `modal_sandbox.py`.
-fn read_dockerignore_patterns(cwd: &Path) -> Vec<String> {
-    let path = cwd.join(".dockerignore");
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    contents
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
-}
-
-/// Copy the working directory into a temporary directory for use as build context.
-///
-/// This produces a frozen snapshot so that files modified by other processes
-/// (e.g. `.pyc` bytecode caches) don't cause "modified during build" errors
-/// when Modal uploads the context.
-///
-/// If a `.dockerignore` file is present, its patterns are passed as `--exclude`
-/// rules to `rsync` so that large ignored trees (`.git`, `.venv`, etc.) are
-/// never copied, keeping the snapshot fast.
-fn snapshot_working_directory(tracer: &offload::trace::Tracer) -> Result<tempfile::TempDir> {
-    let _span = tracer.span(
-        "snapshot_cwd",
-        "local",
-        offload::trace::PID_LOCAL,
-        offload::trace::TID_MAIN,
-    );
-
-    let snapshot = tempfile::tempdir()
-        .context("Failed to create temporary directory for build context snapshot")?;
-    let cwd = std::env::current_dir().context("Failed to get current directory")?;
-
-    let ignore_patterns = read_dockerignore_patterns(&cwd);
-
-    // rsync requires a trailing slash on the source to copy *contents* into dest.
-    let mut src = cwd.as_os_str().to_os_string();
-    src.push("/");
-
-    let mut cmd = std::process::Command::new("rsync");
-    cmd.arg("-a");
-    for pattern in &ignore_patterns {
-        cmd.arg(format!("--exclude={pattern}"));
-    }
-    cmd.arg("--");
-    cmd.arg(&src);
-    cmd.arg(snapshot.path());
-
-    let status = cmd
-        .status()
-        .context("Failed to spawn rsync for working directory snapshot")?;
-    if !status.success() {
-        return Err(anyhow!("rsync failed with exit code {:?}", status.code()));
-    }
-    info!(
-        "Snapshotted working directory into {} (excluded {} .dockerignore pattern(s))",
-        snapshot.path().display(),
-        ignore_patterns.len(),
-    );
-    Ok(snapshot)
-}
-
 /// Discover tests concurrently with provider preparation, signalling completion.
 async fn discover_with_signal(
     framework: &FrameworkConfig,
@@ -417,8 +349,9 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
-/// Shared logic for Default and Modal provider arms: prewarm image cache,
-/// concurrent discovery, fallback to full build, and framework dispatch.
+/// Shared logic for Default and Modal provider arms: concurrent discovery +
+/// prepare (which internally handles cache resolution, thin-diff, and
+/// full-build fallback), then framework dispatch.
 #[allow(clippy::too_many_arguments)]
 async fn run_remote_provider<P: SandboxProvider>(
     repo: &Path,
@@ -435,91 +368,43 @@ async fn run_remote_provider<P: SandboxProvider>(
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
-    let prewarm_ctx = image_cache::PrewarmContext {
+    let prepare_ctx = PrepareContext {
+        copy_dirs: copy_dir_tuples,
+        sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
         repo,
         config,
         config_path,
-        copy_dir_tuples,
         no_cache,
         tracer,
         discovery_done: &discovery_done,
     };
 
-    // Run discovery concurrently with the prewarm pipeline
-    let (all_tests, prewarm_result) = tokio::try_join!(
+    let (all_tests, _) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
-        provider.prewarm_image_cache(&prewarm_ctx),
+        async {
+            provider
+                .prepare(&prepare_ctx)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
     )?;
 
-    match prewarm_result {
-        image_cache::PrewarmOutcome::Resolved { .. } => {
-            // Provider already has image_id set internally
-            if all_tests.is_empty() {
-                return Ok(None);
-            }
-            dispatch_framework(
-                config,
-                &all_tests,
-                provider,
-                copy_dirs,
-                verbose,
-                tracer,
-                show_estimated_cost,
-                fail_fast,
-            )
-            .await
-            .map(Some)
-        }
-        image_cache::PrewarmOutcome::CacheMiss { base_sha } => {
-            // Stage 3: Full build -- snapshot working dir, prepare from scratch
-            let provider_label = match &config.provider {
-                ProviderConfig::Local(_) => "Local",
-                ProviderConfig::Default(_) => "Default",
-                ProviderConfig::Modal(_) => "Modal",
-            };
-
-            let context_snapshot = snapshot_working_directory(tracer)?;
-
-            let prepare_result = {
-                let _span = tracer.span(
-                    "image_prepare",
-                    "local",
-                    offload::trace::PID_LOCAL,
-                    offload::trace::TID_MAIN,
-                );
-                with_retry!(provider.prepare(
-                    copy_dir_tuples,
-                    no_cache,
-                    config.offload.sandbox_init_cmd.as_deref(),
-                    Some(&discovery_done),
-                    Some(context_snapshot.path()),
-                ))
-                .context(format!("Failed to prepare {} provider", provider_label))?
-            };
-
-            // Write cache note for the full build if caching is enabled.
-            if !no_cache && let (Some(sha), Some(image_id)) = (&base_sha, prepare_result.as_deref())
-            {
-                image_cache::write_note_for_commit(repo, sha, image_id, config_path).await;
-            }
-
-            if all_tests.is_empty() {
-                return Ok(None);
-            }
-            dispatch_framework(
-                config,
-                &all_tests,
-                provider,
-                copy_dirs,
-                verbose,
-                tracer,
-                show_estimated_cost,
-                fail_fast,
-            )
-            .await
-            .map(Some)
-        }
+    if all_tests.is_empty() {
+        return Ok(None);
     }
+
+    dispatch_framework(
+        config,
+        &all_tests,
+        provider,
+        copy_dirs,
+        verbose,
+        tracer,
+        show_estimated_cost,
+        fail_fast,
+    )
+    .await
+    .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
