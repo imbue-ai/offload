@@ -318,7 +318,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             Some(result) => result,
             None => {
                 // Cancelled - return early without recording results
-                warn!(
+                info!(
                     "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
                     sandbox_id, expected_count
                 );
