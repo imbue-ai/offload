@@ -41,6 +41,16 @@ pub enum BatchOutcome {
     Cancelled,
 }
 
+/// Outcome of a streaming command execution.
+enum ExecStreamOutcome {
+    /// Command completed (possibly with non-zero exit code).
+    Completed(crate::provider::ExecResult),
+    /// Execution was cancelled via the cancellation token.
+    Cancelled,
+    /// Command exceeded its timeout and was killed.
+    TimedOut,
+}
+
 /// Configuration for downloading artifacts from sandboxes after test execution.
 pub struct ArtifactConfig {
     /// Glob patterns for files to download. Empty means no downloads.
@@ -188,12 +198,11 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Execute command with streaming, collecting output.
     ///
     /// The `output_id` is passed to the output callback to identify the source.
-    /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
-    ) -> Result<Option<crate::provider::ExecResult>> {
+    ) -> Result<ExecStreamOutcome> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -211,14 +220,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             select! {
                 _ = self.cancellation_token.cancelled() => {
                     debug!("Test execution cancelled (all tests passed)");
-                    return Ok(None);
+                    return Ok(ExecStreamOutcome::Cancelled);
                     // child is dropped here, killing the process (kill_on_drop)
                 }
                 _ = &mut timeout_sleep => {
                     let secs = timeout_duration.as_secs();
                     warn!("Test execution timed out after {}s", secs);
                     // child is dropped here, killing the process (kill_on_drop)
-                    anyhow::bail!("Test execution timed out after {secs}s");
+                    return Ok(ExecStreamOutcome::TimedOut);
                 }
                 line = stream.next() => {
                     match line {
@@ -242,7 +251,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             Err(_) => -1,
         };
 
-        Ok(Some(crate::provider::ExecResult {
+        Ok(ExecStreamOutcome::Completed(crate::provider::ExecResult {
             exit_code,
             stdout,
             stderr,
@@ -327,9 +336,9 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.sandbox_pid,
             crate::trace::TID_EXEC,
         );
-        let exec_result = match self.exec_with_streaming(&cmd, "batch").await {
-            Ok(Some(result)) => result,
-            Ok(None) => {
+        let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
+            ExecStreamOutcome::Completed(result) => result,
+            ExecStreamOutcome::Cancelled => {
                 // Cancelled - return early without recording results
                 info!(
                     "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
@@ -337,7 +346,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 );
                 return Ok(BatchOutcome::Cancelled);
             }
-            Err(e) if e.to_string().contains("timed out") && tests.len() == 1 => {
+            ExecStreamOutcome::TimedOut if tests.len() == 1 => {
                 // Singleton batch timeout: record the test as a failure in the
                 // completion tracker so it counts as decided.
                 let test_id = tests[0].id();
@@ -352,7 +361,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 }
                 return Ok(BatchOutcome::Failure);
             }
-            Err(e) => return Err(e),
+            ExecStreamOutcome::TimedOut => {
+                return Err(anyhow::anyhow!(
+                    "Test execution timed out after {}s",
+                    self.timeout.as_secs()
+                ));
+            }
         };
         drop(_exec_span);
 
@@ -591,9 +605,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let tar_cmd = crate::provider::Command::new("sh").arg("-c").arg(&pipeline);
 
         match self.exec_with_streaming(&tar_cmd, "artifacts").await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+            Ok(ExecStreamOutcome::Completed(_)) => {}
+            Ok(ExecStreamOutcome::Cancelled) => {
                 debug!("[ARTIFACTS] Sandbox {} cancelled", sandbox_id);
+                return;
+            }
+            Ok(ExecStreamOutcome::TimedOut) => {
+                warn!("[ARTIFACTS] Sandbox {} find+tar timed out", sandbox_id);
                 return;
             }
             Err(e) => {
@@ -821,14 +839,11 @@ mod tests {
         // Command with a 2-second timeout running sleep 60
         let cmd = crate::provider::Command::new("sleep").arg("60").timeout(2);
 
-        let result = runner.exec_with_streaming(&cmd, "timeout-test").await;
+        let result = runner.exec_with_streaming(&cmd, "timeout-test").await?;
 
-        assert!(result.is_err(), "Expected timeout error, got Ok");
-        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
-            err.contains("timed out"),
-            "Expected error to contain 'timed out', got: {}",
-            err
+            matches!(result, ExecStreamOutcome::TimedOut),
+            "Expected ExecStreamOutcome::TimedOut"
         );
         Ok(())
     }
@@ -855,10 +870,18 @@ mod tests {
 
         let result = runner.exec_with_streaming(&cmd, "no-timeout-test").await?;
 
-        let exec_result =
-            result.ok_or_else(|| anyhow::anyhow!("Expected Some result, got None (cancelled)"))?;
-        assert_eq!(exec_result.exit_code, 0);
-        assert!(exec_result.stdout.contains("hello"));
+        match result {
+            ExecStreamOutcome::Completed(exec_result) => {
+                assert_eq!(exec_result.exit_code, 0);
+                assert!(exec_result.stdout.contains("hello"));
+            }
+            ExecStreamOutcome::Cancelled => {
+                return Err(anyhow::anyhow!("Expected Completed, got Cancelled"));
+            }
+            ExecStreamOutcome::TimedOut => {
+                return Err(anyhow::anyhow!("Expected Completed, got TimedOut"));
+            }
+        }
         Ok(())
     }
 
