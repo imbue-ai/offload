@@ -152,18 +152,15 @@ pub struct MasterJunitReport {
     test_outcomes: HashMap<TestId, TestStatus>,
     /// Total number of unique test IDs expected (for early stopping)
     total_expected: usize,
-    /// Format string for constructing test IDs from JUnit XML attributes.
-    test_id_format: String,
 }
 
 impl MasterJunitReport {
     /// Creates a new master report expecting the given number of unique test IDs.
-    pub fn new(total_expected: usize, test_id_format: &str) -> Self {
+    pub fn new(total_expected: usize) -> Self {
         Self {
             testsuites: Vec::new(),
             test_outcomes: HashMap::new(),
             total_expected,
-            test_id_format: test_id_format.to_string(),
         }
     }
 
@@ -302,17 +299,15 @@ impl MasterJunitReport {
 
     /// Returns true if the test with the given full ID has already passed or is flaky.
     ///
-    /// Reconstructs the full test ID from JUnit XML classname/name attributes
-    /// using the configured `test_id_format` before comparing.
+    /// After merge, testcases are rewritten so that `name` contains the
+    /// canonical test ID and `classname` is `None`. This method compares
+    /// directly against `name`.
     pub fn has_test_passed(&self, test_id: &str) -> bool {
-        self.test_outcomes.iter().any(|(id, status)| {
-            let full_id = crate::config::format_test_id(
-                &self.test_id_format,
-                &id.name,
-                id.classname.as_deref(),
-            );
-            full_id == test_id && (*status == TestStatus::Passed || *status == TestStatus::Flaky)
-        })
+        let key = TestId::new(None, test_id.to_string());
+        matches!(
+            self.test_outcomes.get(&key),
+            Some(TestStatus::Passed | TestStatus::Flaky)
+        )
     }
 
     /// Total number of raw testcases across all testsuites.
@@ -624,12 +619,13 @@ pub type SharedJunitReport = Arc<Mutex<MasterJunitReport>>;
 
 /// Loads test durations from an existing JUnit XML file.
 ///
+/// Assumes the master JUnit XML was written by Offload with canonical test
+/// IDs in the `name` attribute and no `classname`. The `name` attribute is
+/// used directly as the test ID.
+///
 /// If a test ID appears across multiple testsuites (retries), the max
 /// duration is kept for conservative scheduling estimates.
-pub fn load_test_durations(
-    junit_path: &Path,
-    test_id_format: &str,
-) -> HashMap<String, std::time::Duration> {
+pub fn load_test_durations(junit_path: &Path) -> HashMap<String, std::time::Duration> {
     let mut durations = HashMap::new();
 
     let content = match std::fs::read_to_string(junit_path) {
@@ -650,15 +646,9 @@ pub fn load_test_durations(
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) if e.name().as_ref() == b"testcase" => {
                 let name = get_attr(&e, b"name");
-                let classname = get_attr(&e, b"classname");
                 let time = get_attr_f64(&e, b"time");
 
-                if let Some(test_name) = name {
-                    let test_id = crate::config::format_test_id(
-                        test_id_format,
-                        &test_name,
-                        classname.as_deref(),
-                    );
+                if let Some(test_id) = name {
                     let duration = std::time::Duration::from_secs_f64(time);
                     durations
                         .entry(test_id)
@@ -677,10 +667,9 @@ pub fn load_test_durations(
     }
 
     info!(
-        "Loaded {} test durations from {} using format '{}'",
+        "Loaded {} test durations from {}",
         durations.len(),
         junit_path.display(),
-        test_id_format
     );
 
     if !durations.is_empty() {
@@ -709,7 +698,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_something" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert_eq!(report.total_count(), 1);
@@ -726,7 +715,7 @@ mod tests {
     </testcase>
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert_eq!(report.total_count(), 1);
@@ -748,7 +737,7 @@ mod tests {
     <testcase classname="foo.bar" name="test_flaky" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml_fail, &[]).is_ok());
         assert_eq!(report.failed_count(), 1);
 
@@ -769,7 +758,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert_eq!(report.total_count(), 1); // 1 unique test ID
@@ -790,7 +779,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.3" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert_eq!(report.total_count(), 1);
@@ -815,7 +804,7 @@ mod tests {
     <testcase classname="a.test.ts:5" name="suite > dup" time="0.2" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml_fail, &[]).is_ok());
         assert_eq!(report.failed_count(), 1);
 
@@ -826,62 +815,49 @@ mod tests {
     }
 
     #[test]
-    fn test_has_test_passed_name_only_format() {
+    fn test_has_test_passed_canonical_format() {
+        // Offload's master JUnit XML uses name=canonical_test_id, no classname
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="test" tests="2" failures="0">
-    <testcase classname="foo.bar" name="test_alpha" time="0.1" />
-    <testcase classname="foo.bar" name="test_beta" time="0.2" />
+    <testcase name="test_alpha" time="0.1" />
+    <testcase name="test_beta" time="0.2" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(2, "{name}");
+        let mut report = MasterJunitReport::new(2);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert!(report.has_test_passed("test_alpha"));
         assert!(report.has_test_passed("test_beta"));
         assert!(!report.has_test_passed("test_gamma")); // unknown
-        assert!(!report.has_test_passed("foo.bar")); // classname, not name
     }
 
     #[test]
-    fn test_has_test_passed_classname_space_name_format() {
+    fn test_has_test_passed_with_batch_ids() {
+        // When batch_test_ids are provided, testcases are rewritten to
+        // canonical form (name=resolved_id, classname=None)
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="test" tests="1" failures="0">
     <testcase classname="my_binary" name="tests::test_something" time="0.5" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{classname} {name}");
-        assert!(report.add_junit_xml(xml, &[]).is_ok());
+        let mut report = MasterJunitReport::new(1);
+        let batch_ids = vec!["my_binary tests::test_something".to_string()];
+        assert!(report.add_junit_xml(xml, &batch_ids).is_ok());
 
         assert!(report.has_test_passed("my_binary tests::test_something"));
-        assert!(!report.has_test_passed("tests::test_something")); // name alone
-        assert!(!report.has_test_passed("my_binary")); // classname alone
-    }
-
-    #[test]
-    fn test_has_test_passed_classname_separator_name_format() {
-        let xml = r#"<?xml version="1.0"?>
-<testsuite name="test" tests="1" failures="0">
-    <testcase classname="com.example" name="testFoo" time="0.1" />
-</testsuite>"#;
-
-        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
-        assert!(report.add_junit_xml(xml, &[]).is_ok());
-
-        assert!(report.has_test_passed("com.example::testFoo"));
-        assert!(!report.has_test_passed("testFoo"));
-        assert!(!report.has_test_passed("com.example"));
+        assert!(!report.has_test_passed("tests::test_something")); // partial ID
     }
 
     #[test]
     fn test_has_test_passed_failed_test_returns_false() {
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="test" tests="1" failures="1">
-    <testcase classname="foo" name="test_fail" time="0.1">
+    <testcase name="test_fail" time="0.1">
         <failure message="oops">stack trace</failure>
     </testcase>
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
         assert!(!report.has_test_passed("test_fail"));
@@ -891,17 +867,17 @@ mod tests {
     fn test_has_test_passed_flaky_test_returns_true() {
         let xml_fail = r#"<?xml version="1.0"?>
 <testsuite name="batch1" tests="1" failures="1">
-    <testcase classname="foo" name="test_flaky" time="0.1">
+    <testcase name="test_flaky" time="0.1">
         <failure message="oops">stack</failure>
     </testcase>
 </testsuite>"#;
 
         let xml_pass = r#"<?xml version="1.0"?>
 <testsuite name="batch2" tests="1" failures="0">
-    <testcase classname="foo" name="test_flaky" time="0.1" />
+    <testcase name="test_flaky" time="0.1" />
 </testsuite>"#;
 
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml_fail, &[]).is_ok());
         assert!(!report.has_test_passed("test_flaky"));
 
@@ -911,17 +887,16 @@ mod tests {
 
     #[test]
     fn test_has_test_passed_no_classname_in_xml() {
+        // Canonical format: name is the full test ID, no classname
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="test" tests="1" failures="0">
     <testcase name="test_solo" time="0.1" />
 </testsuite>"#;
 
-        // With {classname}::{name} format but no classname in XML
-        let mut report = MasterJunitReport::new(1, "{classname}::{name}");
+        let mut report = MasterJunitReport::new(1);
         assert!(report.add_junit_xml(xml, &[]).is_ok());
 
-        assert!(report.has_test_passed("::test_solo")); // classname is empty
-        assert!(!report.has_test_passed("test_solo")); // no match without ::
+        assert!(report.has_test_passed("test_solo"));
     }
 
     #[test]
@@ -942,12 +917,13 @@ mod tests {
     fn test_load_test_durations() -> anyhow::Result<()> {
         use std::io::Write;
 
+        // Canonical format: name=test_id, no classname
         let xml = r#"<?xml version="1.0"?>
 <testsuites>
   <testsuite name="test">
-    <testcase name="test_fast" classname="foo" time="0.5" />
-    <testcase name="test_slow" classname="foo" time="10.0" />
-    <testcase name="test_medium" classname="foo" time="2.5" />
+    <testcase name="test_fast" time="0.5" />
+    <testcase name="test_slow" time="10.0" />
+    <testcase name="test_medium" time="2.5" />
   </testsuite>
 </testsuites>"#;
 
@@ -956,7 +932,7 @@ mod tests {
         let mut file = std::fs::File::create(&path)?;
         file.write_all(xml.as_bytes())?;
 
-        let durations = load_test_durations(&path, "{name}");
+        let durations = load_test_durations(&path);
 
         assert_eq!(durations.len(), 3);
         assert_eq!(
@@ -978,13 +954,14 @@ mod tests {
     fn test_load_test_durations_uses_max_for_duplicates() -> anyhow::Result<()> {
         use std::io::Write;
 
+        // Canonical format: name=test_id, no classname
         let xml = r#"<?xml version="1.0"?>
 <testsuites>
   <testsuite name="batch1">
-    <testcase name="test_flaky" classname="foo" time="1.0" />
+    <testcase name="test_flaky" time="1.0" />
   </testsuite>
   <testsuite name="batch2">
-    <testcase name="test_flaky" classname="foo" time="3.0" />
+    <testcase name="test_flaky" time="3.0" />
   </testsuite>
 </testsuites>"#;
 
@@ -993,7 +970,7 @@ mod tests {
         let mut file = std::fs::File::create(&path)?;
         file.write_all(xml.as_bytes())?;
 
-        let durations = load_test_durations(&path, "{name}");
+        let durations = load_test_durations(&path);
 
         assert_eq!(durations.len(), 1);
         assert_eq!(
@@ -1005,7 +982,7 @@ mod tests {
 
     #[test]
     fn test_load_test_durations_nonexistent_file() {
-        let durations = load_test_durations(Path::new("/nonexistent/path/junit.xml"), "{name}");
+        let durations = load_test_durations(Path::new("/nonexistent/path/junit.xml"));
         assert!(durations.is_empty());
     }
 
@@ -1035,7 +1012,7 @@ mod tests {
 
     #[test]
     fn test_known_test_ids_no_warning() {
-        let mut report = MasterJunitReport::new(2, "{name}");
+        let mut report = MasterJunitReport::new(2);
 
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="test" tests="2" failures="0">
@@ -1111,7 +1088,7 @@ mod tests {
 
     #[test]
     fn test_add_junit_xml_with_batch_ids() {
-        let mut report = MasterJunitReport::new(1, "{name}");
+        let mut report = MasterJunitReport::new(1);
 
         let xml = r#"<?xml version="1.0"?>
 <testsuite name="pytest" tests="1" failures="0">
