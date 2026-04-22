@@ -86,7 +86,7 @@ Create `offload.toml` at the project root using the Modal provider. In the templ
 [offload]
 max_parallel = 3
 test_timeout_secs = 120
-sandbox_project_root = "/app"
+sandbox_repo_root = "/app"
 
 [provider]
 type = "modal"
@@ -123,7 +123,7 @@ Do not add `sandbox_init_cmd` initially. If you observe that every sandbox runs 
 [offload]
 max_parallel = 3
 test_timeout_secs = 120
-sandbox_project_root = "/app"
+sandbox_repo_root = "/app"
 sandbox_init_cmd = "uv sync --all-packages"   # runs once at image build time
 ```
 
@@ -152,12 +152,12 @@ run_command = "cd /app && uv run pytest -v --tb=short --no-cov -p no:xdist -o ad
 test_id_format = "{name}"
 ```
 
-If `sandbox_project_root` points to a subdirectory (e.g. `/app/mypackage`) because pytest must run from there, add `sandbox_repo_root` so thin-diff patches apply at the actual repo root:
+In monorepo setups where tests run from a subdirectory, add `sandbox_project_root` to set the test working directory separately from the repo root:
 
 ```toml
 [offload]
-sandbox_project_root = "/app/mypackage"
 sandbox_repo_root = "/app"
+sandbox_project_root = "/app/mypackage"
 
 [framework]
 type = "pytest"
@@ -173,8 +173,8 @@ Configuration reference for fields used above:
 **`[offload]`**
 - `max_parallel`: Number of concurrent Modal sandboxes (start with 3, optimize later)
 - `test_timeout_secs`: Per-test-batch timeout in seconds (120s is generous for unit tests)
-- `sandbox_project_root`: Working directory for test execution on the sandbox, exported as `OFFLOAD_ROOT`. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set
-- `sandbox_repo_root`: Repository root path on the sandbox, used for thin-diff patch application. Only needed in monorepo setups where tests run from a subdirectory. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set
+- `sandbox_repo_root`: Path to the repository root inside the sandbox (e.g. `/app`). Used for thin-diff patches and as the default test working directory (`OFFLOAD_ROOT`)
+- `sandbox_project_root`: (optional) Working directory for test execution, if different from `sandbox_repo_root`. Only needed in monorepo setups where tests run from a subdirectory
 - `sandbox_init_cmd`: Optional command to run during image build, after cwd/copy-dirs are applied (e.g. `"uv sync --all-packages"`)
 
 **`[provider]`** (Modal)
@@ -244,7 +244,7 @@ exec offload run --copy-dir ".:/app" "$@"
 
 Make it executable with `chmod +x scripts/offload-tests.sh`.
 
-The `--copy-dir` flag tells Offload to bake the local directory into the sandbox image at the given path during the prepare step. The target path must match `sandbox_project_root` in `offload.toml` (e.g. `".:/app"` when `sandbox_project_root = "/app"`). This is specified at invocation time, not in `offload.toml`, because it depends on where you're running from.
+The `--copy-dir` flag tells Offload to bake the local directory into the sandbox image at the given path during the prepare step. The target path must match `sandbox_repo_root` in `offload.toml` (e.g. `".:/app"` when `sandbox_repo_root = "/app"`). This is specified at invocation time, not in `offload.toml`, because it depends on where you're running from.
 
 **Use this script (or the equivalent invocation) for all subsequent steps that run Offload.**
 
@@ -474,7 +474,7 @@ jobs:
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: offload run --copy-dir ".:/app"  # adjust path to match sandbox_project_root
+        run: offload run --copy-dir ".:/app"  # adjust path to match sandbox_repo_root
 ```
 
 **IMPORTANT**: The CI runner needs the project's language toolchain and dependencies installed because Offload discovers tests **locally** (e.g. `uv -m pytest --collect-only`), then sends them to Modal for execution. Without local discovery dependencies, Offload will fail with "No such file or directory".

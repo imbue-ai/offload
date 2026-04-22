@@ -3,7 +3,7 @@
 [offload]
 max_parallel = 4
 test_timeout_secs = 600
-sandbox_project_root = "/app"
+sandbox_repo_root = "/app"
 
 [provider]
 type = "default"

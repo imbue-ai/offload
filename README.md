@@ -255,11 +255,11 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `max_parallel` | integer | `10` | Maximum number of parallel sandboxes |
 | `test_timeout_secs` | integer | `900` | Timeout per test batch in seconds |
 | `working_dir` | string | (cwd) | Working directory for test execution |
-| `sandbox_project_root` | string | (none) | Working directory for test execution on the sandbox (exported as `OFFLOAD_ROOT`). At least one of `sandbox_project_root` or `sandbox_repo_root` must be set. When only one is provided, it is used for both |
-| `sandbox_repo_root` | string | (none) | Repository root path on the sandbox, used for applying thin-diff patches. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set. When only one is provided, it is used for both |
+| `sandbox_repo_root` | string | (none) | Path to the repository root inside the sandbox (e.g. `/app`). Used for thin-diff patches and as the default test working directory (`OFFLOAD_ROOT`) |
+| `sandbox_project_root` | string | (none) | Working directory for test execution, if different from `sandbox_repo_root`. Only needed in monorepo setups where tests run from a subdirectory (e.g. `/app/mypackage`) |
 | `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
 
-Most projects only need `sandbox_project_root`. Add `sandbox_repo_root` in monorepo setups where tests run from a subdirectory (e.g. `/app/mypackage`) but the repository root is elsewhere (e.g. `/app`), since thin-diff patches contain repo-root-relative paths.
+Set `sandbox_repo_root` to tell Offload where the codebase lives in the sandbox. In monorepo setups where tests run from a subdirectory, also set `sandbox_project_root` to that subdirectory.
 
 ### `[provider]` -- Execution Provider
 
@@ -403,7 +403,7 @@ Example configuration files are included in the repository root.
 [offload]
 max_parallel = 4
 test_timeout_secs = 300
-sandbox_project_root = "."
+sandbox_repo_root = "."
 
 [provider]
 type = "local"
@@ -425,7 +425,7 @@ output_dir = "test-results"
 [offload]
 max_parallel = 4
 test_timeout_secs = 600
-sandbox_project_root = "/app"
+sandbox_repo_root = "/app"
 
 [provider]
 type = "default"
@@ -464,7 +464,7 @@ output_dir = "test-results"
 [offload]
 max_parallel = 4
 test_timeout_secs = 600
-sandbox_project_root = "/app"
+sandbox_repo_root = "/app"
 
 [provider]
 type = "modal"
@@ -487,7 +487,7 @@ output_dir = "test-results"
 [offload]
 max_parallel = 40
 test_timeout_secs = 60
-sandbox_project_root = "/code/mng"
+sandbox_repo_root = "/code/mng"
 sandbox_init_cmd = "git apply /offload-upload/patch --allow-empty && uv sync --all-packages"
 
 [provider]

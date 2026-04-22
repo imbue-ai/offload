@@ -3,7 +3,7 @@
 [offload]
 max_parallel = 2
 test_timeout_secs = 60
-sandbox_project_root = "."
+sandbox_repo_root = "."
 
 [provider]
 type = "local"

@@ -61,30 +61,23 @@ pub struct OffloadConfig {
     /// the current working directory is used.
     pub working_dir: Option<PathBuf>,
 
-    /// Project root path on the remote sandbox.
+    /// Path to the repository root inside the sandbox.
     ///
-    /// Exported as `OFFLOAD_ROOT` environment variable in the sandbox.
-    /// Sets the working directory for test execution. In monorepo setups
-    /// where tests run from a subdirectory, set this to the subdirectory
-    /// (e.g. `/app/mypackage`) and `sandbox_repo_root` to the actual
-    /// repository root (e.g. `/app`).
-    ///
-    /// At least one of `sandbox_project_root` or `sandbox_repo_root` must
-    /// be set. When only one is provided, it is used for both purposes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_project_root: Option<String>,
-
-    /// Repository root path on the remote sandbox.
-    ///
-    /// Used for applying thin-diff patches, which contain repo-root-relative
-    /// paths. In monorepo setups, set this to the repository root (e.g.
-    /// `/app`) and `sandbox_project_root` to the subdirectory where tests
-    /// run.
-    ///
-    /// At least one of `sandbox_project_root` or `sandbox_repo_root` must
-    /// be set. When only one is provided, it is used for both purposes.
+    /// This is the primary path setting — it tells Offload where the
+    /// codebase lives in the sandbox container. Used for applying thin-diff
+    /// patches and as the default working directory for test execution
+    /// (exported as `OFFLOAD_ROOT`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_repo_root: Option<String>,
+
+    /// Working directory for test execution, if different from the repo root.
+    ///
+    /// Only needed in monorepo setups where tests must run from a
+    /// subdirectory (e.g. `/app/mypackage` while the repo root is `/app`).
+    /// When set, this is exported as `OFFLOAD_ROOT` instead of
+    /// `sandbox_repo_root`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_project_root: Option<String>,
 
     /// Optional command to run during image build, after cwd/copy-dirs are applied.
     #[serde(default)]
