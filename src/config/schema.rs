@@ -63,10 +63,28 @@ pub struct OffloadConfig {
 
     /// Project root path on the remote sandbox.
     ///
-    /// Exported as OFFLOAD_ROOT environment variable in the sandbox.
-    /// Used by test frameworks to compute paths relative to the project root,
-    /// ensuring JUnit XML classnames match the test IDs from discovery.
-    pub sandbox_project_root: String,
+    /// Exported as `OFFLOAD_ROOT` environment variable in the sandbox.
+    /// Sets the working directory for test execution. In monorepo setups
+    /// where tests run from a subdirectory, set this to the subdirectory
+    /// (e.g. `/app/mypackage`) and `sandbox_repo_root` to the actual
+    /// repository root (e.g. `/app`).
+    ///
+    /// At least one of `sandbox_project_root` or `sandbox_repo_root` must
+    /// be set. When only one is provided, it is used for both purposes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_project_root: Option<String>,
+
+    /// Repository root path on the remote sandbox.
+    ///
+    /// Used for applying thin-diff patches, which contain repo-root-relative
+    /// paths. In monorepo setups, set this to the repository root (e.g.
+    /// `/app`) and `sandbox_project_root` to the subdirectory where tests
+    /// run.
+    ///
+    /// At least one of `sandbox_project_root` or `sandbox_repo_root` must
+    /// be set. When only one is provided, it is used for both purposes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
 
     /// Optional command to run during image build, after cwd/copy-dirs are applied.
     #[serde(default)]
@@ -378,19 +396,6 @@ impl FrameworkConfig {
             FrameworkConfig::Vitest(config) => &config.test_id_format,
         }
     }
-
-    /// Returns the sandbox repo root override, if configured.
-    ///
-    /// When set, this overrides `sandbox_project_root` for thin-diff patch
-    /// application in monorepo setups.
-    pub fn sandbox_repo_root(&self) -> Option<&str> {
-        match self {
-            FrameworkConfig::Pytest(c) => c.sandbox_repo_root.as_deref(),
-            FrameworkConfig::Cargo(c) => c.sandbox_repo_root.as_deref(),
-            FrameworkConfig::Default(c) => c.sandbox_repo_root.as_deref(),
-            FrameworkConfig::Vitest(c) => c.sandbox_repo_root.as_deref(),
-        }
-    }
 }
 
 /// Configuration for pytest test framework.
@@ -421,15 +426,6 @@ pub struct PytestFrameworkConfig {
     /// Default: `"{name}"` (pytest typically includes full path in name)
     #[serde(default = "default_pytest_test_id_format")]
     pub test_id_format: String,
-
-    /// Override for the repository root path inside the sandbox container.
-    ///
-    /// Use this in monorepo setups where the test framework runs from a
-    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
-    /// relative to the repository root. If not set, `sandbox_project_root`
-    /// is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_repo_root: Option<String>,
 }
 
 fn default_pytest_command() -> String {
@@ -470,15 +466,6 @@ pub struct VitestFrameworkConfig {
     /// Default: `"{classname} > {name}"`
     #[serde(default = "default_vitest_test_id_format")]
     pub test_id_format: String,
-
-    /// Override for the repository root path inside the sandbox container.
-    ///
-    /// Use this in monorepo setups where the test framework runs from a
-    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
-    /// relative to the repository root. If not set, `sandbox_project_root`
-    /// is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_repo_root: Option<String>,
 }
 
 impl Default for VitestFrameworkConfig {
@@ -487,7 +474,6 @@ impl Default for VitestFrameworkConfig {
             command: default_vitest_command(),
             run_args: None,
             test_id_format: default_vitest_test_id_format(),
-            sandbox_repo_root: None,
         }
     }
 }
@@ -528,15 +514,6 @@ pub struct CargoFrameworkConfig {
     /// Default: `"{classname} {name}"` (cargo/nextest uses classname as binary name)
     #[serde(default = "default_cargo_test_id_format")]
     pub test_id_format: String,
-
-    /// Override for the repository root path inside the sandbox container.
-    ///
-    /// Use this in monorepo setups where the test framework runs from a
-    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
-    /// relative to the repository root. If not set, `sandbox_project_root`
-    /// is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_repo_root: Option<String>,
 }
 
 /// Configuration for generic/custom test framework.
@@ -584,15 +561,6 @@ pub struct DefaultFrameworkConfig {
     /// This field is required for the default framework as the format varies
     /// by test runner.
     pub test_id_format: String,
-
-    /// Override for the repository root path inside the sandbox container.
-    ///
-    /// Use this in monorepo setups where the test framework runs from a
-    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
-    /// relative to the repository root. If not set, `sandbox_project_root`
-    /// is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_repo_root: Option<String>,
 }
 
 /// Configuration for image checkpointing.
@@ -776,7 +744,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -808,7 +777,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -838,7 +808,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -851,7 +822,6 @@ mod tests {
                 test_id_format: "{name}".into(),
                 result_file: None,
                 working_dir: None,
-                sandbox_repo_root: None,
             }),
             groups: HashMap::from([(
                 "default".to_string(),
@@ -1013,7 +983,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {

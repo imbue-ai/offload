@@ -314,11 +314,13 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     } else {
         Some(ctx.config_path)
     };
+    // Both roots are guaranteed Some after config validation/normalization.
     let patch_root = ctx
         .config
-        .framework
-        .sandbox_repo_root()
-        .unwrap_or(&ctx.config.offload.sandbox_project_root);
+        .offload
+        .sandbox_repo_root
+        .as_deref()
+        .unwrap_or("");
 
     // --- Stage 1: Cache hit -- thin diff on cached image ---
     if let Some(cached_id) = resolved.cached_image_id.as_deref() {

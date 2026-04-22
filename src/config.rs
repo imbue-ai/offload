@@ -47,7 +47,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     expand_provider_env(&mut config.provider)?;
-    validate_config(&config)?;
+    validate_config(&mut config)?;
 
     Ok(config)
 }
@@ -70,7 +70,7 @@ pub fn load_config_str(content: &str) -> Result<Config> {
     let mut config: Config = toml::from_str(content).context("Failed to parse config")?;
 
     expand_provider_env(&mut config.provider)?;
-    validate_config(&config)?;
+    validate_config(&mut config)?;
 
     Ok(config)
 }
@@ -94,7 +94,22 @@ fn normalize_path(raw: &str) -> PathBuf {
 /// Returns an error if:
 /// - No groups are defined
 /// - Default framework's `discover_command` is missing the `{filters}` placeholder
-fn validate_config(config: &Config) -> Result<()> {
+fn validate_config(config: &mut Config) -> Result<()> {
+    // Require at least one sandbox root
+    if config.offload.sandbox_project_root.is_none() && config.offload.sandbox_repo_root.is_none() {
+        anyhow::bail!(
+            "At least one of sandbox_project_root or sandbox_repo_root must be set in [offload]."
+        );
+    }
+
+    // Normalize: fill in whichever root is missing so both are always Some.
+    if config.offload.sandbox_repo_root.is_none() {
+        config.offload.sandbox_repo_root = config.offload.sandbox_project_root.clone();
+    }
+    if config.offload.sandbox_project_root.is_none() {
+        config.offload.sandbox_project_root = config.offload.sandbox_repo_root.clone();
+    }
+
     // Require at least one group
     if config.groups.is_empty() {
         anyhow::bail!(

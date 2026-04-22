@@ -639,7 +639,11 @@ where
     let mut env = provider.base_env();
     env.push((
         "OFFLOAD_ROOT".to_string(),
-        config.offload.sandbox_project_root.clone(),
+        config
+            .offload
+            .sandbox_project_root
+            .clone()
+            .unwrap_or_default(),
     ));
 
     let sandbox_config = SandboxConfig {
@@ -796,7 +800,6 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             test_id_format: "{name}".into(),
             result_file: None,
             working_dir: None,
-            sandbox_repo_root: None,
         }),
         "vitest" => FrameworkConfig::Vitest(VitestFrameworkConfig {
             command: "npx vitest".into(),
@@ -817,7 +820,8 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             max_parallel: 10,
             test_timeout_secs: 900,
             working_dir: None,
-            sandbox_project_root: "/app".to_string(),
+            sandbox_project_root: Some("/app".to_string()),
+            sandbox_repo_root: None,
             sandbox_init_cmd: None,
         },
         provider: provider_config,
