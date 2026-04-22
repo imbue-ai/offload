@@ -12,7 +12,7 @@ use crate::framework::{TestFramework, TestInstance};
 use crate::orchestrator::completion::SharedCompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
-use crate::report::SharedJunitReport;
+use crate::report::{SharedJunitReport, parse_all_testsuites_xml};
 
 /// Count testcases in a JUnit XML string.
 fn count_testcases_in_xml(xml: &str) -> usize {
@@ -447,15 +447,32 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             self.try_download_artifacts().await;
         }
 
+        // Parse JUnit XML into testsuites and resolve test IDs using the framework
+        let batch_ids: Vec<String> = tests.iter().map(|t| t.id().to_string()).collect();
+        let mut testsuites = parse_all_testsuites_xml(&junit_xml);
+
+        if testsuites.is_empty() {
+            warn!(
+                "[BATCH WARN] Sandbox {} parsed 0 testsuites from JUnit XML ({} bytes)",
+                sandbox_id,
+                junit_xml.len()
+            );
+        } else if let Err(e) = self.framework.resolve_test_ids(&mut testsuites, &batch_ids) {
+            error!(
+                "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
+                sandbox_id, e
+            );
+            return Ok(BatchOutcome::Failure);
+        }
+
         // Bookkeeping: update the master JUnit report and completion tracker
         // after artifacts have been downloaded.
-        let batch_ids: Vec<String> = tests.iter().map(|t| t.id().to_string()).collect();
         match self.junit_report.lock() {
             Ok(mut report) => {
                 let before = report.total_count();
-                if let Err(e) = report.add_junit_xml(&junit_xml, &batch_ids) {
+                if let Err(e) = report.add_junit_xml(testsuites) {
                     error!(
-                        "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
+                        "[BATCH ERROR] Sandbox {} failed to add testsuites: {}",
                         sandbox_id, e
                     );
                     return Ok(BatchOutcome::Failure);
@@ -775,6 +792,14 @@ mod tests {
         ) -> crate::provider::Command {
             crate::provider::Command::new("true")
         }
+
+        fn resolve_test_ids(
+            &self,
+            _testsuites: &mut [crate::report::junit::TestsuiteXml],
+            _batch_test_ids: &[String],
+        ) -> crate::framework::FrameworkResult<()> {
+            Ok(())
+        }
     }
 
     /// Helper to create a LocalSandbox via the provider.
@@ -802,9 +827,7 @@ mod tests {
         let tracker = Arc::new(Mutex::new(
             crate::orchestrator::completion::CompletionTracker::new(0),
         ));
-        let junit_report = Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(
-            0, "{name}",
-        )));
+        let junit_report = Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(0)));
         RunnerConfig {
             fail_fast: false,
             parts_dir: parts_dir.to_path_buf(),
@@ -907,6 +930,14 @@ mod tests {
         ) -> crate::provider::Command {
             crate::provider::Command::new("sleep").arg("60")
         }
+
+        fn resolve_test_ids(
+            &self,
+            _testsuites: &mut [crate::report::junit::TestsuiteXml],
+            _batch_test_ids: &[String],
+        ) -> crate::framework::FrameworkResult<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -922,9 +953,7 @@ mod tests {
         let config = RunnerConfig {
             fail_fast: false,
             parts_dir: parts_dir.to_path_buf(),
-            junit_report: Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(
-                0, "{name}",
-            ))),
+            junit_report: Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(0))),
             tracker: Arc::clone(&tracker),
             cancellation_token: CancellationToken::new(),
             artifacts: ArtifactConfig {

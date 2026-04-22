@@ -1,6 +1,6 @@
 //! Vitest framework implementation using `vitest list --json` for discovery.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use super::{
 };
 use crate::config::VitestFrameworkConfig;
 use crate::provider::Command;
+use crate::report::junit::TestsuiteXml;
 
 /// Test framework for JavaScript/TypeScript vitest projects.
 ///
@@ -444,6 +445,32 @@ impl TestFramework for VitestFramework {
         String::from_utf8(writer.into_inner().into_inner()).map_err(|e| {
             super::FrameworkError::ParseError(format!("Failed to encode JUnit XML as UTF-8: {}", e))
         })
+    }
+
+    fn resolve_test_ids(
+        &self,
+        testsuites: &mut [TestsuiteXml],
+        batch_test_ids: &[String],
+    ) -> super::FrameworkResult<()> {
+        let batch_set: HashSet<&str> = batch_test_ids.iter().map(|s| s.as_str()).collect();
+        for testsuite in testsuites.iter_mut() {
+            for testcase in &mut testsuite.testcases {
+                let canonical = format!(
+                    "{} > {}",
+                    testcase.classname.as_deref().unwrap_or(""),
+                    &testcase.name
+                );
+                if !batch_set.contains(canonical.as_str()) {
+                    return Err(super::FrameworkError::Other(anyhow::anyhow!(
+                        "JUnit testcase '{}' not found in batch test IDs",
+                        canonical
+                    )));
+                }
+                testcase.name = canonical;
+                testcase.classname = None;
+            }
+        }
+        Ok(())
     }
 }
 

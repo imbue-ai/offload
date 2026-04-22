@@ -182,7 +182,7 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path, self.config.framework.test_id_format());
+        let durations = load_test_durations(&junit_path);
         drop(_dur_span);
 
         // Ensure output directory exists
@@ -354,7 +354,6 @@ where
         let total_tests_to_run = tests.len();
         let junit_report = Arc::new(std::sync::Mutex::new(MasterJunitReport::new(
             total_tests_to_run,
-            self.config.framework.test_id_format(),
         )));
         let mut tracker = completion::CompletionTracker::new(total_tests_to_run);
         for test in tests {

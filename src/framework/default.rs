@@ -1,5 +1,6 @@
 //! Default framework — custom shell commands for test discovery and execution.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use super::{
 };
 use crate::config::DefaultFrameworkConfig;
 use crate::provider::Command;
+use crate::report::junit::TestsuiteXml;
 
 /// Test framework using custom shell commands.
 ///
@@ -132,5 +134,48 @@ impl TestFramework for DefaultFramework {
         }
 
         cmd
+    }
+
+    fn resolve_test_ids(
+        &self,
+        testsuites: &mut [TestsuiteXml],
+        batch_test_ids: &[String],
+    ) -> FrameworkResult<()> {
+        let batch_set: HashSet<&str> = batch_test_ids.iter().map(|s| s.as_str()).collect();
+        for testsuite in testsuites.iter_mut() {
+            for testcase in &mut testsuite.testcases {
+                let canonical = crate::config::format_test_id(
+                    &self.config.test_id_format,
+                    &testcase.name,
+                    testcase.classname.as_deref(),
+                );
+                if batch_set.contains(canonical.as_str()) {
+                    testcase.name = canonical;
+                    testcase.classname = None;
+                } else {
+                    // Fall back to suffix matching when exact format doesn't match
+                    match super::resolve_test_id_suffix_matching(
+                        &testcase.name,
+                        testcase.classname.as_deref(),
+                        batch_test_ids,
+                    ) {
+                        Ok(resolved) => {
+                            testcase.name = resolved;
+                            testcase.classname = None;
+                        }
+                        Err(msg) => {
+                            return Err(FrameworkError::Other(anyhow::anyhow!(
+                                "JUnit testcase '{}' (format '{}' produced '{}') not resolved: {}",
+                                testcase.name,
+                                self.config.test_id_format,
+                                canonical,
+                                msg
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

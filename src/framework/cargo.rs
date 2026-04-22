@@ -1,6 +1,6 @@
 //! Cargo test framework implementation using `cargo nextest` for discovery.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -12,6 +12,7 @@ use super::{
 };
 use crate::config::CargoFrameworkConfig;
 use crate::provider::Command;
+use crate::report::junit::TestsuiteXml;
 
 /// Minimal representation of `cargo nextest list --message-format json` output.
 #[derive(Deserialize)]
@@ -253,6 +254,32 @@ impl TestFramework for CargoFramework {
         );
 
         Command::new("sh").arg("-c").arg(&shell_cmd)
+    }
+
+    fn resolve_test_ids(
+        &self,
+        testsuites: &mut [TestsuiteXml],
+        batch_test_ids: &[String],
+    ) -> FrameworkResult<()> {
+        let batch_set: HashSet<&str> = batch_test_ids.iter().map(|s| s.as_str()).collect();
+        for testsuite in testsuites.iter_mut() {
+            for testcase in &mut testsuite.testcases {
+                let canonical = format!(
+                    "{} {}",
+                    testcase.classname.as_deref().unwrap_or(""),
+                    &testcase.name
+                );
+                if !batch_set.contains(canonical.as_str()) {
+                    return Err(FrameworkError::Other(anyhow::anyhow!(
+                        "JUnit testcase '{}' not found in batch test IDs",
+                        canonical
+                    )));
+                }
+                testcase.name = canonical;
+                testcase.classname = None;
+            }
+        }
+        Ok(())
     }
 }
 
