@@ -182,7 +182,7 @@ Enable checkpoint mode for repositories where dependency installation or build s
 
 ### Thin diff details
 
-The thin diff is a binary patch generated locally by Rust (`git diff --binary` plus untracked files detected via `git ls-files`). The patch file is passed to the Python script, which applies it inside the sandbox image via `git apply`. The Dockerfile must install `git` for this to work. If the diff is empty and there are no untracked files, the base image is used directly (zero overhead).
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` plus untracked files detected via `git ls-files`). The patch file is passed to the Python script, which applies it inside the sandbox image via `git apply --3way`. The Dockerfile must install `git` for this to work. If the diff is empty and there are no untracked files, the base image is used directly (zero overhead). Patch paths are repo-root-relative; in monorepo setups where `sandbox_project_root` is a subdirectory, set `sandbox_repo_root` in the `[offload]` section to the actual repo root so patches apply at the correct path.
 
 ### Checking status
 

@@ -255,8 +255,11 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `max_parallel` | integer | `10` | Maximum number of parallel sandboxes |
 | `test_timeout_secs` | integer | `900` | Timeout per test batch in seconds |
 | `working_dir` | string | (cwd) | Working directory for test execution |
-| `sandbox_project_root` | string | required | Project root path on the remote sandbox (exported as `OFFLOAD_ROOT`) |
+| `sandbox_project_root` | string | (none) | Working directory for test execution on the sandbox (exported as `OFFLOAD_ROOT`). At least one of `sandbox_project_root` or `sandbox_repo_root` must be set. When only one is provided, it is used for both |
+| `sandbox_repo_root` | string | (none) | Repository root path on the sandbox, used for applying thin-diff patches. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set. When only one is provided, it is used for both |
 | `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
+
+Most projects only need `sandbox_project_root`. Add `sandbox_repo_root` in monorepo setups where tests run from a subdirectory (e.g. `/app/mypackage`) but the repository root is elsewhere (e.g. `/app`), since thin-diff patches contain repo-root-relative paths.
 
 ### `[provider]` -- Execution Provider
 

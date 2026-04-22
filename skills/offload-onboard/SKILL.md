@@ -152,6 +152,18 @@ run_command = "cd /app && uv run pytest -v --tb=short --no-cov -p no:xdist -o ad
 test_id_format = "{name}"
 ```
 
+If `sandbox_project_root` points to a subdirectory (e.g. `/app/mypackage`) because pytest must run from there, add `sandbox_repo_root` so thin-diff patches apply at the actual repo root:
+
+```toml
+[offload]
+sandbox_project_root = "/app/mypackage"
+sandbox_repo_root = "/app"
+
+[framework]
+type = "pytest"
+command = "uv run pytest"
+```
+
 Note: if discovery or execution requires pre-steps like `uv sync --all-packages`, use `sandbox_init_cmd` in the `[offload]` section rather than inlining them into the discover/run commands.
 
 For the full configuration reference and more examples, see the Offload README.
@@ -161,7 +173,8 @@ Configuration reference for fields used above:
 **`[offload]`**
 - `max_parallel`: Number of concurrent Modal sandboxes (start with 3, optimize later)
 - `test_timeout_secs`: Per-test-batch timeout in seconds (120s is generous for unit tests)
-- `sandbox_project_root`: Project root path inside the sandbox, exported as `OFFLOAD_ROOT`
+- `sandbox_project_root`: Working directory for test execution on the sandbox, exported as `OFFLOAD_ROOT`. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set
+- `sandbox_repo_root`: Repository root path on the sandbox, used for thin-diff patch application. Only needed in monorepo setups where tests run from a subdirectory. At least one of `sandbox_project_root` or `sandbox_repo_root` must be set
 - `sandbox_init_cmd`: Optional command to run during image build, after cwd/copy-dirs are applied (e.g. `"uv sync --all-packages"`)
 
 **`[provider]`** (Modal)
