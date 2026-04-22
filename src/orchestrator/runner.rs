@@ -41,6 +41,16 @@ pub enum BatchOutcome {
     Cancelled,
 }
 
+/// Outcome of a streaming command execution.
+enum ExecStreamOutcome {
+    /// Command completed (possibly with non-zero exit code).
+    Completed(crate::provider::ExecResult),
+    /// Execution was cancelled via the cancellation token.
+    Cancelled,
+    /// Command exceeded its timeout and was killed.
+    TimedOut,
+}
+
 /// Configuration for downloading artifacts from sandboxes after test execution.
 pub struct ArtifactConfig {
     /// Glob patterns for files to download. Empty means no downloads.
@@ -188,15 +198,21 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// Execute command with streaming, collecting output.
     ///
     /// The `output_id` is passed to the output callback to identify the source.
-    /// Returns `Ok(None)` if cancelled before completion.
     async fn exec_with_streaming(
         &mut self,
         cmd: &crate::provider::Command,
         output_id: &str,
-    ) -> Result<Option<crate::provider::ExecResult>> {
+    ) -> Result<ExecStreamOutcome> {
         let start = std::time::Instant::now();
         let mut stdout = String::new();
         let mut stderr = String::new();
+
+        let timeout_duration = cmd
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::MAX);
+        let timeout_sleep = tokio::time::sleep(timeout_duration);
+        tokio::pin!(timeout_sleep);
 
         let (mut stream, mut child) = self.sandbox.exec_stream(cmd).await?;
 
@@ -204,8 +220,14 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             select! {
                 _ = self.cancellation_token.cancelled() => {
                     debug!("Test execution cancelled (all tests passed)");
-                    return Ok(None);
+                    return Ok(ExecStreamOutcome::Cancelled);
                     // child is dropped here, killing the process (kill_on_drop)
+                }
+                _ = &mut timeout_sleep => {
+                    let secs = timeout_duration.as_secs();
+                    warn!("Test execution timed out after {}s", secs);
+                    // child is dropped here, killing the process (kill_on_drop)
+                    return Ok(ExecStreamOutcome::TimedOut);
                 }
                 line = stream.next() => {
                     match line {
@@ -229,7 +251,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             Err(_) => -1,
         };
 
-        Ok(Some(crate::provider::ExecResult {
+        Ok(ExecStreamOutcome::Completed(crate::provider::ExecResult {
             exit_code,
             stdout,
             stderr,
@@ -315,14 +337,35 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
             crate::trace::TID_EXEC,
         );
         let exec_result = match self.exec_with_streaming(&cmd, "batch").await? {
-            Some(result) => result,
-            None => {
+            ExecStreamOutcome::Completed(result) => result,
+            ExecStreamOutcome::Cancelled => {
                 // Cancelled - return early without recording results
                 info!(
                     "[BATCH CANCELLED] Sandbox {} was cancelled before completion ({} tests lost)",
                     sandbox_id, expected_count
                 );
                 return Ok(BatchOutcome::Cancelled);
+            }
+            ExecStreamOutcome::TimedOut if tests.len() == 1 => {
+                // Singleton batch timeout: record the test as a failure in the
+                // completion tracker so it counts as decided.
+                let test_id = tests[0].id();
+                warn!(
+                    "[BATCH TIMEOUT] Sandbox {} singleton test '{}' timed out after {}s, recording as failure",
+                    sandbox_id,
+                    test_id,
+                    self.timeout.as_secs()
+                );
+                if let Ok(mut t) = self.tracker.lock() {
+                    t.record_batch(&[test_id], |_| false);
+                }
+                return Ok(BatchOutcome::Failure);
+            }
+            ExecStreamOutcome::TimedOut => {
+                return Err(anyhow::anyhow!(
+                    "Test execution timed out after {}s",
+                    self.timeout.as_secs()
+                ));
             }
         };
         drop(_exec_span);
@@ -562,9 +605,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let tar_cmd = crate::provider::Command::new("sh").arg("-c").arg(&pipeline);
 
         match self.exec_with_streaming(&tar_cmd, "artifacts").await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+            Ok(ExecStreamOutcome::Completed(_)) => {}
+            Ok(ExecStreamOutcome::Cancelled) => {
                 debug!("[ARTIFACTS] Sandbox {} cancelled", sandbox_id);
+                return;
+            }
+            Ok(ExecStreamOutcome::TimedOut) => {
+                warn!("[ARTIFACTS] Sandbox {} find+tar timed out", sandbox_id);
                 return;
             }
             Err(e) => {
@@ -655,6 +702,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_has_failures_in_xml_no_failures() {
@@ -703,5 +751,224 @@ mod tests {
     fn test_build_find_command_preserves_absolute_path() {
         let cmd = build_find_command(&["/tmp/*.dat".to_string()]);
         assert_eq!(cmd, "find . -type f -path '/tmp/*.dat'");
+    }
+
+    /// Minimal framework stub for testing the runner without a real framework.
+    struct StubFramework;
+
+    #[async_trait::async_trait]
+    impl crate::framework::TestFramework for StubFramework {
+        async fn discover(
+            &self,
+            _paths: &[std::path::PathBuf],
+            _filters: &str,
+            _group: &str,
+        ) -> crate::framework::FrameworkResult<Vec<crate::framework::TestRecord>> {
+            Ok(vec![])
+        }
+
+        fn produce_test_execution_command(
+            &self,
+            _tests: &[crate::framework::TestInstance],
+            _result_path: &str,
+            _fail_fast: bool,
+        ) -> crate::provider::Command {
+            crate::provider::Command::new("true")
+        }
+    }
+
+    /// Helper to create a LocalSandbox via the provider.
+    async fn create_test_sandbox(id: &str) -> Result<crate::provider::local::LocalSandbox> {
+        use crate::config::LocalProviderConfig;
+        use crate::provider::SandboxProvider;
+
+        let provider_config = LocalProviderConfig {
+            working_dir: None,
+            env: std::collections::HashMap::new(),
+            shell: "/bin/sh".to_string(),
+        };
+        let provider = crate::provider::local::LocalProvider::new(provider_config);
+        let config = crate::config::SandboxConfig {
+            id: id.to_string(),
+            working_dir: Some(".".to_string()),
+            env: vec![],
+            copy_dirs: vec![],
+        };
+        Ok(provider.create_sandbox(&config).await?)
+    }
+
+    /// Helper to build a RunnerConfig for tests.
+    fn test_runner_config(parts_dir: &std::path::Path) -> RunnerConfig {
+        let tracker = Arc::new(Mutex::new(
+            crate::orchestrator::completion::CompletionTracker::new(0),
+        ));
+        let junit_report = Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(
+            0, "{name}",
+        )));
+        RunnerConfig {
+            fail_fast: false,
+            parts_dir: parts_dir.to_path_buf(),
+            junit_report,
+            tracker,
+            cancellation_token: CancellationToken::new(),
+            artifacts: ArtifactConfig {
+                globs: vec![],
+                output_dir: parts_dir.to_path_buf(),
+                on_failure_only: false,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exec_with_streaming_times_out() -> Result<()> {
+        let sandbox = create_test_sandbox("timeout-test").await?;
+        let framework = StubFramework;
+        let parts_dir = std::env::temp_dir().join("offload-test-timeout-parts");
+        let _ = std::fs::create_dir_all(&parts_dir);
+
+        let mut runner = TestRunner::new(
+            sandbox,
+            &framework,
+            Duration::from_secs(2),
+            crate::trace::Tracer::noop(),
+            0,
+            0,
+            test_runner_config(&parts_dir),
+        );
+
+        // Command with a 2-second timeout running sleep 60
+        let cmd = crate::provider::Command::new("sleep").arg("60").timeout(2);
+
+        let result = runner.exec_with_streaming(&cmd, "timeout-test").await?;
+
+        assert!(
+            matches!(result, ExecStreamOutcome::TimedOut),
+            "Expected ExecStreamOutcome::TimedOut"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_exec_with_streaming_no_timeout_when_none() -> Result<()> {
+        let sandbox = create_test_sandbox("no-timeout-test").await?;
+        let framework = StubFramework;
+        let parts_dir = std::env::temp_dir().join("offload-test-no-timeout-parts");
+        let _ = std::fs::create_dir_all(&parts_dir);
+
+        let mut runner = TestRunner::new(
+            sandbox,
+            &framework,
+            Duration::from_secs(900),
+            crate::trace::Tracer::noop(),
+            0,
+            0,
+            test_runner_config(&parts_dir),
+        );
+
+        // Command with no timeout that completes quickly
+        let cmd = crate::provider::Command::new("echo").arg("hello");
+
+        let result = runner.exec_with_streaming(&cmd, "no-timeout-test").await?;
+
+        match result {
+            ExecStreamOutcome::Completed(exec_result) => {
+                assert_eq!(exec_result.exit_code, 0);
+                assert!(exec_result.stdout.contains("hello"));
+            }
+            ExecStreamOutcome::Cancelled => {
+                return Err(anyhow::anyhow!("Expected Completed, got Cancelled"));
+            }
+            ExecStreamOutcome::TimedOut => {
+                return Err(anyhow::anyhow!("Expected Completed, got TimedOut"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Framework stub that produces a long-running command (for timeout tests).
+    struct TimeoutStubFramework;
+
+    #[async_trait::async_trait]
+    impl crate::framework::TestFramework for TimeoutStubFramework {
+        async fn discover(
+            &self,
+            _paths: &[std::path::PathBuf],
+            _filters: &str,
+            _group: &str,
+        ) -> crate::framework::FrameworkResult<Vec<crate::framework::TestRecord>> {
+            Ok(vec![])
+        }
+
+        fn produce_test_execution_command(
+            &self,
+            _tests: &[crate::framework::TestInstance],
+            _result_path: &str,
+            _fail_fast: bool,
+        ) -> crate::provider::Command {
+            crate::provider::Command::new("sleep").arg("60")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_singleton_batch_timeout_records_failure() -> Result<()> {
+        let sandbox = create_test_sandbox("singleton-timeout").await?;
+        let framework = TimeoutStubFramework;
+        let parts_dir = std::env::temp_dir().join("offload-test-singleton-timeout-parts");
+        let _ = std::fs::create_dir_all(&parts_dir);
+
+        let tracker = Arc::new(Mutex::new(
+            crate::orchestrator::completion::CompletionTracker::new(1),
+        ));
+        let config = RunnerConfig {
+            fail_fast: false,
+            parts_dir: parts_dir.to_path_buf(),
+            junit_report: Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(
+                0, "{name}",
+            ))),
+            tracker: Arc::clone(&tracker),
+            cancellation_token: CancellationToken::new(),
+            artifacts: ArtifactConfig {
+                globs: vec![],
+                output_dir: parts_dir.to_path_buf(),
+                on_failure_only: false,
+            },
+        };
+
+        let mut runner = TestRunner::new(
+            sandbox,
+            &framework,
+            Duration::from_secs(2),
+            crate::trace::Tracer::noop(),
+            0,
+            0,
+            config,
+        );
+
+        let test_record = crate::framework::TestRecord {
+            id: "my_test::timeout_case".to_string(),
+            name: "timeout_case".to_string(),
+            file: None,
+            retry_count: 0,
+            group: "default".to_string(),
+            schedule_individual: false,
+        };
+        let test_instance = crate::framework::TestInstance::new(&test_record);
+
+        let outcome = runner.run_tests(&[test_instance]).await?;
+
+        assert_eq!(
+            outcome,
+            BatchOutcome::Failure,
+            "Expected BatchOutcome::Failure for singleton timeout"
+        );
+
+        // Verify the completion tracker recorded the test as decided.
+        let t = tracker.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        assert!(
+            t.is_decided("my_test::timeout_case"),
+            "Expected test to be decided in completion tracker"
+        );
+
+        Ok(())
     }
 }
