@@ -643,7 +643,7 @@ where
             .offload
             .sandbox_project_root
             .clone()
-            .unwrap_or_default(),
+            .context("sandbox_project_root not set")?,
     ));
 
     let sandbox_config = SandboxConfig {

@@ -92,8 +92,12 @@ fn normalize_path(raw: &str) -> PathBuf {
 /// # Errors
 ///
 /// Returns an error if:
+/// - Neither `sandbox_project_root` nor `sandbox_repo_root` is set
 /// - No groups are defined
 /// - Default framework's `discover_command` is missing the `{filters}` placeholder
+///
+/// On success, normalizes the config so that both `sandbox_project_root` and
+/// `sandbox_repo_root` are `Some` (filling the missing one from the other).
 fn validate_config(config: &mut Config) -> Result<()> {
     // Require at least one sandbox root
     if config.offload.sandbox_project_root.is_none() && config.offload.sandbox_repo_root.is_none() {
@@ -634,5 +638,117 @@ mod tests {
             err_msg.contains("Duplicate"),
             "Error should mention duplicate, got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_config_with_neither_sandbox_root_returns_error() {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let result = load_config_str(toml);
+        assert!(
+            result.is_err(),
+            "Expected error when neither sandbox root is set"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("sandbox_project_root") && err_msg.contains("sandbox_repo_root"),
+            "Error should mention both root fields, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_config_with_only_project_root_fills_repo_root() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app/mypackage"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        assert_eq!(
+            config.offload.sandbox_project_root.as_deref(),
+            Some("/app/mypackage")
+        );
+        assert_eq!(
+            config.offload.sandbox_repo_root.as_deref(),
+            Some("/app/mypackage"),
+            "sandbox_repo_root should be filled from sandbox_project_root"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_with_only_repo_root_fills_project_root() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        assert_eq!(config.offload.sandbox_repo_root.as_deref(), Some("/app"));
+        assert_eq!(
+            config.offload.sandbox_project_root.as_deref(),
+            Some("/app"),
+            "sandbox_project_root should be filled from sandbox_repo_root"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_with_both_sandbox_roots_keeps_both() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app/mypackage"
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        assert_eq!(
+            config.offload.sandbox_project_root.as_deref(),
+            Some("/app/mypackage")
+        );
+        assert_eq!(config.offload.sandbox_repo_root.as_deref(), Some("/app"));
+        Ok(())
     }
 }
