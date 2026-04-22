@@ -549,6 +549,7 @@ mod tests {
                     result_file: None,
                     working_dir: None,
                     test_id_format: "{name}".to_string(),
+                    sandbox_repo_root: None,
                 },
             ),
             groups: Default::default(),

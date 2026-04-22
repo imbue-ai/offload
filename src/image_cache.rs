@@ -314,6 +314,11 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     } else {
         Some(ctx.config_path)
     };
+    let patch_root = ctx
+        .config
+        .framework
+        .sandbox_repo_root()
+        .unwrap_or(&ctx.config.offload.sandbox_project_root);
 
     // --- Stage 1: Cache hit -- thin diff on cached image ---
     if let Some(cached_id) = resolved.cached_image_id.as_deref() {
@@ -328,7 +333,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
             ctx.repo,
             cached_id,
             base_sha,
-            &ctx.config.offload.sandbox_project_root,
+            patch_root,
             ctx.discovery_done,
             ctx.tracer,
         )
@@ -404,7 +409,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         ctx.repo,
         &base_id,
         base_sha,
-        &ctx.config.offload.sandbox_project_root,
+        patch_root,
         ctx.discovery_done,
         ctx.tracer,
     )

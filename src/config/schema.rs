@@ -378,6 +378,19 @@ impl FrameworkConfig {
             FrameworkConfig::Vitest(config) => &config.test_id_format,
         }
     }
+
+    /// Returns the sandbox repo root override, if configured.
+    ///
+    /// When set, this overrides `sandbox_project_root` for thin-diff patch
+    /// application in monorepo setups.
+    pub fn sandbox_repo_root(&self) -> Option<&str> {
+        match self {
+            FrameworkConfig::Pytest(c) => c.sandbox_repo_root.as_deref(),
+            FrameworkConfig::Cargo(c) => c.sandbox_repo_root.as_deref(),
+            FrameworkConfig::Default(c) => c.sandbox_repo_root.as_deref(),
+            FrameworkConfig::Vitest(c) => c.sandbox_repo_root.as_deref(),
+        }
+    }
 }
 
 /// Configuration for pytest test framework.
@@ -408,6 +421,15 @@ pub struct PytestFrameworkConfig {
     /// Default: `"{name}"` (pytest typically includes full path in name)
     #[serde(default = "default_pytest_test_id_format")]
     pub test_id_format: String,
+
+    /// Override for the repository root path inside the sandbox container.
+    ///
+    /// Use this in monorepo setups where the test framework runs from a
+    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
+    /// relative to the repository root. If not set, `sandbox_project_root`
+    /// is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
 }
 
 fn default_pytest_command() -> String {
@@ -448,6 +470,15 @@ pub struct VitestFrameworkConfig {
     /// Default: `"{classname} > {name}"`
     #[serde(default = "default_vitest_test_id_format")]
     pub test_id_format: String,
+
+    /// Override for the repository root path inside the sandbox container.
+    ///
+    /// Use this in monorepo setups where the test framework runs from a
+    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
+    /// relative to the repository root. If not set, `sandbox_project_root`
+    /// is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
 }
 
 impl Default for VitestFrameworkConfig {
@@ -456,6 +487,7 @@ impl Default for VitestFrameworkConfig {
             command: default_vitest_command(),
             run_args: None,
             test_id_format: default_vitest_test_id_format(),
+            sandbox_repo_root: None,
         }
     }
 }
@@ -496,6 +528,15 @@ pub struct CargoFrameworkConfig {
     /// Default: `"{classname} {name}"` (cargo/nextest uses classname as binary name)
     #[serde(default = "default_cargo_test_id_format")]
     pub test_id_format: String,
+
+    /// Override for the repository root path inside the sandbox container.
+    ///
+    /// Use this in monorepo setups where the test framework runs from a
+    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
+    /// relative to the repository root. If not set, `sandbox_project_root`
+    /// is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
 }
 
 /// Configuration for generic/custom test framework.
@@ -543,6 +584,15 @@ pub struct DefaultFrameworkConfig {
     /// This field is required for the default framework as the format varies
     /// by test runner.
     pub test_id_format: String,
+
+    /// Override for the repository root path inside the sandbox container.
+    ///
+    /// Use this in monorepo setups where the test framework runs from a
+    /// subdirectory (`sandbox_project_root`) but thin-diff patches are
+    /// relative to the repository root. If not set, `sandbox_project_root`
+    /// is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
 }
 
 /// Configuration for image checkpointing.
@@ -801,6 +851,7 @@ mod tests {
                 test_id_format: "{name}".into(),
                 result_file: None,
                 working_dir: None,
+                sandbox_repo_root: None,
             }),
             groups: HashMap::from([(
                 "default".to_string(),

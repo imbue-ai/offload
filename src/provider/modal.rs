@@ -39,12 +39,6 @@ pub struct ModalProvider {
     config: ModalProviderConfig,
     /// Set during `prepare()`.
     image_id: Option<String>,
-    /// Detected path where the git repo root lives inside the container.
-    ///
-    /// Used by `build_incremental` to apply thin-diff patches at the correct
-    /// directory. Computed once in `from_config()` from `include_cwd` and
-    /// Dockerfile `WORKDIR`.
-    container_repo_root: Option<String>,
     env: Vec<(String, String)>,
     cpu_cores: f64,
     memory_gb: Option<f64>,
@@ -67,35 +61,15 @@ impl ModalProvider {
 
         let cpu_cores = config.cpu_cores;
         let memory_gb = config.memory_gb;
-        let container_repo_root = Self::detect_container_repo_root(&config);
 
         Self {
             connector,
             config,
             image_id: None,
-            container_repo_root,
             env,
             cpu_cores,
             memory_gb,
         }
-    }
-
-    /// Detect where the git repo root lives inside the container image.
-    ///
-    /// - `include_cwd = true` always copies to `/app` (hardcoded in modal_sandbox.py).
-    /// - Otherwise, parse the Dockerfile's last WORKDIR if available.
-    /// - Returns `None` when the root cannot be determined (falls back to
-    ///   `sandbox_project_root` at usage sites).
-    fn detect_container_repo_root(config: &ModalProviderConfig) -> Option<String> {
-        if config.include_cwd {
-            return Some("/app".to_string());
-        }
-        if let Some(ref dockerfile) = config.dockerfile
-            && let Ok(content) = std::fs::read_to_string(dockerfile)
-        {
-            return parse_last_workdir(&content);
-        }
-        None
     }
 
     /// Builds the shell command string for the `prepare` step.
@@ -192,15 +166,11 @@ impl ImageBuilder for ModalProvider {
         sandbox_project_root: &str,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
-        let patch_root = self
-            .container_repo_root
-            .as_deref()
-            .unwrap_or(sandbox_project_root);
         let cmd = format!(
             "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
             shell_words::quote(base_image_id),
             shell_words::quote(&patch_file.display().to_string()),
-            shell_words::quote(patch_root)
+            shell_words::quote(sandbox_project_root)
         );
         let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
         self.image_id = Some(image_id.clone());
@@ -274,26 +244,6 @@ impl SandboxProvider for ModalProvider {
     fn base_env(&self) -> Vec<(String, String)> {
         self.env.clone()
     }
-}
-
-/// Parse the last WORKDIR directive from Dockerfile content.
-///
-/// Only considers WORKDIR in the final build stage — resets when a new
-/// `FROM` instruction is encountered (multi-stage builds).
-fn parse_last_workdir(dockerfile_content: &str) -> Option<String> {
-    let mut last_workdir = None;
-    for line in dockerfile_content.lines() {
-        let trimmed = line.trim();
-        let upper = trimmed.to_uppercase();
-        if upper.starts_with("FROM ") {
-            last_workdir = None;
-        } else if upper.starts_with("WORKDIR ")
-            && let Some(path) = trimmed.split_whitespace().nth(1)
-        {
-            last_workdir = Some(path.trim_end_matches('/').to_string());
-        }
-    }
-    last_workdir
 }
 
 #[cfg(test)]
@@ -440,55 +390,5 @@ mod tests {
         assert!(cmd.contains("enable_docker"));
         assert!(cmd.contains("true"));
         Ok(())
-    }
-
-    // -- WORKDIR parsing tests --
-
-    #[test]
-    fn test_parse_last_workdir_simple() {
-        let content = "FROM python:3.11\nWORKDIR /app\nCOPY . /app\n";
-        assert_eq!(parse_last_workdir(content), Some("/app".to_string()));
-    }
-
-    #[test]
-    fn test_parse_last_workdir_trailing_slash() {
-        let content = "FROM python:3.11\nWORKDIR /code/mngr/\nCOPY . .\n";
-        assert_eq!(parse_last_workdir(content), Some("/code/mngr".to_string()));
-    }
-
-    #[test]
-    fn test_parse_last_workdir_multistage() {
-        let content = "FROM node:18 AS builder\nWORKDIR /build\nRUN npm build\nFROM python:3.11\nWORKDIR /app\n";
-        assert_eq!(parse_last_workdir(content), Some("/app".to_string()));
-    }
-
-    #[test]
-    fn test_parse_last_workdir_multistage_no_workdir_in_final() {
-        let content = "FROM node:18 AS builder\nWORKDIR /build\nFROM python:3.11\nRUN echo hi\n";
-        assert_eq!(parse_last_workdir(content), None);
-    }
-
-    #[test]
-    fn test_parse_last_workdir_none() {
-        let content = "FROM python:3.11\nCOPY . /app\n";
-        assert_eq!(parse_last_workdir(content), None);
-    }
-
-    #[test]
-    fn test_detect_container_repo_root_include_cwd() {
-        let config = ModalProviderConfig {
-            include_cwd: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            ModalProvider::detect_container_repo_root(&config),
-            Some("/app".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_container_repo_root_no_dockerfile() {
-        let config = ModalProviderConfig::default();
-        assert_eq!(ModalProvider::detect_container_repo_root(&config), None);
     }
 }

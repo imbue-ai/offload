@@ -796,6 +796,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             test_id_format: "{name}".into(),
             result_file: None,
             working_dir: None,
+            sandbox_repo_root: None,
         }),
         "vitest" => FrameworkConfig::Vitest(VitestFrameworkConfig {
             command: "npx vitest".into(),
