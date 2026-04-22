@@ -61,12 +61,23 @@ pub struct OffloadConfig {
     /// the current working directory is used.
     pub working_dir: Option<PathBuf>,
 
-    /// Project root path on the remote sandbox.
+    /// Path to the repository root inside the sandbox.
     ///
-    /// Exported as OFFLOAD_ROOT environment variable in the sandbox.
-    /// Used by test frameworks to compute paths relative to the project root,
-    /// ensuring JUnit XML classnames match the test IDs from discovery.
-    pub sandbox_project_root: String,
+    /// This is the primary path setting — it tells Offload where the
+    /// codebase lives in the sandbox container. Used for applying thin-diff
+    /// patches and as the default working directory for test execution
+    /// (exported as `OFFLOAD_ROOT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_repo_root: Option<String>,
+
+    /// Working directory for test execution, if different from the repo root.
+    ///
+    /// Only needed in monorepo setups where tests must run from a
+    /// subdirectory (e.g. `/app/mypackage` while the repo root is `/app`).
+    /// When set, this is exported as `OFFLOAD_ROOT` instead of
+    /// `sandbox_repo_root`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_project_root: Option<String>,
 
     /// Optional command to run during image build, after cwd/copy-dirs are applied.
     #[serde(default)]
@@ -726,7 +737,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -758,7 +770,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -788,7 +801,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
@@ -962,7 +976,8 @@ mod tests {
                 max_parallel: 10,
                 test_timeout_secs: 900,
                 working_dir: None,
-                sandbox_project_root: "/app".to_string(),
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: None,
                 sandbox_init_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {

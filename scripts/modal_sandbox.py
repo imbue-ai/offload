@@ -305,7 +305,7 @@ def _derive_image_from_base(
     if patch_file is not None:
         img = img.add_local_file(patch_file, "/tmp/offload.patch", copy=True)
         img = img.run_commands(
-            f"cd {project_root} && git init -q . && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
+            f"cd {project_root} && git init -q . && git add -A && git commit -q --allow-empty -m base && git apply --3way /tmp/offload.patch --allow-empty && rm /tmp/offload.patch"
         )
 
     img.build(app)

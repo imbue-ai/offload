@@ -310,16 +310,19 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
     .await?
 }
 
-/// Copy gitignored-but-not-dockerignored files from the working tree into
-/// `dest`.
+/// Bridge the gap between `.gitignore` and `.dockerignore` in the exported tree.
 ///
-/// The thin diff (`generate_checkpoint_diff`) captures non-gitignored changes
-/// via `git add -A`, but gitignored files are invisible to it. Files that are
-/// gitignored yet needed by the Docker build (e.g. generated tarballs) must
-/// be baked into the base image here instead.
+/// `export_tree()` builds the Docker context from a shallow git clone that
+/// contains only tracked files, but a real `COPY . /app` honours
+/// `.dockerignore`, not `.gitignore`. Gitignored build artifacts that the
+/// container needs at runtime — pre-built frontend bundles (`frontend-dist/`),
+/// generated tarballs, etc. — would be missing without this step.
 ///
-/// Only gitignored files are copied to avoid conflicts with the thin diff,
-/// which contains "new file" hunks for non-gitignored untracked files.
+/// `generate_checkpoint_diff()` runs `git add -A`, which respects `.gitignore`,
+/// so these files are invisible to the thin diff and must be baked into the
+/// base image here instead. Only gitignored files are copied to avoid
+/// conflicts with the thin diff's "new file" hunks for non-gitignored
+/// untracked files.
 fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
     let dockerignore = repo_root.join(".dockerignore");
 
