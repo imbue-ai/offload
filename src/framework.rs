@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::provider::Command;
+use crate::report::junit::TestsuiteXml;
 
 /// Build a human-readable detail string from captured process output.
 /// Prefers stderr; falls back to stdout (capped at 500 chars); then "no output captured".
@@ -260,6 +261,78 @@ pub enum TestOutcome {
     Error,
 }
 
+/// Normalizes a test ID into a dotted format for suffix comparison.
+///
+/// Converts both pytest nodeids (`tests/test_foo.py::TestClass::test_method`)
+/// and JUnit classname::name pairs into the same canonical dotted format.
+pub(crate) fn normalize_test_id(s: &str) -> String {
+    s.replace('/', ".").replace(".py", "").replace("::", ".")
+}
+
+/// Counts matching characters from the end of two strings.
+pub(crate) fn longest_common_suffix_len(a: &str, b: &str) -> usize {
+    a.chars()
+        .rev()
+        .zip(b.chars().rev())
+        .take_while(|(ac, bc)| ac == bc)
+        .count()
+}
+
+/// Resolves a JUnit testcase to a batch test ID via suffix matching.
+///
+/// Reconstructs a test ID from the JUnit `name` and optional `classname`,
+/// normalizes both sides, then finds the batch ID sharing the longest
+/// common suffix. Returns `Ok(original_batch_id)` on a unique match,
+/// or `Err(message)` if there is no match or an ambiguous tie.
+pub(crate) fn resolve_test_id_suffix_matching(
+    name: &str,
+    classname: Option<&str>,
+    batch_ids: &[String],
+) -> Result<String, String> {
+    let reconstructed = match classname {
+        Some(cn) if !cn.is_empty() => format!("{}::{}", cn, name),
+        _ => name.to_string(),
+    };
+    let norm_reconstructed = normalize_test_id(&reconstructed);
+
+    let mut best_len: usize = 0;
+    let mut best_ids: Vec<&String> = Vec::new();
+
+    for batch_id in batch_ids {
+        let norm_batch = normalize_test_id(batch_id);
+        let suffix_len = longest_common_suffix_len(&norm_reconstructed, &norm_batch);
+        match suffix_len.cmp(&best_len) {
+            std::cmp::Ordering::Greater => {
+                best_len = suffix_len;
+                best_ids.clear();
+                best_ids.push(batch_id);
+            }
+            std::cmp::Ordering::Equal => {
+                best_ids.push(batch_id);
+            }
+            std::cmp::Ordering::Less => {}
+        }
+    }
+
+    if best_len == 0 || best_ids.is_empty() {
+        return Err(format!(
+            "no batch ID matched JUnit testcase '{}' (normalized: '{}')",
+            reconstructed, norm_reconstructed
+        ));
+    }
+
+    match best_ids.len() {
+        1 => Ok(best_ids[0].clone()),
+        _ => {
+            let tied: Vec<&str> = best_ids.iter().map(|s| s.as_str()).collect();
+            Err(format!(
+                "ambiguous match for JUnit testcase '{}' (normalized: '{}') — tied batch IDs: {:?}",
+                reconstructed, norm_reconstructed, tied
+            ))
+        }
+    }
+}
+
 /// Trait for collecting tests and generating execution commands.
 ///
 /// A `TestFramework` encapsulates the logic for a specific test framework.
@@ -341,6 +414,16 @@ pub trait TestFramework: Send + Sync {
     fn xml_from_report(&self, raw_output: &str) -> FrameworkResult<String> {
         Ok(raw_output.to_string())
     }
+
+    /// Resolves JUnit testcase names to canonical test IDs.
+    ///
+    /// Rewrites each testcase's `name` to the canonical test ID (matching
+    /// what `discover` returned) and sets `classname` to `None`.
+    fn resolve_test_ids(
+        &self,
+        testsuites: &mut [TestsuiteXml],
+        batch_test_ids: &[String],
+    ) -> FrameworkResult<()>;
 }
 
 #[cfg(test)]
@@ -403,5 +486,71 @@ mod tests {
         assert_eq!(records[0].name, "test_addition");
         assert_eq!(records[0].file, Some(PathBuf::from("tests/test_math.py")));
         assert_eq!(records[1].name, "test_method");
+    }
+
+    #[test]
+    fn test_resolve_basic_suffix_match() {
+        let batch_ids = vec!["tests/test_foo.py::test_bar".to_string()];
+        let result =
+            resolve_test_id_suffix_matching("test_bar", Some("tests.test_foo"), &batch_ids);
+        assert_eq!(result, Ok("tests/test_foo.py::test_bar".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_with_class() {
+        let batch_ids = vec![
+            "tests/test_foo.py::ClassA::test_method".to_string(),
+            "tests/test_foo.py::ClassB::test_method".to_string(),
+        ];
+        let result = resolve_test_id_suffix_matching(
+            "test_method",
+            Some("tests.test_foo.ClassA"),
+            &batch_ids,
+        );
+        assert_eq!(
+            result,
+            Ok("tests/test_foo.py::ClassA::test_method".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_parametrized() {
+        let batch_ids = vec!["tests/test_foo.py::test_bar[param1]".to_string()];
+        let result =
+            resolve_test_id_suffix_matching("test_bar[param1]", Some("tests.test_foo"), &batch_ids);
+        assert_eq!(
+            result,
+            Ok("tests/test_foo.py::test_bar[param1]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_ambiguous_error() {
+        let batch_ids = vec![
+            "a/test_foo.py::test_bar".to_string(),
+            "b/test_foo.py::test_bar".to_string(),
+        ];
+        let result = resolve_test_id_suffix_matching("test_bar", Some("test_foo"), &batch_ids);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ambiguous"),
+            "expected 'ambiguous' in: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_no_match_error() {
+        let batch_ids = vec!["tests/test_foo.py::test_bar".to_string()];
+        let result =
+            resolve_test_id_suffix_matching("test_unknown", Some("tests.test_other"), &batch_ids);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no batch ID matched") || err.contains("ambiguous"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::config::PytestFrameworkConfig;
 use crate::provider::Command;
+use crate::report::junit::TestsuiteXml;
 
 /// Test framework for Python pytest projects.
 ///
@@ -207,6 +208,34 @@ impl TestFramework for PytestFramework {
         }
 
         cmd
+    }
+
+    fn resolve_test_ids(
+        &self,
+        testsuites: &mut [TestsuiteXml],
+        batch_test_ids: &[String],
+    ) -> FrameworkResult<()> {
+        for testsuite in testsuites.iter_mut() {
+            for testcase in &mut testsuite.testcases {
+                match super::resolve_test_id_suffix_matching(
+                    &testcase.name,
+                    testcase.classname.as_deref(),
+                    batch_test_ids,
+                ) {
+                    Ok(resolved) => {
+                        testcase.name = resolved;
+                        testcase.classname = None;
+                    }
+                    Err(msg) => {
+                        return Err(FrameworkError::Other(anyhow::anyhow!(
+                            "Failed to resolve JUnit testcase: {}",
+                            msg
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

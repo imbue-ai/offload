@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 /// * `format` - Format string with placeholders like `{name}` and `{classname}`
 /// * `name` - The testcase name attribute from JUnit XML
 /// * `classname` - The testcase classname attribute from JUnit XML (optional)
-#[allow(dead_code)]
 pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> String {
     let mut result = format.to_string();
     result = result.replace("{name}", name);
