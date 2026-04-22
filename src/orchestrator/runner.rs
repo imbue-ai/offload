@@ -198,6 +198,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let mut stdout = String::new();
         let mut stderr = String::new();
 
+        let timeout_duration = cmd
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::MAX);
+        let timeout_sleep = tokio::time::sleep(timeout_duration);
+        tokio::pin!(timeout_sleep);
+
         let (mut stream, mut child) = self.sandbox.exec_stream(cmd).await?;
 
         loop {
@@ -206,6 +213,12 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                     debug!("Test execution cancelled (all tests passed)");
                     return Ok(None);
                     // child is dropped here, killing the process (kill_on_drop)
+                }
+                _ = &mut timeout_sleep => {
+                    let secs = timeout_duration.as_secs();
+                    warn!("Test execution timed out after {}s", secs);
+                    // child is dropped here, killing the process (kill_on_drop)
+                    anyhow::bail!("Test execution timed out after {secs}s");
                 }
                 line = stream.next() => {
                     match line {
@@ -655,6 +668,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_has_failures_in_xml_no_failures() {
@@ -703,5 +717,132 @@ mod tests {
     fn test_build_find_command_preserves_absolute_path() {
         let cmd = build_find_command(&["/tmp/*.dat".to_string()]);
         assert_eq!(cmd, "find . -type f -path '/tmp/*.dat'");
+    }
+
+    /// Minimal framework stub for testing the runner without a real framework.
+    struct StubFramework;
+
+    #[async_trait::async_trait]
+    impl crate::framework::TestFramework for StubFramework {
+        async fn discover(
+            &self,
+            _paths: &[std::path::PathBuf],
+            _filters: &str,
+            _group: &str,
+        ) -> crate::framework::FrameworkResult<Vec<crate::framework::TestRecord>> {
+            Ok(vec![])
+        }
+
+        fn produce_test_execution_command(
+            &self,
+            _tests: &[crate::framework::TestInstance],
+            _result_path: &str,
+            _fail_fast: bool,
+        ) -> crate::provider::Command {
+            crate::provider::Command::new("true")
+        }
+    }
+
+    /// Helper to create a LocalSandbox via the provider.
+    async fn create_test_sandbox(id: &str) -> Result<crate::provider::local::LocalSandbox> {
+        use crate::config::LocalProviderConfig;
+        use crate::provider::SandboxProvider;
+
+        let provider_config = LocalProviderConfig {
+            working_dir: None,
+            env: std::collections::HashMap::new(),
+            shell: "/bin/sh".to_string(),
+        };
+        let provider = crate::provider::local::LocalProvider::new(provider_config);
+        let config = crate::config::SandboxConfig {
+            id: id.to_string(),
+            working_dir: Some(".".to_string()),
+            env: vec![],
+            copy_dirs: vec![],
+        };
+        Ok(provider.create_sandbox(&config).await?)
+    }
+
+    /// Helper to build a RunnerConfig for tests.
+    fn test_runner_config(parts_dir: &std::path::Path) -> RunnerConfig {
+        let tracker = Arc::new(Mutex::new(
+            crate::orchestrator::completion::CompletionTracker::new(0),
+        ));
+        let junit_report = Arc::new(Mutex::new(crate::report::junit::MasterJunitReport::new(
+            0, "{name}",
+        )));
+        RunnerConfig {
+            fail_fast: false,
+            parts_dir: parts_dir.to_path_buf(),
+            junit_report,
+            tracker,
+            cancellation_token: CancellationToken::new(),
+            artifacts: ArtifactConfig {
+                globs: vec![],
+                output_dir: parts_dir.to_path_buf(),
+                on_failure_only: false,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exec_with_streaming_times_out() -> Result<()> {
+        let sandbox = create_test_sandbox("timeout-test").await?;
+        let framework = StubFramework;
+        let parts_dir = std::env::temp_dir().join("offload-test-timeout-parts");
+        let _ = std::fs::create_dir_all(&parts_dir);
+
+        let mut runner = TestRunner::new(
+            sandbox,
+            &framework,
+            Duration::from_secs(2),
+            crate::trace::Tracer::noop(),
+            0,
+            0,
+            test_runner_config(&parts_dir),
+        );
+
+        // Command with a 2-second timeout running sleep 60
+        let cmd = crate::provider::Command::new("sleep").arg("60").timeout(2);
+
+        let result = runner.exec_with_streaming(&cmd, "timeout-test").await;
+
+        assert!(result.is_err(), "Expected timeout error, got Ok");
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            err.contains("timed out"),
+            "Expected error to contain 'timed out', got: {}",
+            err
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_exec_with_streaming_no_timeout_when_none() -> Result<()> {
+        let sandbox = create_test_sandbox("no-timeout-test").await?;
+        let framework = StubFramework;
+        let parts_dir = std::env::temp_dir().join("offload-test-no-timeout-parts");
+        let _ = std::fs::create_dir_all(&parts_dir);
+
+        let mut runner = TestRunner::new(
+            sandbox,
+            &framework,
+            Duration::from_secs(900),
+            crate::trace::Tracer::noop(),
+            0,
+            0,
+            test_runner_config(&parts_dir),
+        );
+
+        // Command with no timeout that completes quickly
+        let cmd = crate::provider::Command::new("echo").arg("hello");
+
+        let result = runner.exec_with_streaming(&cmd, "no-timeout-test").await?;
+
+        let exec_result =
+            result.ok_or_else(|| anyhow::anyhow!("Expected Some result, got None (cancelled)"))?;
+        assert_eq!(exec_result.exit_code, 0);
+        assert!(exec_result.stdout.contains("hello"));
+        Ok(())
     }
 }
