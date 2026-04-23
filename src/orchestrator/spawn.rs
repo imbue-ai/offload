@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -45,7 +45,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
     pub ci: bool,
-    pub ci_last_printed_pct: Arc<AtomicUsize>,
+    pub ci_start: std::time::Instant,
+    pub ci_last_print_ms: Arc<AtomicU64>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -261,16 +262,23 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             let flaky = report.flaky_count();
             let awaiting = cfg.total_tests_to_run - decided;
             if cfg.ci {
-                let current_pct = (decided * 100)
-                    .checked_div(cfg.total_tests_to_run)
-                    .unwrap_or(100);
-                let prev = cfg
-                    .ci_last_printed_pct
-                    .fetch_max(current_pct, Ordering::SeqCst);
-                if current_pct > prev {
-                    eprintln!(
-                        "[ci] {current_pct}% | passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
-                    );
+                let elapsed_ms = cfg.ci_start.elapsed().as_millis() as u64;
+                let last = cfg.ci_last_print_ms.load(Ordering::SeqCst);
+                // Print at most once per second, and always print when all tests are done
+                if elapsed_ms >= last + 1000 || decided == cfg.total_tests_to_run {
+                    // Use compare_exchange to avoid duplicate prints from concurrent workers
+                    if cfg
+                        .ci_last_print_ms
+                        .compare_exchange(last, elapsed_ms, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        let pct = (decided * 100)
+                            .checked_div(cfg.total_tests_to_run)
+                            .unwrap_or(100);
+                        eprintln!(
+                            "[ci] {pct}% | passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
+                        );
+                    }
                 }
             } else {
                 cfg.progress.set_message(format!(

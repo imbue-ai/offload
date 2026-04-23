@@ -7,7 +7,7 @@ pub mod spawn;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -376,7 +376,8 @@ where
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let batch_counter = Arc::new(AtomicUsize::new(0));
-        let ci_last_printed_pct = Arc::new(AtomicUsize::new(0));
+        let ci_start = std::time::Instant::now();
+        let ci_last_print_ms = Arc::new(AtomicU64::new(0));
 
         // Emit per-sandbox metadata events for trace
         for i in 0..sandboxes.len() {
@@ -428,7 +429,8 @@ where
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
                     ci: self.ci,
-                    ci_last_printed_pct: Arc::clone(&ci_last_printed_pct),
+                    ci_start,
+                    ci_last_print_ms: Arc::clone(&ci_last_print_ms),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
