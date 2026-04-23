@@ -383,6 +383,7 @@ where
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let batch_counter = Arc::new(AtomicUsize::new(0));
+        let ci_last_decided = Arc::new(AtomicUsize::new(0));
 
         // Emit per-sandbox metadata events for trace
         for i in 0..sandboxes.len() {
@@ -434,6 +435,7 @@ where
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
                     ci: self.ci,
+                    ci_last_decided: Arc::clone(&ci_last_decided),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
