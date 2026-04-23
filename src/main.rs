@@ -361,6 +361,38 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     }
 }
 
+/// Construct a [`PrepareContext`] and run the provider's prepare step.
+///
+/// Shared by `offload build` (standalone) and `offload run` (concurrent
+/// with test discovery).
+#[allow(clippy::too_many_arguments)]
+async fn run_prepare<P: SandboxProvider>(
+    provider: &mut P,
+    repo: &Path,
+    config: &Config,
+    config_path: &Path,
+    copy_dirs: &[(PathBuf, PathBuf)],
+    no_cache: bool,
+    tracer: &offload::trace::Tracer,
+    discovery_done: &AtomicBool,
+) -> Result<Option<String>> {
+    let prepare_ctx = PrepareContext {
+        copy_dirs,
+        sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
+        repo,
+        config,
+        config_path,
+        no_cache,
+        tracer,
+        discovery_done,
+    };
+
+    provider
+        .prepare(&prepare_ctx)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
 /// Shared logic for Default and Modal provider arms: concurrent discovery +
 /// prepare (which internally handles cache resolution, thin-diff, and
 /// full-build fallback), then framework dispatch.
@@ -380,25 +412,18 @@ async fn run_remote_provider<P: SandboxProvider>(
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
-    let prepare_ctx = PrepareContext {
-        copy_dirs: copy_dir_tuples,
-        sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
-        repo,
-        config,
-        config_path,
-        no_cache,
-        tracer,
-        discovery_done: &discovery_done,
-    };
-
     let (all_tests, _) = tokio::try_join!(
         discover_with_signal(&config.framework, &config.groups, &discovery_done),
-        async {
-            provider
-                .prepare(&prepare_ctx)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
+        run_prepare(
+            &mut provider,
+            repo,
+            config,
+            config_path,
+            copy_dir_tuples,
+            no_cache,
+            tracer,
+            &discovery_done,
+        ),
     )?;
 
     if all_tests.is_empty() {
@@ -705,61 +730,51 @@ async fn build_image(config_path: &Path, no_cache: bool) -> Result<()> {
     let discovery_done = AtomicBool::new(true);
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = Vec::new();
 
-    match &config.provider {
+    let result = match &config.provider {
         ProviderConfig::Local(_) => {
             eprintln!("Local provider does not build images. Nothing to do.");
-            Ok(())
+            return Ok(());
         }
         ProviderConfig::Default(p_cfg) => {
             let mut provider = DefaultProvider::from_config(p_cfg.clone());
-            let prepare_ctx = PrepareContext {
-                copy_dirs: &copy_dir_tuples,
-                sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
-                repo: &cwd,
-                config: &config,
+            run_prepare(
+                &mut provider,
+                &cwd,
+                &config,
                 config_path,
+                &copy_dir_tuples,
                 no_cache,
-                tracer: &tracer,
-                discovery_done: &discovery_done,
-            };
-
-            match provider.prepare(&prepare_ctx).await {
-                Ok(Some(image_id)) => {
-                    println!("{}", image_id);
-                    Ok(())
-                }
-                Ok(None) => {
-                    eprintln!("No image ID returned (no prepare_command configured?)");
-                    Ok(())
-                }
-                Err(e) => Err(anyhow!("Build failed: {}", e)),
-            }
+                &tracer,
+                &discovery_done,
+            )
+            .await
         }
         ProviderConfig::Modal(p_cfg) => {
             let mut provider = ModalProvider::from_config(p_cfg.clone());
-            let prepare_ctx = PrepareContext {
-                copy_dirs: &copy_dir_tuples,
-                sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
-                repo: &cwd,
-                config: &config,
+            run_prepare(
+                &mut provider,
+                &cwd,
+                &config,
                 config_path,
+                &copy_dir_tuples,
                 no_cache,
-                tracer: &tracer,
-                discovery_done: &discovery_done,
-            };
-
-            match provider.prepare(&prepare_ctx).await {
-                Ok(Some(image_id)) => {
-                    println!("{}", image_id);
-                    Ok(())
-                }
-                Ok(None) => {
-                    eprintln!("No image ID returned.");
-                    Ok(())
-                }
-                Err(e) => Err(anyhow!("Build failed: {}", e)),
-            }
+                &tracer,
+                &discovery_done,
+            )
+            .await
         }
+    };
+
+    match result {
+        Ok(Some(image_id)) => {
+            println!("{}", image_id);
+            Ok(())
+        }
+        Ok(None) => {
+            eprintln!("No image ID returned (no prepare_command configured?)");
+            Ok(())
+        }
+        Err(e) => Err(e.context("Build failed")),
     }
 }
 
