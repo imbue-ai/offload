@@ -44,6 +44,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub sandbox_index: usize,
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
+    pub ci: bool,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -265,6 +266,11 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 console::style(format!("flaky: {flaky}")).yellow(),
                 console::style(format!("awaiting: {awaiting}")).dim(),
             ));
+            if cfg.ci {
+                eprintln!(
+                    "[ci] passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
+                );
+            }
 
             // Early stop: all tests have a decided outcome
             if tracker.all_complete() && !cfg.all_complete.load(Ordering::SeqCst) {
