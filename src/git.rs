@@ -453,21 +453,29 @@ pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
     Ok(output.lines().map(|s| s.to_string()).collect())
 }
 
-/// Find the nearest ancestor of HEAD that touches any of the given paths.
-///
-/// Returns `None` if no ancestor within the window touches any of the paths.
-pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<Option<String>> {
-    if paths.is_empty() {
-        return Ok(None);
-    }
+/// Return the parent SHAs of a commit.
+async fn commit_parents(repo: &Path, sha: &str) -> Result<Vec<String>> {
+    let output = run_git(repo, &["rev-list", "--parents", "-n", "1", sha]).await?;
+    Ok(output
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect())
+}
 
+/// Walk the first-parent lineage from `start` looking for a commit that touches `paths`.
+async fn first_parent_touching(
+    repo: &Path,
+    start: &str,
+    paths: &[String],
+) -> Result<Option<String>> {
     let mut args: Vec<String> = vec![
         "log".into(),
+        "--first-parent".into(),
         "--format=%H".into(),
         "-n".into(),
         "1".into(),
-        "--full-history".into(),
-        "-m".into(),
+        start.into(),
         "--".into(),
     ];
     args.extend(paths.iter().cloned());
@@ -481,6 +489,35 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
     }
 
     Ok(Some(sha.to_string()))
+}
+
+/// Find the nearest ancestor of HEAD that touches any of the given paths.
+///
+/// Checks HEAD itself first (handles merge commits where both parents modified
+/// the paths), then walks each parent's first-parent lineage and returns the
+/// first hit. Returns `None` if no ancestor touches any of the paths.
+pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let head = head_sha(repo).await?;
+
+    // If HEAD itself touches the paths (e.g. merge commit where both parents
+    // modified deps), use it.
+    if commit_touches_paths(repo, &head, paths).await? {
+        return Ok(Some(head));
+    }
+
+    // Walk each parent's first-parent line; return the first hit.
+    let parents = commit_parents(repo, &head).await?;
+    for parent in &parents {
+        if let Some(sha) = first_parent_touching(repo, parent, paths).await? {
+            return Ok(Some(sha));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Convert a config path to a canonical repo-relative form.
@@ -917,6 +954,97 @@ mod tests {
         // Should return None for empty paths
         let result = nearest_ancestor_touching(dir.path(), &[]).await?;
         assert!(result.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nearest_ancestor_touching_merge_both_parents() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        let initial_branch = git_in(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"])?;
+
+        // Branch A: modifies Dockerfile
+        git_in(dir.path(), &["checkout", "-b", "branch-a"])?;
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile on branch-a"])?;
+
+        // Branch B from initial: modifies app.py
+        git_in(dir.path(), &["checkout", &initial_branch])?;
+        git_in(dir.path(), &["checkout", "-b", "branch-b"])?;
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_in(dir.path(), &["add", "app.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add app.py on branch-b"])?;
+
+        // Merge branch-a into branch-b -> HEAD
+        git_in(
+            dir.path(),
+            &["merge", "branch-a", "-m", "merge branch-a into branch-b"],
+        )?;
+        let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // The merge commit touches Dockerfile (diff-tree -m shows it changed
+        // vs the branch-b parent that lacked Dockerfile), so HEAD is returned.
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        assert_eq!(result.as_deref(), Some(merge_sha.as_str()));
+
+        // Similarly, the merge commit touches app.py (diff-tree -m shows it
+        // changed vs the branch-a parent that lacked app.py).
+        let result = nearest_ancestor_touching(dir.path(), &["app.py".to_string()]).await?;
+        assert_eq!(result.as_deref(), Some(merge_sha.as_str()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nearest_ancestor_touching_merge_commit_is_base() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        let initial_branch = git_in(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"])?;
+
+        // Branch A: modifies Dockerfile
+        git_in(dir.path(), &["checkout", "-b", "branch-a"])?;
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile on branch-a"])?;
+
+        // Branch B from initial: also modifies Dockerfile
+        git_in(dir.path(), &["checkout", &initial_branch])?;
+        git_in(dir.path(), &["checkout", "-b", "branch-b"])?;
+        std::fs::write(dir.path().join("Dockerfile"), "FROM alpine")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile on branch-b"])?;
+
+        // Merge branch-a into branch-b -> HEAD (conflict resolved automatically
+        // by git since both sides add the same file with different content --
+        // we pick ours)
+        let merge_output = std::process::Command::new("git")
+            .args([
+                "merge",
+                "branch-a",
+                "-m",
+                "merge both dockerfiles",
+                "-X",
+                "ours",
+            ])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()?;
+        if !merge_output.status.success() {
+            let stderr = String::from_utf8_lossy(&merge_output.stderr);
+            bail!("merge failed: {}", stderr.trim());
+        }
+
+        let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // The merge commit itself touches Dockerfile (via diff-tree -m),
+        // so nearest_ancestor_touching should return HEAD.
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        assert_eq!(result.as_deref(), Some(merge_sha.as_str()));
 
         Ok(())
     }
