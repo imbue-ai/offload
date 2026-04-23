@@ -7,7 +7,7 @@ pub mod spawn;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -256,6 +256,13 @@ where
             pb
         };
 
+        if self.ci {
+            eprintln!(
+                "[ci] 0% | passed: 0, failed: 0, flaky: 0, awaiting: {}",
+                tests.len()
+            );
+        }
+
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
         let (individual_tests, normal_tests): (Vec<_>, Vec<_>) =
@@ -376,8 +383,6 @@ where
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let batch_counter = Arc::new(AtomicUsize::new(0));
-        let ci_start = std::time::Instant::now();
-        let ci_last_print_ms = Arc::new(AtomicU64::new(0));
 
         // Emit per-sandbox metadata events for trace
         for i in 0..sandboxes.len() {
@@ -429,8 +434,6 @@ where
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
                     ci: self.ci,
-                    ci_start,
-                    ci_last_print_ms: Arc::clone(&ci_last_print_ms),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
