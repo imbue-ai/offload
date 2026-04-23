@@ -188,6 +188,16 @@ Run tests in parallel.
 | `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
 | `--show-estimated-cost` | Show estimated sandbox cost after run (client-side estimate, may not reflect actual billing) |
 
+### `offload build`
+
+Build the sandbox image without running tests. Prepares the provider image
+(resolving cache, building if needed) and writes the image ID to git notes.
+The image ID is printed to stdout on success.
+
+| Flag | Description |
+|------|-------------|
+| `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
+
 ### `offload collect`
 
 Discover tests without running them.
