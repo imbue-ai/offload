@@ -45,6 +45,7 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
     pub ci: bool,
+    pub ci_last_printed_pct: Arc<AtomicUsize>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -267,9 +268,17 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                 console::style(format!("awaiting: {awaiting}")).dim(),
             ));
             if cfg.ci {
-                eprintln!(
-                    "[ci] passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
-                );
+                let current_pct = (decided * 100)
+                    .checked_div(cfg.total_tests_to_run)
+                    .unwrap_or(100);
+                let prev = cfg
+                    .ci_last_printed_pct
+                    .fetch_max(current_pct, Ordering::SeqCst);
+                if current_pct > prev {
+                    eprintln!(
+                        "[ci] {current_pct}% | passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
+                    );
+                }
             }
 
             // Early stop: all tests have a decided outcome
