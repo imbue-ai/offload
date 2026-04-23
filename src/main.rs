@@ -179,6 +179,7 @@ async fn main() -> Result<()> {
             fail_fast,
             ci,
         } => {
+            let ci = ci || std::env::var("CI").is_ok_and(|v| v == "true");
             run_tests(
                 &cli.config,
                 parallel,
