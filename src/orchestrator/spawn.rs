@@ -260,13 +260,6 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             let failed = report.failed_count();
             let flaky = report.flaky_count();
             let awaiting = cfg.total_tests_to_run - decided;
-            cfg.progress.set_message(format!(
-                "{}\n{}\n{}\n{}",
-                console::style(format!("passed: {passed}")).green(),
-                console::style(format!("failed: {failed}")).red(),
-                console::style(format!("flaky: {flaky}")).yellow(),
-                console::style(format!("awaiting: {awaiting}")).dim(),
-            ));
             if cfg.ci {
                 let current_pct = (decided * 100)
                     .checked_div(cfg.total_tests_to_run)
@@ -279,6 +272,14 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
                         "[ci] {current_pct}% | passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
                     );
                 }
+            } else {
+                cfg.progress.set_message(format!(
+                    "{}\n{}\n{}\n{}",
+                    console::style(format!("passed: {passed}")).green(),
+                    console::style(format!("failed: {failed}")).red(),
+                    console::style(format!("flaky: {flaky}")).yellow(),
+                    console::style(format!("awaiting: {awaiting}")).dim(),
+                ));
             }
 
             // Early stop: all tests have a decided outcome

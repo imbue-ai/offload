@@ -720,7 +720,7 @@ where
         offload::trace::TID_MAIN,
     );
     sandbox_pool
-        .populate(config.offload.max_parallel, &provider, &sandbox_config)
+        .populate(config.offload.max_parallel, &provider, &sandbox_config, ci)
         .await
         .context("Failed to create sandboxes")?;
     drop(_pool_span);
