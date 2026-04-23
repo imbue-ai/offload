@@ -467,6 +467,7 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
         "-n".into(),
         "1".into(),
         "--full-history".into(),
+        "--first-parent".into(),
         "-m".into(),
         "--".into(),
     ];
