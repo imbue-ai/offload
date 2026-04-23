@@ -44,6 +44,8 @@ pub(crate) struct SpawnConfig<'a, F: TestFramework, S: Sandbox> {
     pub sandbox_index: usize,
     pub fail_fast: bool,
     pub tracker: Arc<Mutex<CompletionTracker>>,
+    pub ci: bool,
+    pub ci_last_decided: Arc<AtomicUsize>,
 }
 
 /// Runs a worker that pulls batches from a shared queue until empty.
@@ -258,13 +260,25 @@ pub(crate) async fn spawn_task<'a, F: TestFramework, S: Sandbox>(
             let failed = report.failed_count();
             let flaky = report.flaky_count();
             let awaiting = cfg.total_tests_to_run - decided;
-            cfg.progress.set_message(format!(
-                "{}\n{}\n{}\n{}",
-                console::style(format!("passed: {passed}")).green(),
-                console::style(format!("failed: {failed}")).red(),
-                console::style(format!("flaky: {flaky}")).yellow(),
-                console::style(format!("awaiting: {awaiting}")).dim(),
-            ));
+            if cfg.ci {
+                let prev = cfg.ci_last_decided.fetch_max(decided, Ordering::SeqCst);
+                if decided > prev {
+                    let pct = (decided * 100)
+                        .checked_div(cfg.total_tests_to_run)
+                        .unwrap_or(100);
+                    eprintln!(
+                        "[ci] {pct}% | passed: {passed}, failed: {failed}, flaky: {flaky}, awaiting: {awaiting}"
+                    );
+                }
+            } else {
+                cfg.progress.set_message(format!(
+                    "{}\n{}\n{}\n{}",
+                    console::style(format!("passed: {passed}")).green(),
+                    console::style(format!("failed: {failed}")).red(),
+                    console::style(format!("flaky: {flaky}")).yellow(),
+                    console::style(format!("awaiting: {awaiting}")).dim(),
+                ));
+            }
 
             // Early stop: all tests have a decided outcome
             if tracker.all_complete() && !cfg.all_complete.load(Ordering::SeqCst) {

@@ -87,6 +87,10 @@ enum Commands {
         /// Stop immediately when a test failure is detected
         #[arg(long)]
         fail_fast: bool,
+
+        /// CI mode: replace progress bars with plain-text log lines
+        #[arg(long)]
+        ci: bool,
     },
 
     /// Discover tests without running them
@@ -173,7 +177,9 @@ async fn main() -> Result<()> {
             trace,
             show_estimated_cost,
             fail_fast,
+            ci,
         } => {
+            let ci = ci || std::env::var("CI").is_ok_and(|v| v == "true");
             run_tests(
                 &cli.config,
                 parallel,
@@ -185,6 +191,7 @@ async fn main() -> Result<()> {
                 trace,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await
         }
@@ -295,6 +302,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
     fail_fast: bool,
+    ci: bool,
 ) -> Result<i32> {
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
@@ -308,6 +316,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 tracer,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await
         }
@@ -322,6 +331,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 tracer,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await
         }
@@ -341,6 +351,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 tracer,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await
         }
@@ -355,6 +366,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 tracer,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await
         }
@@ -409,6 +421,7 @@ async fn run_remote_provider<P: SandboxProvider>(
     show_estimated_cost: bool,
     fail_fast: bool,
     config_path: &Path,
+    ci: bool,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
@@ -439,6 +452,7 @@ async fn run_remote_provider<P: SandboxProvider>(
         tracer,
         show_estimated_cost,
         fail_fast,
+        ci,
     )
     .await
     .map(Some)
@@ -456,6 +470,7 @@ async fn run_tests(
     trace: bool,
     show_estimated_cost: bool,
     fail_fast: bool,
+    ci: bool,
 ) -> Result<()> {
     let tracer = if trace {
         offload::trace::Tracer::new()
@@ -586,6 +601,7 @@ async fn run_tests(
                 &tracer,
                 show_estimated_cost,
                 fail_fast,
+                ci,
             )
             .await?
         }
@@ -603,6 +619,7 @@ async fn run_tests(
                 show_estimated_cost,
                 fail_fast,
                 config_path,
+                ci,
             )
             .await?
             {
@@ -624,6 +641,7 @@ async fn run_tests(
                 show_estimated_cost,
                 fail_fast,
                 config_path,
+                ci,
             )
             .await?
             {
@@ -661,6 +679,7 @@ async fn run_all_tests<P, D>(
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
     fail_fast: bool,
+    ci: bool,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -702,7 +721,7 @@ where
         offload::trace::TID_MAIN,
     );
     sandbox_pool
-        .populate(config.offload.max_parallel, &provider, &sandbox_config)
+        .populate(config.offload.max_parallel, &provider, &sandbox_config, ci)
         .await
         .context("Failed to create sandboxes")?;
     drop(_pool_span);
@@ -714,6 +733,7 @@ where
         tracer.clone(),
         show_estimated_cost,
         fail_fast,
+        ci,
     );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;

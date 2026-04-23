@@ -38,17 +38,24 @@ impl<S: Sandbox> SandboxPool<S> {
         count: usize,
         provider: &P,
         config: &SandboxConfig,
+        ci: bool,
     ) -> Result<(), ProviderError>
     where
         P: SandboxProvider<Sandbox = S>,
     {
-        let progress = indicatif::ProgressBar::new(count as u64);
-        if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Creating sandboxes...",
-        ) {
-            progress.set_style(style.progress_chars("#>-"));
-        }
-        progress.enable_steady_tick(std::time::Duration::from_millis(100));
+        let progress = if ci {
+            eprintln!("Creating {count} sandboxes...");
+            indicatif::ProgressBar::hidden()
+        } else {
+            let pb = indicatif::ProgressBar::new(count as u64);
+            if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Creating sandboxes...",
+            ) {
+                pb.set_style(style.progress_chars("#>-"));
+            }
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb
+        };
 
         let futs: FuturesUnordered<_> = (0..count)
             .map(|i| {
@@ -72,6 +79,9 @@ impl<S: Sandbox> SandboxPool<S> {
             }
         }
         progress.finish_and_clear();
+        if ci {
+            eprintln!("Sandboxes created.");
+        }
         Ok(())
     }
 
@@ -149,7 +159,7 @@ mod tests {
             env: vec![],
             copy_dirs: vec![],
         };
-        pool.populate(4, &FakeProvider, &config).await?;
+        pool.populate(4, &FakeProvider, &config, false).await?;
 
         let sandboxes = pool.take_all();
         assert_eq!(sandboxes.len(), 4);

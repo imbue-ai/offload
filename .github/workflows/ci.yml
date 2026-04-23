@@ -55,7 +55,7 @@ jobs:
         tool: just@1.11.0
 
     - name: Run offload cargo-local
-      run: just test-cargo-local
+      run: just test-cargo-local --ci
 
     - name: Run offload pytest-local
-      run: just test-pytest-local
+      run: just test-pytest-local --ci

@@ -7,7 +7,7 @@ pub mod spawn;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -108,6 +108,7 @@ pub struct Orchestrator<S, D> {
     tracer: crate::trace::Tracer,
     show_cost: bool,
     fail_fast: bool,
+    ci: bool,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -126,6 +127,7 @@ where
     /// * `tracer` - Performance tracer for emitting trace events
     /// * `show_cost` - Whether to display cost estimate in summary
     /// * `fail_fast` - Whether to stop on first test failure
+    /// * `ci` - Whether to use CI mode (plain-text log lines instead of progress bars)
     pub fn new(
         config: Config,
         framework: D,
@@ -133,6 +135,7 @@ where
         tracer: crate::trace::Tracer,
         show_cost: bool,
         fail_fast: bool,
+        ci: bool,
     ) -> Self {
         Self {
             config,
@@ -141,6 +144,7 @@ where
             tracer,
             show_cost,
             fail_fast,
+            ci,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -232,20 +236,32 @@ where
         }
 
         // Set up progress bar (tracks unique test results, not retry instances)
-        let progress = indicatif::ProgressBar::new(tests.len() as u64);
-        if let Ok(style) = indicatif::ProgressStyle::default_bar()
-            .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%")
-        {
-            progress.set_style(style.progress_chars("#>-"));
+        let progress = if self.ci {
+            indicatif::ProgressBar::hidden()
+        } else {
+            let pb = indicatif::ProgressBar::new(tests.len() as u64);
+            if let Ok(style) = indicatif::ProgressStyle::default_bar().template(
+                "{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent}%",
+            ) {
+                pb.set_style(style.progress_chars("#>-"));
+            }
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb.set_message(format!(
+                "{}\n{}\n{}\n{}",
+                console::style("passed: 0").green(),
+                console::style("failed: 0").red(),
+                console::style("flaky: 0").yellow(),
+                console::style(format!("awaiting: {}", tests.len())).dim(),
+            ));
+            pb
+        };
+
+        if self.ci {
+            eprintln!(
+                "[ci] 0% | passed: 0, failed: 0, flaky: 0, awaiting: {}",
+                tests.len()
+            );
         }
-        progress.enable_steady_tick(std::time::Duration::from_millis(100));
-        progress.set_message(format!(
-            "{}\n{}\n{}\n{}",
-            console::style("passed: 0").green(),
-            console::style("failed: 0").red(),
-            console::style("flaky: 0").yellow(),
-            console::style(format!("awaiting: {}", tests.len())).dim(),
-        ));
 
         // Create test instances
         // For tests with retry_count > 0, create multiple instances to run in parallel
@@ -366,7 +382,8 @@ where
         // Collect sandboxes back after use for termination
         let sandboxes_for_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let batch_counter = Arc::new(AtomicUsize::new(0));
+        let ci_last_decided = Arc::new(AtomicUsize::new(0));
 
         // Emit per-sandbox metadata events for trace
         for i in 0..sandboxes.len() {
@@ -417,6 +434,8 @@ where
                     sandbox_index,
                     fail_fast: self.fail_fast,
                     tracker: Arc::clone(&tracker),
+                    ci: self.ci,
+                    ci_last_decided: Arc::clone(&ci_last_decided),
                 };
                 scope.spawn(spawn::spawn_task(cfg, sandbox));
             }
@@ -532,13 +551,19 @@ where
                 acc
             });
 
-        let term_progress = indicatif::ProgressBar::new(sandboxes.len() as u64);
-        if let Ok(style) = indicatif::ProgressStyle::default_bar()
-            .template("{spinner:.green} Terminating sandboxes [{bar:40.cyan/blue}] {pos}/{len}")
-        {
-            term_progress.set_style(style.progress_chars("#>-"));
-        }
-        term_progress.enable_steady_tick(std::time::Duration::from_millis(100));
+        let term_progress = if self.ci {
+            eprintln!("Terminating {} sandboxes...", sandboxes.len());
+            indicatif::ProgressBar::hidden()
+        } else {
+            let pb = indicatif::ProgressBar::new(sandboxes.len() as u64);
+            if let Ok(style) = indicatif::ProgressStyle::default_bar()
+                .template("{spinner:.green} Terminating sandboxes [{bar:40.cyan/blue}] {pos}/{len}")
+            {
+                pb.set_style(style.progress_chars("#>-"));
+            }
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb
+        };
         let term_progress_ref = &term_progress;
         let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
             let id = sandbox.id().to_string();
@@ -553,6 +578,9 @@ where
         });
         futures::future::join_all(terminate_futures).await;
         term_progress.finish_and_clear();
+        if self.ci {
+            eprintln!("Sandboxes terminated.");
+        }
         drop(_cleanup_span);
 
         // Update run_result with estimated_cost
