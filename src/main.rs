@@ -116,6 +116,17 @@ enum Commands {
         remote: String,
     },
 
+    /// Build the sandbox image without running tests.
+    ///
+    /// Prepares the provider image (resolving cache, building if needed)
+    /// and writes the image ID to git notes. Useful for CI warm-up or
+    /// pre-building images before a test run.
+    Build {
+        /// Skip cached image lookup during prepare (forces fresh build)
+        #[arg(long)]
+        no_cache: bool,
+    },
+
     /// View test run logs
     Logs {
         /// Show only failure logs
@@ -188,6 +199,7 @@ async fn main() -> Result<()> {
             let config_path_str = cli.config.to_string_lossy().to_string();
             image_cache::status_handler(&cwd, &config_path_str, &remote).await
         }
+        Commands::Build { no_cache } => build_image(&cli.config, no_cache).await,
         Commands::Logs {
             failures,
             errors,
@@ -682,6 +694,73 @@ where
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
 
     Ok(result.exit_code())
+}
+
+async fn build_image(config_path: &Path, no_cache: bool) -> Result<()> {
+    let config = config::load_config(config_path)
+        .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let tracer = offload::trace::Tracer::noop();
+    let discovery_done = AtomicBool::new(true);
+    let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    match &config.provider {
+        ProviderConfig::Local(_) => {
+            eprintln!("Local provider does not build images. Nothing to do.");
+            Ok(())
+        }
+        ProviderConfig::Default(p_cfg) => {
+            let mut provider = DefaultProvider::from_config(p_cfg.clone());
+            let prepare_ctx = PrepareContext {
+                copy_dirs: &copy_dir_tuples,
+                sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
+                repo: &cwd,
+                config: &config,
+                config_path,
+                no_cache,
+                tracer: &tracer,
+                discovery_done: &discovery_done,
+            };
+
+            match provider.prepare(&prepare_ctx).await {
+                Ok(Some(image_id)) => {
+                    println!("{}", image_id);
+                    Ok(())
+                }
+                Ok(None) => {
+                    eprintln!("No image ID returned (no prepare_command configured?)");
+                    Ok(())
+                }
+                Err(e) => Err(anyhow!("Build failed: {}", e)),
+            }
+        }
+        ProviderConfig::Modal(p_cfg) => {
+            let mut provider = ModalProvider::from_config(p_cfg.clone());
+            let prepare_ctx = PrepareContext {
+                copy_dirs: &copy_dir_tuples,
+                sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
+                repo: &cwd,
+                config: &config,
+                config_path,
+                no_cache,
+                tracer: &tracer,
+                discovery_done: &discovery_done,
+            };
+
+            match provider.prepare(&prepare_ctx).await {
+                Ok(Some(image_id)) => {
+                    println!("{}", image_id);
+                    Ok(())
+                }
+                Ok(None) => {
+                    eprintln!("No image ID returned.");
+                    Ok(())
+                }
+                Err(e) => Err(anyhow!("Build failed: {}", e)),
+            }
+        }
+    }
 }
 
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
