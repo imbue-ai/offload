@@ -923,6 +923,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_nearest_ancestor_touching_skips_merge_second_parent() -> Result<()> {
+        // Simulates the GitHub Actions merge commit scenario:
+        // Feature branch modifies Dockerfile, main does not. When main is merged
+        // into feature, the merge commit touches Dockerfile (diff against main parent).
+        // With --first-parent, the merge commit is skipped and the feature branch's
+        // Dockerfile commit is found instead.
+        let dir = init_temp_repo()?;
+        // init_temp_repo: commit 1 with README.md on "main" branch
+
+        // Commit 2 on main: add Dockerfile (shared starting point)
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu:20.04")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile"])?;
+
+        // Create feature branch from here
+        git_in(dir.path(), &["checkout", "-b", "feature"])?;
+
+        // Commit 3 on feature: modify Dockerfile
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu:22.04")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "update dockerfile on feature"])?;
+        let feature_dockerfile_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Commit 4 on feature: unrelated change (so merge commit is not HEAD)
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_in(dir.path(), &["add", "app.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add app on feature"])?;
+
+        // Go back to main and add an unrelated change (so branches diverge)
+        git_in(dir.path(), &["checkout", "main"])?;
+        std::fs::write(dir.path().join("README.md"), "# updated readme")?;
+        git_in(dir.path(), &["add", "README.md"])?;
+        git_in(dir.path(), &["commit", "-m", "update readme on main"])?;
+
+        // Switch to feature and merge main (simulating GitHub's merge commit).
+        // Main did NOT touch Dockerfile, but the merge commit's diff against
+        // the main parent shows Dockerfile changed (feature's modification).
+        git_in(dir.path(), &["checkout", "feature"])?;
+        git_in(dir.path(), &["merge", "main", "-m", "merge main into feature"])?;
+        let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Add one more unrelated commit so the merge is not at HEAD
+        std::fs::write(dir.path().join("test.py"), "assert True")?;
+        git_in(dir.path(), &["add", "test.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add test"])?;
+
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        let found_sha = result.as_deref().unwrap();
+
+        // With --first-parent, should find the feature branch's Dockerfile commit,
+        // not the merge commit
+        assert_ne!(found_sha, merge_sha, "should skip the merge commit");
+        assert_eq!(found_sha, feature_dockerfile_sha,
+            "should find the feature branch's Dockerfile commit");
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_configure_notes_fetch_idempotent() -> Result<()> {
         let dir = init_temp_repo()?;
 
