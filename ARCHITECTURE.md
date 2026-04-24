@@ -16,7 +16,7 @@ After creating an Arc, Mutex, RwLock, AtomicUsize or any other type with thread-
 
 If you're implementing something system-level, search far and wide in tokio for that functionality first. For algorithms and data structures, find popular crates on crates.io
 
-### Framework, SandboxProvider, and Sandbox should be SIMPLE TRAITS
+### TestFramework, SandboxProvider, and Sandbox should be SIMPLE TRAITS
 
 We expect people to implement these traits themselves. We want to make this as simple as possible. We do this by giving these traits small easy-to-understand interfaces
 
