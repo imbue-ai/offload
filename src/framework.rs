@@ -284,11 +284,11 @@ pub(crate) fn longest_common_suffix_len(a: &str, b: &str) -> usize {
 /// normalizes both sides, then finds the batch ID sharing the longest
 /// common suffix. Returns `Ok(original_batch_id)` on a unique match,
 /// or `Err(message)` if there is no match or an ambiguous tie.
-pub(crate) fn resolve_test_id_suffix_matching(
+pub(crate) fn resolve_test_id_suffix_matching<'a>(
     name: &str,
     classname: Option<&str>,
-    batch_ids: &[String],
-) -> Result<String, String> {
+    batch_ids: &'a [String],
+) -> Result<&'a str, String> {
     let reconstructed = match classname {
         Some(cn) if !cn.is_empty() => format!("{}::{}", cn, name),
         _ => name.to_string(),
@@ -322,7 +322,7 @@ pub(crate) fn resolve_test_id_suffix_matching(
     }
 
     match best_ids.len() {
-        1 => Ok(best_ids[0].clone()),
+        1 => Ok(best_ids[0].as_str()),
         _ => {
             let tied: Vec<&str> = best_ids.iter().map(|s| s.as_str()).collect();
             Err(format!(
@@ -493,7 +493,7 @@ mod tests {
         let batch_ids = vec!["tests/test_foo.py::test_bar".to_string()];
         let result =
             resolve_test_id_suffix_matching("test_bar", Some("tests.test_foo"), &batch_ids);
-        assert_eq!(result, Ok("tests/test_foo.py::test_bar".to_string()));
+        assert_eq!(result, Ok("tests/test_foo.py::test_bar"));
     }
 
     #[test]
@@ -507,10 +507,7 @@ mod tests {
             Some("tests.test_foo.ClassA"),
             &batch_ids,
         );
-        assert_eq!(
-            result,
-            Ok("tests/test_foo.py::ClassA::test_method".to_string())
-        );
+        assert_eq!(result, Ok("tests/test_foo.py::ClassA::test_method"));
     }
 
     #[test]
@@ -518,10 +515,7 @@ mod tests {
         let batch_ids = vec!["tests/test_foo.py::test_bar[param1]".to_string()];
         let result =
             resolve_test_id_suffix_matching("test_bar[param1]", Some("tests.test_foo"), &batch_ids);
-        assert_eq!(
-            result,
-            Ok("tests/test_foo.py::test_bar[param1]".to_string())
-        );
+        assert_eq!(result, Ok("tests/test_foo.py::test_bar[param1]"));
     }
 
     #[test]

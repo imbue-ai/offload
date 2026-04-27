@@ -223,7 +223,7 @@ impl TestFramework for PytestFramework {
                     batch_test_ids,
                 ) {
                     Ok(resolved) => {
-                        testcase.name = resolved;
+                        testcase.name = resolved.to_string();
                         testcase.classname = None;
                     }
                     Err(msg) => {
