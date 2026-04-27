@@ -34,6 +34,7 @@ offload.local.toml
 
 # Offload local files
 .offload/*
+artifact-output/*
 
 # Python
 __pycache__/
