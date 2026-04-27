@@ -342,8 +342,9 @@ impl TestFramework for VitestFramework {
                 .unwrap_or(&test_result.name)
                 .trim_start_matches('/');
 
+            let file_string = file.to_string();
             let mut suite = SuiteData {
-                name: file.to_string(),
+                name: file_string.clone(),
                 tests: 0,
                 failures: 0,
                 time: 0.0,
@@ -363,7 +364,7 @@ impl TestFramework for VitestFramework {
                     .collect::<Vec<_>>()
                     .join(" > ");
 
-                let classname = file.to_string();
+                let classname = file_string.clone();
 
                 let duration_secs = ar.duration.unwrap_or(0.0) / 1000.0;
                 let failed = ar.status == "failed";
