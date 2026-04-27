@@ -234,7 +234,7 @@ pub async fn configure_notes_fetch(repo: &Path, remote: &str) -> Result<()> {
 /// Check whether a commit touches any of the given paths.
 ///
 /// Uses `git diff-tree` with `-m` to handle merge commits (checks all parents).
-pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String]) -> Result<bool> {
+pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[&str]) -> Result<bool> {
     let sha = commit_sha.to_string();
     let paths = paths.to_vec();
 
@@ -252,7 +252,7 @@ pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String
     .await?;
 
     let changed: std::collections::HashSet<&str> = output.lines().collect();
-    Ok(paths.iter().any(|p| changed.contains(p.as_str())))
+    Ok(paths.iter().any(|p| changed.contains(*p)))
 }
 
 /// Export a commit's tree plus untracked files into `dest` as a shallow clone.
@@ -460,7 +460,7 @@ pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
 /// the actual commit that changed the file content, while still returning
 /// conflict-resolution merges where the merge itself determined the result.
 /// Returns `None` if no ancestor touches any of the paths.
-pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<Option<String>> {
+pub async fn nearest_ancestor_touching(repo: &Path, paths: &[&str]) -> Result<Option<String>> {
     if paths.is_empty() {
         return Ok(None);
     }
@@ -473,7 +473,7 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
         "HEAD".into(),
         "--".into(),
     ];
-    args.extend(paths.iter().cloned());
+    args.extend(paths.iter().map(|s| s.to_string()));
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let output = run_git(repo, &refs).await?;
@@ -842,11 +842,10 @@ mod tests {
         git_in(dir.path(), &["commit", "-m", "add dockerfile"])?;
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
 
-        let touches = commit_touches_paths(dir.path(), &sha, &["Dockerfile".to_string()]).await?;
+        let touches = commit_touches_paths(dir.path(), &sha, &["Dockerfile"]).await?;
         assert!(touches);
 
-        let no_touch =
-            commit_touches_paths(dir.path(), &sha, &["nonexistent.txt".to_string()]).await?;
+        let no_touch = commit_touches_paths(dir.path(), &sha, &["nonexistent.txt"]).await?;
         assert!(!no_touch);
         Ok(())
     }
@@ -876,13 +875,11 @@ mod tests {
         let merge_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
 
         // The merge commit should touch files from branch-a (via -m flag)
-        let touches_a =
-            commit_touches_paths(dir.path(), &merge_sha, &["file-a.txt".to_string()]).await?;
+        let touches_a = commit_touches_paths(dir.path(), &merge_sha, &["file-a.txt"]).await?;
         assert!(touches_a);
 
         // And files from branch-b
-        let touches_b =
-            commit_touches_paths(dir.path(), &merge_sha, &["file-b.txt".to_string()]).await?;
+        let touches_b = commit_touches_paths(dir.path(), &merge_sha, &["file-b.txt"]).await?;
         assert!(touches_b);
         Ok(())
     }
@@ -909,12 +906,11 @@ mod tests {
         git_in(dir.path(), &["commit", "-m", "add test"])?;
 
         // Should find the Dockerfile commit (2 commits back)
-        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile"]).await?;
         assert_eq!(result.as_deref(), Some(dockerfile_sha.as_str()));
 
         // Should return None for a file never committed
-        let result =
-            nearest_ancestor_touching(dir.path(), &["nonexistent.txt".to_string()]).await?;
+        let result = nearest_ancestor_touching(dir.path(), &["nonexistent.txt"]).await?;
         assert!(result.is_none());
 
         // Should return None for empty paths
@@ -959,7 +955,7 @@ mod tests {
         // Git's default history simplification follows the TREESAME edge
         // through the trivial merge to find the actual branch-a commit
         // that introduced the Dockerfile.
-        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile"]).await?;
         assert_eq!(result.as_deref(), Some(dockerfile_sha.as_str()));
 
         Ok(())

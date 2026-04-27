@@ -85,11 +85,15 @@ pub async fn resolve_checkpoint(
     checkpoint_cfg: &CheckpointConfig,
     no_cache: bool,
 ) -> Result<Option<CheckpointInfo>> {
-    let checkpoint_sha =
-        match git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs).await? {
-            Some(sha) => sha,
-            None => return Ok(None),
-        };
+    let build_inputs: Vec<&str> = checkpoint_cfg
+        .build_inputs
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let checkpoint_sha = match git::nearest_ancestor_touching(repo, &build_inputs).await? {
+        Some(sha) => sha,
+        None => return Ok(None),
+    };
 
     let cached_image = if no_cache {
         None
