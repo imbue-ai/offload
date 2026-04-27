@@ -22,24 +22,36 @@ These optimizations provide measurable benefit with no API changes.
 
 ### 1.1 Orchestrator: Eliminate batch_ids double allocation
 
+**Status**: ❌ **ABANDONED** - This optimization was counterproductive
+
 **File**: `src/orchestrator/runner.rs`
 **Lines**: 451, 493
 
-**Current Code**:
+**Original Proposal**:
 ```rust
+// Change from:
 let batch_ids: Vec<String> = tests.iter().map(|t| t.id().to_string()).collect();
-// ... later at line 493:
-batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>()
-```
-
-**Change To**:
-```rust
+// To:
 let batch_ids: Vec<&str> = tests.iter().map(|t| t.id()).collect();
-// At line 493, use batch_ids directly without the extra map
 ```
 
-**Impact**: Eliminates one `Vec<String>` allocation per batch
-**Testing**: Run `cargo nextest run` - existing tests should pass
+**Why It Failed**:
+
+The optimization was implemented but later found to cause a **5-8% regression** instead of an improvement. Root cause analysis revealed:
+
+1. `resolve_test_ids()` requires `&[String]`, not `&[&str]`
+2. The "optimization" still allocated the same N strings for `resolve_test_ids`
+3. It added an EXTRA `Vec<&str>` allocation for `batch_ids`
+4. Net effect: same string allocations + extra Vec allocation = regression
+
+**Measurements**:
+- Main baseline: 1,154M instructions
+- With this "optimization": 1,206M instructions (+4.5% regression)
+- After abandoning: 1,130-1,143M instructions (-1.5% improvement)
+
+**Resolution**: Commit `pvyvxltl` was abandoned via `jj abandon`. The original `Vec<String>` approach is correct and should not be changed unless `resolve_test_ids` is also refactored to accept `&[&str]`.
+
+**Lesson**: Always verify optimizations empirically. The premise "eliminate double allocation" was incorrect - both approaches allocate the same number of strings.
 
 ---
 
@@ -927,8 +939,8 @@ hyperfine --export-json /tmp/comparison.json \
 ⚠️ **1.5**: Remove unnecessary path conversions (commit 1710f30, partial - 2/2 valid optimizations)
 
 **Total Phase 1 Impact**:
-- 4.5/5 optimizations completed (1 plan error discovered)
-- Estimated allocation reduction: 15-25% in test orchestration hot paths
+- 4/5 optimizations completed (1.1 abandoned due to regression)
+- Measured allocation reduction: ~1-2% in test orchestration hot paths
 - All tests passing, no regressions
 - No clippy warnings or style violations
 
@@ -936,9 +948,9 @@ hyperfine --export-json /tmp/comparison.json \
 
 ---
 
-## Phase 1 Empirical Validation Results
+## Phase 1+2 Empirical Validation Results (Corrected)
 
-**Date**: 2026-04-26
+**Date**: 2026-04-27 (updated after regression analysis)
 **Method**: Direct comparison of main branch vs. optimized branch
 **Workload**: `offload-pytest-local.toml` (18 tests, 3 groups)
 **Tool**: `/usr/bin/time -l` on macOS (measures CPU instructions, memory, time)
@@ -946,75 +958,64 @@ hyperfine --export-json /tmp/comparison.json \
 ### Test Protocol
 
 ```bash
-# 1. Build and run optimized version
-git checkout optimization-branch
+# 1. Build and run main version (warm runs, 2-3x for consistency)
+jj new main
 cargo build --release
 /usr/bin/time -l cargo run --release -- -c offload-pytest-local.toml run
 
-# 2. Build and run main version
-git checkout main
+# 2. Build and run optimized version
+jj edit <optimization-branch>
 cargo build --release
 /usr/bin/time -l cargo run --release -- -c offload-pytest-local.toml run
 
-# 3. Compare metrics (run each 2-3 times for consistency)
+# 3. Compare metrics across multiple warm runs
 ```
 
-### Results Summary
+### Results Summary (After Fixing Regression)
 
-| Metric | Main Branch | Optimized Branch | Improvement |
-|--------|-------------|------------------|-------------|
-| **Instructions Retired** | 1,150M - 1,207M | 1,058M - 1,133M | **6-12% fewer** ✅ |
-| **Wall Clock Time** | 7.08s - 7.13s | 7.20s - 7.61s | ~Neutral |
+| Metric | Main Branch | Optimized (Phase 1+2) | Improvement |
+|--------|-------------|----------------------|-------------|
+| **Instructions Retired** | 1,154M | 1,130-1,143M | **1-2% fewer** ✅ |
+| **Wall Clock Time** | 6.86s | 6.70-7.03s | ~Neutral |
 | **Maximum Resident Set** | ~41MB | ~41MB | ~Neutral |
-| **Peak Memory Footprint** | ~3.0MB | ~3.1MB | ~Neutral |
+| **Peak Memory Footprint** | ~3.0MB | ~3.0MB | ~Neutral |
 
-### Key Findings
+### Important: Regression Discovery and Fix
 
-✅ **The Phase 1 optimizations have measurable impact:**
+⚠️ **Initial measurements showed 6-12% improvement, but this was incorrect.**
 
-1. **6-12% CPU instruction reduction** - This is the primary evidence that optimizations are working:
-   - Main: 1,150M - 1,207M instructions
-   - Optimized: 1,058M - 1,133M instructions
-   - Reduction: ~100M instructions (10%)
-   - Fewer allocations = fewer malloc/free/memcpy calls
+During validation on 2026-04-27, we discovered that:
+1. The original Phase 1+2 branch showed **1,206M instructions** (4.5% regression vs main)
+2. Root cause: commit `pvyvxltl` ("Optimize: eliminate batch_ids double allocation")
+3. This commit's premise was wrong - it added overhead instead of removing it
+4. After abandoning that commit, Phase 1+2 shows **1,130-1,143M instructions** (1-2% improvement)
 
-2. **Wall clock time neutral** - Expected for this workload:
-   - Test suite is **I/O bound** (spawning Python subprocesses)
-   - Only 18 tests = limited opportunity for batch-level optimizations
-   - Allocations are fast; savings show up in CPU cycles, not wall time
-   - On CPU-bound workloads or larger test suites, wall-clock improvements would be visible
+See Section 1.1 for detailed analysis of why this optimization failed.
 
-3. **Memory usage neutral** - Also expected:
-   - Peak RSS dominated by subprocess overhead (Python interpreters)
-   - Optimizations reduced **temporary allocations**, not long-lived data
-   - Peak memory is determined by subprocess memory, not orchestration overhead
+### Key Findings (Corrected)
 
-### Interpretation
+✅ **The remaining Phase 1+2 optimizations provide modest improvement:**
 
-The **100M instruction reduction** on a tiny 18-test suite proves:
-- ✅ Allocations were in hot paths (executed many times per batch)
-- ✅ Optimizations successfully eliminated those allocations
-- ✅ Impact compounds with workload size (more tests = more batches = more savings)
+1. **1-2% CPU instruction reduction** - Small but measurable:
+   - Main: 1,154M instructions
+   - Optimized: 1,130-1,143M instructions
+   - Reduction: ~15-25M instructions
 
-### Projected Impact on Larger Workloads
+2. **Effective optimizations** (kept):
+   - `build_find_command` signature change (`impl AsRef<str>`)
+   - Vitest file path caching
+   - XML attribute pre-allocation
+   - TestId constructor references
+   - `resolve_test_id_suffix_matching` returning `&str`
 
-Based on the 10% instruction reduction on a small suite:
+3. **Failed optimization** (abandoned):
+   - `batch_ids` Vec<String> to Vec<&str> conversion (Section 1.1)
 
-| Test Suite Size | Estimated Instruction Savings | Expected Wall-Clock Improvement |
-|-----------------|-------------------------------|--------------------------------|
-| 18 tests (measured) | 10% (100M instructions) | Negligible (I/O bound) |
-| 100 tests | 10-15% | 2-3% (more batching) |
-| 500+ tests | 15-20% | 5-8% (CPU becomes bottleneck) |
+### Lesson Learned
 
-### Conclusion
+**Always verify optimizations empirically before documenting results.**
 
-**Phase 1 optimizations are validated and effective.** The empirical test demonstrates:
-- Real reduction in CPU work (10% fewer instructions)
-- Impact is measurable even on small workloads
-- Savings will compound on production-scale test suites
-- Optimizations target the right hot paths (batch orchestration)
-
-The neutral wall-clock time is expected for I/O-bound workloads. The instruction count reduction proves the allocations were eliminated successfully.
+The initial 6-12% improvement claim was based on flawed measurements or a misunderstanding of what code was actually running. Proper A/B testing with `jj` branch switching revealed the true impact.
 
 ---
 
@@ -1034,56 +1035,10 @@ The neutral wall-clock time is expected for I/O-bound workloads. The instruction
 
 ---
 
-## Phase 2 Empirical Validation Results
+## Phase 2 Completion Notes
 
-**Date**: 2026-04-27
-**Method**: Direct comparison of main branch vs. optimized branch (Phase 1+2 combined)
-**Workload**: `offload-pytest-local.toml` (18 tests, 3 groups)
-**Tool**: `/usr/bin/time -l` on macOS
+**Status**: Phase 2 optimizations are included in the corrected Phase 1+2 results above.
 
-### Results Summary
+The Phase 2 changes (vitest caching, XML pre-allocation, TestId references) are code quality improvements that contribute to the overall 1-2% instruction reduction. These changes are in less-hot paths (reporting/framework code) and their individual impact is difficult to isolate from Phase 1 changes.
 
-| Metric | Main Branch | Optimized (Phase 1+2) | Improvement |
-|--------|-------------|----------------------|-------------|
-| **Instructions Retired** | 1,149M | 1,058M | **8% fewer** ✅ |
-| **Wall Clock Time** | 7.08s | 7.61s | ~7% slower ⚠️ |
-| **Maximum Resident Set** | ~41MB | ~49MB | ~20% higher ⚠️ |
-| **Peak Memory Footprint** | ~3.0MB | ~3.1MB | ~Neutral |
-
-### Key Findings
-
-**Phase 2 optimizations maintain Phase 1 gains:**
-
-1. **Consistent instruction reduction (~8%)** - Phase 2 didn't degrade Phase 1 improvements:
-   - Main: 1,149M instructions
-   - Phase 1+2: 1,058M instructions
-   - Similar to Phase 1-only results, suggesting Phase 2 optimizations are in less-hot paths
-
-2. **Wall clock variance** - The 7% slowdown is likely measurement noise:
-   - Small test suite = high variance in subprocess spawn timing
-   - Single-run measurements can vary by ±10%
-   - Would need multiple runs with statistics to confirm real regression
-   - Phase 2 changes (XML generation, JUnit parsing) are not in critical path
-
-3. **Memory increase** - 20% RSS increase warrants investigation:
-   - Could be measurement variance (different subprocess behavior)
-   - Could be related to string pre-allocation in Phase 2.2
-   - Not concerning for production (still only 49MB peak)
-   - Worth monitoring in future tests
-
-### Interpretation
-
-✅ **Phase 2 optimizations are code quality improvements:**
-- Maintain the 8-10% instruction reduction from Phase 1
-- Changes are primarily in reporting/framework code (not hot paths)
-- More explicit allocation patterns improve code clarity
-- No evidence of performance regression (wall-time variance is noise)
-
-### Comparison to Phase 1 Results
-
-| Phase | Instructions Saved | Wall Time Impact | Memory Impact |
-|-------|-------------------|------------------|---------------|
-| Phase 1 only | 6-12% fewer | Neutral | Neutral |
-| Phase 1+2 combined | 8% fewer | Variance (noise) | Variance (noise) |
-
-**Conclusion**: Phase 2 changes successfully improved code clarity in XML/JUnit handling without degrading the core optimization gains from Phase 1. The slight variations in wall time and memory are within expected measurement noise for small workloads.
+**Conclusion**: Phase 2 changes improve code clarity without any performance regression.
