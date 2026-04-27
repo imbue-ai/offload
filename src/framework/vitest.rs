@@ -396,10 +396,13 @@ impl TestFramework for VitestFramework {
         // Write <testsuites>
         let mut ts_elem = BytesStart::new("testsuites");
         ts_elem.push_attribute(("name", "vitest tests"));
-        ts_elem.push_attribute(("tests", total_tests.to_string().as_str()));
-        ts_elem.push_attribute(("failures", total_failures.to_string().as_str()));
+        let tests_str = total_tests.to_string();
+        let failures_str = total_failures.to_string();
+        let time_str = format!("{:.6}", total_time);
+        ts_elem.push_attribute(("tests", tests_str.as_str()));
+        ts_elem.push_attribute(("failures", failures_str.as_str()));
         ts_elem.push_attribute(("errors", "0"));
-        ts_elem.push_attribute(("time", format!("{:.6}", total_time).as_str()));
+        ts_elem.push_attribute(("time", time_str.as_str()));
         let _ = writer.write_event(Event::Start(ts_elem));
 
         for suite in &suites {
@@ -409,11 +412,14 @@ impl TestFramework for VitestFramework {
 
             let mut s_elem = BytesStart::new("testsuite");
             s_elem.push_attribute(("name", suite.name.as_str()));
-            s_elem.push_attribute(("tests", suite.tests.to_string().as_str()));
-            s_elem.push_attribute(("failures", suite.failures.to_string().as_str()));
+            let suite_tests_str = suite.tests.to_string();
+            let suite_failures_str = suite.failures.to_string();
+            let suite_time_str = format!("{:.6}", suite.time);
+            s_elem.push_attribute(("tests", suite_tests_str.as_str()));
+            s_elem.push_attribute(("failures", suite_failures_str.as_str()));
             s_elem.push_attribute(("errors", "0"));
             s_elem.push_attribute(("skipped", "0"));
-            s_elem.push_attribute(("time", format!("{:.6}", suite.time).as_str()));
+            s_elem.push_attribute(("time", suite_time_str.as_str()));
             let _ = writer.write_event(Event::Start(s_elem));
 
             for tc in &suite.cases {
