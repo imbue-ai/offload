@@ -375,8 +375,8 @@ impl Sandbox for DefaultSandbox {
             .iter()
             .map(|(remote, local)| {
                 (
-                    remote.to_string_lossy().to_string(),
-                    local.to_string_lossy().to_string(),
+                    remote.to_string_lossy().into_owned(),
+                    local.to_string_lossy().into_owned(),
                 )
             })
             .collect();
