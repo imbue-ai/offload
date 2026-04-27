@@ -448,7 +448,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         }
 
         // Parse JUnit XML into testsuites and resolve test IDs using the framework
-        let batch_ids: Vec<String> = tests.iter().map(|t| t.id().to_string()).collect();
+        let batch_ids: Vec<&str> = tests.iter().map(|t| t.id()).collect();
         let mut testsuites = parse_all_testsuites_xml(&junit_xml);
 
         if testsuites.is_empty() {
@@ -457,12 +457,18 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 sandbox_id,
                 junit_xml.len()
             );
-        } else if let Err(e) = self.framework.resolve_test_ids(&mut testsuites, &batch_ids) {
-            error!(
-                "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
-                sandbox_id, e
-            );
-            return Ok(BatchOutcome::Failure);
+        } else {
+            let batch_ids_owned: Vec<String> = batch_ids.iter().map(|s| s.to_string()).collect();
+            if let Err(e) = self
+                .framework
+                .resolve_test_ids(&mut testsuites, &batch_ids_owned)
+            {
+                error!(
+                    "[BATCH ERROR] Sandbox {} failed to resolve test IDs: {}",
+                    sandbox_id, e
+                );
+                return Ok(BatchOutcome::Failure);
+            }
         }
 
         // Bookkeeping: update the master JUnit report and completion tracker
@@ -489,10 +495,7 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
                 // Update completion tracker immediately so progress
                 // stays in sync with the report.
                 if let Ok(mut t) = self.tracker.lock() {
-                    t.record_batch(
-                        &batch_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                        |id| report.has_test_passed(id),
-                    );
+                    t.record_batch(&batch_ids, |id| report.has_test_passed(id));
                 }
             }
             Err(e) => {
