@@ -455,7 +455,11 @@ pub async fn ancestors(repo: &Path, max_depth: usize) -> Result<Vec<String>> {
 
 /// Find the nearest ancestor of HEAD that touches any of the given paths.
 ///
-/// Returns `None` if no ancestor within the window touches any of the paths.
+/// Relies on git's default history simplification, which follows TREESAME
+/// edges through merge commits. This looks through trivial merges to find
+/// the actual commit that changed the file content, while still returning
+/// conflict-resolution merges where the merge itself determined the result.
+/// Returns `None` if no ancestor touches any of the paths.
 pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<Option<String>> {
     if paths.is_empty() {
         return Ok(None);
@@ -466,8 +470,7 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
         "--format=%H".into(),
         "-n".into(),
         "1".into(),
-        "--full-history".into(),
-        "-m".into(),
+        "HEAD".into(),
         "--".into(),
     ];
     args.extend(paths.iter().cloned());
@@ -917,6 +920,47 @@ mod tests {
         // Should return None for empty paths
         let result = nearest_ancestor_touching(dir.path(), &[]).await?;
         assert!(result.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nearest_ancestor_touching_behind_merge() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        let initial_branch = git_in(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"])?;
+
+        // Branch A: modifies Dockerfile
+        git_in(dir.path(), &["checkout", "-b", "branch-a"])?;
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu")?;
+        git_in(dir.path(), &["add", "Dockerfile"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerfile on branch-a"])?;
+        let dockerfile_sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Branch B from same base: unrelated change
+        git_in(dir.path(), &["checkout", &initial_branch])?;
+        git_in(dir.path(), &["checkout", "-b", "branch-b"])?;
+        std::fs::write(dir.path().join("app.py"), "print('hello')")?;
+        git_in(dir.path(), &["add", "app.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add app.py on branch-b"])?;
+
+        // Merge branch-a into branch-b
+        git_in(
+            dir.path(),
+            &["merge", "branch-a", "-m", "merge branch-a into branch-b"],
+        )?;
+
+        // One more unrelated commit on top so HEAD is NOT the merge
+        std::fs::write(dir.path().join("test.py"), "assert True")?;
+        git_in(dir.path(), &["add", "test.py"])?;
+        git_in(dir.path(), &["commit", "-m", "add test.py"])?;
+
+        // The Dockerfile change is behind the merge, on branch-a.
+        // Git's default history simplification follows the TREESAME edge
+        // through the trivial merge to find the actual branch-a commit
+        // that introduced the Dockerfile.
+        let result = nearest_ancestor_touching(dir.path(), &["Dockerfile".to_string()]).await?;
+        assert_eq!(result.as_deref(), Some(dockerfile_sha.as_str()));
 
         Ok(())
     }
