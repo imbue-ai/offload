@@ -427,10 +427,12 @@ pub trait SandboxProvider: Send + Sync {
     ///
     /// # Default Implementation
     ///
-    /// Returns an empty vector. Providers with environment configuration
+    /// Returns an empty HashMap. Providers with environment configuration
     /// should override this method.
-    fn base_env(&self) -> Vec<(String, String)> {
-        Vec::new()
+    fn base_env(&self) -> &std::collections::HashMap<String, String> {
+        static EMPTY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+            std::sync::OnceLock::new();
+        EMPTY.get_or_init(std::collections::HashMap::new)
     }
 }
 

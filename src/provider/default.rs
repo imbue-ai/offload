@@ -193,7 +193,11 @@ impl SandboxProvider for DefaultProvider {
         debug!("Created default sandbox with ID: {}", remote_id);
 
         // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
-        let mut env = self.base_env();
+        let mut env: Vec<(String, String)> = self
+            .base_env()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         env.extend(config.env.iter().cloned());
 
         // Apply {cpu_cores} placeholder to command templates
@@ -223,12 +227,8 @@ impl SandboxProvider for DefaultProvider {
         })
     }
 
-    fn base_env(&self) -> Vec<(String, String)> {
-        self.config
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+    fn base_env(&self) -> &std::collections::HashMap<String, String> {
+        &self.config.env
     }
 }
 

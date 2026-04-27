@@ -692,7 +692,11 @@ where
         .collect();
 
     // Pre-populate sandbox pool
-    let mut env = provider.base_env();
+    let mut env: Vec<(String, String)> = provider
+        .base_env()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     env.push((
         "OFFLOAD_ROOT".to_string(),
         config

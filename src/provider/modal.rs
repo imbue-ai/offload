@@ -39,7 +39,6 @@ pub struct ModalProvider {
     config: ModalProviderConfig,
     /// Set during `prepare()`.
     image_id: Option<String>,
-    env: Vec<(String, String)>,
     cpu_cores: f64,
     memory_gb: Option<f64>,
 }
@@ -53,12 +52,6 @@ impl ModalProvider {
     pub fn from_config(config: ModalProviderConfig) -> Self {
         let connector = Arc::new(ShellConnector::new());
 
-        let env: Vec<(String, String)> = config
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
         let cpu_cores = config.cpu_cores;
         let memory_gb = config.memory_gb;
 
@@ -66,7 +59,6 @@ impl ModalProvider {
             connector,
             config,
             image_id: None,
-            env,
             cpu_cores,
             memory_gb,
         }
@@ -226,7 +218,11 @@ impl SandboxProvider for ModalProvider {
             Some("uv run @modal_sandbox.py download {sandbox_id} {paths}".to_string());
 
         // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
-        let mut env = self.base_env();
+        let mut env: Vec<(String, String)> = self
+            .base_env()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         env.extend(config.env.iter().cloned());
 
         Ok(DefaultSandbox::new(
@@ -241,8 +237,8 @@ impl SandboxProvider for ModalProvider {
         ))
     }
 
-    fn base_env(&self) -> Vec<(String, String)> {
-        self.env.clone()
+    fn base_env(&self) -> &std::collections::HashMap<String, String> {
+        &self.config.env
     }
 }
 

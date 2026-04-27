@@ -63,12 +63,8 @@ impl SandboxProvider for LocalProvider {
         })
     }
 
-    fn base_env(&self) -> Vec<(String, String)> {
-        self.config
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+    fn base_env(&self) -> &std::collections::HashMap<String, String> {
+        &self.config.env
     }
 }
 
