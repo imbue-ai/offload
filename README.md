@@ -73,7 +73,6 @@ cargo install --path .
 
 **For Modal providers** (`type = "modal"` or `type = "default"` with `@modal_sandbox.py`):
 - [uv](https://docs.astral.sh/uv/) — the bundled `modal_sandbox.py` is invoked via `uv run`, which auto-installs its dependencies (`modal`, `click`)
-- Python >= 3.10
 - A Modal account — authenticate with `modal token new`
 
 **For the pytest framework** (local test discovery):
