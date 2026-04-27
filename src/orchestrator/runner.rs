@@ -106,12 +106,13 @@ pub struct TestRunner<'a, S, D> {
 ///
 /// Converts glob patterns into a `find -path` command. Each pattern is
 /// prefixed with `./` if it doesn't already start with `./` or `/`.
-fn build_find_command(globs: &[String]) -> String {
+fn build_find_command(globs: &[impl AsRef<str>]) -> String {
     let path_predicates: Vec<String> = globs
         .iter()
         .map(|g| {
+            let g = g.as_ref();
             let pattern = if g.starts_with("./") || g.starts_with('/') {
-                g.clone()
+                g.to_string()
             } else {
                 format!("./{}", g)
             };
