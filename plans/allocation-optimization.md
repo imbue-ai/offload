@@ -1262,3 +1262,76 @@ The larger workload provides:
 - **8.3% memory footprint reduction** - Lower allocation overhead
 
 The optimizations successfully reduce allocations across all targeted code paths (orchestration, reporting, provider APIs) with no negative side effects. The improvements scale with workload size, making them especially valuable for large test suites.
+
+---
+
+## Follow-up: SandboxConfig HashMap Refactor
+
+**Date**: 2026-04-27
+**Motivation**: Code review identified repetitive HashMap→Vec conversion pattern at all 4 call sites of `base_env()`
+
+### The Problem
+
+After Phase 3.1, `base_env()` returned `&HashMap<String, String>`, but `SandboxConfig::env` expected `Vec<(String, String)>`. This forced every call site to perform the same conversion:
+
+```rust
+let env: Vec<(String, String)> = self.base_env()
+    .iter()
+    .map(|(k, v)| (k.clone(), v.clone()))
+    .collect();
+env.push(("KEY".to_string(), value));
+```
+
+This pattern appeared in 4 locations: `src/main.rs`, `src/provider/local.rs`, `src/provider/modal.rs`, `src/provider/default.rs`.
+
+### The Solution
+
+Changed `SandboxConfig::env` from `Vec<(String, String)>` to `HashMap<String, String>`. Since `SandboxConfig` is an internal type (not exported from `lib.rs`), this is a non-breaking change.
+
+**After refactor:**
+```rust
+let mut env = self.base_env().clone();
+env.insert("KEY".to_string(), value);
+```
+
+### Files Changed
+
+- `src/config/schema.rs` - SandboxConfig definition
+- `src/main.rs` - Sandbox config construction
+- `src/provider/local.rs` - LocalSandbox creation
+- `src/provider/modal.rs` - ModalSandbox creation and env merging
+- `src/provider/default.rs` - DefaultSandbox creation and env merging
+- `src/orchestrator/pool.rs` - Test helper
+- `src/orchestrator/runner.rs` - Test helper
+
+**Total**: 7 files changed, 44 insertions, 48 deletions
+
+### Performance Impact
+
+**Prediction**: No performance difference - both approaches clone N key-value pairs and add one entry (O(1) for both Vec::push and HashMap::insert).
+
+**Validation on 18-test suite:**
+
+| Run | Instructions | Wall Time |
+|-----|-------------|-----------|
+| Phase 3 (Vec approach) | 1,131M - 1,233M | 7.15s - 7.65s |
+| HashMap refactor | **1,130M** | **7.66s** |
+
+**Result**: ✅ Confirmed - performance is identical (within measurement noise). The HashMap refactor is purely a code quality improvement.
+
+### Benefits Achieved
+
+1. **Eliminated repetitive code**: 4 instances of `.iter().map(|(k,v)| (k.clone(), v.clone())).collect()` replaced with `.clone()`
+2. **Cleaner insertion pattern**: `.insert(key, value)` is semantically clearer than `.push((key, value))`
+3. **Type correctness**: Environment variables are inherently a map (unique keys), not a list
+4. **DRY principle**: No repeated conversion logic across call sites
+
+### Validation
+
+- ✅ All 213 unit tests pass
+- ✅ cargo clippy passes (zero warnings)
+- ✅ cargo fmt --check passes
+- ✅ ratchets check passes
+- ✅ Performance unchanged on 18-test suite (1,130M instructions vs 1,131M baseline)
+
+**Conclusion**: The HashMap refactor successfully eliminates code duplication without performance cost. The change improves maintainability and type correctness while preserving all performance gains from Phases 1-3.

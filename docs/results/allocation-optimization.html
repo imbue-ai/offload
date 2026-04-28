@@ -483,6 +483,9 @@
         <p>
             The optimizations target both hot paths (test orchestration, result parsing) and cold paths (provider APIs, git operations), with benefits scaling proportionally to workload size. Larger test suites will see greater improvements due to increased execution frequency of optimized code paths. The work demonstrates effective application of Rust's zero-cost abstraction principles to production systems.
         </p>
+        <p>
+            <strong>Follow-up HashMap Refactor:</strong> Code review identified repetitive HashMap→Vec conversion patterns at all 4 call sites of <code>base_env()</code>. A follow-up refactor changed <code>SandboxConfig::env</code> from <code>Vec&lt;(String, String)&gt;</code> to <code>HashMap&lt;String, String&gt;</code>, eliminating the repetition. This change has zero performance impact (validated: 1,130M instructions vs 1,131M baseline on 18-test suite) but significantly improves code quality by removing 4 instances of repetitive conversion code and using the semantically correct type for environment variables.
+        </p>
         <p style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; color: #7f8c8d; font-size: 12px;">
             Report generated: April 27, 2026 | Offload v0.8.2 | Complete methodology and raw data available in <code>plans/allocation-optimization.md</code>
         </p>
