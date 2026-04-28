@@ -30,8 +30,11 @@ struct TestId {
 }
 
 impl TestId {
-    fn new(classname: Option<String>, name: String) -> Self {
-        Self { classname, name }
+    fn new(classname: Option<&str>, name: &str) -> Self {
+        Self {
+            classname: classname.map(|s| s.to_string()),
+            name: name.to_string(),
+        }
     }
 }
 
@@ -115,7 +118,7 @@ impl MasterJunitReport {
             // A test ID fails if ANY of its testcases failed.
             let mut suite_outcomes: HashMap<TestId, bool> = HashMap::new();
             for testcase in &testsuite.testcases {
-                let test_id = TestId::new(testcase.classname.clone(), testcase.name.clone());
+                let test_id = TestId::new(testcase.classname.as_deref(), &testcase.name);
                 let failed = testcase.failure.is_some() || testcase.error.is_some();
                 let entry = suite_outcomes.entry(test_id).or_insert(false);
                 if failed {
@@ -199,7 +202,7 @@ impl MasterJunitReport {
     /// canonical test ID and `classname` is `None`. This method compares
     /// directly against `name`.
     pub fn has_test_passed(&self, test_id: &str) -> bool {
-        let key = TestId::new(None, test_id.to_string());
+        let key = TestId::new(None, test_id);
         matches!(
             self.test_outcomes.get(&key),
             Some(TestStatus::Passed | TestStatus::Flaky)
