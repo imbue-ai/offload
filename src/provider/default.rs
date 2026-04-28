@@ -193,12 +193,8 @@ impl SandboxProvider for DefaultProvider {
         debug!("Created default sandbox with ID: {}", remote_id);
 
         // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
-        let mut env: Vec<(String, String)> = self
-            .base_env()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        env.extend(config.env.iter().cloned());
+        let mut env = self.base_env().clone();
+        env.extend(config.env.clone());
 
         // Apply {cpu_cores} placeholder to command templates
         let exec_command = self
@@ -255,7 +251,7 @@ pub struct DefaultSandbox {
     exec_command: String,
     destroy_command: String,
     download_command: Option<String>,
-    env: Vec<(String, String)>,
+    env: std::collections::HashMap<String, String>,
     created_at: Instant,
     cpu_cores: f64,
 }
@@ -270,7 +266,7 @@ impl DefaultSandbox {
         exec_command: String,
         destroy_command: String,
         download_command: Option<String>,
-        env: Vec<(String, String)>,
+        env: std::collections::HashMap<String, String>,
         created_at: Instant,
         cpu_cores: f64,
     ) -> Self {
@@ -311,7 +307,7 @@ impl DefaultSandbox {
         };
 
         // Prepend cd to project root if OFFLOAD_ROOT is set
-        let inner_cmd = match self.env.iter().find(|(k, _)| k == "OFFLOAD_ROOT") {
+        let inner_cmd = match self.env.iter().find(|(k, _)| k.as_str() == "OFFLOAD_ROOT") {
             Some((_, root)) => format!("cd {} && {}", shell_words::quote(root), inner_cmd),
             None => inner_cmd,
         };
@@ -430,7 +426,7 @@ mod tests {
     use super::*;
 
     /// Creates a DefaultSandbox with given env vars for testing.
-    fn sandbox_with_env(env: Vec<(String, String)>) -> DefaultSandbox {
+    fn sandbox_with_env(env: std::collections::HashMap<String, String>) -> DefaultSandbox {
         DefaultSandbox {
             id: "sb-test-123".to_string(),
             connector: Arc::new(ShellConnector::new()),
@@ -456,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_no_env_vars() {
-        let sandbox = sandbox_with_env(vec![]);
+        let sandbox = sandbox_with_env(std::collections::HashMap::new());
         let command = cmd("pytest", &["test_foo.py", "-v"]);
 
         let result = sandbox.build_exec_command(&command);
@@ -487,7 +483,9 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_single_env_var() {
-        let sandbox = sandbox_with_env(vec![("FOO".to_string(), "bar".to_string())]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("FOO".to_string(), "bar".to_string());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("echo", &["hello"]);
 
         let result = sandbox.build_exec_command(&command);
@@ -507,10 +505,10 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_multiple_env_vars() {
-        let sandbox = sandbox_with_env(vec![
-            ("FOO".to_string(), "bar".to_string()),
-            ("BAZ".to_string(), "qux".to_string()),
-        ]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("FOO".to_string(), "bar".to_string());
+        env.insert("BAZ".to_string(), "qux".to_string());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("myprogram", &[]);
 
         let result = sandbox.build_exec_command(&command);
@@ -533,7 +531,9 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_env_var_with_spaces() {
-        let sandbox = sandbox_with_env(vec![("MESSAGE".to_string(), "hello world".to_string())]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("MESSAGE".to_string(), "hello world".to_string());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("echo", &[]);
 
         let result = sandbox.build_exec_command(&command);
@@ -557,7 +557,9 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_env_var_with_quotes() {
-        let sandbox = sandbox_with_env(vec![("QUOTED".to_string(), "it's \"quoted\"".to_string())]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("QUOTED".to_string(), "it's \"quoted\"".to_string());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("echo", &[]);
 
         let result = sandbox.build_exec_command(&command);
@@ -579,7 +581,9 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_env_var_empty_value() {
-        let sandbox = sandbox_with_env(vec![("EMPTY".to_string(), String::new())]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("EMPTY".to_string(), String::new());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("echo", &[]);
 
         let result = sandbox.build_exec_command(&command);
@@ -606,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_sandbox_id_substitution() {
-        let sandbox = sandbox_with_env(vec![]);
+        let sandbox = sandbox_with_env(std::collections::HashMap::new());
         let command = cmd("test", &[]);
 
         let result = sandbox.build_exec_command(&command);
@@ -624,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_command_substitution() {
-        let sandbox = sandbox_with_env(vec![]);
+        let sandbox = sandbox_with_env(std::collections::HashMap::new());
         let command = cmd("pytest", &["--verbose"]);
 
         let result = sandbox.build_exec_command(&command);
@@ -643,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_args_with_special_chars() {
-        let sandbox = sandbox_with_env(vec![]);
+        let sandbox = sandbox_with_env(std::collections::HashMap::new());
         let command = cmd("echo", &["hello world", "foo'bar"]);
 
         let result = sandbox.build_exec_command(&command);
@@ -658,10 +662,10 @@ mod tests {
 
     #[test]
     fn test_build_exec_command_offload_root_cd() {
-        let sandbox = sandbox_with_env(vec![
-            ("OFFLOAD_ROOT".to_string(), "/code/mng".to_string()),
-            ("FOO".to_string(), "bar".to_string()),
-        ]);
+        let mut env = std::collections::HashMap::new();
+        env.insert("OFFLOAD_ROOT".to_string(), "/code/mng".to_string());
+        env.insert("FOO".to_string(), "bar".to_string());
+        let sandbox = sandbox_with_env(env);
         let command = cmd("pytest", &["-v"]);
 
         let result = sandbox.build_exec_command(&command);
@@ -705,7 +709,7 @@ mod tests {
             exec_command: String::new(),
             destroy_command: String::new(),
             download_command: None,
-            env: vec![],
+            env: std::collections::HashMap::new(),
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 2.0,
         };
@@ -734,7 +738,7 @@ mod tests {
             exec_command: String::new(),
             destroy_command: String::new(),
             download_command: None,
-            env: vec![],
+            env: std::collections::HashMap::new(),
             created_at: Instant::now() - std::time::Duration::from_secs(100),
             cpu_cores: 0.125,
         };
@@ -805,7 +809,7 @@ mod tests {
         let sandbox_config = SandboxConfig {
             id: "test-download".to_string(),
             working_dir: None,
-            env: vec![],
+            env: std::collections::HashMap::new(),
             copy_dirs: vec![],
         };
 

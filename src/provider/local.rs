@@ -87,7 +87,7 @@ impl SandboxProvider for LocalProvider {
 pub struct LocalSandbox {
     id: String,
     working_dir: PathBuf,
-    env: Vec<(String, String)>,
+    env: std::collections::HashMap<String, String>,
     shell: String,
 }
 
@@ -215,7 +215,7 @@ mod tests {
         let sandbox = LocalSandbox {
             id: "local-1".to_string(),
             working_dir: PathBuf::from("."),
-            env: vec![],
+            env: std::collections::HashMap::new(),
             shell: "/bin/sh".to_string(),
         };
 

@@ -692,19 +692,15 @@ where
         .collect();
 
     // Pre-populate sandbox pool
-    let mut env: Vec<(String, String)> = provider
-        .base_env()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    env.push((
+    let mut env = provider.base_env().clone();
+    env.insert(
         "OFFLOAD_ROOT".to_string(),
         config
             .offload
             .sandbox_project_root
             .clone()
             .context("sandbox_project_root not set")?,
-    ));
+    );
 
     let sandbox_config = SandboxConfig {
         id: format!("offload-{}", uuid::Uuid::new_v4()),

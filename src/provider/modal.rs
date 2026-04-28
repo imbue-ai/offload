@@ -218,12 +218,8 @@ impl SandboxProvider for ModalProvider {
             Some("uv run @modal_sandbox.py download {sandbox_id} {paths}".to_string());
 
         // Merge provider base env with sandbox-specific env (includes OFFLOAD_ROOT)
-        let mut env: Vec<(String, String)> = self
-            .base_env()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        env.extend(config.env.iter().cloned());
+        let mut env = self.base_env().clone();
+        env.extend(config.env.clone());
 
         Ok(DefaultSandbox::new(
             sandbox_id,

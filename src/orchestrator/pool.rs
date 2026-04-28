@@ -156,7 +156,7 @@ mod tests {
         let config = SandboxConfig {
             id: "offload-test".to_string(),
             working_dir: None,
-            env: vec![],
+            env: std::collections::HashMap::new(),
             copy_dirs: vec![],
         };
         pool.populate(4, &FakeProvider, &config, false).await?;

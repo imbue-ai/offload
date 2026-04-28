@@ -820,7 +820,7 @@ mod tests {
         let config = crate::config::SandboxConfig {
             id: id.to_string(),
             working_dir: Some(".".to_string()),
-            env: vec![],
+            env: std::collections::HashMap::new(),
             copy_dirs: vec![],
         };
         Ok(provider.create_sandbox(&config).await?)

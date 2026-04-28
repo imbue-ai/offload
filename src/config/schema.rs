@@ -665,8 +665,8 @@ pub struct SandboxConfig {
 
     /// Environment variables to set in the sandbox.
     ///
-    /// Passed as key-value tuples.
-    pub env: Vec<(String, String)>,
+    /// Passed as a map of key-value pairs.
+    pub env: HashMap<String, String>,
 
     /// Directories to copy to the sandbox.
     ///
