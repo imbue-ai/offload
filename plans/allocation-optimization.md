@@ -327,9 +327,15 @@ pub fn has_test_passed(&self, test_id: &str) -> bool {
 
 ---
 
-## Phase 3: Breaking API Changes (Consider for next major version)
+## Phase 3: Breaking API Changes — REJECTED
 
-These optimizations require public API changes and should be batched into a major version release.
+**Status**: REJECTED (2026-04-27)
+
+**What happened**: Phase 3 was attempted on a separate branch. Item 3.1 (refactoring `SandboxConfig::env` from `Vec` to `HashMap` and changing the `base_env()` trait signature) produced cascading conflicts across the provider implementations. Items 3.2 and 3.3 were also attempted but the entire branch was abandoned. None of the Phase 3 changes are included in the final optimized branch (`danver/optimize-instructions-1-2`).
+
+**Why it was rejected**: The Phase 1–2 empirical results showed that the allocation optimizations produce no statistically significant runtime improvement on real workloads (local or Modal). The breaking API changes in Phase 3 add complexity and churn across provider implementations for a benefit that cannot be measured. Item 3.2 (`&[String]` → `&[&str]` for git paths) was also not a real improvement: all callers have `Vec<String>` from config deserialization, so the change just adds a temporary `Vec<&str>` conversion at each call site with no net allocation savings.
+
+**What follows**: The existing Phase 1–2 changes (non-breaking, ~43 lines across 7 files) are the final scope of this optimization effort. No further allocation work is planned.
 
 ### 3.1 Provider: Refactor base_env() to avoid cloning
 
@@ -565,14 +571,14 @@ cargo bench
 ### Trade-offs Accepted
 
 1. **Readability over micro-optimization**: String literals using `.to_string()` left as-is in many places for clarity
-2. **API stability**: Phase 3 changes deferred to avoid breaking existing code
+2. **API stability**: Phase 3 changes rejected — breaking API churn not justified by measured results
 3. **Complexity**: Avoided `Cow<str>` in most places where the benefit is marginal
 
 ### Performance Expectations
 
 - **Phase 1**: 10-20% reduction in allocations during test execution
 - **Phase 2**: 5-10% additional reduction in reporting/framework code
-- **Phase 3**: 15-25% reduction in provider-related allocations
+- **Phase 3**: REJECTED — attempted, produced conflicts, measured benefit did not justify breaking changes
 
 **Total expected impact**: 30-50% reduction in unnecessary allocations, primarily in test orchestration hot paths.
 
@@ -606,9 +612,9 @@ Each phase is independent, so rolling back one phase doesn't affect others.
 
 ## Notes for Follow-on Agents
 
-- **Priority order**: Implement Phase 1 first, then Phase 2, defer Phase 3 pending user decision
+- **Priority order**: Phase 1 and 2 completed. Phase 3 attempted and rejected
 - **Test coverage**: All changes are covered by existing tests in `#[cfg(test)]` modules
-- **Breaking changes**: Only Phase 3 contains breaking changes
+- **Breaking changes**: Phase 3 (breaking changes) was attempted and rejected
 - **Time estimates**: Conservative estimates assume careful testing at each step
 - **Idiomatic Rust**: All suggestions maintain Rust idioms (tests in same file per `#[cfg(test)]` convention)
 
@@ -1031,7 +1037,7 @@ The initial 6-12% improvement claim was based on flawed measurements or a misund
 - All tests passing, no regressions
 - No clippy warnings or style violations
 
-**Next**: Phase 3 (breaking API changes) or further validation
+**Next**: No further allocation optimization work planned. Phase 3 was attempted and rejected
 
 ---
 

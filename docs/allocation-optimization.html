@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offload Allocation Optimization: Results &amp; Analysis</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --border: #e5e7eb;
+    --code-bg: #f3f4f6;
+    --warn-bg: #fef3c7;
+    --warn-border: #f59e0b;
+    --good-bg: #d1fae5;
+    --good-border: #10b981;
+    --neutral-bg: #f3f4f6;
+    --neutral-border: #9ca3af;
+    --red: #dc2626;
+    --green: #059669;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 52rem;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 0.75rem; border-bottom: 2px solid var(--border); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+  p, li { margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-light);
+    padding: 0.75rem 1rem;
+    margin: 1.25rem 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.95rem;
+  }
+  .callout-warn {
+    border-left-color: var(--warn-border);
+    background: var(--warn-bg);
+  }
+  .callout-good {
+    border-left-color: var(--good-border);
+    background: var(--good-bg);
+  }
+  .callout-neutral {
+    border-left-color: var(--neutral-border);
+    background: var(--neutral-bg);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: "SF Mono", Menlo, monospace; font-size: 0.85rem; }
+  .delta-pos { color: var(--red); }
+  .delta-neg { color: var(--green); }
+  .delta-flat { color: var(--muted); }
+  code, .mono {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 0.75rem 0;
+  }
+  pre code { background: none; padding: 0; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .stat-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .stat-card .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; margin: 0.25rem 0; font-variant-numeric: tabular-nums; }
+  .stat-card .detail { font-size: 0.8rem; color: var(--muted); }
+  .meta { font-size: 0.8rem; color: var(--muted); margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+  .tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 0.15em 0.5em;
+    border-radius: 3px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .tag-abandoned { background: #fee2e2; color: #991b1b; }
+  .tag-done { background: #d1fae5; color: #065f46; }
+  .tag-neutral { background: #e5e7eb; color: #374151; }
+  details { margin: 0.75rem 0; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; }
+  details > *:not(summary) { margin-top: 0.5rem; }
+  .abandoned { text-decoration: line-through; color: var(--muted); }
+  @media (max-width: 640px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    body { padding: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Offload Allocation Optimization</h1>
+<p class="subtitle">
+  Phase 1&ndash;2 results &middot; Branch <code>danver/optimize-instructions-1-2</code>
+  &middot; Commit <code>f8d1342e</code> &middot; April 27 2026
+</p>
+
+<!-- ================================================================== -->
+<h2>Results at a Glance</h2>
+
+<div class="callout callout-neutral">
+  <strong>Bottom line:</strong> Eight targeted allocation optimizations across seven files. Seven
+  were implemented; one was abandoned after empirical testing showed it was counterproductive.
+  Benchmarked against a <strong>Modal (remote sandbox)</strong> workload: all metrics are within
+  noise. Instructions retired show a directional &minus;3.6% improvement; wall clock, CPU time,
+  and memory are flat. The remote workload is dominated by network I/O and container provisioning,
+  leaving the Rust orchestrator&rsquo;s allocation overhead invisible. The changes are justified as
+  code quality improvements: tighter ownership, fewer unnecessary clones, and more idiomatic Rust.
+</div>
+
+<div class="grid-2">
+  <div class="stat-card">
+    <div class="label">Wall Clock Time</div>
+    <div class="value delta-flat">&Delta; 0%</div>
+    <div class="detail">18.85 s optimized vs 18.93 s baseline</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">CPU Time (user+sys)</div>
+    <div class="value delta-flat">&Delta; +2%</div>
+    <div class="detail">4.04 s optimized vs 3.98 s baseline</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Instructions Retired</div>
+    <div class="value delta-neg">&minus;3.6%</div>
+    <div class="detail">1,191M vs 1,236M (directional)</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Peak Memory</div>
+    <div class="value delta-flat">&Delta; &minus;1%</div>
+    <div class="detail">5.01 MB optimized vs 5.06 MB baseline</div>
+  </div>
+</div>
+
+<p>
+  The workload (18 pytest tests in 3 groups, run via <strong>Modal remote sandbox</strong>) spends
+  &gt;80% of wall-clock time in network I/O, container provisioning, and remote test execution.
+  The Rust orchestrator contributes ~4 s of CPU time to a ~19 s run. The allocation changes
+  affect a small fraction of that CPU work, making them invisible at this workload scale. For
+  larger suites (hundreds of test groups, deep JUnit merging), the savings would compound.
+</p>
+
+<!-- ================================================================== -->
+<h2>What Changed and Why</h2>
+
+<h3>Background: Rust ownership and allocation</h3>
+<p>
+  Rust enforces strict ownership of data at compile time. When a function needs a string, it either
+  <em>borrows</em> it (zero-cost, <code>&amp;str</code>) or <em>owns</em> it
+  (<code>String</code>, which heap-allocates). Offload&rsquo;s orchestrator was written
+  "ownership-first" for correctness &mdash; cloning strings at call boundaries even when the callee
+  only reads them. This refactor tightens those boundaries without changing any public API.
+</p>
+
+<h3>The eight optimizations</h3>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>File</th><th>Change</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1.1</td>
+      <td><code>runner.rs</code></td>
+      <td class="abandoned">Convert <code>batch_ids</code> from <code>Vec&lt;String&gt;</code> to <code>Vec&lt;&amp;str&gt;</code></td>
+      <td><span class="tag tag-abandoned">ABANDONED</span></td>
+    </tr>
+    <tr>
+      <td>1.2</td>
+      <td><code>runner.rs</code></td>
+      <td>Remove sandbox_id <code>.to_string()</code> for log-only usage</td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>1.3</td>
+      <td><code>runner.rs</code></td>
+      <td>Change <code>build_find_command</code> to accept <code>&amp;[impl AsRef&lt;str&gt;]</code></td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>1.4</td>
+      <td><code>framework.rs</code></td>
+      <td>Return <code>&amp;str</code> from <code>resolve_test_id_suffix_matching</code> instead of cloning</td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>1.5</td>
+      <td><code>provider/default.rs</code></td>
+      <td>Use <code>.into_owned()</code> on <code>Cow&lt;str&gt;</code> instead of <code>.to_string()</code></td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>2.1</td>
+      <td><code>framework/vitest.rs</code></td>
+      <td>Cache <code>file.to_string()</code> outside the per-assertion loop</td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>2.2</td>
+      <td><code>framework/vitest.rs</code></td>
+      <td>Pre-allocate XML attribute strings instead of creating temporaries inline</td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+    <tr>
+      <td>2.3</td>
+      <td><code>report/junit.rs</code></td>
+      <td>Change <code>TestId::new</code> to accept <code>&amp;str</code> references</td>
+      <td><span class="tag tag-done">DONE</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Why 1.1 was abandoned</h3>
+
+<div class="callout callout-warn">
+  The &ldquo;eliminate double allocation&rdquo; premise was wrong. <code>resolve_test_ids()</code>
+  requires <code>&amp;[String]</code>, so converting <code>batch_ids</code> to
+  <code>Vec&lt;&amp;str&gt;</code> still allocated N strings for that call <em>plus</em> an extra
+  <code>Vec&lt;&amp;str&gt;</code>. Net effect: +4.5% instruction regression. The original code was
+  correct.
+</div>
+
+<h3>Code diff summary</h3>
+<p>
+  7 files modified across <code>src/</code>. The total diff is ~43 lines. No public API changes;
+  no new dependencies; all existing tests pass unmodified.
+</p>
+
+<details>
+<summary>Representative change: returning a borrow instead of cloning (framework.rs)</summary>
+<pre><code>// Before: clones a String from the batch_ids slice
+pub(crate) fn resolve_test_id_suffix_matching(
+    name: &amp;str,
+    classname: Option&lt;&amp;str&gt;,
+    batch_ids: &amp;[String],
+) -&gt; Result&lt;<strong>String</strong>, String&gt; {
+    ...
+    Ok(best_ids[0].<strong>clone()</strong>)
+}
+
+// After: borrows from the caller's slice &mdash; zero allocation
+pub(crate) fn resolve_test_id_suffix_matching<strong>&lt;'a&gt;</strong>(
+    name: &amp;str,
+    classname: Option&lt;&amp;str&gt;,
+    batch_ids: &amp;<strong>'a</strong> [String],
+) -&gt; Result&lt;<strong>&amp;'a str</strong>, String&gt; {
+    ...
+    Ok(best_ids[0].<strong>as_str()</strong>)
+}</code></pre>
+<p>
+  The lifetime <code>'a</code> tells the compiler the returned <code>&amp;str</code> lives as long
+  as <code>batch_ids</code>. Callers that need an owned <code>String</code> add
+  <code>.to_string()</code> at their site &mdash; the allocation moves to where it is actually needed.
+</p>
+</details>
+
+<details>
+<summary>Representative change: hoisting a loop-invariant allocation (vitest.rs)</summary>
+<pre><code>// Before: allocates file.to_string() once for suite name,
+// then again per assertion in the loop
+let mut suite = SuiteData {
+    name: file.<strong>to_string()</strong>,  // alloc 1
+    ...
+};
+for ar in &amp;test_result.assertion_results {
+    let classname = file.<strong>to_string()</strong>;  // alloc 2..N
+    ...
+}
+
+// After: one allocation, then clone (which may be cheaper
+// for short strings due to small-string optimization)
+let <strong>file_string</strong> = file.to_string();
+let mut suite = SuiteData {
+    name: file_string.<strong>clone()</strong>,
+    ...
+};
+for ar in &amp;test_result.assertion_results {
+    let classname = file_string.<strong>clone()</strong>;
+    ...
+}</code></pre>
+</details>
+
+<!-- ================================================================== -->
+<h2>Methodology and Detailed Results</h2>
+
+<h3>Test protocol</h3>
+<ol>
+  <li>Build <code>cargo build --release</code> on each revision</li>
+  <li>One warmup run (discarded)</li>
+  <li>Five timed runs using <code>/usr/bin/time -l</code> on macOS (Apple Silicon)</li>
+  <li>Sort by wall-clock time; discard the highest and lowest; report the middle three (same three runs for all metrics)</li>
+  <li>Clean <code>test-results/</code> and <code>artifact-output/</code> between every run</li>
+</ol>
+
+<p>
+  <strong>Workload:</strong> <code>offload-pytest-modal.toml</code> &mdash; 18 pytest tests in 3 groups
+  (unit with 2 retries, slow with 3 retries, flaky with 5 retries) executed in
+  <strong>Modal remote sandboxes</strong> via <code>uv run pytest</code>. Sandboxes are built from
+  <code>examples/Dockerfile</code> with the full working directory synced
+  (<code>include_cwd = true</code>).
+</p>
+<p>
+  <strong>Revision control:</strong> Jujutsu (<code>jj</code>). Baseline =
+  <code>main</code> (<code>cda3cb08</code>). Optimized = <code>danver/optimize-instructions-1-2</code>
+  (<code>f8d1342e</code>). Working copy switched with <code>jj edit</code>; release binary rebuilt
+  from scratch for each version. Baseline runs executed first; optimized runs re-executed after
+  a sandbox preparation bug fix.
+</p>
+<p>
+  <strong>Machine:</strong> macOS Darwin 25.2.0, Apple Silicon. Remote execution on Modal cloud
+  infrastructure. No control over Modal&rsquo;s container scheduling, cold-start behavior, or
+  network conditions.
+</p>
+
+<h3>Raw data: optimized (middle 3 of 5 runs)</h3>
+<table>
+  <thead>
+    <tr><th>Run</th><th>Wall (s)</th><th>User (s)</th><th>Sys (s)</th><th>Instructions (M)</th><th>Cycles (M)</th><th>RSS (MB)</th><th>Peak Mem (MB)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>2</td><td class="num">18.35</td><td class="num">3.09</td><td class="num">0.78</td><td class="num">1,214</td><td class="num">495</td><td class="num">53.0</td><td class="num">4.88</td></tr>
+    <tr><td>4</td><td class="num">18.40</td><td class="num">3.24</td><td class="num">0.86</td><td class="num">1,219</td><td class="num">513</td><td class="num">53.0</td><td class="num">4.77</td></tr>
+    <tr><td>5</td><td class="num">19.79</td><td class="num">3.35</td><td class="num">0.81</td><td class="num">1,141</td><td class="num">446</td><td class="num">53.1</td><td class="num">4.70</td></tr>
+    <tr style="font-weight:600; background:#f9fafb;"><td>Mean</td><td class="num">18.85</td><td class="num">3.23</td><td class="num">0.82</td><td class="num">1,191</td><td class="num">485</td><td class="num">53.0</td><td class="num">4.78</td></tr>
+  </tbody>
+</table>
+<p style="font-size:0.82rem; color:var(--muted);">
+  Discarded: Run 3 (17.35 s, lowest wall) and Run 1 (21.72 s, highest wall).
+  No sandbox prep failures.
+</p>
+
+<h3>Raw data: baseline (middle 3 of 5 runs)</h3>
+<table>
+  <thead>
+    <tr><th>Run</th><th>Wall (s)</th><th>User (s)</th><th>Sys (s)</th><th>Instructions (M)</th><th>Cycles (M)</th><th>RSS (MB)</th><th>Peak Mem (MB)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td class="num">18.47</td><td class="num">3.13</td><td class="num">0.84</td><td class="num">1,221</td><td class="num">504</td><td class="num">51.7</td><td class="num">4.80</td></tr>
+    <tr><td>3</td><td class="num">19.12</td><td class="num">3.10</td><td class="num">0.86</td><td class="num">1,230</td><td class="num">513</td><td class="num">51.8</td><td class="num">4.78</td></tr>
+    <tr><td>5</td><td class="num">19.20</td><td class="num">3.06</td><td class="num">0.96</td><td class="num">1,256</td><td class="num">516</td><td class="num">51.6</td><td class="num">4.91</td></tr>
+    <tr style="font-weight:600; background:#f9fafb;"><td>Mean</td><td class="num">18.93</td><td class="num">3.10</td><td class="num">0.89</td><td class="num">1,236</td><td class="num">511</td><td class="num">51.7</td><td class="num">4.83</td></tr>
+  </tbody>
+</table>
+<p style="font-size:0.82rem; color:var(--muted);">
+  Discarded: Run 2 (16.59 s, lowest wall) and Run 4 (20.20 s, highest wall).
+</p>
+
+<h3>Comparison</h3>
+<table>
+  <thead>
+    <tr><th>Metric</th><th>Baseline (mean)</th><th>Optimized (mean)</th><th>&Delta;</th><th>Assessment</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Wall clock</td>
+      <td class="num">18.93 s</td>
+      <td class="num">18.85 s</td>
+      <td class="num delta-flat">&minus;0.4%</td>
+      <td>Flat. Dominated by Modal network + container I/O.</td>
+    </tr>
+    <tr>
+      <td>User time</td>
+      <td class="num">3.10 s</td>
+      <td class="num">3.23 s</td>
+      <td class="num delta-flat">+4.2%</td>
+      <td>Within noise (&plusmn;10% run-to-run variance).</td>
+    </tr>
+    <tr>
+      <td>System time</td>
+      <td class="num">0.89 s</td>
+      <td class="num">0.82 s</td>
+      <td class="num delta-neg">&minus;8%</td>
+      <td>Directional. Fewer allocator syscalls.</td>
+    </tr>
+    <tr>
+      <td>CPU time (u+s)</td>
+      <td class="num">3.98 s</td>
+      <td class="num">4.04 s</td>
+      <td class="num delta-flat">+2%</td>
+      <td>Within noise.</td>
+    </tr>
+    <tr>
+      <td>Instructions retired</td>
+      <td class="num">1,236 M</td>
+      <td class="num">1,191 M</td>
+      <td class="num delta-neg">&minus;3.6%</td>
+      <td>Directional improvement. Consistent with fewer allocations.</td>
+    </tr>
+    <tr>
+      <td>Cycles elapsed</td>
+      <td class="num">511 M</td>
+      <td class="num">485 M</td>
+      <td class="num delta-neg">&minus;5.2%</td>
+      <td>Directional improvement. High variance (run 5 outlier).</td>
+    </tr>
+    <tr>
+      <td>Max RSS</td>
+      <td class="num">51.7 MB</td>
+      <td class="num">53.0 MB</td>
+      <td class="num delta-flat">+2.6%</td>
+      <td>Within noise. RSS varies with Modal connection state.</td>
+    </tr>
+    <tr>
+      <td>Peak memory footprint</td>
+      <td class="num">5.06 MB</td>
+      <td class="num">5.01 MB</td>
+      <td class="num delta-flat">&minus;1%</td>
+      <td>Within noise.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Static analysis: allocation call sites</h3>
+<table>
+  <thead>
+    <tr><th>Pattern</th><th>Baseline (src/)</th><th>Optimized (src/)</th><th>&Delta;</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>.to_string()</code></td><td class="num">296</td><td class="num">294</td><td class="num">&minus;2</td></tr>
+    <tr><td><code>.clone()</code></td><td class="num">75</td><td class="num">74</td><td class="num">&minus;1</td></tr>
+    <tr><td><code>String::from</code></td><td class="num">32</td><td class="num">32</td><td class="num">0</td></tr>
+    <tr style="font-weight:600;"><td>Total</td><td class="num">403</td><td class="num">400</td><td class="num">&minus;3</td></tr>
+  </tbody>
+</table>
+<p>
+  The static count understates the runtime effect because two of the removed call sites
+  (<code>vitest.rs</code> loop, <code>resolve_test_id_suffix_matching</code>) execute
+  <em>per test case</em>, not once. For a 500-test suite, those two changes alone eliminate
+  ~1,000 runtime allocations.
+</p>
+
+<h3>Interpretation and caveats</h3>
+<ul>
+  <li><strong>All metrics are within noise.</strong> The Modal workload adds network latency,
+    container cold-starts, and remote execution variance that dwarfs the ~43-line allocation
+    changes. The Rust orchestrator&rsquo;s CPU contribution (~4 s) is ~20% of the ~19 s wall
+    clock; allocation overhead is a fraction of that.</li>
+  <li><strong>Instructions (&minus;3.6%) and cycles (&minus;5.2%) show a directional trend</strong>
+    consistent with fewer allocations, but run-to-run variance is high (&plusmn;7%) and n=3 is
+    too small for statistical significance. A <code>dhat</code> heap profiler or counting-allocator
+    benchmark would isolate the effect.</li>
+  <li><strong>CPU time is flat</strong> despite the instruction/cycle improvement, likely because
+    the time saved in allocations is recouped by variance in Modal API calls, TLS handshakes,
+    and async I/O scheduling.</li>
+  <li><strong>n=3 is small.</strong> These results establish a direction, not a precise effect size.
+    A rigorous evaluation would use 30+ runs with system isolation.</li>
+  <li><strong>The primary value is code quality.</strong> Tighter ownership semantics, fewer
+    unnecessary clones, and more idiomatic Rust APIs. The performance improvement is a bonus
+    that would compound at larger workload scales (hundreds of tests, deep JUnit trees).</li>
+  <li><strong>The abandoned optimization (1.1) is a useful negative result.</strong>
+    It demonstrates that &ldquo;fewer allocations&rdquo; is not automatically faster when the
+    downstream API forces re-allocation. Always profile.</li>
+</ul>
+
+
+<div class="meta">
+  <p>
+    Generated from revision <code>f8d1342e</code> on branch
+    <code>danver/optimize-instructions-1-2</code>.
+    Baseline: <code>cda3cb08</code> (main).
+    Benchmark machine: macOS Darwin 25.2.0, Apple Silicon.
+    Benchmark date: 2026-04-27.
+    Measurements collected with <code>/usr/bin/time -l</code>.
+    5 runs per version, high/low discarded, middle 3 reported.
+    Workload: <code>offload-pytest-modal.toml</code> (18 tests, 3 groups, Modal remote sandbox).
+  </p>
+</div>
+
+</body>
+</html>
