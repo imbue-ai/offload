@@ -211,7 +211,7 @@ where
                 };
                 match result {
                     Ok(()) => debug!("Removed previous output: {}", path.display()),
-                    Err(e) => warn!("Failed to remove {}: {}", path.display(), e),
+                    Err(e) => debug!("Failed to remove {}: {}", path.display(), e),
                 }
             }
         }
@@ -570,8 +570,8 @@ where
             match tokio::time::timeout(std::time::Duration::from_secs(30), sandbox.terminate())
                 .await
             {
-                Ok(Err(e)) => warn!("Failed to terminate sandbox {}: {}", id, e),
-                Err(_) => warn!("Timeout terminating sandbox {}", id),
+                Ok(Err(e)) => debug!("Failed to terminate sandbox {}: {}", id, e),
+                Err(_) => debug!("Timeout terminating sandbox {}", id),
                 Ok(Ok(())) => {}
             }
             term_progress_ref.inc(1);

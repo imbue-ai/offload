@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::config::schema::CheckpointConfig;
@@ -342,7 +342,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         {
             Ok(image_id) => return Ok(PrewarmOutcome::Resolved { image_id }),
             Err(e) => {
-                warn!(
+                debug!(
                     "{} thin diff failed, falling back to base build: {}",
                     label, e
                 );
@@ -418,7 +418,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     {
         Ok(image_id) => Ok(PrewarmOutcome::Resolved { image_id }),
         Err(e) => {
-            warn!(
+            debug!(
                 "Thin diff failed after base build, falling back to full build: {}",
                 e
             );
