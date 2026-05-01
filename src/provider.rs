@@ -64,7 +64,7 @@ impl std::fmt::Display for CostEstimate {
 ///
 /// Errors are categorized to enable appropriate handling strategies:
 /// - **Retryable**: `Timeout`, `Connection` - may succeed on retry
-/// - **Fatal**: `CreateFailed`, `NotFound` - unlikely to succeed on retry
+/// - **Fatal**: `CreateFailed`, `NotFound`, `SandboxDead` - unlikely to succeed on retry
 /// - **Resource**: `SandboxExhausted` - need to wait for resources
 ///
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +85,14 @@ pub enum ProviderError {
     /// Failed to download a file from the sandbox.
     #[error("Failed to download file: {0}")]
     DownloadFailed(String),
+
+    /// The sandbox has finished or failed and can no longer service requests.
+    ///
+    /// Distinct from [`DownloadFailed`] because it is **not** retryable: the
+    /// container is gone, so retrying will only burn time waiting for the
+    /// underlying SDK's own gRPC retries to give up.
+    #[error("Sandbox is dead: {0}")]
+    SandboxDead(String),
 
     /// The specified sandbox was not found.
     ///
