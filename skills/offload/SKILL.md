@@ -182,7 +182,7 @@ Enable checkpoint mode for repositories where dependency installation or build s
 
 ### Thin diff details
 
-The thin diff is a binary patch generated locally by Rust (`git diff --binary` against a temporary index). The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate — no `git` is required in the sandbox image. If the diff is empty, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory.
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` against a temporary index). The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate — no `git` is required in the sandbox image. If `git` was installed in the Dockerfile solely for thin-diff application, it can now be removed. If the diff is empty, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory.
 
 ### Checking status
 

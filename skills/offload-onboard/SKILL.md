@@ -47,8 +47,9 @@ Offload's Modal provider needs a Dockerfile to build sandbox images. Look for an
 ```dockerfile
 FROM python:<version>-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+# Only install git if tests or dependencies require it (not needed for thin diffs)
+# RUN apt-get update && apt-get install -y --no-install-recommends git \
+#     && rm -rf /var/lib/apt/lists/*
 
 # Install the package manager used by the project (uv, poetry, etc.)
 # For uv:
@@ -63,7 +64,8 @@ WORKDIR /app
 ```dockerfile
 FROM rust:<version>-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config libssl-dev \
+# Only install git if tests or dependencies require it (not needed for thin diffs)
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-nextest if the project uses it
