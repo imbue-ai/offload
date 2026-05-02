@@ -11,8 +11,8 @@ use tracing_subscriber::FmtSubscriber;
 
 use offload::config::{
     self, CargoFrameworkConfig, Config, DefaultFrameworkConfig, DefaultProviderConfig,
-    FrameworkConfig, GroupConfig, HistoryConfig, LocalProviderConfig, OffloadConfig,
-    ProviderConfig, PytestFrameworkConfig, ReportConfig, SandboxConfig, VitestFrameworkConfig,
+    FrameworkConfig, GroupConfig, LocalProviderConfig, OffloadConfig, ProviderConfig,
+    PytestFrameworkConfig, ReportConfig, SandboxConfig, VitestFrameworkConfig,
 };
 use offload::framework::{
     TestFramework, TestRecord, cargo::CargoFramework, default::DefaultFramework,
@@ -91,6 +91,12 @@ enum Commands {
         /// CI mode: replace progress bars with plain-text log lines
         #[arg(long)]
         ci: bool,
+
+        /// Record test history after the run.
+        ///
+        /// Requires a [history] section in the config file.
+        #[arg(long)]
+        record_history: bool,
     },
 
     /// Discover tests without running them
@@ -209,6 +215,7 @@ async fn main() -> Result<()> {
             show_estimated_cost,
             fail_fast,
             ci,
+            record_history,
         } => {
             let ci = ci || std::env::var("CI").is_ok_and(|v| v == "true");
             run_tests(
@@ -223,6 +230,7 @@ async fn main() -> Result<()> {
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -344,6 +352,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<i32> {
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
@@ -360,6 +369,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -377,6 +387,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -399,6 +410,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -416,6 +428,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -473,6 +486,7 @@ async fn run_remote_provider<P: SandboxProvider>(
     fail_fast: bool,
     config_path: &Path,
     ci: bool,
+    record_history: bool,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
@@ -506,6 +520,7 @@ async fn run_remote_provider<P: SandboxProvider>(
         show_estimated_cost,
         fail_fast,
         ci,
+        record_history,
     )
     .await
     .map(Some)
@@ -524,6 +539,7 @@ async fn run_tests(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<()> {
     let tracer = if trace {
         offload::trace::Tracer::new()
@@ -547,6 +563,11 @@ async fn run_tests(
     // Load configuration
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    // Validate --record-history flag
+    if record_history && config.history.is_none() {
+        anyhow::bail!("--record-history requires a [history] section in the config file");
+    }
 
     // Generate run ID for history recording
     let run_id = offload::generate_run_id();
@@ -665,6 +686,7 @@ async fn run_tests(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await?
         }
@@ -685,6 +707,7 @@ async fn run_tests(
                 fail_fast,
                 config_path,
                 ci,
+                record_history,
             )
             .await?
             {
@@ -709,6 +732,7 @@ async fn run_tests(
                 fail_fast,
                 config_path,
                 ci,
+                record_history,
             )
             .await?
             {
@@ -749,6 +773,7 @@ async fn run_all_tests<P, D>(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -805,6 +830,7 @@ where
         show_estimated_cost,
         fail_fast,
         ci,
+        record_history,
     );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
@@ -1021,7 +1047,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
         )]),
         report: ReportConfig::default(),
         checkpoint: None,
-        history: HistoryConfig::default(),
+        history: None,
     };
 
     let toml_content = toml::to_string_pretty(&config)?;

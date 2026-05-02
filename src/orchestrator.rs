@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{Config, format_test_id};
+use crate::config::{Config, RecordHistory, format_test_id};
 use crate::framework::{TestFramework, TestInstance, TestRecord};
 use crate::history::{TestAttemptResult, TestHistoryStore, store::JsonlHistoryStore};
 use crate::provider::{CostEstimate, Sandbox};
@@ -112,6 +112,7 @@ pub struct Orchestrator<S, D> {
     show_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history_flag: bool,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -133,6 +134,7 @@ where
     /// * `show_cost` - Whether to display cost estimate in summary
     /// * `fail_fast` - Whether to stop on first test failure
     /// * `ci` - Whether to use CI mode (plain-text log lines instead of progress bars)
+    /// * `record_history_flag` - Whether `--record-history` was passed on the CLI
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
@@ -144,6 +146,7 @@ where
         show_cost: bool,
         fail_fast: bool,
         ci: bool,
+        record_history_flag: bool,
     ) -> Self {
         Self {
             config,
@@ -155,6 +158,7 @@ where
             show_cost,
             fail_fast,
             ci,
+            record_history_flag,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -198,11 +202,11 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = if self.config.history.enabled {
+        let durations = if let Some(ref history_cfg) = self.config.history {
             let history = JsonlHistoryStore::load(
-                &self.config.history.path,
-                self.config.history.reservoir_size,
-                self.config.history.default_duration_secs,
+                &history_cfg.path,
+                history_cfg.reservoir_size,
+                history_cfg.default_duration_secs,
             )
             .ok();
 
@@ -212,7 +216,7 @@ where
                     debug!(
                         "Using history-based scheduling with {} durations from {}",
                         history_durations.len(),
-                        self.config.history.path.display()
+                        history_cfg.path.display()
                     );
                     history_durations
                 } else {
@@ -347,7 +351,7 @@ where
             crate::trace::TID_MAIN,
         );
         if durations.is_empty() {
-            if self.config.history.enabled {
+            if self.config.history.is_some() {
                 info!(
                     "No historical test durations found. Using default durations for scheduling.",
                 );
@@ -545,9 +549,15 @@ where
         }
 
         // Record results to history store
-        if self.config.history.enabled
-            && let Err(e) = self.record_history(&junit_report)
-        {
+        let should_record = if let Some(ref history_cfg) = self.config.history {
+            match history_cfg.record_history {
+                RecordHistory::Always => true,
+                RecordHistory::Flag => self.record_history_flag,
+            }
+        } else {
+            false
+        };
+        if should_record && let Err(e) = self.record_history(&junit_report) {
             warn!("Failed to record test history: {}", e);
         }
 
@@ -649,14 +659,20 @@ where
     /// Extracts attempt results from the JUnit report and writes them to the
     /// configured history file. Each testcase becomes a separate attempt record.
     fn record_history(&self, junit_report: &SharedJunitReport) -> anyhow::Result<()> {
+        let history_cfg = self
+            .config
+            .history
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("record_history called without history config"))?;
+
         let report = junit_report
             .lock()
             .map_err(|e| anyhow::anyhow!("Failed to lock junit report: {}", e))?;
 
         let mut history_store = JsonlHistoryStore::load(
-            &self.config.history.path,
-            self.config.history.reservoir_size,
-            self.config.history.default_duration_secs,
+            &history_cfg.path,
+            history_cfg.reservoir_size,
+            history_cfg.default_duration_secs,
         )?;
 
         let results = self.extract_attempt_results(&report);
@@ -668,7 +684,7 @@ where
         info!(
             "[HISTORY] Recording {} test attempt(s) to {}",
             results.len(),
-            self.config.history.path.display()
+            history_cfg.path.display()
         );
 
         history_store.record_results(&results)?;

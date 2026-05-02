@@ -555,7 +555,7 @@ mod tests {
             groups: Default::default(),
             report: Default::default(),
             checkpoint: None,
-            history: crate::config::schema::HistoryConfig::default(),
+            history: None,
         };
         let ctx = PrepareContext {
             copy_dirs: &[],

@@ -32,9 +32,11 @@ pub struct Config {
     #[serde(default)]
     pub checkpoint: Option<CheckpointConfig>,
 
-    /// History configuration for cross-run test statistics (optional, has defaults).
+    /// History configuration for cross-run test statistics.
+    ///
+    /// When the `[history]` section is omitted, history is disabled entirely.
     #[serde(default)]
-    pub history: HistoryConfig,
+    pub history: Option<HistoryConfig>,
 }
 
 /// Core offload execution settings.
@@ -635,20 +637,35 @@ fn default_report_dir() -> PathBuf {
     PathBuf::from("test-results")
 }
 
+/// Controls when test history is recorded.
+///
+/// - `Always`: record after every `offload run`.
+/// - `Flag`: record only when `--record-history` is passed on the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordHistory {
+    Always,
+    Flag,
+}
+
 /// Configuration for test history storage.
 ///
 /// History is a cross-run concern that tracks test statistics over time,
 /// enabling better scheduling decisions and flakiness detection.
+///
+/// When the `[history]` section is present in TOML, history is enabled.
+/// When the section is omitted entirely, `Config.history` is `None`
+/// and history is disabled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryConfig {
-    /// Enable/disable history storage.
+    /// When to record history.
     ///
-    /// When enabled, test results are recorded to a local file after each run.
-    /// This data is used for duration estimation and flakiness tracking.
+    /// - `always`: record after every run.
+    /// - `flag`: record only when `--record-history` is passed.
     ///
-    /// Default: `true`
-    #[serde(default = "default_history_enabled")]
-    pub enabled: bool,
+    /// Default: `flag`
+    #[serde(default = "default_record_history")]
+    pub record_history: RecordHistory,
 
     /// Path to history file.
     ///
@@ -682,7 +699,7 @@ pub struct HistoryConfig {
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
-            enabled: default_history_enabled(),
+            record_history: default_record_history(),
             path: default_history_path(),
             reservoir_size: default_reservoir_size(),
             default_duration_secs: default_duration_secs(),
@@ -702,8 +719,8 @@ fn default_retry_count() -> usize {
     0
 }
 
-fn default_history_enabled() -> bool {
-    true
+fn default_record_history() -> RecordHistory {
+    RecordHistory::Flag
 }
 
 fn default_history_path() -> PathBuf {
@@ -836,7 +853,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
-            history: HistoryConfig::default(),
+            history: None,
         }
     }
 
@@ -868,7 +885,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
-            history: HistoryConfig::default(),
+            history: None,
         }
     }
 
@@ -903,7 +920,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
-            history: HistoryConfig::default(),
+            history: None,
         }
     }
 
@@ -1077,7 +1094,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
-            history: HistoryConfig::default(),
+            history: None,
         }
     }
 
@@ -1375,7 +1392,7 @@ mod tests {
         Ok(())
     }
 
-    /// Test that history config uses defaults when not specified.
+    /// Test that history is None when [history] section is omitted.
     #[test]
     fn test_history_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
@@ -1394,10 +1411,64 @@ test_id_format = "{name}"
 [groups.all]
 "#;
         let config: Config = toml::from_str(toml)?;
-        assert!(config.history.enabled);
-        assert_eq!(config.history.path, PathBuf::from("offload-history.jsonl"));
-        assert_eq!(config.history.reservoir_size, 20);
-        assert!((config.history.default_duration_secs - 1.0).abs() < f64::EPSILON);
+        assert!(config.history.is_none());
+        Ok(())
+    }
+
+    /// Test that record_history = "always" deserializes correctly.
+    #[test]
+    fn test_record_history_always() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1 {filters}"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+record_history = "always"
+"#;
+        let config: Config = toml::from_str(toml)?;
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Always);
+        Ok(())
+    }
+
+    /// Test that record_history defaults to "flag" when not specified.
+    #[test]
+    fn test_record_history_defaults_to_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1 {filters}"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+"#;
+        let config: Config = toml::from_str(toml)?;
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Flag);
         Ok(())
     }
 
@@ -1420,16 +1491,19 @@ test_id_format = "{name}"
 [groups.all]
 
 [history]
-enabled = false
+record_history = "flag"
 path = "custom-history.jsonl"
 reservoir_size = 50
 default_duration_secs = 2.5
 "#;
         let config: Config = toml::from_str(toml)?;
-        assert!(!config.history.enabled);
-        assert_eq!(config.history.path, PathBuf::from("custom-history.jsonl"));
-        assert_eq!(config.history.reservoir_size, 50);
-        assert!((config.history.default_duration_secs - 2.5).abs() < f64::EPSILON);
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Flag);
+        assert_eq!(history.path, PathBuf::from("custom-history.jsonl"));
+        assert_eq!(history.reservoir_size, 50);
+        assert!((history.default_duration_secs - 2.5).abs() < f64::EPSILON);
         Ok(())
     }
 }
