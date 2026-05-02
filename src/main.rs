@@ -161,6 +161,19 @@ enum Commands {
         #[command(subcommand)]
         subcommand: HistoryCommands,
     },
+
+    /// Apply a git-format binary patch to the filesystem.
+    ///
+    /// Intended for use inside sandbox images during the thin-diff step.
+    /// Uses diffy for patch application instead of git apply.
+    ApplyDiff {
+        /// Path to the patch file
+        patch_file: PathBuf,
+
+        /// Project root directory to apply patches relative to
+        #[arg(long, default_value = ".")]
+        project_root: PathBuf,
+    },
 }
 
 /// Subcommands for history management.
@@ -260,6 +273,10 @@ async fn main() -> Result<()> {
             }
             HistoryCommands::SetupMergeDriver => setup_merge_driver(),
         },
+        Commands::ApplyDiff {
+            patch_file,
+            project_root,
+        } => apply_diff(&patch_file, &project_root),
     }
 }
 
@@ -1130,6 +1147,167 @@ fn setup_merge_driver() -> Result<()> {
     }
 
     println!("Git merge driver configured");
+    Ok(())
+}
+
+/// Apply a git-format binary patch to the filesystem.
+///
+/// Reads the patch file, parses it with `diffy::PatchSet`, and applies each
+/// file patch (create, delete, modify, rename, copy) to disk under
+/// `project_root`.
+fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
+    use diffy::patch_set::{FileOperation, ParseOptions, PatchSet};
+
+    let patch_bytes = std::fs::read(patch_file)
+        .with_context(|| format!("failed to read patch file: {}", patch_file.display()))?;
+
+    let patches = PatchSet::parse_bytes(&patch_bytes, ParseOptions::gitdiff());
+
+    for result in patches {
+        let file_patch = result.context("failed to parse patch entry")?;
+        let operation = file_patch.operation().strip_prefix(1);
+        let new_mode = file_patch.new_mode().copied();
+
+        match operation {
+            FileOperation::Create(path) => {
+                let path_str =
+                    std::str::from_utf8(&path).context("non-UTF-8 path in create patch")?;
+                let target = project_root.join(path_str);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create parent directories for {}",
+                            target.display()
+                        )
+                    })?;
+                }
+                let content = apply_patch_to_base(&[], file_patch.patch(), path_str)?;
+                std::fs::write(&target, &content)
+                    .with_context(|| format!("failed to write new file: {}", target.display()))?;
+                set_file_mode(&target, new_mode)?;
+            }
+            FileOperation::Delete(path) => {
+                let path_str =
+                    std::str::from_utf8(&path).context("non-UTF-8 path in delete patch")?;
+                let target = project_root.join(path_str);
+                if target.exists() {
+                    std::fs::remove_file(&target)
+                        .with_context(|| format!("failed to delete file: {}", target.display()))?;
+                }
+            }
+            FileOperation::Modify { original, modified } => {
+                let orig_str =
+                    std::str::from_utf8(&original).context("non-UTF-8 original path in patch")?;
+                let mod_str =
+                    std::str::from_utf8(&modified).context("non-UTF-8 modified path in patch")?;
+                let source = project_root.join(orig_str);
+                let existing = std::fs::read(&source).with_context(|| {
+                    format!("failed to read file for modification: {}", source.display())
+                })?;
+                let content = apply_patch_to_base(&existing, file_patch.patch(), orig_str)?;
+                // If paths differ (rare for Modify, but possible), write to the modified path
+                let target = project_root.join(mod_str);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create parent directories for {}",
+                            target.display()
+                        )
+                    })?;
+                }
+                std::fs::write(&target, &content).with_context(|| {
+                    format!("failed to write modified file: {}", target.display())
+                })?;
+                set_file_mode(&target, new_mode)?;
+            }
+            FileOperation::Rename { from, to } => {
+                let from_str =
+                    std::str::from_utf8(&from).context("non-UTF-8 rename-from path in patch")?;
+                let to_str =
+                    std::str::from_utf8(&to).context("non-UTF-8 rename-to path in patch")?;
+                let source = project_root.join(from_str);
+                let target = project_root.join(to_str);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create parent directories for {}",
+                            target.display()
+                        )
+                    })?;
+                }
+                let existing = std::fs::read(&source).with_context(|| {
+                    format!("failed to read file for rename: {}", source.display())
+                })?;
+                let content = apply_patch_to_base(&existing, file_patch.patch(), from_str)?;
+                std::fs::write(&target, &content).with_context(|| {
+                    format!("failed to write renamed file: {}", target.display())
+                })?;
+                std::fs::remove_file(&source).with_context(|| {
+                    format!("failed to remove source of rename: {}", source.display())
+                })?;
+                set_file_mode(&target, new_mode)?;
+            }
+            FileOperation::Copy { from, to } => {
+                let from_str =
+                    std::str::from_utf8(&from).context("non-UTF-8 copy-from path in patch")?;
+                let to_str = std::str::from_utf8(&to).context("non-UTF-8 copy-to path in patch")?;
+                let source = project_root.join(from_str);
+                let target = project_root.join(to_str);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create parent directories for {}",
+                            target.display()
+                        )
+                    })?;
+                }
+                let existing = std::fs::read(&source).with_context(|| {
+                    format!("failed to read file for copy: {}", source.display())
+                })?;
+                let content = apply_patch_to_base(&existing, file_patch.patch(), from_str)?;
+                std::fs::write(&target, &content).with_context(|| {
+                    format!("failed to write copied file: {}", target.display())
+                })?;
+                set_file_mode(&target, new_mode)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply a patch (text or binary) to a base byte slice, returning the result.
+fn apply_patch_to_base(
+    base: &[u8],
+    patch_kind: &diffy::patch_set::PatchKind<'_, [u8]>,
+    file_path: &str,
+) -> Result<Vec<u8>> {
+    match patch_kind {
+        diffy::patch_set::PatchKind::Text(text_patch) => diffy::apply_bytes(base, text_patch)
+            .with_context(|| format!("failed to apply text patch to {file_path}")),
+        diffy::patch_set::PatchKind::Binary(binary_patch) => binary_patch
+            .apply(base)
+            .with_context(|| format!("failed to apply binary patch to {file_path}")),
+    }
+}
+
+/// Set file permissions based on the patch's file mode (unix only).
+#[cfg(unix)]
+fn set_file_mode(path: &Path, mode: Option<diffy::patch_set::FileMode>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(diffy::patch_set::FileMode::Executable) = mode {
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(path, perms).with_context(|| {
+            format!("failed to set executable permission on {}", path.display())
+        })?;
+    }
+    Ok(())
+}
+
+/// Set file permissions based on the patch's file mode (non-unix: no-op).
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Path, _mode: Option<diffy::patch_set::FileMode>) -> Result<()> {
     Ok(())
 }
 
