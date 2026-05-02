@@ -711,4 +711,157 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Integration tests: history store -> scheduler read pathway ---
+
+    use crate::framework::TestRecord;
+    use crate::orchestrator::scheduler::Scheduler;
+
+    /// Drains all initial batches from a scheduler, returning each batch's test IDs.
+    async fn drain_batch_ids(scheduler: &Scheduler) -> Vec<Vec<String>> {
+        let n = scheduler.batch_count();
+        let mut batches = Vec::with_capacity(n);
+        for _ in 0..n {
+            if let Some(batch) = scheduler.pop().await {
+                batches.push(batch.tests.iter().map(|t| t.id().to_string()).collect());
+            }
+        }
+        batches
+    }
+
+    #[tokio::test]
+    async fn test_history_durations_change_scheduler_batching()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 1.0);
+
+        // Record >=5 ok samples so P75 is computed for each test.
+        // "test::slow": durations [10, 11, 12, 13, 14] -> P75 = 13.0
+        record_ok_samples(&mut store, "test.toml", "test::slow", 5, 10.0)?;
+        // "test::medium": durations [5, 6, 7, 8, 9] -> P75 = 8.0
+        record_ok_samples(&mut store, "test.toml", "test::medium", 5, 5.0)?;
+        // "test::fast": durations [1, 2, 3, 4, 5] -> P75 = 4.0
+        record_ok_samples(&mut store, "test.toml", "test::fast", 5, 1.0)?;
+
+        let durations = store.get_scheduling_durations("test.toml");
+        assert_eq!(durations.len(), 3);
+
+        // Build TestInstances
+        let records = [
+            TestRecord::new("test::slow", "group"),
+            TestRecord::new("test::medium", "group"),
+            TestRecord::new("test::fast", "group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        // Scheduler WITH history durations (max_parallel=2)
+        let with_history = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let batches_with = drain_batch_ids(&with_history).await;
+
+        // Scheduler WITHOUT history (empty durations, all tests use 1s default)
+        let without_history = Scheduler::new(2, &tests, &HashMap::new(), &HashMap::new());
+        let batches_without = drain_batch_ids(&without_history).await;
+
+        // With history: LPT assigns slow (13s) alone, medium (8s) + fast (4s) together
+        // Batch 0 (heaviest): [test::slow] = 13s
+        // Batch 1: [test::medium, test::fast] = 12s
+        assert_eq!(batches_with.len(), 2);
+        assert_eq!(batches_with[0].len(), 1);
+        assert!(batches_with[0].contains(&"test::slow".to_string()));
+        assert_eq!(batches_with[1].len(), 2);
+
+        // Without history: all 3 tests have the same 1s default duration.
+        // LPT with equal durations assigns first to batch 0, second to batch 1,
+        // third to the lighter batch. The distribution differs from the history case.
+        // Verify the batch sizes differ from the history-informed case.
+        let sizes_with: Vec<usize> = batches_with.iter().map(|b| b.len()).collect();
+        let sizes_without: Vec<usize> = batches_without.iter().map(|b| b.len()).collect();
+        // With history: [1, 2]. Without history: could be [2, 1] or [1, 2] but the
+        // composition differs -- the slow test is NOT isolated in its own batch.
+        // The key assertion: with history, the heaviest batch has exactly 1 test (slow).
+        // Without history (all equal), the heaviest batch has 2 tests.
+        assert_eq!(sizes_with, vec![1, 2]);
+        assert_eq!(sizes_without, vec![2, 1]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_partial_history_uses_defaults_for_unknown_tests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 1.0);
+
+        // Record history for 2 out of 4 tests (>=5 ok samples each)
+        // "test::known_slow": durations [20, 21, 22, 23, 24] -> P75 = 23.0
+        record_ok_samples(&mut store, "test.toml", "test::known_slow", 5, 20.0)?;
+        // "test::known_fast": durations [1, 2, 3, 4, 5] -> P75 = 4.0
+        record_ok_samples(&mut store, "test.toml", "test::known_fast", 5, 1.0)?;
+
+        let durations = store.get_scheduling_durations("test.toml");
+        // Should contain only the 2 known tests
+        assert_eq!(durations.len(), 2);
+        assert!(durations.contains_key("test::known_slow"));
+        assert!(durations.contains_key("test::known_fast"));
+        assert!(!durations.contains_key("test::unknown_a"));
+        assert!(!durations.contains_key("test::unknown_b"));
+
+        // Build 4 TestInstances
+        let records = [
+            TestRecord::new("test::known_slow", "group"),
+            TestRecord::new("test::known_fast", "group"),
+            TestRecord::new("test::unknown_a", "group"),
+            TestRecord::new("test::unknown_b", "group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        // Scheduler with partial durations (max_parallel=2)
+        // known_slow=23s, known_fast=4s, unknown_a=1s default, unknown_b=1s default
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let batches = drain_batch_ids(&scheduler).await;
+
+        assert_eq!(batches.len(), 2);
+        // LPT: known_slow (23s) -> batch 0
+        //       known_fast (4s) -> batch 1
+        //       unknown_b (1s)  -> batch 1 (lighter)
+        //       unknown_a (1s)  -> batch 1 (still lighter than batch 0)
+        // Batch 0 (heaviest): [known_slow] = 23s
+        // Batch 1: [known_fast, unknown_b, unknown_a] = 6s
+        assert_eq!(batches[0].len(), 1);
+        assert!(batches[0].contains(&"test::known_slow".to_string()));
+        assert_eq!(batches[1].len(), 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_empty_store_produces_empty_durations() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let nonexistent_path = dir.path().join("does_not_exist.jsonl");
+
+        // Load from nonexistent file -> empty store
+        let store = JsonlHistoryStore::load(&nonexistent_path, 20, 1.0)?;
+        let durations = store.get_scheduling_durations("any.toml");
+        assert!(durations.is_empty());
+
+        // Scheduler with empty durations still works (all tests use 1s default)
+        let records = [
+            TestRecord::new("test::a", "group"),
+            TestRecord::new("test::b", "group"),
+            TestRecord::new("test::c", "group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        assert_eq!(scheduler.batch_count(), 2);
+
+        let batches = drain_batch_ids(&scheduler).await;
+        // All 3 tests should be scheduled across the 2 batches
+        let total: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(total, 3);
+
+        Ok(())
+    }
 }
