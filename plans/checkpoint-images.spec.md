@@ -62,7 +62,7 @@ Current image (rebuilt each run):
 
 In both cases, git notes are the storage mechanism. The first run against a commit that lacks a cached image builds and caches it automatically. There is no manual "create checkpoint" step.
 
-**Requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs. The Dockerfile must install `git` in the image. If `git` is not available, `git apply` will fail and offload will fall back to a full build with a warning.
+**Requirement**: Thin diffs are applied inside the sandbox via `offload apply-diff` (which uses the `diffy` crate). The Dockerfile must install the `offload` binary on PATH. If `offload` is not available, `offload apply-diff` will fail and offload will fall back to a full build with a warning.
 
 ## Configuration: `[checkpoint]` Section
 
@@ -145,7 +145,7 @@ A concurrent writer may clobber another's entry. This is acceptable: image build
 
 ## `offload run` Flow
 
-Test discovery runs once concurrently with the entire prewarm pipeline (via `tokio::try_join!`). The prewarm pipeline is invoked through `provider.prewarm_image_cache()` which delegates to `image_cache::run_prewarm_pipeline()`.
+Test discovery runs once concurrently with the prepare path (via `tokio::try_join!`). The prepare path goes through `provider.prepare(ctx)`, whose impl delegates to `image_cache::prepare_with_prewarm()`; that function wraps `run_prewarm_pipeline()` plus a full-build fallback.
 
 ### When `[checkpoint]` is configured
 
@@ -154,9 +154,9 @@ Test discovery runs once concurrently with the entire prewarm pipeline (via `tok
 3. **If a checkpoint is found:**
    a. Check the note on that commit for a cached checkpoint image (keyed by TOML config path).
    b. If no cached image exists: build the checkpoint image (full build), write the note, push notes.
-   c. Rust generates a unified binary patch file locally using a temporary git index: `git read-tree <checkpoint-sha>` into a temp index, then `git add -A` to stage the entire working tree (tracked + untracked), then `git diff --cached --binary <checkpoint-sha>` against the temp index. This produces a single patch that includes both tracked modifications and untracked (non-ignored) files. The real index is never touched.
-   d. If diff is empty and no untracked files: use checkpoint image directly (zero overhead).
-   e. If non-empty: pass the patch file to the provider via `provider.prepare_from_checkpoint()`, which builds the appropriate command (e.g. `uv run @modal_sandbox.py prepare --from-base-image=... --patch-file=...`) and applies it on top of the checkpoint image. All git logic stays in Rust.
+   c. Rust generates a thin-diff artifact locally: a binary patch capturing all working-tree changes since the checkpoint (tracked modifications and untracked non-ignored files).
+   d. If no changes: use checkpoint image directly (zero overhead).
+   e. If non-empty: ship the patch to a sandbox created from the checkpoint image, apply it via `offload apply-diff`, and snapshot the result as the derived image.
    f. Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into the checkpoint image).
 4. **If no checkpoint is found** in the search window: build a full image (same as non-checkpoint mode).
 
@@ -166,8 +166,8 @@ The latest-commit path follows the same pipeline as the checkpoint path. The onl
 
 1. Fetch notes from remote (best-effort).
 2. Look up the latest commit (HEAD) in git notes for a cached base image (keyed by TOML config path).
-3. If cached base image exists (cache hit): Rust generates a unified binary patch file locally using a temporary git index (same technique as checkpoint mode: temp index seeded with HEAD tree, `git add -A`, `git diff --cached --binary HEAD`), then passes it to the provider's `prepare_from_checkpoint()` method which builds a thin-diff image on top of the cached base. On failure (e.g. git not installed in image, apply failure), warn and fall back to full build.
-4. If no cached base image (cache miss): export the HEAD tree via `git::export_tree()`, build the base image via `provider.prepare(context_dir=exported_tree)`, write the note on HEAD, push notes. Then apply thin diff (same as step 3). The thin-diff step routes through `provider.prepare_from_checkpoint()` rather than directly calling a `ShellConnector`.
+3. If cached base image exists (cache hit): Rust generates a thin-diff patch locally (same technique as checkpoint mode). Ships the patch to a sandbox created from the cached base, applies it via `offload apply-diff`, and snapshots the derived image. On failure, warn and fall back to full build.
+4. If no cached base image (cache miss): export the HEAD tree via `git::export_tree()`, build the base image via `builder.build_full(context_dir=exported_tree, ...)`, write the note on HEAD, push notes. Then apply thin diff (same as step 3). The thin-diff step routes through `builder.build_incremental()` rather than directly calling a `ShellConnector`.
 
 ### When `--no-cache` is passed
 
@@ -181,7 +181,7 @@ Both Checkpoint and LatestCommit follow the same unified procedure under `--no-c
    - Without `[checkpoint]` config: use HEAD as the base commit.
 3. If a base commit is found:
    a. Export the base commit tree via `git::export_tree()`.
-   b. Build the base image via `provider.prepare(context_dir=exported_tree)` -- the same build procedure as a normal cache miss.
+   b. Build the base image from the exported tree (`builder.build_full(context_dir=exported_tree, ...)`) -- the same build procedure as a normal cache miss.
    c. Apply thin diff on top (same as normal path).
    d. Do not write notes. Do not push notes.
 4. If no base commit is found (no checkpoint in window, or empty repo with no commits): full build (same as normal path).
@@ -248,8 +248,9 @@ Next run mode:      full build
 | `offload run --no-cache` (with `[checkpoint]`) | Same as normal cache miss (find checkpoint SHA, export tree, build base from `context_dir`, apply thin diff) -- but no note read/write. Produces the same image, just without persisting the result. |
 | `offload run --no-cache` (without `[checkpoint]`) | Same as normal cache miss (resolve HEAD SHA, export HEAD tree, build base from `context_dir`, apply thin diff of uncommitted changes) -- but no note read/write. Produces the same image, just without persisting the result. |
 | Empty diff since checkpoint | Use checkpoint image directly |
-| Binary files in diff | `git diff --binary` + `git apply` handles them |
-| New untracked files since checkpoint | Detected by Rust via a temporary git index (`git add -A` stages all untracked non-ignored files, then `git diff --cached --binary` includes them in the unified patch). Included in the binary patch file alongside tracked changes (not baked into the checkpoint image itself) |
+| Binary files in diff | `git diff --binary` includes them in the patch; `offload apply-diff` handles them via `diffy` |
+| New untracked files since checkpoint | Detected by Rust via a temporary git index (`git add -A` stages all untracked non-ignored files). Included in the patch alongside tracked changes (not baked into the checkpoint image itself) |
+| Sandbox image missing `offload` binary | `offload apply-diff` not found; thin diff fails; falls back to full build with warning |
 | No `[checkpoint]` in config, first run (latest-commit caching) | Export HEAD tree, build base from `context_dir`, cache on HEAD, then thin diff of uncommitted changes |
 | No `[checkpoint]` in config, cached (latest-commit caching) | Use cached HEAD image + thin diff of uncommitted changes |
 | No `[checkpoint]` in config, initial commit (latest-commit caching) | Full build, no caching |
