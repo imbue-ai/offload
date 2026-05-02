@@ -538,4 +538,177 @@ mod tests {
         assert_eq!(failures[0], "test::a");
         Ok(())
     }
+
+    /// Helper: record N ok samples for a test with sequential durations starting at `base_secs`.
+    fn record_ok_samples(
+        store: &mut JsonlHistoryStore,
+        config: &str,
+        test_id: &str,
+        count: usize,
+        base_secs: f64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let results: Vec<TestAttemptResult> = (0..count)
+            .map(|i| TestAttemptResult {
+                config: config.into(),
+                test_id: test_id.into(),
+                run_id: format!("{test_id}-ok-{i}"),
+                passed: true,
+                duration_secs: base_secs + i as f64,
+                timestamp_ms: (i as u64 + 1) * 1000,
+            })
+            .collect();
+        store.record_results(&results)?;
+        Ok(())
+    }
+
+    /// Helper: record N fail samples for a test with sequential durations starting at `base_secs`.
+    fn record_fail_samples(
+        store: &mut JsonlHistoryStore,
+        config: &str,
+        test_id: &str,
+        count: usize,
+        base_secs: f64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let results: Vec<TestAttemptResult> = (0..count)
+            .map(|i| TestAttemptResult {
+                config: config.into(),
+                test_id: test_id.into(),
+                run_id: format!("{test_id}-fail-{i}"),
+                passed: false,
+                duration_secs: base_secs + i as f64,
+                timestamp_ms: (i as u64 + 1) * 2000,
+            })
+            .collect();
+        store.record_results(&results)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_scheduling_durations_populated_store() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 1.0);
+
+        // Record 5 ok samples for two tests under config1
+        record_ok_samples(&mut store, "config1.toml", "test::alpha", 5, 1.0)?;
+        record_ok_samples(&mut store, "config1.toml", "test::beta", 5, 10.0)?;
+        // Record 5 ok samples for one test under config2
+        record_ok_samples(&mut store, "config2.toml", "test::gamma", 5, 100.0)?;
+
+        let durations = store.get_scheduling_durations("config1.toml");
+
+        // Should contain exactly the two config1 tests
+        assert_eq!(durations.len(), 2);
+        assert!(durations.contains_key("test::alpha"));
+        assert!(durations.contains_key("test::beta"));
+        assert!(!durations.contains_key("test::gamma"));
+
+        // Durations should be non-zero
+        let alpha_dur = durations["test::alpha"];
+        let beta_dur = durations["test::beta"];
+        assert!(alpha_dur > Duration::ZERO);
+        assert!(beta_dur > Duration::ZERO);
+
+        // test::alpha has sorted durations [1,2,3,4,5], P75 = sorted[3] = 4.0
+        assert_eq!(alpha_dur, Duration::from_secs_f64(4.0));
+        // test::beta has sorted durations [10,11,12,13,14], P75 = sorted[3] = 13.0
+        assert_eq!(beta_dur, Duration::from_secs_f64(13.0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_scheduling_durations_empty_store() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+
+        // Test with new() (no file)
+        let store = JsonlHistoryStore::new(path.clone(), 20, 1.0);
+        let durations = store.get_scheduling_durations("anything.toml");
+        assert!(durations.is_empty());
+
+        // Test with load() from nonexistent path
+        let store2 = JsonlHistoryStore::load(&path, 20, 1.0)?;
+        let durations2 = store2.get_scheduling_durations("anything.toml");
+        assert!(durations2.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_expected_duration_weighted_p75() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 99.0);
+
+        // Record 5 ok samples: durations [1, 2, 3, 4, 5] -> P75 = sorted[3] = 4.0
+        record_ok_samples(&mut store, "cfg.toml", "test::mixed", 5, 1.0)?;
+        // Record 5 fail samples: durations [10, 11, 12, 13, 14] -> P75 = sorted[3] = 13.0
+        record_fail_samples(&mut store, "cfg.toml", "test::mixed", 5, 10.0)?;
+
+        // failure_rate = 5 / 10 = 0.5
+        // weighted = (1 - 0.5) * 4.0 + 0.5 * 13.0 = 2.0 + 6.5 = 8.5
+        let duration = store.expected_duration("cfg.toml", "test::mixed");
+        let expected = Duration::from_secs_f64(0.5 * 4.0 + 0.5 * 13.0);
+        assert_eq!(duration, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_expected_duration_ok_only() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 99.0);
+
+        // 5 ok samples: durations [2, 3, 4, 5, 6] -> P75 = sorted[3] = 5.0
+        record_ok_samples(&mut store, "cfg.toml", "test::ok_only", 5, 2.0)?;
+        // Only 3 fail samples (<5), so fail percentiles are None
+        record_fail_samples(&mut store, "cfg.toml", "test::ok_only", 3, 50.0)?;
+
+        // Should hit (Some(ok), None) branch -> returns ok P75 = 5.0
+        let duration = store.expected_duration("cfg.toml", "test::ok_only");
+        assert_eq!(duration, Duration::from_secs_f64(5.0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_expected_duration_group_average_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut store = JsonlHistoryStore::new(path, 20, 99.0);
+
+        // Two tests with enough data for P75 computation
+        // test::fast: durations [1, 2, 3, 4, 5] -> P75 = 4.0
+        record_ok_samples(&mut store, "cfg.toml", "test::fast", 5, 1.0)?;
+        // test::slow: durations [10, 11, 12, 13, 14] -> P75 = 13.0
+        record_ok_samples(&mut store, "cfg.toml", "test::slow", 5, 10.0)?;
+
+        // test::sparse has only 2 ok samples (<5) and 0 fail -> both percentiles None
+        record_ok_samples(&mut store, "cfg.toml", "test::sparse", 2, 50.0)?;
+
+        // Group average of tests with P75: (4.0 + 13.0) / 2 = 8.5
+        let duration = store.expected_duration("cfg.toml", "test::sparse");
+        assert_eq!(duration, Duration::from_secs_f64(8.5));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_expected_duration_fewer_than_5_samples() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let default_secs = 7.5;
+        let mut store = JsonlHistoryStore::new(path, 20, default_secs);
+
+        // Record 3 ok samples (fewer than 5) for the only test in this config
+        record_ok_samples(&mut store, "solo.toml", "test::few", 3, 1.0)?;
+
+        // No other tests in config -> group average has count=0 -> falls to default
+        let duration = store.expected_duration("solo.toml", "test::few");
+        assert_eq!(duration, Duration::from_secs_f64(default_secs));
+
+        Ok(())
+    }
 }
