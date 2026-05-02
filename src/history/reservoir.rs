@@ -63,7 +63,7 @@ impl WeightedReservoir {
             // Need to potentially evict
             // Sort by timestamp descending to determine age ranks
             self.samples
-                .sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                .sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
 
             // Compute key for new sample (age_rank = 0, it's the newest)
             let new_key = Self::compute_key(&sample, 0);
@@ -115,7 +115,7 @@ impl WeightedReservoir {
         } else {
             // Need to downsample using weighted reservoir selection
             // Sort by timestamp descending for age ranking
-            all_samples.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+            all_samples.sort_by_key(|s| std::cmp::Reverse(s.timestamp_ms));
 
             // Compute keys for all samples
             let mut keyed: Vec<(f64, Sample)> = all_samples
