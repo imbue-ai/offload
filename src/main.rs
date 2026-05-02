@@ -91,6 +91,12 @@ enum Commands {
         /// CI mode: replace progress bars with plain-text log lines
         #[arg(long)]
         ci: bool,
+
+        /// Record test history after the run.
+        ///
+        /// Requires a [history] section in the config file.
+        #[arg(long)]
+        record_history: bool,
     },
 
     /// Discover tests without running them
@@ -149,6 +155,37 @@ enum Commands {
         #[arg(long)]
         test_regex: Option<String>,
     },
+
+    /// History management commands
+    History {
+        #[command(subcommand)]
+        subcommand: HistoryCommands,
+    },
+}
+
+/// Subcommands for history management.
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Git merge driver for history files.
+    ///
+    /// Usage: offload history merge <base> <ours> <theirs>
+    ///
+    /// This implements the git merge driver protocol. The merged result
+    /// is written to the "ours" file.
+    Merge {
+        /// Base/ancestor version (%O)
+        base: PathBuf,
+        /// Our version (%A) - modified in place with merge result
+        ours: PathBuf,
+        /// Their version (%B)
+        theirs: PathBuf,
+    },
+
+    /// Configure git merge driver for history files.
+    ///
+    /// Updates .gitattributes and configures the merge driver in .git/config.
+    /// This enables automatic merging of offload-history.jsonl during git operations.
+    SetupMergeDriver,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -178,6 +215,7 @@ async fn main() -> Result<()> {
             show_estimated_cost,
             fail_fast,
             ci,
+            record_history,
         } => {
             let ci = ci || std::env::var("CI").is_ok_and(|v| v == "true");
             run_tests(
@@ -192,6 +230,7 @@ async fn main() -> Result<()> {
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -213,6 +252,14 @@ async fn main() -> Result<()> {
             test,
             test_regex,
         } => show_logs(&cli.config, failures, errors, &test, test_regex.as_deref()),
+        Commands::History { subcommand } => match subcommand {
+            HistoryCommands::Merge { base, ours, theirs } => {
+                // Default reservoir size matches the history config default
+                offload::history::merge::merge_history_files(&base, &ours, &theirs, 20)?;
+                Ok(())
+            }
+            HistoryCommands::SetupMergeDriver => setup_merge_driver(),
+        },
     }
 }
 
@@ -295,6 +342,8 @@ async fn discover_with_signal(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     config: &Config,
+    config_filename: &str,
+    run_id: &str,
     all_tests: &[TestRecord],
     provider: P,
     copy_dirs: &[CopyDir],
@@ -303,11 +352,14 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<i32> {
     match &config.framework {
         FrameworkConfig::Pytest(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 PytestFramework::new(f_cfg.clone())?,
@@ -317,12 +369,15 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
         FrameworkConfig::Cargo(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 CargoFramework::new(f_cfg.clone()),
@@ -332,6 +387,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -343,6 +399,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
             }
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 DefaultFramework::new(f_cfg.clone()),
@@ -352,12 +410,15 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
         FrameworkConfig::Vitest(f_cfg) => {
             run_all_tests(
                 config,
+                config_filename,
+                run_id,
                 all_tests,
                 provider,
                 VitestFramework::new(f_cfg.clone())?,
@@ -367,6 +428,7 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await
         }
@@ -414,6 +476,8 @@ async fn run_remote_provider<P: SandboxProvider>(
     mut provider: P,
     config: &Config,
     copy_dir_tuples: &[(PathBuf, PathBuf)],
+    config_filename: &str,
+    run_id: &str,
     copy_dirs: &[CopyDir],
     no_cache: bool,
     verbose: bool,
@@ -422,6 +486,7 @@ async fn run_remote_provider<P: SandboxProvider>(
     fail_fast: bool,
     config_path: &Path,
     ci: bool,
+    record_history: bool,
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
@@ -445,6 +510,8 @@ async fn run_remote_provider<P: SandboxProvider>(
 
     dispatch_framework(
         config,
+        config_filename,
+        run_id,
         &all_tests,
         provider,
         copy_dirs,
@@ -453,6 +520,7 @@ async fn run_remote_provider<P: SandboxProvider>(
         show_estimated_cost,
         fail_fast,
         ci,
+        record_history,
     )
     .await
     .map(Some)
@@ -471,6 +539,7 @@ async fn run_tests(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<()> {
     let tracer = if trace {
         offload::trace::Tracer::new()
@@ -494,6 +563,19 @@ async fn run_tests(
     // Load configuration
     let mut config = config::load_config(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
+
+    // Validate --record-history flag
+    if record_history && config.history.is_none() {
+        anyhow::bail!("--record-history requires a [history] section in the config file");
+    }
+
+    // Generate run ID for history recording
+    let run_id = offload::generate_run_id();
+    let config_filename = config_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("offload.toml")
+        .to_string();
 
     // Apply overrides
     if let Some(parallel) = parallel_override {
@@ -594,6 +676,8 @@ async fn run_tests(
             }
             dispatch_framework(
                 &config,
+                &config_filename,
+                &run_id,
                 &all_tests,
                 LocalProvider::new(p_cfg.clone()),
                 &copy_dirs,
@@ -602,6 +686,7 @@ async fn run_tests(
                 show_estimated_cost,
                 fail_fast,
                 ci,
+                record_history,
             )
             .await?
         }
@@ -612,6 +697,8 @@ async fn run_tests(
                 provider,
                 &config,
                 &copy_dir_tuples,
+                &config_filename,
+                &run_id,
                 &copy_dirs,
                 no_cache,
                 verbose,
@@ -620,6 +707,7 @@ async fn run_tests(
                 fail_fast,
                 config_path,
                 ci,
+                record_history,
             )
             .await?
             {
@@ -634,6 +722,8 @@ async fn run_tests(
                 provider,
                 &config,
                 &copy_dir_tuples,
+                &config_filename,
+                &run_id,
                 &copy_dirs,
                 no_cache,
                 verbose,
@@ -642,6 +732,7 @@ async fn run_tests(
                 fail_fast,
                 config_path,
                 ci,
+                record_history,
             )
             .await?
             {
@@ -671,6 +762,8 @@ async fn run_tests(
 #[allow(clippy::too_many_arguments)]
 async fn run_all_tests<P, D>(
     config: &config::Config,
+    config_filename: &str,
+    run_id: &str,
     tests: &[TestRecord],
     provider: P,
     framework: D,
@@ -680,6 +773,7 @@ async fn run_all_tests<P, D>(
     show_estimated_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history: bool,
 ) -> Result<i32>
 where
     P: offload::provider::SandboxProvider,
@@ -728,12 +822,15 @@ where
 
     let orchestrator = Orchestrator::new(
         config.clone(),
+        config_filename.to_string(),
+        run_id.to_string(),
         framework,
         verbose,
         tracer.clone(),
         show_estimated_cost,
         fail_fast,
         ci,
+        record_history,
     );
 
     let result = orchestrator.run_with_tests(tests, sandbox_pool).await?;
@@ -950,6 +1047,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
         )]),
         report: ReportConfig::default(),
         checkpoint: None,
+        history: None,
     };
 
     let toml_content = toml::to_string_pretty(&config)?;
@@ -967,6 +1065,71 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
     println!("Edit the configuration as needed, then run:");
     println!("  offload run");
 
+    Ok(())
+}
+
+/// Configure git merge driver for history files.
+///
+/// Updates .gitattributes and configures the merge driver in .git/config.
+fn setup_merge_driver() -> Result<()> {
+    // Check if .git directory exists
+    if !Path::new(".git").exists() {
+        anyhow::bail!("Not a git repository (no .git directory found)");
+    }
+
+    // Update .gitattributes
+    let gitattributes_line = "offload-history.jsonl merge=offload-history";
+    let gitattributes_path = Path::new(".gitattributes");
+
+    let needs_update = if gitattributes_path.exists() {
+        let contents =
+            std::fs::read_to_string(gitattributes_path).context("Failed to read .gitattributes")?;
+        !contents.contains(gitattributes_line)
+    } else {
+        true
+    };
+
+    if needs_update {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(gitattributes_path)
+            .context("Failed to open .gitattributes")?;
+        writeln!(file, "{}", gitattributes_line)?;
+        println!("Updated .gitattributes");
+    } else {
+        println!(".gitattributes already configured");
+    }
+
+    // Configure git merge driver using git config
+    let name_status = std::process::Command::new("git")
+        .args([
+            "config",
+            "merge.offload-history.name",
+            "Offload test history merger",
+        ])
+        .status()
+        .context("Failed to run git config for merge driver name")?;
+
+    if !name_status.success() {
+        anyhow::bail!("Failed to configure merge driver name");
+    }
+
+    let driver_status = std::process::Command::new("git")
+        .args([
+            "config",
+            "merge.offload-history.driver",
+            "offload history merge %O %A %B",
+        ])
+        .status()
+        .context("Failed to run git config for merge driver")?;
+
+    if !driver_status.success() {
+        anyhow::bail!("Failed to configure merge driver command");
+    }
+
+    println!("Git merge driver configured");
     Ok(())
 }
 

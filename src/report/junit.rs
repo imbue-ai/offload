@@ -260,6 +260,11 @@ impl MasterJunitReport {
         let flaky = self.flaky_count();
         (passed, failed, flaky)
     }
+
+    /// Returns a reference to the parsed testsuites for iteration.
+    pub fn testsuites(&self) -> &[TestsuiteXml] {
+        &self.testsuites
+    }
 }
 
 /// Extracts a string attribute, decoding XML entities (`&gt;` -> `>`).

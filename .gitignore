@@ -40,3 +40,7 @@ artifact-output/*
 __pycache__/
 *.pyc
 .venv/
+
+
+# Beads
+.beads/.br_history

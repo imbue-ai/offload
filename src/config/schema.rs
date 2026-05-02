@@ -31,6 +31,12 @@ pub struct Config {
     /// Optional checkpoint configuration for image caching.
     #[serde(default)]
     pub checkpoint: Option<CheckpointConfig>,
+
+    /// History configuration for cross-run test statistics.
+    ///
+    /// When the `[history]` section is omitted, history is disabled entirely.
+    #[serde(default)]
+    pub history: Option<HistoryConfig>,
 }
 
 /// Core offload execution settings.
@@ -631,6 +637,76 @@ fn default_report_dir() -> PathBuf {
     PathBuf::from("test-results")
 }
 
+/// Controls when test history is recorded.
+///
+/// - `Always`: record after every `offload run`.
+/// - `Flag`: record only when `--record-history` is passed on the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordHistory {
+    Always,
+    Flag,
+}
+
+/// Configuration for test history storage.
+///
+/// History is a cross-run concern that tracks test statistics over time,
+/// enabling better scheduling decisions and flakiness detection.
+///
+/// When the `[history]` section is present in TOML, history is enabled.
+/// When the section is omitted entirely, `Config.history` is `None`
+/// and history is disabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    /// When to record history.
+    ///
+    /// - `always`: record after every run.
+    /// - `flag`: record only when `--record-history` is passed.
+    ///
+    /// Default: `flag`
+    #[serde(default = "default_record_history")]
+    pub record_history: RecordHistory,
+
+    /// Path to history file.
+    ///
+    /// The history file is stored in JSONL format and can be checked into
+    /// source control for sharing across team members.
+    ///
+    /// Default: `"offload-history.jsonl"`
+    #[serde(default = "default_history_path")]
+    pub path: PathBuf,
+
+    /// Reservoir size per outcome per test.
+    ///
+    /// Each test stores up to this many success samples and this many failure
+    /// samples. Larger values provide better statistical estimates but increase
+    /// file size.
+    ///
+    /// Default: `20`
+    #[serde(default = "default_reservoir_size")]
+    pub reservoir_size: usize,
+
+    /// Default duration estimate when no history available (seconds).
+    ///
+    /// Used as the final fallback in the scheduling chain when no test-specific
+    /// or group-average duration data is available.
+    ///
+    /// Default: `1.0`
+    #[serde(default = "default_duration_secs")]
+    pub default_duration_secs: f64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            record_history: default_record_history(),
+            path: default_history_path(),
+            reservoir_size: default_reservoir_size(),
+            default_duration_secs: default_duration_secs(),
+        }
+    }
+}
+
 fn default_junit() -> bool {
     true
 }
@@ -641,6 +717,22 @@ fn default_junit_file() -> String {
 
 fn default_retry_count() -> usize {
     0
+}
+
+fn default_record_history() -> RecordHistory {
+    RecordHistory::Flag
+}
+
+fn default_history_path() -> PathBuf {
+    PathBuf::from("offload-history.jsonl")
+}
+
+fn default_reservoir_size() -> usize {
+    20
+}
+
+fn default_duration_secs() -> f64 {
+    1.0
 }
 
 /// Runtime configuration passed to sandbox creation.
@@ -761,6 +853,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
+            history: None,
         }
     }
 
@@ -792,6 +885,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
+            history: None,
         }
     }
 
@@ -826,6 +920,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
+            history: None,
         }
     }
 
@@ -999,6 +1094,7 @@ mod tests {
             )]),
             report: ReportConfig::default(),
             checkpoint: None,
+            history: None,
         }
     }
 
@@ -1293,6 +1389,121 @@ mod tests {
             "Expected checkpoint to be None when absent from config"
         );
 
+        Ok(())
+    }
+
+    /// Test that history is None when [history] section is omitted.
+    #[test]
+    fn test_history_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(config.history.is_none());
+        Ok(())
+    }
+
+    /// Test that record_history = "always" deserializes correctly.
+    #[test]
+    fn test_record_history_always() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1 {filters}"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+record_history = "always"
+"#;
+        let config: Config = toml::from_str(toml)?;
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Always);
+        Ok(())
+    }
+
+    /// Test that record_history defaults to "flag" when not specified.
+    #[test]
+    fn test_record_history_defaults_to_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1 {filters}"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+"#;
+        let config: Config = toml::from_str(toml)?;
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Flag);
+        Ok(())
+    }
+
+    /// Test that history config can be customized.
+    #[test]
+    fn test_history_config_custom() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "default"
+discover_command = "echo test1"
+run_command = "echo {tests}"
+test_id_format = "{name}"
+
+[groups.all]
+
+[history]
+record_history = "flag"
+path = "custom-history.jsonl"
+reservoir_size = 50
+default_duration_secs = 2.5
+"#;
+        let config: Config = toml::from_str(toml)?;
+        let history = config
+            .history
+            .ok_or("history should be Some when [history] section is present")?;
+        assert_eq!(history.record_history, RecordHistory::Flag);
+        assert_eq!(history.path, PathBuf::from("custom-history.jsonl"));
+        assert_eq!(history.reservoir_size, 50);
+        assert!((history.default_duration_secs - 2.5).abs() < f64::EPSILON);
         Ok(())
     }
 }

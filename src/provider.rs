@@ -555,6 +555,7 @@ mod tests {
             groups: Default::default(),
             report: Default::default(),
             checkpoint: None,
+            history: None,
         };
         let ctx = PrepareContext {
             copy_dirs: &[],

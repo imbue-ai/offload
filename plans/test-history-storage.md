@@ -21,7 +21,7 @@ Currently, offload only reads the previous `junit.xml` for duration hints. There
 
 1. **Problem 1 - Interface**: Provide offload with a Rust trait that abstracts historical test queries. The interface should be independent of the backing implementation.
 
-2. **Problem 2 - Local File Implementation**: Implement the interface using a local file that can be checked into source control. This is opt-out (enabled by default).
+2. **Problem 2 - Local File Implementation**: Implement the interface using a local file that can be checked into source control. Recording is controlled by the `--record-history` CLI flag or the `record_history` config setting. Reading history for scheduling is always active when a `[history]` section exists.
 
 3. **Problem 3 - CI/CD Backend (OUT OF SCOPE)**: Future work could support database backends for CI systems where results are written to a shared database rather than merged into source control. This spec explicitly does not address this—leave it underspecified.
 
@@ -188,8 +188,8 @@ pub enum HistoryError {
     #[error("Parse error: {0}")]
     Parse(String),
 
-    #[error("History storage is disabled")]
-    Disabled,
+    #[error("No [history] section in config (required by --record-history flag)")]
+    NotConfigured,
 }
 ```
 
@@ -198,7 +198,7 @@ pub enum HistoryError {
 When no history exists for a test:
 - `expected_duration()` follows the fallback chain: test P75 → group average from history → configurable default
 - `get_stats()` returns `None`
-- When history is disabled entirely, the existing `load_test_durations()` from `junit.xml` is used
+- When no `[history]` section exists in config, the existing `load_test_durations()` from `junit.xml` is used
 
 ## Part 2: Local File Storage
 
@@ -372,8 +372,10 @@ History is a top-level config section, separate from `[report]`, since it is a c
 
 ```toml
 [history]
-# Enable/disable history storage (default: true)
-enabled = true
+# When to record history after a run (default: "flag")
+#   "always" — record after every run
+#   "flag"   — record only when --record-history is passed on the CLI
+record_history = "flag"
 
 # Path to history file (default: "offload-history.jsonl")
 path = "offload-history.jsonl"
@@ -387,7 +389,22 @@ reservoir_size = 20
 default_duration_secs = 1.0
 ```
 
-To disable: `[history] enabled = false`
+**Reading vs writing:** The `record_history` setting only gates *writing* (recording results after a run). *Reading* history for LPT scheduling is always active when a `[history]` section exists in the config. This means teams benefit from smarter scheduling immediately, even if they only record history in CI.
+
+**CLI flag: `--record-history`**
+
+The `offload run` command accepts a `--record-history` flag:
+
+```
+offload run -c offload.toml --record-history
+```
+
+Behavior:
+- If `--record-history` is passed and a `[history]` section exists: record history after the run (regardless of the `record_history` config value).
+- If `--record-history` is passed but no `[history]` section exists: **error** — offload exits with a clear message explaining that `[history]` config is required.
+- If `--record-history` is not passed: defer to the `record_history` config value (`"always"` records, `"flag"` does not).
+
+To fully disable history (no reading, no writing): omit the `[history]` section entirely.
 
 **Hardcoded parameters (not configurable):**
 - Decay rate λ = 0.1 (each sample ~10% less likely to be retained than the next newer one)
@@ -497,9 +514,16 @@ Rename is atomic on POSIX filesystems, so readers will always see either the old
 
 History recording happens inside the Orchestrator, after the parallel test run completes and `MasterJunitReport::write_to_file()` is called. The config filename and history config must be passed into the Orchestrator (the Orchestrator currently only receives a `Config` struct, so the config filename needs to be threaded in as an additional parameter).
 
+Recording is gated by the `record_history` config value and the `--record-history` CLI flag:
+
 ```rust
 // In orchestrator.rs, after writing junit.xml (single-threaded context)
-if self.history_config.enabled {
+let should_record = match self.history_config.record_history {
+    RecordHistory::Always => true,
+    RecordHistory::Flag => self.record_history_flag,  // from CLI --record-history
+};
+
+if should_record {
     let mut history_store = JsonlHistoryStore::load(&self.history_config.path)?;
     // One TestAttemptResult per <testcase> element — each retry attempt
     // is a separate record, not aggregated per test ID.
@@ -509,11 +533,15 @@ if self.history_config.enabled {
 }
 ```
 
+The `--record-history` flag is validated early in `main.rs`: if the flag is passed but the config has no `[history]` section, offload exits with an error before running any tests.
+
 The history store is used single-threaded only — it is loaded, mutated, and saved after the parallel run completes. It is not shared across worker threads and does not need `Arc<Mutex<>>` wrapping.
 
 `extract_attempt_results` maps each `<testcase>` element in the JUnit XML to a `TestAttemptResult`. This means each retry attempt produces a separate record. For example, if a test is retried 3 times, this produces 3 `TestAttemptResult` entries (each with its own pass/fail status and duration).
 
 **Loading for scheduling:**
+
+Reading history for scheduling is **always active** when a `[history]` section exists in the config. This is not gated by `record_history` — even teams that only record history in CI still benefit from smarter scheduling locally.
 
 Replace or augment `load_test_durations()`. The expected duration for a test is computed as a **weighted combination** of the success and failure reservoir P75 values:
 
@@ -528,20 +556,20 @@ where:
 
 If only one reservoir has enough samples (≥ 5), the P75 from that reservoir alone is used. This formula accounts for the fact that failures and successes often have very different durations (e.g., a test that times out on failure will have a much higher failure P75 than success P75).
 
-**Fallback chain** when history is enabled:
+**Fallback chain** when a `[history]` section exists:
 
 1. **Weighted P75** for this specific test (formula above)
 2. **Group average from history** — average weighted P75 across all tests in this config
 3. **Configurable default** — a static fallback duration (e.g., 1 second)
 
-When history is disabled, the existing `load_test_durations()` path (from `junit.xml`) is used. The previous `junit.xml` is **not** consulted as a secondary source when history is enabled — history fully replaces it for scheduling.
+When no `[history]` section exists, the existing `load_test_durations()` path (from `junit.xml`) is used. The previous `junit.xml` is **not** consulted as a secondary source when history is available — history fully replaces it for scheduling.
 
 ```rust
 // In orchestrator.rs, during setup
-let durations = if config.history.enabled {
-    let history = JsonlHistoryStore::load(&config.history.path)?;
+let durations = if let Some(ref history_config) = config.history {
+    let history = JsonlHistoryStore::load(&history_config.path)?;
     // Fallback chain: weighted test P75 → group average → default
-    history.get_scheduling_durations(&config_filename, config.history.default_duration_secs)
+    history.get_scheduling_durations(&config_filename, history_config.default_duration_secs)
 } else {
     load_test_durations(&junit_path, test_id_format)
 };
@@ -575,7 +603,10 @@ Key considerations for future CI/CD work:
 | Reservoir size | N = 20 samples per reservoir |
 | Counter behavior | Unbounded growth (u64), no decay |
 | File location | `offload-history.jsonl` in project root (outside `.offload/` to avoid gitignore issues) |
-| Config section | Top-level `[history]` (not nested under `[report]`) |
+| Config section | Top-level `[history]` (not nested under `[report]`); omitting section disables history entirely |
+| Record gating | `record_history` enum: `"always"` (record every run) or `"flag"` (record only with `--record-history` CLI flag). Default: `"flag"` |
+| CLI flag | `--record-history` on `offload run`; errors if no `[history]` section exists |
+| Read vs write | Reading history for scheduling is always active when `[history]` exists; only writing is gated |
 | Merge driver setup | `offload init` sets up merge driver automatically |
 | Merge conflict: deleted keys | Surviving data wins — keep if present in either branch |
 | Sampling algorithm | Efraimidis-Spirakis weighted reservoir sampling |
@@ -589,7 +620,7 @@ Key considerations for future CI/CD work:
 | Trait mutability | `record_results` takes `&mut self`; trait does not require `Send + Sync` |
 | Thread safety | Single-threaded only: load after parallel run, record, save. No `Arc<Mutex<>>` needed |
 | Recording location | Inside Orchestrator (config filename and history config passed in) |
-| Scheduling fallback | Weighted P75 `(1-f/n)*ok_p75 + (f/n)*fail_p75` → group average → configurable default (no junit.xml fallback when history is enabled) |
+| Scheduling fallback | Weighted P75 `(1-f/n)*ok_p75 + (f/n)*fail_p75` → group average → configurable default (no junit.xml fallback when `[history]` section exists) |
 | Attempt mapping | One `TestAttemptResult` per `<testcase>` element (each retry is separate) |
 | Concurrent writes | Atomic write via temp file + rename |
 | Counter merge (no base) | Estimate shared via reservoir overlap: `overlap_ratio * min(A.n, B.n)` |
@@ -642,9 +673,10 @@ This is acceptable for source control.
 ## Appendix C: Migration Path
 
 For existing projects:
-1. First run with history enabled: creates `offload-history.jsonl` with data from that run
-2. Subsequent runs: accumulates history
-3. No migration of old `junit.xml` data (start fresh)
+1. Add `[history]` section to config (with `record_history = "always"` or `"flag"`)
+2. First run with recording active: creates `offload-history.jsonl` with data from that run
+3. Subsequent runs: accumulates history. Scheduling benefits from history immediately on next run.
+4. No migration of old `junit.xml` data (start fresh)
 
 **Deferred to follow-up work:** `offload history import junit.xml` command to seed history from existing junit files. This is not part of the initial implementation scope.
 

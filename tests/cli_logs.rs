@@ -38,6 +38,7 @@ fn write_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
             download_globs_failure_only: false,
         },
         checkpoint: None,
+        history: None,
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
     fs::write(config_path, content).context("failed to write config")?;
@@ -416,6 +417,7 @@ fn write_cargo_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
             download_globs_failure_only: false,
         },
         checkpoint: None,
+        history: None,
     };
     let content = toml::to_string_pretty(&config).context("failed to serialize config")?;
     fs::write(config_path, content).context("failed to write config")?;

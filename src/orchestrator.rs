@@ -13,10 +13,11 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, RecordHistory, format_test_id};
 use crate::framework::{TestFramework, TestInstance, TestRecord};
+use crate::history::{TestAttemptResult, TestHistoryStore, store::JsonlHistoryStore};
 use crate::provider::{CostEstimate, Sandbox};
-use crate::report::{MasterJunitReport, load_test_durations, print_summary};
+use crate::report::{MasterJunitReport, SharedJunitReport, load_test_durations, print_summary};
 
 pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
@@ -103,12 +104,15 @@ impl RunResult {
 ///
 pub struct Orchestrator<S, D> {
     config: Config,
+    config_filename: String,
+    run_id: String,
     framework: D,
     verbose: bool,
     tracer: crate::trace::Tracer,
     show_cost: bool,
     fail_fast: bool,
     ci: bool,
+    record_history_flag: bool,
     _sandbox: std::marker::PhantomData<S>,
 }
 
@@ -122,29 +126,39 @@ where
     /// # Arguments
     ///
     /// * `config` - Configuration loaded from TOML
+    /// * `config_filename` - Name of the config file (for history recording)
+    /// * `run_id` - Unique identifier for this run (for history recording)
     /// * `framework` - Test framework for running tests
     /// * `verbose` - Whether to show verbose output (streaming test output)
     /// * `tracer` - Performance tracer for emitting trace events
     /// * `show_cost` - Whether to display cost estimate in summary
     /// * `fail_fast` - Whether to stop on first test failure
     /// * `ci` - Whether to use CI mode (plain-text log lines instead of progress bars)
+    /// * `record_history_flag` - Whether `--record-history` was passed on the CLI
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
+        config_filename: String,
+        run_id: String,
         framework: D,
         verbose: bool,
         tracer: crate::trace::Tracer,
         show_cost: bool,
         fail_fast: bool,
         ci: bool,
+        record_history_flag: bool,
     ) -> Self {
         Self {
             config,
+            config_filename,
+            run_id,
             framework,
             verbose,
             tracer,
             show_cost,
             fail_fast,
             ci,
+            record_history_flag,
             _sandbox: std::marker::PhantomData,
         }
     }
@@ -174,7 +188,9 @@ where
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
 
-        // Load test durations from previous junit.xml for LPT scheduling
+        // Load test durations for LPT scheduling
+        // When history is enabled and the file exists, use history-based durations.
+        // Otherwise fall back to junit.xml.
         let _dur_span = self.tracer.span(
             "duration_loading",
             "orchestrator",
@@ -186,7 +202,32 @@ where
             .report
             .output_dir
             .join(&self.config.report.junit_file);
-        let durations = load_test_durations(&junit_path);
+        let durations = if let Some(ref history_cfg) = self.config.history {
+            let history = JsonlHistoryStore::load(
+                &history_cfg.path,
+                history_cfg.reservoir_size,
+                history_cfg.default_duration_secs,
+            )
+            .ok();
+
+            if let Some(store) = history {
+                let history_durations = store.get_scheduling_durations(&self.config_filename);
+                if !history_durations.is_empty() {
+                    debug!(
+                        "Using history-based scheduling with {} durations from {}",
+                        history_durations.len(),
+                        history_cfg.path.display()
+                    );
+                    history_durations
+                } else {
+                    load_test_durations(&junit_path)
+                }
+            } else {
+                load_test_durations(&junit_path)
+            }
+        } else {
+            load_test_durations(&junit_path)
+        };
         drop(_dur_span);
 
         // Ensure output directory exists
@@ -310,10 +351,16 @@ where
             crate::trace::TID_MAIN,
         );
         if durations.is_empty() {
-            info!(
-                "No historical test durations found at {}. Using default durations for scheduling.",
-                junit_path.display()
-            );
+            if self.config.history.is_some() {
+                info!(
+                    "No historical test durations found. Using default durations for scheduling.",
+                );
+            } else {
+                info!(
+                    "No historical test durations found at {}. Using default durations for scheduling.",
+                    junit_path.display()
+                );
+            }
         } else {
             debug!(
                 "Using LPT scheduling with {} historical durations from {}",
@@ -501,6 +548,19 @@ where
             }
         }
 
+        // Record results to history store
+        let should_record = if let Some(ref history_cfg) = self.config.history {
+            match history_cfg.record_history {
+                RecordHistory::Always => true,
+                RecordHistory::Flag => self.record_history_flag,
+            }
+        } else {
+            false
+        };
+        if should_record && let Err(e) = self.record_history(&junit_report) {
+            warn!("Failed to record test history: {}", e);
+        }
+
         // Use JUnit report as source of truth for all counts
         let total_in_junit = if let Ok(report) = junit_report.lock() {
             report.total_count()
@@ -592,5 +652,72 @@ where
         print_summary(&run_result, self.show_cost);
 
         Ok(run_result)
+    }
+
+    /// Records test results to the history store.
+    ///
+    /// Extracts attempt results from the JUnit report and writes them to the
+    /// configured history file. Each testcase becomes a separate attempt record.
+    fn record_history(&self, junit_report: &SharedJunitReport) -> anyhow::Result<()> {
+        let history_cfg = self
+            .config
+            .history
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("record_history called without history config"))?;
+
+        let report = junit_report
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock junit report: {}", e))?;
+
+        let mut history_store = JsonlHistoryStore::load(
+            &history_cfg.path,
+            history_cfg.reservoir_size,
+            history_cfg.default_duration_secs,
+        )?;
+
+        let results = self.extract_attempt_results(&report);
+        if results.is_empty() {
+            debug!("No test results to record in history");
+            return Ok(());
+        }
+
+        info!(
+            "[HISTORY] Recording {} test attempt(s) to {}",
+            results.len(),
+            history_cfg.path.display()
+        );
+
+        history_store.record_results(&results)?;
+        history_store.save()?;
+
+        Ok(())
+    }
+
+    /// Extracts test attempt results from a JUnit report for history recording.
+    ///
+    /// Each `<testcase>` element becomes one `TestAttemptResult`. Retries produce
+    /// separate entries, which is correct for the history store's per-attempt tracking.
+    fn extract_attempt_results(&self, report: &MasterJunitReport) -> Vec<TestAttemptResult> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let test_id_format = self.config.framework.test_id_format();
+
+        report
+            .testsuites()
+            .iter()
+            .flat_map(|ts| &ts.testcases)
+            .filter(|tc| !tc.skipped)
+            .map(|tc| TestAttemptResult {
+                config: self.config_filename.clone(),
+                test_id: format_test_id(test_id_format, &tc.name, tc.classname.as_deref()),
+                run_id: self.run_id.clone(),
+                passed: tc.failure.is_none() && tc.error.is_none(),
+                duration_secs: tc.time,
+                timestamp_ms: now_ms,
+            })
+            .collect()
     }
 }
