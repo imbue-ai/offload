@@ -186,6 +186,7 @@ Run tests in parallel.
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
 | `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
 | `--show-estimated-cost` | Show estimated sandbox cost after run (client-side estimate, may not reflect actual billing) |
+| `--record-history` | Record test results to history file after run. Requires a `[history]` section in config |
 
 ### `offload build`
 
@@ -243,6 +244,22 @@ AssertionError: expected 2 got 3
 tests/test_math.py:10: in test_div
     assert 1 / 0 == 2
 E   AssertionError: expected 2 got 3
+```
+
+### `offload history merge`
+
+Git merge driver for history files. Used automatically by git when configured.
+
+```
+offload history merge <base> <ours> <theirs>
+```
+
+### `offload history setup-merge-driver`
+
+Configure the git merge driver for `offload-history.jsonl`. Updates `.gitattributes` and `.git/config` so history files merge automatically during git operations.
+
+```bash
+offload history setup-merge-driver
 ```
 
 ### Exit Codes
@@ -383,6 +400,29 @@ Failed tests that pass on retry are marked as "flaky" (exit code 2).
 | `junit_file` | string | `"junit.xml"` | Filename for JUnit XML output |
 | `download_globs` | string[] | `[]` | Glob patterns for files to download from sandboxes after each batch |
 | `download_globs_failure_only` | boolean | `false` | When true, only download `download_globs` artifacts for batches that had test failures or errors |
+
+### `[history]` -- Test History (optional)
+
+When present, enables history-based LPT scheduling. Offload loads historical test durations on every run to optimize batch assignment. Recording results to the history file is controlled by `record_history`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `record_history` | string | `"flag"` | When to record results: `"always"` (every run) or `"flag"` (only with `--record-history`) |
+| `path` | string | `"offload-history.jsonl"` | Path to the JSONL history file. Can be checked into source control |
+| `reservoir_size` | integer | `20` | Maximum samples per outcome (pass/fail) per test. Larger values improve statistical estimates but increase file size |
+| `default_duration_secs` | float | `1.0` | Fallback duration estimate (seconds) when no historical data is available |
+
+Example:
+
+```toml
+[history]
+record_history = "flag"
+path = "offload-history.jsonl"
+reservoir_size = 20
+default_duration_secs = 1.0
+```
+
+Run `offload history setup-merge-driver` to enable automatic conflict-free merging of the history file during git operations.
 
 ## Performance Tracing
 
