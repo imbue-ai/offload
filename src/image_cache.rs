@@ -448,13 +448,22 @@ pub(crate) async fn prepare_with_prewarm<B: ImageBuilder>(
     }
 }
 
-/// Full-build fallback: snapshot working directory, build from scratch, write cache note.
+/// Full-build fallback: snapshot working directory and build from scratch.
+///
+/// The resulting image's filesystem matches the working tree, NOT any
+/// committed tree, so we deliberately do not write a `for_commit(...)`
+/// cache note here -- doing so would poison the cache for future runs
+/// that expect the note's image to match the checkpoint commit's tree
+/// (see `try_thin_diff` and Stage 2 of `run_prewarm_pipeline`). When
+/// prewarm Stage 2 wrote a note for a freshly-built base image before
+/// falling back, leaving it in place lets future runs reuse that
+/// correct base.
 ///
 /// Shared between `DefaultProvider` and `ModalProvider`.
 pub(crate) async fn full_build_fallback<B: ImageBuilder>(
     builder: &mut B,
     ctx: &PrepareContext<'_>,
-    base_sha: Option<String>,
+    _base_sha: Option<String>,
 ) -> ProviderResult<Option<String>> {
     let context_snapshot = snapshot_working_directory(ctx.tracer).map_err(|e| {
         ProviderError::ExecFailed(format!("failed to snapshot working directory: {e}"))
@@ -475,13 +484,6 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
         ))
         .map_err(|e| ProviderError::ExecFailed(format!("Failed to prepare provider: {e}")))?
     };
-
-    // Write cache note if applicable
-    if !ctx.no_cache
-        && let (Some(sha), Some(id)) = (&base_sha, &image_id)
-    {
-        write_note_for_commit(ctx.repo, sha, id, ctx.config_path).await;
-    }
 
     Ok(image_id)
 }
