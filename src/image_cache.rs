@@ -178,9 +178,7 @@ pub(crate) enum PrewarmOutcome {
     /// A usable image was produced (cache hit + thin diff, or base build + thin diff).
     Resolved { image_id: String },
     /// No image produced — caller should fall back to a full build.
-    /// Carries the base SHA (if resolved) so the caller can write a cache note
-    /// after building without re-resolving.
-    CacheMiss { base_sha: Option<String> },
+    CacheMiss,
 }
 
 /// Pick the base commit and (optionally) its cached image before provider dispatch.
@@ -303,7 +301,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     let resolved = match resolve_base(ctx.repo, ctx.config_path, ctx.config, ctx.no_cache).await {
         Some(r) => r,
         None => {
-            return Ok(PrewarmOutcome::CacheMiss { base_sha: None });
+            return Ok(PrewarmOutcome::CacheMiss);
         }
     };
 
@@ -400,9 +398,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
 
     // Build thin diff on top of base
     let Some(base_id) = base_image_id else {
-        return Ok(PrewarmOutcome::CacheMiss {
-            base_sha: Some(base_sha.to_string()),
-        });
+        return Ok(PrewarmOutcome::CacheMiss);
     };
 
     match try_thin_diff(
@@ -423,9 +419,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
                 e
             );
             eprintln!("[cache] Thin diff failed, falling back to full build");
-            Ok(PrewarmOutcome::CacheMiss {
-                base_sha: Some(base_sha.to_string()),
-            })
+            Ok(PrewarmOutcome::CacheMiss)
         }
     }
 }
@@ -438,23 +432,29 @@ pub(crate) async fn prepare_with_prewarm<B: ImageBuilder>(
     let prewarm = run_prewarm_pipeline(builder, ctx).await;
     match prewarm {
         Ok(PrewarmOutcome::Resolved { ref image_id }) => Ok(Some(image_id.clone())),
-        Ok(PrewarmOutcome::CacheMiss { base_sha }) => {
-            full_build_fallback(builder, ctx, base_sha).await
-        }
+        Ok(PrewarmOutcome::CacheMiss) => full_build_fallback(builder, ctx).await,
         Err(e) => {
             warn!("Prewarm pipeline failed: {}", e);
-            full_build_fallback(builder, ctx, None).await
+            full_build_fallback(builder, ctx).await
         }
     }
 }
 
-/// Full-build fallback: snapshot working directory, build from scratch, write cache note.
+/// Full-build fallback: snapshot working directory and build from scratch.
+///
+/// The resulting image's filesystem matches the working tree, NOT any
+/// committed tree, so we deliberately do not write a `for_commit(...)`
+/// cache note here -- doing so would poison the cache for future runs
+/// that expect the note's image to match the checkpoint commit's tree
+/// (see `try_thin_diff` and Stage 2 of `run_prewarm_pipeline`). When
+/// prewarm Stage 2 wrote a note for a freshly-built base image before
+/// falling back, leaving it in place lets future runs reuse that
+/// correct base.
 ///
 /// Shared between `DefaultProvider` and `ModalProvider`.
 pub(crate) async fn full_build_fallback<B: ImageBuilder>(
     builder: &mut B,
     ctx: &PrepareContext<'_>,
-    base_sha: Option<String>,
 ) -> ProviderResult<Option<String>> {
     let context_snapshot = snapshot_working_directory(ctx.tracer).map_err(|e| {
         ProviderError::ExecFailed(format!("failed to snapshot working directory: {e}"))
@@ -475,13 +475,6 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
         ))
         .map_err(|e| ProviderError::ExecFailed(format!("Failed to prepare provider: {e}")))?
     };
-
-    // Write cache note if applicable
-    if !ctx.no_cache
-        && let (Some(sha), Some(id)) = (&base_sha, &image_id)
-    {
-        write_note_for_commit(ctx.repo, sha, id, ctx.config_path).await;
-    }
 
     Ok(image_id)
 }

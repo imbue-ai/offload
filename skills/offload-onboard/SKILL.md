@@ -47,8 +47,9 @@ Offload's Modal provider needs a Dockerfile to build sandbox images. Look for an
 ```dockerfile
 FROM python:<version>-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+# Only install git if tests or dependencies require it (not needed for thin diffs)
+# RUN apt-get update && apt-get install -y --no-install-recommends git \
+#     && rm -rf /var/lib/apt/lists/*
 
 # Install the package manager used by the project (uv, poetry, etc.)
 # For uv:
@@ -63,7 +64,8 @@ WORKDIR /app
 ```dockerfile
 FROM rust:<version>-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config libssl-dev \
+# Only install git if tests or dependencies require it (not needed for thin diffs)
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-nextest if the project uses it
@@ -362,7 +364,7 @@ Common `build_inputs` patterns:
 
 Include the Dockerfile itself in `build_inputs` — changes to the base image should always trigger a full rebuild. Also include lockfiles (e.g. `uv.lock`, `Cargo.lock`, `package-lock.json`) since they pin exact dependency versions.
 
-**Dockerfile requirement**: Checkpoint mode uses `git apply` inside the sandbox to apply thin diffs on top of the checkpoint image. The Dockerfile must install `git` in the image. If `git` is not installed, thin diff will fail and Offload falls back to a full build (with a warning). The Dockerfile templates in Step 3 already include `git`, but if you are using an existing Dockerfile, verify that `git` is present.
+**Dockerfile requirement**: Checkpoint mode uses `offload apply-diff` inside the sandbox to apply thin diffs on top of the checkpoint image. The Dockerfile must have the `offload` binary on PATH. If `offload` is not installed, thin diff will fail and Offload falls back to a full build (with a warning). Projects that install `offload` for test execution already satisfy this requirement.
 
 After adding the section, run `offload validate` to check the config and `offload checkpoint-status` to verify checkpoint detection.
 

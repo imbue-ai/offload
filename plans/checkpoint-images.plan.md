@@ -13,8 +13,8 @@ Implementation plan for the checkpoint images spec (`checkpoint-images.spec.md`)
 | Config path keys | Repo-relative, no `./` prefix | Canonical form prevents duplicate entries |
 | JSON in notes | Pretty-printed (indented) | Human-debuggable via `git notes show` |
 | No `CheckpointProvider` trait | Checkpoint fields go directly on `SandboxProvider` | Both Modal and Default providers have identical checkpoint/image_id fields; a separate trait is unnecessary indirection for trivial field accessors |
-| Provider trait extended | `prewarm_image_cache()` and `prepare_from_checkpoint()` added to `SandboxProvider` | Thin-diff image build is routed through `provider.prepare_from_checkpoint()`, and the entire prewarm pipeline is invoked via `provider.prewarm_image_cache()`. The provider stores the resulting image_id internally. |
-| Diff generation in Rust | Rust generates a unified binary patch using a temporary git index (`git read-tree` + `git add -A` + `git diff --cached --binary`), capturing both tracked changes and untracked files in one patch. Passes `--patch-file` to the provider's `prepare_from_checkpoint()` | Keeps all git logic in Rust; Python is a thin SDK wrapper that only applies a pre-generated patch via Modal API calls. The temp-index approach avoids separate handling of untracked files. |
+| Separate `ImageBuilder` trait | `ImageBuilder` trait (`build_full`, `build_incremental`) lives in `image_cache.rs`. Providers implement both `ImageBuilder` and `SandboxProvider`. `SandboxProvider::prepare()` delegates to `prepare_with_prewarm(self, ctx)`, which is generic over `ImageBuilder`. | Splitting the image-build interface from the broader `SandboxProvider` keeps the prewarm pipeline testable via `MockImageBuilder` without standing up a real sandbox. The pipeline only needs `build_full` / `build_incremental`; isolating those into a narrow trait is cheaper to mock than the full provider surface. |
+| Diff generation in Rust, application via `offload apply-diff` | Rust generates a unified binary patch using a temporary git index (`git read-tree` + `git add -A` + `git diff --cached --binary`), capturing both tracked changes and untracked files in one patch. The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate. | Keeps diff generation in Rust; patch application uses offload's own binary (already installed in the sandbox image) instead of `git apply`. Eliminates `git apply --3way` failure modes while preserving the small-artifact architecture. |
 | Fallthrough caching | Cache lookups are transparent steps in a linear pipeline | No scattered if/else trees; each step either produces a value or falls through to the next |
 | Unified caching pipeline | Checkpoint and LatestCommit follow identical steps after base-commit resolution | The only difference is how the base commit is selected (nearest ancestor touching `build_inputs` vs HEAD). Everything after resolution -- cache lookup, tree export, base build, thin diff, note write -- is the same code path. Variant names are kept for logging/diagnostics |
 | Latest-commit base commit | Use HEAD (latest commit) as base image | Thin diff covers only uncommitted changes (smaller than diffing from HEAD~1); cache hit rate is the same (miss on new commit, hit on repeated runs); avoids initial-commit edge case since HEAD always exists. Non-checkpoint caching uses HEAD (not HEAD~1) as the base commit. |
@@ -49,18 +49,19 @@ Both kinds follow identical steps:
 ```
 Stage 1 (cache hit):
   if cached_image_id is Some(image_id):
-    try_thin_diff(provider, image_id, base_sha) → return Resolved { image_id }
+    try_thin_diff(builder, image_id, base_sha) → return Resolved { image_id }
     on failure → fall through to Stage 2
 
 Stage 2 (cache miss / base build):
   export_tree(base_sha)
-  base_id = provider.prepare(context_dir=exported_tree)
+  base_id = builder.build_full(context_dir=exported_tree, ...)
   if !no_cache: write_note(base_sha, base_id), push_notes
-  try_thin_diff(provider, base_id, base_sha) → return Resolved { image_id }
+  try_thin_diff(builder, base_id, base_sha) → return Resolved { image_id }
   on failure → return CacheMiss { base_sha }
 
 No base found → return CacheMiss { base_sha: None }
-  // Caller (main.rs) falls back to full build with snapshot_working_directory()
+  // prepare_with_prewarm falls back to full_build_fallback, which snapshots
+  // the working directory and calls builder.build_full().
 ```
 
 `--no-cache` follows the same unified pipeline but skips all note interactions (no fetch, read, write, or push). It still resolves the base SHA, exports the tree, builds from `context_dir`, and applies thin diff -- producing the same image as a normal cache miss. The only difference is that the result is not persisted to git notes.
@@ -69,13 +70,17 @@ When `no_cache` is true, `resolve_base()` skips notes fetch and returns `Resolve
 
 ### Key principle
 
-The provider is an **image builder + sandbox factory** with thin caching hooks. It knows how to:
-- `prepare()`: build an image from a Dockerfile and return an image ID
-- `prewarm_image_cache()`: run the caching pipeline (delegates to `image_cache::run_prewarm_pipeline()`) and store the resulting image ID internally
-- `prepare_from_checkpoint()`: build a thin-diff image on top of a base image from a patch file
-- `create_sandbox()`: create a sandbox from the current image ID
+Each provider implements two traits:
 
-All checkpoint logic, caching decisions, fallback strategies, and note management live in `image_cache.rs`. The provider stores the image_id internally after prewarm completes.
+`ImageBuilder` (defined in `image_cache.rs`, `pub(crate)`):
+- `build_full()`: build an image from scratch (Dockerfile + copy_dirs + sandbox_init_cmd).
+- `build_incremental()`: build a thin-diff image on top of a base image given a patch file.
+
+`SandboxProvider` (defined in `provider.rs`):
+- `prepare()`: delegates to `prepare_with_prewarm(self, ctx)`. The prewarm pipeline runs the cache lookup + thin diff path; on miss it falls back to a full build via `full_build_fallback`. Stores the resulting image_id internally.
+- `create_sandbox()`: create a sandbox from the current image ID.
+
+All checkpoint logic, caching decisions, fallback strategies, and note management live in `image_cache.rs`. `prepare_with_prewarm` and `run_prewarm_pipeline` are generic over `ImageBuilder`, which enables unit-testing the pipeline against `MockImageBuilder` without standing up a real sandbox.
 
 ## Commit Sequence
 
@@ -152,7 +157,7 @@ Implementation notes:
 - `configure_notes_fetch`: check `git config --get-all remote.<remote>.fetch` for existing refspec; add `+refs/notes/offload-images:refs/notes/offload-images` if absent.
 - `fetch_notes`: returns `Ok(())` even if the remote ref doesn't exist (not an error on fresh repos).
 - `read_note`: returns `Ok(None)` if the ref or note doesn't exist (not an error).
-- `export_tree`: creates a shallow clone (depth=1) of the current repo at the given commit SHA via `git init` + `git fetch --depth=1` + `git checkout`, preserving `.git/` for downstream `COPY . /app` and `git apply`. Also creates a branch (`main`) so `refs/heads/` is non-empty.
+- `export_tree`: creates a shallow clone (depth=1) of the current repo at the given commit SHA via `git init` + `git fetch --depth=1` + `git checkout`. Also creates a branch (`main`) so `refs/heads/` is non-empty.
 - `generate_checkpoint_diff`: uses a temporary git index (`GIT_INDEX_FILE`) to produce a unified binary patch that includes both tracked modifications and untracked (non-ignored) files. The real index is never touched.
 - `canonicalize_config_path`: strips `./` prefix, converts to repo-relative path. Used before any note read/write.
 
@@ -248,39 +253,61 @@ Tests:
 
 ---
 
-### Commit 4: `SandboxProvider` gains `prewarm_image_cache()` and `prepare_from_checkpoint()`
+### Commit 4: `ImageBuilder` trait and `prepare_with_prewarm`
 
-**Files:** `src/provider.rs`, `src/provider/modal.rs`, `src/provider/default.rs`, `src/provider/local.rs`
+**Files:** `src/image_cache.rs`, `src/provider/modal.rs`, `src/provider/default.rs`, `src/provider/local.rs`
 
-Two new methods are added to the `SandboxProvider` trait:
+A new `pub(crate)` trait `ImageBuilder` is added to `image_cache.rs`:
 
 ```rust
-/// Prewarm the image cache by resolving a base commit and building a thin-diff image.
-/// Providers that support image caching delegate to image_cache::run_prewarm_pipeline().
-/// Providers that do not (Local) return CacheMiss.
-async fn prewarm_image_cache(
-    &mut self,
-    ctx: &crate::image_cache::PrewarmContext<'_>,
-) -> anyhow::Result<crate::image_cache::PrewarmOutcome>;
+#[async_trait]
+pub(crate) trait ImageBuilder: Send {
+    /// Build an image from scratch (full prepare).
+    async fn build_full(
+        &mut self,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+        discovery_done: Option<&AtomicBool>,
+        context_dir: Option<&Path>,
+    ) -> ProviderResult<Option<String>>;
 
-/// Build a thin-diff image from a checkpoint base image and a patch file.
-/// Returns the new image ID if successful, or None for providers that
-/// do not support this operation.
-async fn prepare_from_checkpoint(
-    &mut self,
-    base_image_id: &str,
-    patch_file: &Path,
-    sandbox_project_root: &str,
-    discovery_done: Option<&AtomicBool>,
-) -> ProviderResult<Option<String>>;
+    /// Build a thin-diff image on top of a base image.
+    async fn build_incremental(
+        &mut self,
+        base_image_id: &str,
+        patch_file: &Path,
+        sandbox_project_root: &str,
+        discovery_done: Option<&AtomicBool>,
+    ) -> ProviderResult<Option<String>>;
+}
 ```
 
-`ModalProvider` and `DefaultProvider` implement `prewarm_image_cache()` by delegating to `image_cache::run_prewarm_pipeline(self, ctx)` and then storing the resulting image_id internally. They implement `prepare_from_checkpoint()` by building a `uv run @modal_sandbox.py prepare --from-base-image=... --patch-file=...` command. `LocalProvider` returns `CacheMiss` / `None` respectively.
+`ModalProvider` and `DefaultProvider` implement `ImageBuilder`. Their `build_incremental` invokes the Python sandbox script:
 
-**No `CheckpointContext`, no `CheckpointProvider` trait, no checkpoint branching in `build_prepare_command()`.** The provider's `prepare()` method is untouched -- it always does a normal Dockerfile-based build.
+```
+uv run @modal_sandbox.py prepare --from-base-image=<id> --patch-file=<path> --sandbox-project-root=<root>
+```
+
+`LocalProvider` does **not** implement `ImageBuilder` (local doesn't build images). Its `SandboxProvider::prepare()` is a no-op for image work.
+
+The existing `SandboxProvider::prepare()` is restructured to delegate:
+
+```rust
+// In ModalProvider / DefaultProvider:
+async fn prepare(&mut self, ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
+    let result = prepare_with_prewarm(self, ctx).await?;
+    self.image_id = result.clone();
+    Ok(result)
+}
+```
+
+The `PrepareContext` struct already lives in `provider.rs` and is unchanged.
+
+**No `CheckpointContext`, no `CheckpointProvider` trait, no checkpoint branching in `build_prepare_command()`.** The trait split keeps checkpoint/cache logic out of `SandboxProvider` entirely — it lives in `image_cache.rs` and is exercised through `ImageBuilder`.
 
 Tests:
-- Existing provider tests pass unchanged
+- `MockImageBuilder` in `image_cache.rs` exercises `run_prewarm_pipeline` without a real sandbox.
+- Existing provider tests (sandbox-level) pass unchanged.
 
 ---
 
@@ -301,16 +328,16 @@ Image caching is now handled entirely by the Rust side via git notes. The Python
 - `--patch-file` (path to a binary patch file generated by Rust)
 - `--sandbox-project-root` (default `/app`)
 
-The Python script is a **thin wrapper** that applies a pre-generated patch. All git logic (diff generation, untracked file collection) lives in Rust. The Python script never runs git commands to generate diffs.
+The Python script is a **thin wrapper** that ships the patch to the sandbox. All diff logic lives in Rust. The Python script never runs git commands to apply diffs — it delegates to `offload apply-diff`.
 
 When `--from-base-image` is set:
 1. `modal.Image.from_id(from_base_image)`
 2. If `--patch-file` is not provided: return checkpoint image ID directly (print to stdout). This happens when the diff is empty (Rust determined no changes).
 3. If `--patch-file` is provided:
    - `checkpoint_img.add_local_file(patch_file, "/tmp/offload.patch")`
-   - `.run_commands(f"cd {project_root} && git apply /tmp/offload.patch --allow-empty && rm /tmp/offload.patch")`
+   - `.run_commands(f"offload apply-diff /tmp/offload.patch --project-root {project_root} && rm /tmp/offload.patch")`
    - Build, materialize, return new image ID
-4. On image-expired or `git apply` failure: **exit non-zero**. Python does not implement fallback logic. All fallback/retry decisions live in Rust.
+4. On failure: **exit non-zero**. Python does not implement fallback logic. All fallback/retry decisions live in Rust.
 
 New helper:
 - `_derive_image_from_base(app, base_img, patch_file, project_root) -> str`
@@ -325,7 +352,7 @@ Tests:
 
 **Files:** `src/image_cache.rs`, `src/main.rs`
 
-This is where the caching flow comes together. The integration follows the **linear fallthrough** pattern described in the Design section. The pipeline orchestration lives in `image_cache.rs`. The `main.rs` file calls `provider.prewarm_image_cache()` which delegates to `image_cache::run_prewarm_pipeline()`.
+This is where the caching flow comes together. The integration follows the **linear fallthrough** pattern described in the Design section. The pipeline orchestration lives in `image_cache.rs`. `main.rs` calls `provider.prepare(ctx)` (the existing `SandboxProvider::prepare` method); the provider's impl delegates to `image_cache::prepare_with_prewarm(self, ctx)`, which encapsulates cache lookup, thin diff, and full-build fallback.
 
 **ResolvedBase struct with BaseKind enum (in `image_cache.rs`):**
 
@@ -346,39 +373,31 @@ struct ResolvedBase {
 
 `BaseKind` carries only the diagnostic label (e.g. "[cache] Checkpoint hit" vs "[cache] Latest-commit hit").
 
-**`PrewarmContext` and `PrewarmOutcome` structs (in `image_cache.rs`):**
+**`PrewarmOutcome` enum (in `image_cache.rs`):**
 
 ```rust
-pub struct PrewarmContext<'a> {
-    pub repo: &'a Path,
-    pub config: &'a Config,
-    pub config_path: &'a Path,
-    pub copy_dir_tuples: &'a [(PathBuf, PathBuf)],
-    pub no_cache: bool,
-    pub tracer: &'a Tracer,
-    pub discovery_done: &'a AtomicBool,
-}
-
-pub enum PrewarmOutcome {
+pub(crate) enum PrewarmOutcome {
     Resolved { image_id: String },
     CacheMiss { base_sha: Option<String> },
 }
 ```
 
-The `CacheMiss` variant carries an `Option<String>` base_sha so the caller (`main.rs`) can write a cache note after a full build without re-resolving.
+The `CacheMiss` variant carries an `Option<String>` base_sha so `prepare_with_prewarm` can write a cache note after the fallback full build without re-resolving. `PrewarmOutcome` is internal to `image_cache.rs` -- callers in `main.rs` never see it; they only observe the final `Option<String>` image ID returned by `provider.prepare()`.
 
-**Helper: `try_thin_diff()` (in `image_cache.rs`, replaces planned `build_thin_diff_image()`)**
+The `PrepareContext` struct already lives in `provider.rs` and is reused as-is by the prewarm pipeline.
 
-An async function in `image_cache.rs` that generates the binary patch locally in Rust via `git::generate_checkpoint_diff()`, then routes through `provider.prepare_from_checkpoint()`. The provider builds the appropriate `--from-base-image` / `--patch-file` command internally.
+**Helper: `try_thin_diff()` (in `image_cache.rs`)**
+
+An async function generic over `ImageBuilder`. It generates the binary patch locally in Rust via `git::generate_checkpoint_diff()`, then calls `builder.build_incremental(base_image_id, patch_file, sandbox_project_root, discovery_done)`. The provider's `build_incremental` impl ships the patch to the sandbox, where `offload apply-diff` applies it using `diffy`.
 
 Diff generation in Rust (via `git::generate_checkpoint_diff()`):
 1. Create a temporary git index seeded with the checkpoint tree.
 2. Stage the entire working tree (tracked + untracked) into the temp index via `git add -A`.
 3. `git diff --cached --binary <checkpoint_sha>` against the temp index produces a unified binary patch.
 4. If the diff is empty, return the base image ID directly (no Python call).
-5. Otherwise, pass the patch file to `provider.prepare_from_checkpoint()`.
+5. Otherwise, pass the patch file to `builder.build_incremental(...)`.
 
-This keeps all git logic in Rust, consistent with the principle that Python is a thin SDK wrapper.
+This keeps diff generation in Rust, consistent with the principle that Python is a thin SDK wrapper. Patch application happens in the sandbox via `offload apply-diff`.
 
 **Pipeline flow in `image_cache::run_prewarm_pipeline()`:**
 
@@ -395,31 +414,30 @@ resolve_base():
     (returns None if no base found)
 
 Stage 1 (cache hit): if cached_image_id is Some(image_id):
-    try_thin_diff(provider, base_image_id, base_sha, ...) → on success return Resolved
+    try_thin_diff(builder, image_id, base_sha, ...) → on success return Resolved
     on failure: warn, fall through to Stage 2
 
 Stage 2 (cache miss / base build):
     export_tree(base_sha) to tempdir
-    base_id = provider.prepare(context_dir=tempdir)
+    base_id = builder.build_full(context_dir=tempdir, ...)
     if !no_cache: write note on base_sha, push
-    try_thin_diff(provider, base_id, base_sha, ...) → on success return Resolved
+    try_thin_diff(builder, base_id, base_sha, ...) → on success return Resolved
     on failure: return CacheMiss { base_sha: Some(...) }
 ```
 
-**In `main.rs`, the `run_remote_provider()` function:**
+`prepare_with_prewarm` wraps `run_prewarm_pipeline`: on `Resolved` it returns the image ID; on `CacheMiss` it invokes `full_build_fallback` (which snapshots the working directory, runs `build_full`, and writes a cache note when `base_sha` is present and caching is enabled).
 
-Discovery runs concurrently with the prewarm pipeline via `tokio::try_join!`:
+**In `main.rs`, the prepare invocation:**
+
+Discovery runs concurrently with `run_prepare` (which builds a `PrepareContext` and calls `provider.prepare(ctx)`):
 ```
-(all_tests, prewarm_result) = tokio::try_join!(
+(all_tests, _) = tokio::try_join!(
     discover_with_signal(...),
-    provider.prewarm_image_cache(&prewarm_ctx),
+    run_prepare(&mut provider, repo, config, config_path, copy_dir_tuples, no_cache, tracer, &discovery_done),
 )
 ```
 
-On `PrewarmOutcome::Resolved`: dispatch tests immediately (provider has image_id set).
-On `PrewarmOutcome::CacheMiss { base_sha }`: snapshot working directory, run `provider.prepare()` as full build, write cache note if base_sha is present and caching enabled, then dispatch tests.
-
-Note writing is best-effort (warn on failure, don't abort the run).
+`main.rs` does not branch on cache hit/miss -- the entire pipeline is encapsulated inside `provider.prepare()`. Note writing is best-effort within the pipeline (warn on failure, don't abort the run).
 
 Tests:
 - `test_run_with_checkpoint_cache_hit` (thin diff path)
@@ -503,7 +521,7 @@ Latest-commit image caching (the default):
 - [ ] Latest-commit caching thin diff failure: falls back to full build
 
 Both modes (unified pipeline -- identical steps after base commit resolution):
-- [ ] Untracked files (non-gitignored) included in thin diff tarball
+- [ ] Untracked files (non-gitignored) included in thin diff patch
 - [ ] `offload run --no-cache` without `[checkpoint]`: resolves HEAD SHA, exports HEAD tree, builds base from `context_dir`, thin diff of uncommitted changes -- no note interaction
 - [ ] `offload run --no-cache` with `[checkpoint]`: resolves checkpoint SHA, exports checkpoint tree, builds base from `context_dir`, thin diff -- no note interaction. Verify `provider.prepare()` receives exported tree as `context_dir` (not `None`)
 - [ ] Cached image expired: warns, rebuilds, updates note
@@ -520,13 +538,13 @@ Both modes (unified pipeline -- identical steps after base commit resolution):
 | `src/config/schema.rs` | Add `CheckpointConfig`, wire into `Config` |
 | `src/config.rs` | Validation for checkpoint config |
 | `src/git.rs` | **New** -- all git notes and tree operations (`head_sha()`, `parent_sha()`, notes read/write, `generate_checkpoint_diff()`, `export_tree()`, etc.) |
-| `src/image_cache.rs` | **New** -- checkpoint resolution (`resolve_checkpoint()`, `resolve_latest_commit()`), pipeline orchestration (`resolve_base()`, `run_prewarm_pipeline()`, `try_thin_diff()`), `status_handler()`, `write_note_for_commit()` |
+| `src/image_cache.rs` | **New** -- `ImageBuilder` trait (`build_full`, `build_incremental`); checkpoint resolution (`resolve_checkpoint()`, `resolve_latest_commit()`); pipeline orchestration (`resolve_base()`, `run_prewarm_pipeline()`, `prepare_with_prewarm()`, `full_build_fallback()`, `try_thin_diff()`); `status_handler()`; `write_note_for_commit()` |
 | `src/lib.rs` | Register `git` and `image_cache` modules |
-| `src/provider.rs` | Add `prewarm_image_cache()` and `prepare_from_checkpoint()` to `SandboxProvider` |
-| `src/provider/modal.rs` | Implement `prewarm_image_cache()` (delegates to `image_cache::run_prewarm_pipeline()`) and `prepare_from_checkpoint()` |
-| `src/provider/default.rs` | Implement `prewarm_image_cache()` (delegates to `image_cache::run_prewarm_pipeline()`) and `prepare_from_checkpoint()` |
-| `src/provider/local.rs` | Implement `prewarm_image_cache()` (returns `CacheMiss`) and `prepare_from_checkpoint()` (returns `None`) |
-| `src/main.rs` | `run_remote_provider()` calls `provider.prewarm_image_cache()` concurrently with discovery; handles `CacheMiss` fallback; `checkpoint-status` subcommand dispatches to `image_cache::status_handler()` |
+| `src/provider.rs` | `PrepareContext<'a>` already exists -- no trait changes |
+| `src/provider/modal.rs` | Implement `ImageBuilder` (`build_full`, `build_incremental`); `SandboxProvider::prepare()` delegates to `prepare_with_prewarm(self, ctx)` |
+| `src/provider/default.rs` | Implement `ImageBuilder` (`build_full`, `build_incremental`); `SandboxProvider::prepare()` delegates to `prepare_with_prewarm(self, ctx)` |
+| `src/provider/local.rs` | Does not implement `ImageBuilder` (local doesn't build images); `SandboxProvider::prepare()` is a no-op |
+| `src/main.rs` | `run_prepare()` builds `PrepareContext` and calls `provider.prepare(ctx)` concurrently with discovery via `tokio::try_join!`; cache and fallback logic is encapsulated inside `prepare_with_prewarm` (no main.rs branching). `checkpoint-status` subcommand dispatches to `image_cache::status_handler()` |
 | `scripts/modal_sandbox.py` | `--cached` kept as hidden deprecated no-op; add `--from-base-image` / `--patch-file` / `--sandbox-project-root`; add `_derive_image_from_base()` helper |
 | `skills/offload/SKILL.md` | Checkpoint documentation |
 | `skills/offload-onboard/SKILL.md` | Optional checkpoint step |

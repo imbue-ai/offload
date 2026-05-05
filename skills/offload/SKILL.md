@@ -182,7 +182,7 @@ Enable checkpoint mode for repositories where dependency installation or build s
 
 ### Thin diff details
 
-The thin diff is a binary patch generated locally by Rust (`git diff --binary` plus untracked files detected via `git ls-files`). The patch file is passed to the Python script, which applies it inside the sandbox image via `git apply --3way`. The Dockerfile must install `git` for this to work. If the diff is empty and there are no untracked files, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory.
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` against a temporary index). The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate — no `git` is required in the sandbox image. If `git` was installed in the Dockerfile solely for thin-diff application, it can now be removed. If the diff is empty, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory.
 
 ### Checking status
 
@@ -217,7 +217,7 @@ This command works in both modes: with a `[checkpoint]` section it shows checkpo
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Cached image expired | Modal garbage-collected the image | Self-healing: Offload rebuilds automatically on the next run, updates the note, and pushes. One slow run, then cached again for everyone |
-| `git apply` failure inside sandbox | Diff cannot apply (e.g. missing `git` in image, conflicts) | Ensure the Dockerfile installs `git`. Offload falls back to a full build with a warning |
+| `offload apply-diff` failure inside sandbox | Diff cannot apply (e.g. `offload` not installed in image, context mismatch) | Ensure the Dockerfile installs `offload` (or `cargo install offload`). Offload falls back to a full build with a warning |
 | No checkpoint found in last N commits | No recent commit touched any `build_inputs` file | The ancestor walk has a depth limit; a full build runs instead |
 | Thin diff failure (general) | Various causes (binary incompatibility, corrupt patch) | Offload falls back to a full build with a warning. If persistent, run `--no-cache` to force a clean rebuild |
 | Notes not shared across team | Remote does not have the notes ref | Notes are pushed automatically. Verify with `git ls-remote origin refs/notes/offload-images` |
@@ -231,6 +231,7 @@ This command works in both modes: with a `[checkpoint]` section it shows checkpo
 | `offload validate` | Validate `offload.toml` and print settings summary |
 | `offload init` | Generate a new `offload.toml` (`--provider`, `--framework`) |
 | `offload logs` | View per-test results from the most recent run |
+| `offload apply-diff` | Apply a git-format binary patch to the filesystem (used internally in sandboxes) |
 | `offload checkpoint-status` | Show checkpoint cache status for current HEAD |
 
 Global flags: `-c, --config PATH` (config file), `-v, --verbose` (verbose output).

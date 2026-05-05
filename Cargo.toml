@@ -64,6 +64,9 @@ backon = "1"
 # Random number generation
 rand = "0.9"
 
+# Patch application
+diffy = { version = "0.5", features = ["binary"] }
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
