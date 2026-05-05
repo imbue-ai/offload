@@ -1170,25 +1170,13 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
 
         match operation {
             FileOperation::Create(path) => {
-                let path_str =
-                    std::str::from_utf8(&path).context("non-UTF-8 path in create patch")?;
+                let path_str = path_from_utf8(&path, "path in create patch")?;
                 let target = project_root.join(path_str);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "failed to create parent directories for {}",
-                            target.display()
-                        )
-                    })?;
-                }
                 let content = apply_patch_to_base(&[], file_patch.patch(), path_str)?;
-                std::fs::write(&target, &content)
-                    .with_context(|| format!("failed to write new file: {}", target.display()))?;
-                set_file_mode(&target, new_mode)?;
+                write_patched_file(&target, &content, new_mode)?;
             }
             FileOperation::Delete(path) => {
-                let path_str =
-                    std::str::from_utf8(&path).context("non-UTF-8 path in delete patch")?;
+                let path_str = path_from_utf8(&path, "path in delete patch")?;
                 let target = project_root.join(path_str);
                 if target.exists() {
                     std::fs::remove_file(&target)
@@ -1196,84 +1184,76 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
                 }
             }
             FileOperation::Modify { original, modified } => {
-                let orig_str =
-                    std::str::from_utf8(&original).context("non-UTF-8 original path in patch")?;
-                let mod_str =
-                    std::str::from_utf8(&modified).context("non-UTF-8 modified path in patch")?;
+                let orig_str = path_from_utf8(&original, "original path in patch")?;
+                let mod_str = path_from_utf8(&modified, "modified path in patch")?;
                 let source = project_root.join(orig_str);
-                let existing = std::fs::read(&source).with_context(|| {
-                    format!("failed to read file for modification: {}", source.display())
-                })?;
-                let content = apply_patch_to_base(&existing, file_patch.patch(), orig_str)?;
                 // If paths differ (rare for Modify, but possible), write to the modified path
                 let target = project_root.join(mod_str);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "failed to create parent directories for {}",
-                            target.display()
-                        )
-                    })?;
-                }
-                std::fs::write(&target, &content).with_context(|| {
-                    format!("failed to write modified file: {}", target.display())
-                })?;
-                set_file_mode(&target, new_mode)?;
+                let content =
+                    read_and_patch(&source, file_patch.patch(), orig_str, "modification")?;
+                write_patched_file(&target, &content, new_mode)?;
             }
             FileOperation::Rename { from, to } => {
-                let from_str =
-                    std::str::from_utf8(&from).context("non-UTF-8 rename-from path in patch")?;
-                let to_str =
-                    std::str::from_utf8(&to).context("non-UTF-8 rename-to path in patch")?;
+                let from_str = path_from_utf8(&from, "rename-from path in patch")?;
+                let to_str = path_from_utf8(&to, "rename-to path in patch")?;
                 let source = project_root.join(from_str);
                 let target = project_root.join(to_str);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "failed to create parent directories for {}",
-                            target.display()
-                        )
-                    })?;
-                }
-                let existing = std::fs::read(&source).with_context(|| {
-                    format!("failed to read file for rename: {}", source.display())
-                })?;
-                let content = apply_patch_to_base(&existing, file_patch.patch(), from_str)?;
-                std::fs::write(&target, &content).with_context(|| {
-                    format!("failed to write renamed file: {}", target.display())
-                })?;
+                let content = read_and_patch(&source, file_patch.patch(), from_str, "rename")?;
+                write_patched_file(&target, &content, new_mode)?;
                 std::fs::remove_file(&source).with_context(|| {
                     format!("failed to remove source of rename: {}", source.display())
                 })?;
-                set_file_mode(&target, new_mode)?;
             }
             FileOperation::Copy { from, to } => {
-                let from_str =
-                    std::str::from_utf8(&from).context("non-UTF-8 copy-from path in patch")?;
-                let to_str = std::str::from_utf8(&to).context("non-UTF-8 copy-to path in patch")?;
+                let from_str = path_from_utf8(&from, "copy-from path in patch")?;
+                let to_str = path_from_utf8(&to, "copy-to path in patch")?;
                 let source = project_root.join(from_str);
                 let target = project_root.join(to_str);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "failed to create parent directories for {}",
-                            target.display()
-                        )
-                    })?;
-                }
-                let existing = std::fs::read(&source).with_context(|| {
-                    format!("failed to read file for copy: {}", source.display())
-                })?;
-                let content = apply_patch_to_base(&existing, file_patch.patch(), from_str)?;
-                std::fs::write(&target, &content).with_context(|| {
-                    format!("failed to write copied file: {}", target.display())
-                })?;
-                set_file_mode(&target, new_mode)?;
+                let content = read_and_patch(&source, file_patch.patch(), from_str, "copy")?;
+                write_patched_file(&target, &content, new_mode)?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Decode a path from a patch's raw bytes, attaching a description on failure.
+fn path_from_utf8<'a>(bytes: &'a [u8], description: &str) -> Result<&'a str> {
+    std::str::from_utf8(bytes).with_context(|| format!("non-UTF-8 {description}"))
+}
+
+/// Read `source` and apply `patch_kind` to its contents. `label` describes the
+/// operation (e.g. "rename") for error messages.
+fn read_and_patch(
+    source: &Path,
+    patch_kind: &diffy::patch_set::PatchKind<'_, [u8]>,
+    diag_path: &str,
+    label: &str,
+) -> Result<Vec<u8>> {
+    let existing = std::fs::read(source)
+        .with_context(|| format!("failed to read file for {label}: {}", source.display()))?;
+    apply_patch_to_base(&existing, patch_kind, diag_path)
+}
+
+/// Write `content` to `target`, creating parent directories and applying the
+/// requested file mode.
+fn write_patched_file(
+    target: &Path,
+    content: &[u8],
+    mode: Option<diffy::patch_set::FileMode>,
+) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create parent directories for {}",
+                target.display()
+            )
+        })?;
+    }
+    std::fs::write(target, content)
+        .with_context(|| format!("failed to write file: {}", target.display()))?;
+    set_file_mode(target, mode)
 }
 
 /// Apply a patch (text or binary) to a base byte slice, returning the result.
