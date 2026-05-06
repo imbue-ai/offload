@@ -470,6 +470,7 @@ async fn run_prepare<P: SandboxProvider>(
     let prepare_ctx = PrepareContext {
         copy_dirs,
         sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
+        post_patch_cmd: config.offload.post_patch_cmd.as_deref(),
         repo,
         config,
         config_path,
@@ -1051,6 +1052,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             sandbox_repo_root: Some("/app".to_string()),
             sandbox_project_root: None,
             sandbox_init_cmd: None,
+            post_patch_cmd: None,
         },
         provider: provider_config,
         framework: framework_config,

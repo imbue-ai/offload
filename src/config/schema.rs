@@ -88,6 +88,10 @@ pub struct OffloadConfig {
     /// Optional command to run during image build, after cwd/copy-dirs are applied.
     #[serde(default)]
     pub sandbox_init_cmd: Option<String>,
+
+    /// Optional command to run after the patch is applied to the sandbox.
+    #[serde(default)]
+    pub post_patch_cmd: Option<String>,
 }
 
 fn default_max_parallel() -> usize {
@@ -832,6 +836,7 @@ mod tests {
                 sandbox_project_root: Some("/app".to_string()),
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
+                post_patch_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -866,6 +871,7 @@ mod tests {
                 sandbox_project_root: Some("/app".to_string()),
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
+                post_patch_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -898,6 +904,7 @@ mod tests {
                 sandbox_project_root: Some("/app".to_string()),
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
+                post_patch_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -1074,6 +1081,7 @@ mod tests {
                 sandbox_project_root: Some("/app".to_string()),
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
+                post_patch_cmd: None,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
