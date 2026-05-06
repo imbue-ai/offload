@@ -180,7 +180,7 @@ impl ImageBuilder for ModalProvider {
 }
 
 /// Builds the shell command string for an incremental (thin-diff) image build.
-fn build_incremental_command(
+pub(super) fn build_incremental_command(
     base_image_id: &str,
     patch_file: Option<&Path>,
     sandbox_project_root: &str,

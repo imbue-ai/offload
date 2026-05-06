@@ -484,7 +484,7 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
 
 /// Apply the diff between `checkpoint_sha` and the working tree on top of
 /// `base_image_id` to produce a new image.  Returns the base image unchanged
-/// when there is no diff.
+/// when there is no diff and no `post_patch_cmd`.
 #[allow(clippy::too_many_arguments)]
 async fn try_thin_diff<B: ImageBuilder>(
     builder: &mut B,
@@ -1070,10 +1070,7 @@ mod tests {
     }
 
     /// Verifies build_incremental is called even when patch_file is None but
-    /// post_patch_cmd is Some. The try_thin_diff behavior change (not short-circuiting
-    /// when post_patch_cmd is set) is integration-tested via a real git repo; this
-    /// unit test confirms the mock correctly tracks incremental calls with the new
-    /// parameter signature.
+    /// post_patch_cmd is Some.
     #[tokio::test]
     async fn test_mock_image_builder_build_incremental_no_patch_with_post_patch_cmd() {
         let mut builder = MockImageBuilder::new();

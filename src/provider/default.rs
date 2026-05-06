@@ -129,20 +129,12 @@ impl ImageBuilder for DefaultProvider {
         post_patch_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
-        let mut cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-base-image={} --sandbox-project-root={}",
-            shell_words::quote(base_image_id),
-            shell_words::quote(sandbox_project_root)
+        let cmd = super::modal::build_incremental_command(
+            base_image_id,
+            patch_file,
+            sandbox_project_root,
+            post_patch_cmd,
         );
-        if let Some(patch) = patch_file {
-            cmd.push_str(&format!(
-                " --patch-file={}",
-                shell_words::quote(&patch.display().to_string())
-            ));
-        }
-        if let Some(ppc) = post_patch_cmd {
-            cmd.push_str(&format!(" --post-patch-cmd={}", shell_words::quote(ppc)));
-        }
         let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
