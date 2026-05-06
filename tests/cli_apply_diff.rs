@@ -316,6 +316,60 @@ fn test_apply_diff_multiple_files() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_apply_diff_renamed_file() -> anyhow::Result<()> {
+    let source = TempDir::new()?;
+    init_git_repo(source.path())?;
+
+    // Create a file inside a subdirectory and commit it.
+    let content = "Hello from a subdirectory!\n";
+    fs::create_dir_all(source.path().join("sub"))?;
+    fs::write(source.path().join("sub/hello.txt"), content)?;
+    git(source.path(), &["add", "sub/hello.txt"])?;
+    git(source.path(), &["commit", "-m", "add sub/hello.txt"])?;
+
+    // Rename the file within the same subdirectory.
+    git(source.path(), &["mv", "sub/hello.txt", "sub/goodbye.txt"])?;
+
+    // Generate the patch (rename is already staged by git mv).
+    let patch = generate_patch(source.path())?;
+
+    // Set up the target directory with the original file at its original path.
+    let target = TempDir::new()?;
+    fs::create_dir_all(target.path().join("sub"))?;
+    fs::write(target.path().join("sub/hello.txt"), content)?;
+
+    // Write the patch to a file.
+    let patch_file = target.path().join("patch.diff");
+    fs::write(&patch_file, &patch)?;
+
+    // Apply the patch.
+    offload_cmd()?
+        .args([
+            "apply-diff",
+            patch_file
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path"))?,
+            "--project-root",
+            target
+                .path()
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path"))?,
+        ])
+        .assert()
+        .success();
+
+    // Verify the old file is gone and the new file exists with correct content.
+    assert!(
+        !target.path().join("sub/hello.txt").exists(),
+        "original file sub/hello.txt should have been removed by the rename"
+    );
+    let result = fs::read_to_string(target.path().join("sub/goodbye.txt"))?;
+    assert_eq!(result, content);
+
+    Ok(())
+}
+
+#[test]
 fn test_apply_diff_creates_parent_directories() -> anyhow::Result<()> {
     let source = TempDir::new()?;
     init_git_repo(source.path())?;
