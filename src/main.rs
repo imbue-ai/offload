@@ -1180,13 +1180,13 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
 
         match operation {
             FileOperation::Create(path) => {
-                let path_str = path_from_utf8(&path, "path in create patch")?;
+                let path_str = path_from_utf8(path, "path in create patch")?;
                 let target = project_root.join(path_str);
                 let content = apply_patch_to_base(&[], file_patch.patch(), path_str)?;
                 write_patched_file(&target, &content, new_mode)?;
             }
             FileOperation::Delete(path) => {
-                let path_str = path_from_utf8(&path, "path in delete patch")?;
+                let path_str = path_from_utf8(path, "path in delete patch")?;
                 let target = project_root.join(path_str);
                 if target.exists() {
                     std::fs::remove_file(&target)
@@ -1194,8 +1194,8 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
                 }
             }
             FileOperation::Modify { original, modified } => {
-                let orig_str = path_from_utf8(&original, "original path in patch")?;
-                let mod_str = path_from_utf8(&modified, "modified path in patch")?;
+                let orig_str = path_from_utf8(original, "original path in patch")?;
+                let mod_str = path_from_utf8(modified, "modified path in patch")?;
                 let source = project_root.join(orig_str);
                 // If paths differ (rare for Modify, but possible), write to the modified path
                 let target = project_root.join(mod_str);
@@ -1204,8 +1204,8 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
                 write_patched_file(&target, &content, new_mode)?;
             }
             FileOperation::Rename { from, to } => {
-                let from_str = path_from_utf8(&from, "rename-from path in patch")?;
-                let to_str = path_from_utf8(&to, "rename-to path in patch")?;
+                let from_str = path_from_utf8(from, "rename-from path in patch")?;
+                let to_str = path_from_utf8(to, "rename-to path in patch")?;
                 let source = project_root.join(from_str);
                 let target = project_root.join(to_str);
                 let content = read_and_patch(&source, file_patch.patch(), from_str, "rename")?;
@@ -1215,8 +1215,8 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
                 })?;
             }
             FileOperation::Copy { from, to } => {
-                let from_str = path_from_utf8(&from, "copy-from path in patch")?;
-                let to_str = path_from_utf8(&to, "copy-to path in patch")?;
+                let from_str = path_from_utf8(from, "copy-from path in patch")?;
+                let to_str = path_from_utf8(to, "copy-to path in patch")?;
                 let source = project_root.join(from_str);
                 let target = project_root.join(to_str);
                 let content = read_and_patch(&source, file_patch.patch(), from_str, "copy")?;
