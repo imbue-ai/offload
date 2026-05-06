@@ -1001,6 +1001,40 @@ mod tests {
         Ok(())
     }
 
+    /// Test that post_patch_cmd deserializes from TOML and survives a round-trip.
+    #[test]
+    fn test_post_patch_cmd_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+            post_patch_cmd = "scripts/regen-clients.sh"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.offload.post_patch_cmd.as_deref(),
+            Some("scripts/regen-clients.sh")
+        );
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        assert_eq!(
+            round_tripped.offload.post_patch_cmd.as_deref(),
+            Some("scripts/regen-clients.sh")
+        );
+
+        Ok(())
+    }
+
     /// Test that `command` and `run_args` fields round-trip through TOML serialization.
     #[test]
     fn test_pytest_command_and_run_args_round_trip() -> Result<(), Box<dyn std::error::Error>> {

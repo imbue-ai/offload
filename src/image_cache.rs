@@ -983,6 +983,7 @@ mod tests {
     struct MockImageBuilder {
         image_id: Option<String>,
         build_full_calls: u32,
+        build_incremental_calls: u32,
     }
 
     impl MockImageBuilder {
@@ -990,6 +991,7 @@ mod tests {
             Self {
                 image_id: None,
                 build_full_calls: 0,
+                build_incremental_calls: 0,
             }
         }
     }
@@ -1017,7 +1019,8 @@ mod tests {
             _post_patch_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
         ) -> crate::provider::ProviderResult<Option<String>> {
-            let id = "im-mock-incremental".to_string();
+            self.build_incremental_calls += 1;
+            let id = format!("im-mock-incremental-{}", self.build_incremental_calls);
             self.image_id = Some(id.clone());
             Ok(Some(id))
         }
@@ -1028,6 +1031,7 @@ mod tests {
         let builder = MockImageBuilder::new();
         assert!(builder.image_id.is_none());
         assert_eq!(builder.build_full_calls, 0);
+        assert_eq!(builder.build_incremental_calls, 0);
     }
 
     #[tokio::test]
@@ -1041,5 +1045,66 @@ mod tests {
         );
         assert_eq!(builder.build_full_calls, 1);
         assert_eq!(builder.image_id.as_deref(), Some("im-mock-1"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_image_builder_build_incremental_with_post_patch_cmd() {
+        let mut builder = MockImageBuilder::new();
+        let discovery_done = AtomicBool::new(true);
+        let result = builder
+            .build_incremental(
+                "im-base-123",
+                None,
+                "/app",
+                Some("scripts/regen-clients.sh"),
+                Some(&discovery_done),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            result.as_ref().ok().and_then(|r| r.as_deref()),
+            Some("im-mock-incremental-1")
+        );
+        assert_eq!(builder.build_incremental_calls, 1);
+        assert_eq!(builder.image_id.as_deref(), Some("im-mock-incremental-1"));
+    }
+
+    /// Verifies build_incremental is called even when patch_file is None but
+    /// post_patch_cmd is Some. The try_thin_diff behavior change (not short-circuiting
+    /// when post_patch_cmd is set) is integration-tested via a real git repo; this
+    /// unit test confirms the mock correctly tracks incremental calls with the new
+    /// parameter signature.
+    #[tokio::test]
+    async fn test_mock_image_builder_build_incremental_no_patch_with_post_patch_cmd() {
+        let mut builder = MockImageBuilder::new();
+        let discovery_done = AtomicBool::new(true);
+
+        // First call: no patch, with post_patch_cmd
+        let result = builder
+            .build_incremental(
+                "im-base-456",
+                None,
+                "/app/project",
+                Some("make generate-client"),
+                Some(&discovery_done),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(builder.build_incremental_calls, 1);
+
+        // Second call: with patch, with post_patch_cmd
+        let patch_path = Path::new("/tmp/test.patch");
+        let result = builder
+            .build_incremental(
+                "im-base-456",
+                Some(patch_path),
+                "/app/project",
+                Some("make generate-client"),
+                Some(&discovery_done),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(builder.build_incremental_calls, 2);
+        assert_eq!(builder.image_id.as_deref(), Some("im-mock-incremental-2"));
     }
 }
