@@ -1165,7 +1165,17 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
 
     for result in patches {
         let file_patch = result.context("failed to parse patch entry")?;
-        let operation = file_patch.operation().strip_prefix(1);
+        // Rename and Copy paths come from `rename from`/`rename to` (or `copy from`/`copy to`)
+        // git headers which have no `a/`/`b/` prefix, so strip_prefix must be skipped for them.
+        let operation = file_patch.operation();
+        let needs_strip = !operation.is_rename() && !operation.is_copy();
+        let stripped;
+        let operation = if needs_strip {
+            stripped = operation.strip_prefix(1);
+            &stripped
+        } else {
+            operation
+        };
         let new_mode = file_patch.new_mode().copied();
 
         match operation {
