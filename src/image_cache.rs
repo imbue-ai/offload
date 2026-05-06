@@ -167,8 +167,9 @@ pub(crate) trait ImageBuilder: Send {
     async fn build_incremental(
         &mut self,
         base_image_id: &str,
-        patch_file: &Path,
+        patch_file: Option<&Path>,
         sandbox_project_root: &str,
+        post_patch_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>>;
 }
@@ -333,6 +334,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
             cached_id,
             base_sha,
             patch_root,
+            ctx.post_patch_cmd,
             ctx.discovery_done,
             ctx.tracer,
         )
@@ -407,6 +409,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         &base_id,
         base_sha,
         patch_root,
+        ctx.post_patch_cmd,
         ctx.discovery_done,
         ctx.tracer,
     )
@@ -482,12 +485,14 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
 /// Apply the diff between `checkpoint_sha` and the working tree on top of
 /// `base_image_id` to produce a new image.  Returns the base image unchanged
 /// when there is no diff.
+#[allow(clippy::too_many_arguments)]
 async fn try_thin_diff<B: ImageBuilder>(
     builder: &mut B,
     repo: &Path,
     base_image_id: &str,
     checkpoint_sha: &str,
     sandbox_project_root: &str,
+    post_patch_cmd: Option<&str>,
     discovery_done: &AtomicBool,
     tracer: &Tracer,
 ) -> Result<String, crate::provider::ProviderError> {
@@ -507,27 +512,30 @@ async fn try_thin_diff<B: ImageBuilder>(
             ))
         })?;
 
-    // If no changes, reuse the base image directly
-    let patch_file = match patch_file {
-        Some(f) => f,
-        None => {
-            // Wait for discovery to finish before printing
+    match (&patch_file, post_patch_cmd) {
+        (None, None) => {
+            // No diff, no post_patch_cmd — reuse base image
             while !discovery_done.load(Ordering::Acquire) {
                 tokio::task::yield_now().await;
             }
             eprintln!("[prepare] No changes since checkpoint, reusing image");
             return Ok(base_image_id.to_string());
         }
+        (None, Some(_)) => {
+            eprintln!("[prepare] No changes since checkpoint, running post-patch command...");
+        }
+        (Some(_), _) => {
+            eprintln!("[prepare] Building thin diff image...");
+        }
     };
-
-    eprintln!("[prepare] Building thin diff image...");
 
     // Route through builder's incremental build
     match builder
         .build_incremental(
             base_image_id,
-            patch_file.path(),
+            patch_file.as_ref().map(|f| f.path()),
             sandbox_project_root,
+            post_patch_cmd,
             Some(discovery_done),
         )
         .await?
@@ -1004,8 +1012,9 @@ mod tests {
         async fn build_incremental(
             &mut self,
             _base_image_id: &str,
-            _patch_file: &Path,
+            _patch_file: Option<&Path>,
             _sandbox_project_root: &str,
+            _post_patch_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
         ) -> crate::provider::ProviderResult<Option<String>> {
             let id = "im-mock-incremental".to_string();
