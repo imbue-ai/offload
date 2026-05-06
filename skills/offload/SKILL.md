@@ -143,6 +143,7 @@ Run `offload validate` after editing to check config syntax. A test that fails t
 | "Token validation failed" | Modal credentials expired | Run `modal token new` |
 | Slow sandbox creation | Docker image not cached | Pass `--no-cache` to force a fresh image build |
 | All tests fail with import errors | Sandbox missing dependencies | Check Dockerfile and `sandbox_init_cmd` |
+| Tests fail with import errors for generated code after a checkpoint cache hit | Derived artifacts (e.g., generated API clients) not regenerated after thin diff | Add `post_patch_cmd` to regenerate derived artifacts after patch application |
 
 ## Image Cache
 
@@ -182,7 +183,7 @@ Enable checkpoint mode for repositories where dependency installation or build s
 
 ### Thin diff details
 
-The thin diff is a binary patch generated locally by Rust (`git diff --binary` against a temporary index). The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate — no `git` is required in the sandbox image. If `git` was installed in the Dockerfile solely for thin-diff application, it can now be removed. If the diff is empty, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory.
+The thin diff is a binary patch generated locally by Rust (`git diff --binary` against a temporary index). The patch is shipped to the sandbox and applied by `offload apply-diff`, which uses the `diffy` crate — no `git` is required in the sandbox image. If `git` was installed in the Dockerfile solely for thin-diff application, it can now be removed. If the diff is empty, the base image is used directly (zero overhead). Patch paths are relative to `sandbox_repo_root`. In monorepo setups where tests run from a subdirectory, set `sandbox_project_root` to override the test working directory. When `post_patch_cmd` is configured, it runs as an image layer after the patch is applied, regenerating derived artifacts (e.g., generated API clients, frontend bundles). The `OFFLOAD_PATCH_FILE` env var is set to the patch path when a diff exists, allowing conditional regeneration.
 
 ### Checking status
 

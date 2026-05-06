@@ -284,6 +284,7 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `sandbox_repo_root` | string | (none) | Path to the repository root inside the sandbox (e.g. `/app`). Used for thin-diff patches and as the default test working directory (`OFFLOAD_ROOT`) |
 | `sandbox_project_root` | string | (none) | Working directory for test execution, if different from `sandbox_repo_root`. Only needed in monorepo setups where tests run from a subdirectory (e.g. `/app/mypackage`) |
 | `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
+| `post_patch_cmd` | string | (none) | Optional command to run after thin-diff patch is applied, before image materialization. Runs as an image layer. `OFFLOAD_PATCH_FILE` env var is set to the patch path when a diff exists |
 
 Set `sandbox_repo_root` to tell Offload where the codebase lives in the sandbox. In monorepo setups where tests run from a subdirectory, also set `sandbox_project_root` to that subdirectory.
 
@@ -564,6 +565,17 @@ junit_file = "junit.xml"
 ```
 
 This demonstrates using `sandbox_init_cmd` to run setup commands during image build. The `sandbox_init_cmd` applies a patch and syncs packages after the working directory is copied into the image, enabling the use of the native `pytest` framework instead of the `default` framework with inline setup commands.
+
+Use `post_patch_cmd` for derived artifacts that must be regenerated when source changes — generated API clients, frontend bundles, or compiled assets. Unlike `sandbox_init_cmd` (which runs only during base image builds), `post_patch_cmd` runs after every thin-diff patch, ensuring derived artifacts stay in sync with patched source code.
+
+```toml
+[offload]
+max_parallel = 40
+test_timeout_secs = 60
+sandbox_repo_root = "/code/myproject"
+sandbox_init_cmd = "uv sync --all-packages"
+post_patch_cmd = "make generate-client"
+```
 
 ## Bundled Scripts
 
