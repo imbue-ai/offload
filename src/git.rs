@@ -415,6 +415,59 @@ pub async fn generate_checkpoint_diff(
         // Stage the entire current working tree (tracked + untracked) into it
         run_git_with_index(&["add", "-A"])?;
 
+        // Reset staged paths that match .dockerignore back to the checkpoint
+        // tree so the thin diff is symmetric with copy_untracked_files() (which
+        // filters the base image by .dockerignore). Without this, tracked
+        // dockerignored files modified in the working tree (e.g.
+        // offload-history.jsonl) would generate hunks against an image that
+        // deliberately omits them, and untracked dockerignored files would be
+        // shipped as new-file hunks. Resetting via the checkpoint tree handles
+        // both: tracked paths go back to their checkpoint blob (no diff) and
+        // untracked paths drop out of the index (no diff).
+        let dockerignore = repo.join(".dockerignore");
+        if dockerignore.exists() {
+            let dockerignore_str = dockerignore.to_string_lossy().to_string();
+            let listed = run_git_with_index(&[
+                "ls-files",
+                "--cached",
+                "--ignored",
+                "-z",
+                &format!("--exclude-from={dockerignore_str}"),
+            ])?;
+            if !listed.stdout.is_empty() {
+                let mut child = std::process::Command::new("git")
+                    .args([
+                        "reset",
+                        "-q",
+                        &sha,
+                        "--pathspec-from-file=-",
+                        "--pathspec-file-nul",
+                    ])
+                    .current_dir(&repo)
+                    .env("GIT_INDEX_FILE", &tmp_index_path)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .context("failed to spawn git reset --pathspec-from-file")?;
+                {
+                    let mut stdin = child
+                        .stdin
+                        .take()
+                        .context("git reset stdin was unavailable")?;
+                    std::io::Write::write_all(&mut stdin, &listed.stdout)
+                        .context("failed to write paths to git reset")?;
+                }
+                let reset_output = child
+                    .wait_with_output()
+                    .context("failed to wait for git reset")?;
+                if !reset_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&reset_output.stderr);
+                    bail!("git reset --pathspec-from-file failed: {}", stderr.trim());
+                }
+            }
+        }
+
         // Diff the checkpoint against the staged state -> single binary patch
         let output = run_git_with_index(&["diff", "--cached", "--binary", &sha])?;
 
@@ -669,6 +722,87 @@ mod tests {
         let result =
             generate_checkpoint_diff(dir.path(), "0000000000000000000000000000000000000000").await;
         assert!(result.is_err(), "expected error for invalid SHA");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_skips_dockerignored_tracked_modification() -> Result<()>
+    {
+        let dir = init_temp_repo()?;
+
+        // Add a .dockerignore that ignores secrets.txt and a tracked secrets.txt.
+        std::fs::write(dir.path().join(".dockerignore"), "secrets.txt\n")?;
+        std::fs::write(dir.path().join("secrets.txt"), "initial secret")?;
+        git_in(dir.path(), &["add", ".dockerignore", "secrets.txt"])?;
+        git_in(
+            dir.path(),
+            &["commit", "-m", "add dockerignore and secrets"],
+        )?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Modify the dockerignored tracked file in the working tree.
+        std::fs::write(dir.path().join("secrets.txt"), "leaked secret")?;
+
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
+
+        // Either no patch at all (no other changes), or a patch that doesn't mention secrets.txt.
+        if let Some(patch_file) = result {
+            let patch_content = std::fs::read_to_string(patch_file.path())?;
+            assert!(
+                !patch_content.contains("secrets.txt"),
+                "patch should not reference dockerignored file, got: {patch_content}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_skips_dockerignored_new_file() -> Result<()> {
+        let dir = init_temp_repo()?;
+
+        // Add a .dockerignore that ignores *.log files.
+        std::fs::write(dir.path().join(".dockerignore"), "*.log\n")?;
+        git_in(dir.path(), &["add", ".dockerignore"])?;
+        git_in(dir.path(), &["commit", "-m", "add dockerignore"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Create a new untracked file that matches .dockerignore.
+        std::fs::write(dir.path().join("build.log"), "log content")?;
+
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
+
+        if let Some(patch_file) = result {
+            let patch_content = std::fs::read_to_string(patch_file.path())?;
+            assert!(
+                !patch_content.contains("build.log"),
+                "patch should not reference dockerignored new file, got: {patch_content}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_generate_checkpoint_diff_no_dockerignore_unchanged() -> Result<()> {
+        // Regression: when no .dockerignore exists, behaviour matches the original.
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        // Modify a tracked file and add an untracked file.
+        std::fs::write(dir.path().join("README.md"), "# modified content")?;
+        std::fs::write(dir.path().join("untracked.txt"), "new content")?;
+
+        let result = generate_checkpoint_diff(dir.path(), &sha).await?;
+
+        let patch_file = result.context("expected Some patch when no dockerignore is in play")?;
+        let patch_content = std::fs::read_to_string(patch_file.path())?;
+        assert!(
+            patch_content.contains("README.md"),
+            "patch should still include modified tracked file"
+        );
+        assert!(
+            patch_content.contains("untracked.txt"),
+            "patch should still include untracked file"
+        );
         Ok(())
     }
 
