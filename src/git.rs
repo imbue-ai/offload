@@ -415,15 +415,8 @@ pub async fn generate_checkpoint_diff(
         // Stage the entire current working tree (tracked + untracked) into it
         run_git_with_index(&["add", "-A"])?;
 
-        // Reset staged paths that match .dockerignore back to the checkpoint
-        // tree so the thin diff is symmetric with copy_untracked_files() (which
-        // filters the base image by .dockerignore). Without this, tracked
-        // dockerignored files modified in the working tree (e.g.
-        // offload-history.jsonl) would generate hunks against an image that
-        // deliberately omits them, and untracked dockerignored files would be
-        // shipped as new-file hunks. Resetting via the checkpoint tree handles
-        // both: tracked paths go back to their checkpoint blob (no diff) and
-        // untracked paths drop out of the index (no diff).
+        // Filter the temp index by .dockerignore so the diff is symmetric
+        // with the base image, which is also .dockerignore-filtered.
         let dockerignore = repo.join(".dockerignore");
         if dockerignore.exists() {
             let dockerignore_str = dockerignore.to_string_lossy().to_string();
