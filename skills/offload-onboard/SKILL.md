@@ -131,6 +131,17 @@ sandbox_init_cmd = "uv sync --all-packages"   # runs once at image build time
 
 This is especially useful for monorepo setups where dependency installation is slow.
 
+**Optional: `post_patch_cmd` for derived artifact regeneration**
+
+If the project generates code or builds assets that must stay in sync with source (e.g., API clients from OpenAPI schemas, frontend bundles, compiled protobufs), add `post_patch_cmd` to regenerate them after the thin-diff patch is applied:
+
+```toml
+[offload]
+post_patch_cmd = "make generate-client"
+```
+
+Unlike `sandbox_init_cmd` (which runs once during base image builds), `post_patch_cmd` runs after every patch, ensuring derived artifacts match the patched source. The `OFFLOAD_PATCH_FILE` env var is set when a diff exists.
+
 **When to use `type = "default"` for the framework:**
 
 The built-in `pytest` and `cargo` frameworks cover straightforward setups. Fall back to `type = "default"` for the `[framework]` section when:
@@ -178,6 +189,7 @@ Configuration reference for fields used above:
 - `sandbox_repo_root`: Path to the repository root inside the sandbox (e.g. `/app`). Used for thin-diff patches and as the default test working directory (`OFFLOAD_ROOT`)
 - `sandbox_project_root`: (optional) Working directory for test execution, if different from `sandbox_repo_root`. Only needed in monorepo setups where tests run from a subdirectory
 - `sandbox_init_cmd`: Optional command to run during image build, after cwd/copy-dirs are applied (e.g. `"uv sync --all-packages"`)
+- `post_patch_cmd`: Optional command to run after thin-diff patch is applied, before image materialization (e.g. `"make generate-client"`)
 
 **`[provider]`** (Modal)
 - `dockerfile`: Path to the Dockerfile for building the sandbox image

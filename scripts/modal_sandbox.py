@@ -298,6 +298,7 @@ def _derive_image_from_base(
     base_img: modal.Image,
     patch_file: str | None,
     project_root: str,
+    post_patch_cmd: str | None = None,
 ) -> str:
     """Apply a binary patch to a base image and return the new image ID."""
     img = base_img
@@ -305,8 +306,20 @@ def _derive_image_from_base(
     if patch_file is not None:
         img = img.add_local_file(patch_file, "/tmp/offload.patch", copy=True)
         img = img.run_commands(
-            f"offload apply-diff /tmp/offload.patch --project-root {project_root} && rm /tmp/offload.patch"
+            f"offload apply-diff /tmp/offload.patch --project-root {project_root}"
         )
+
+        if post_patch_cmd:
+            logger.info("Running post_patch_cmd: %s", post_patch_cmd)
+            img = img.run_commands(
+                post_patch_cmd,
+                env={"OFFLOAD_PATCH_FILE": "/tmp/offload.patch"},
+            )
+
+        img = img.run_commands("rm /tmp/offload.patch")
+    elif post_patch_cmd:
+        logger.info("Running post_patch_cmd (no patch): %s", post_patch_cmd)
+        img = img.run_commands(post_patch_cmd)
 
     img.build(app)
     temp_sandbox = modal.Sandbox.create(app=app, image=img, timeout=10)
@@ -358,6 +371,11 @@ def _derive_image_from_base(
     default="/app",
     help="Project root path in sandbox",
 )
+@click.option(
+    "--post-patch-cmd",
+    default=None,
+    help="Command to run after thin-diff patch is applied",
+)
 def prepare(
     dockerfile_path: str | None,
     include_cwd: bool,
@@ -368,6 +386,7 @@ def prepare(
     from_base_image: str | None,
     patch_file: str | None,
     sandbox_project_root: str,
+    post_patch_cmd: str | None,
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
@@ -396,6 +415,7 @@ def prepare(
                 base_img,
                 patch_file,
                 sandbox_project_root,
+                post_patch_cmd=post_patch_cmd,
             )
 
         sys.stdout.write("%s\n" % image_id)

@@ -21,6 +21,8 @@ pub struct PrepareContext<'a> {
     pub copy_dirs: &'a [(PathBuf, PathBuf)],
     /// Optional command to run during image build.
     pub sandbox_init_cmd: Option<&'a str>,
+    /// Optional command to run after the patch is applied.
+    pub post_patch_cmd: Option<&'a str>,
     /// Path to the git repository root.
     pub repo: &'a Path,
     /// Loaded configuration.
@@ -541,6 +543,7 @@ mod tests {
                 sandbox_project_root: Some("/app".to_string()),
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
+                post_patch_cmd: None,
             },
             provider: crate::config::schema::ProviderConfig::Local(Default::default()),
             framework: crate::config::schema::FrameworkConfig::Default(
@@ -560,6 +563,7 @@ mod tests {
         let ctx = PrepareContext {
             copy_dirs: &[],
             sandbox_init_cmd: None,
+            post_patch_cmd: None,
             repo: Path::new("/tmp"),
             config: &config,
             config_path: Path::new("offload.toml"),

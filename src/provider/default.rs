@@ -124,15 +124,16 @@ impl ImageBuilder for DefaultProvider {
     async fn build_incremental(
         &mut self,
         base_image_id: &str,
-        patch_file: &Path,
+        patch_file: Option<&Path>,
         sandbox_project_root: &str,
+        post_patch_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
-        let cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            shell_words::quote(base_image_id),
-            shell_words::quote(&patch_file.display().to_string()),
-            shell_words::quote(sandbox_project_root)
+        let cmd = super::modal::build_incremental_command(
+            base_image_id,
+            patch_file,
+            sandbox_project_root,
+            post_patch_cmd,
         );
         let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
         self.image_id = Some(image_id.clone());

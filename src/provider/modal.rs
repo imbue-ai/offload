@@ -162,20 +162,45 @@ impl ImageBuilder for ModalProvider {
     async fn build_incremental(
         &mut self,
         base_image_id: &str,
-        patch_file: &Path,
+        patch_file: Option<&Path>,
         sandbox_project_root: &str,
+        post_patch_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
     ) -> ProviderResult<Option<String>> {
-        let cmd = format!(
-            "uv run @modal_sandbox.py prepare --from-base-image={} --patch-file={} --sandbox-project-root={}",
-            shell_words::quote(base_image_id),
-            shell_words::quote(&patch_file.display().to_string()),
-            shell_words::quote(sandbox_project_root)
+        let cmd = build_incremental_command(
+            base_image_id,
+            patch_file,
+            sandbox_project_root,
+            post_patch_cmd,
         );
         let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
     }
+}
+
+/// Builds the shell command string for an incremental (thin-diff) image build.
+pub(super) fn build_incremental_command(
+    base_image_id: &str,
+    patch_file: Option<&Path>,
+    sandbox_project_root: &str,
+    post_patch_cmd: Option<&str>,
+) -> String {
+    let mut cmd = format!(
+        "uv run @modal_sandbox.py prepare --from-base-image={} --sandbox-project-root={}",
+        shell_words::quote(base_image_id),
+        shell_words::quote(sandbox_project_root)
+    );
+    if let Some(patch) = patch_file {
+        cmd.push_str(&format!(
+            " --patch-file={}",
+            shell_words::quote(&patch.display().to_string())
+        ));
+    }
+    if let Some(ppc) = post_patch_cmd {
+        cmd.push_str(&format!(" --post-patch-cmd={}", shell_words::quote(ppc)));
+    }
+    cmd
 }
 
 #[async_trait]
@@ -390,5 +415,45 @@ mod tests {
         assert!(cmd.contains("enable_docker"));
         assert!(cmd.contains("true"));
         Ok(())
+    }
+
+    // -- incremental command tests --
+
+    #[test]
+    fn test_incremental_command_with_post_patch_cmd() {
+        let cmd = build_incremental_command(
+            "im-base123",
+            Some(Path::new("/tmp/patch.diff")),
+            "/app",
+            Some("make generate-client"),
+        );
+        assert!(cmd.contains("--from-base-image=im-base123"));
+        assert!(cmd.contains("--sandbox-project-root=/app"));
+        assert!(cmd.contains("--patch-file=/tmp/patch.diff"));
+        assert!(cmd.contains("--post-patch-cmd='make generate-client'"));
+    }
+
+    #[test]
+    fn test_incremental_command_without_post_patch_cmd() {
+        let cmd = build_incremental_command(
+            "im-base123",
+            Some(Path::new("/tmp/patch.diff")),
+            "/app",
+            None,
+        );
+        assert!(cmd.contains("--from-base-image=im-base123"));
+        assert!(cmd.contains("--sandbox-project-root=/app"));
+        assert!(cmd.contains("--patch-file=/tmp/patch.diff"));
+        assert!(!cmd.contains("--post-patch-cmd"));
+    }
+
+    #[test]
+    fn test_incremental_command_no_patch_with_post_patch_cmd() {
+        let cmd =
+            build_incremental_command("im-base123", None, "/app", Some("scripts/regen-clients.sh"));
+        assert!(cmd.contains("--from-base-image=im-base123"));
+        assert!(cmd.contains("--sandbox-project-root=/app"));
+        assert!(!cmd.contains("--patch-file"));
+        assert!(cmd.contains("--post-patch-cmd=scripts/regen-clients.sh"));
     }
 }

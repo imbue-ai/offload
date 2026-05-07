@@ -31,7 +31,7 @@ This feature builds checkpoints into Offload as a first-class capability, using 
 
 **Checkpoint**: A commit whose diff (relative to **any** of its parents) modifies any file in the `build_inputs` set. For merge commits (including octopus merges), the diff is checked against each parent separately using `git diff-tree --no-commit-id --name-only -r -m <sha>`. The `-m` flag produces one diff per parent; if any of those diffs touches a `build_inputs` file, the merge is a checkpoint. Whether a commit is a checkpoint is a pure function of the commit's content and the config -- it is not a manual designation.
 
-**Checkpoint image**: A full image built from a checkpoint commit (Dockerfile base + source checkout + dependency install + sandbox_init_cmd). Expensive to build. Cached in git notes.
+**Checkpoint image**: A full image built from a checkpoint commit (Dockerfile base + source checkout + dependency install + sandbox_init_cmd). Expensive to build. Cached in git notes. Note: `post_patch_cmd` (specified in `plans/post-patch-cmd.spec.md`) is not baked into the checkpoint image; it runs during the thin-diff step that produces the current image.
 
 **Base image (latest-commit caching)**: When `[checkpoint]` is absent (the default), the image built from the latest commit (HEAD) serves as the base image for subsequent runs. The current run applies a thin diff of uncommitted changes on top of this base. Cached in git notes on the HEAD commit.
 
@@ -45,7 +45,7 @@ Checkpoint image (rebuilt infrequently):
   Built from a checkpoint commit. Cached in git notes on that commit.
 
 Current image (rebuilt each run):
-  Checkpoint image + thin git diff of changes since checkpoint
+  Checkpoint image + thin git diff of changes since checkpoint + post_patch_cmd
 ```
 
 When `[checkpoint]` is absent:
@@ -57,7 +57,7 @@ Base image (rebuilt when HEAD changes):
   Cached in git notes on that commit.
 
 Current image (rebuilt each run):
-  Base image + thin diff of uncommitted changes since HEAD
+  Base image + thin diff of uncommitted changes + post_patch_cmd
 ```
 
 In both cases, git notes are the storage mechanism. The first run against a commit that lacks a cached image builds and caches it automatically. There is no manual "create checkpoint" step.
@@ -157,7 +157,7 @@ Test discovery runs once concurrently with the prepare path (via `tokio::try_joi
    c. Rust generates a thin-diff artifact locally: a binary patch capturing all working-tree changes since the checkpoint (tracked modifications and untracked non-ignored files).
    d. If no changes: use checkpoint image directly (zero overhead).
    e. If non-empty: ship the patch to a sandbox created from the checkpoint image, apply it via `offload apply-diff`, and snapshot the result as the derived image.
-   f. Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into the checkpoint image).
+   f. Skip `include_cwd`, `copy_dirs`, `sandbox_init_cmd` (all baked into the checkpoint image). `post_patch_cmd` still runs during the thin-diff step (see `plans/post-patch-cmd.spec.md`).
 4. **If no checkpoint is found** in the search window: build a full image (same as non-checkpoint mode).
 
 ### When `[checkpoint]` is absent
@@ -247,7 +247,7 @@ Next run mode:      full build
 | Cached image expired on provider | Warn, rebuild, update note |
 | `offload run --no-cache` (with `[checkpoint]`) | Same as normal cache miss (find checkpoint SHA, export tree, build base from `context_dir`, apply thin diff) -- but no note read/write. Produces the same image, just without persisting the result. |
 | `offload run --no-cache` (without `[checkpoint]`) | Same as normal cache miss (resolve HEAD SHA, export HEAD tree, build base from `context_dir`, apply thin diff of uncommitted changes) -- but no note read/write. Produces the same image, just without persisting the result. |
-| Empty diff since checkpoint | Use checkpoint image directly |
+| Empty diff since checkpoint | Use checkpoint image directly. If `post_patch_cmd` is configured, `build_incremental` is still called to run it. |
 | Binary files in diff | `git diff --binary` includes them in the patch; `offload apply-diff` handles them via `diffy` |
 | New untracked files since checkpoint | Detected by Rust via a temporary git index (`git add -A` stages all untracked non-ignored files). Included in the patch alongside tracked changes (not baked into the checkpoint image itself) |
 | Sandbox image missing `offload` binary | `offload apply-diff` not found; thin diff fails; falls back to full build with warning |
