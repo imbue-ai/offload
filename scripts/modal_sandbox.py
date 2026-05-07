@@ -465,6 +465,25 @@ def destroy(sandbox_id: str):
     logger.info("Terminated sandbox %s", sandbox_id)
 
 
+SANDBOX_DEAD_MARKER = "OFFLOAD_SANDBOX_DEAD:"
+# Exit code returned when the sandbox is dead. Distinct from 1 so that the
+# Rust side could in principle short-circuit on the exit code alone, though
+# the marker on stderr is the authoritative signal.
+SANDBOX_DEAD_EXIT_CODE = 75
+
+
+def _emit_sandbox_dead(reason: str) -> None:
+    """Emit the SANDBOX_DEAD sentinel on a line by itself and exit.
+
+    Offload's Rust side parses this marker out of stderr to map the failure
+    to a non-retryable ProviderError::SandboxDead, avoiding a multi-minute
+    Modal-SDK gRPC retry storm against a container that is already gone.
+    """
+    sys.stderr.write("%s %s\n" % (SANDBOX_DEAD_MARKER, reason))
+    sys.stderr.flush()
+    sys.exit(SANDBOX_DEAD_EXIT_CODE)
+
+
 @cli.command("download")
 @click.argument("sandbox_id")
 @click.argument("paths", nargs=-1, required=True)
@@ -484,6 +503,16 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
     """
     sandbox = modal.Sandbox.from_id(sandbox_id)
 
+    # Bail fast if the sandbox is already dead. Without this, sandbox.open()
+    # below triggers the Modal SDK's own gRPC retry loop (~tens of seconds per
+    # attempt). Combined with offload's three rust-level retries, that adds up
+    # to roughly four minutes of polling a dead container before we give up.
+    poll_result = sandbox.poll()
+    if poll_result is not None:
+        _emit_sandbox_dead(
+            "sandbox %s already finished with returncode=%s" % (sandbox_id, poll_result)
+        )
+
     for path_spec in paths:
         if ":" not in path_spec:
             logger.error(
@@ -502,6 +531,15 @@ def download(sandbox_id: str, paths: tuple[str, ...]):
         try:
             copy_from_sandbox(sandbox, remote_path, local_path)
         except Exception as e:
+            # Even with the pre-flight poll() above, the sandbox can die mid-
+            # download. Detect Modal's "Container ID ... finished" wording and
+            # surface it as the SANDBOX_DEAD sentinel so the rust side does
+            # not waste retries on a corpse.
+            err_text = str(e)
+            if "finished" in err_text and "status=" in err_text:
+                _emit_sandbox_dead(
+                    "sandbox %s died mid-download: %s" % (sandbox_id, err_text)
+                )
             logger.error("Failed to download %s: %s", remote_path, e)
             sys.exit(1)
 

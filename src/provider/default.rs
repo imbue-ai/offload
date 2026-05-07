@@ -14,6 +14,24 @@ use super::{
 };
 /// Modal non-preemptible pricing: $0.00003942 per CPU-core per second.
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
+
+/// Sentinel emitted by `modal_sandbox.py` (and any equivalent download script)
+/// to signal that the underlying sandbox has finished/failed and can no longer
+/// service requests. Detecting this lets us short-circuit the retry loop instead
+/// of waiting for the Modal SDK's gRPC retries to give up.
+const SANDBOX_DEAD_MARKER: &str = "OFFLOAD_SANDBOX_DEAD:";
+
+/// Returns the human-readable reason if `stderr` contains the
+/// [`SANDBOX_DEAD_MARKER`] sentinel, otherwise `None`.
+fn parse_sandbox_dead_marker(stderr: &str) -> Option<String> {
+    for line in stderr.lines() {
+        if let Some(idx) = line.find(SANDBOX_DEAD_MARKER) {
+            let reason = line[idx + SANDBOX_DEAD_MARKER.len()..].trim();
+            return Some(reason.to_string());
+        }
+    }
+    None
+}
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
 use crate::image_cache::{ImageBuilder, prepare_with_prewarm};
@@ -387,6 +405,12 @@ impl Sandbox for DefaultSandbox {
             let result = self.connector.run(&shell_cmd).await?;
 
             if result.exit_code != 0 {
+                if let Some(reason) = parse_sandbox_dead_marker(&result.stderr) {
+                    return Err(ProviderError::SandboxDead(format!(
+                        "sandbox {}: {}",
+                        self.id, reason
+                    )));
+                }
                 return Err(ProviderError::DownloadFailed(format!(
                     "Download command failed: {}",
                     result.stderr
@@ -751,6 +775,31 @@ mod tests {
             cost.estimated_cost_usd > 0.0,
             "cost should be positive for remote sandboxes"
         );
+    }
+
+    #[test]
+    fn parse_sandbox_dead_marker_finds_sentinel() {
+        let stderr = "some prelude\nOFFLOAD_SANDBOX_DEAD: sb-abc123 finished 4s ago (status='failure')\nmore noise\n";
+        let reason = parse_sandbox_dead_marker(stderr);
+        assert_eq!(
+            reason.as_deref(),
+            Some("sb-abc123 finished 4s ago (status='failure')")
+        );
+    }
+
+    #[test]
+    fn parse_sandbox_dead_marker_returns_none_when_absent() {
+        let stderr = "regular download error\nno sentinel here\n";
+        assert!(parse_sandbox_dead_marker(stderr).is_none());
+    }
+
+    #[test]
+    fn parse_sandbox_dead_marker_handles_logger_prefix() {
+        // Real stderr from modal_sandbox.py is line-oriented; the sentinel may
+        // appear after a logger prefix on the same line.
+        let stderr = "ERROR:offload:OFFLOAD_SANDBOX_DEAD: container gone";
+        let reason = parse_sandbox_dead_marker(stderr);
+        assert_eq!(reason.as_deref(), Some("container gone"));
     }
 
     /// Integration test for Modal sandbox download functionality via DefaultProvider.
