@@ -479,6 +479,31 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
         .map_err(|e| ProviderError::ExecFailed(format!("Failed to prepare provider: {e}")))?
     };
 
+    // If post_patch_cmd is configured, run it via build_incremental on the
+    // freshly-built image so derived artifacts are regenerated even in the
+    // fallback path.
+    let image_id = match (image_id, ctx.post_patch_cmd) {
+        (Some(base_id), Some(_)) => {
+            let patch_root = ctx
+                .config
+                .offload
+                .sandbox_repo_root
+                .as_deref()
+                .unwrap_or("/app");
+            eprintln!("[prepare] Running post-patch command in fallback build...");
+            builder
+                .build_incremental(
+                    &base_id,
+                    None,
+                    patch_root,
+                    ctx.post_patch_cmd,
+                    Some(ctx.discovery_done),
+                )
+                .await?
+        }
+        (id, _) => id,
+    };
+
     Ok(image_id)
 }
 
