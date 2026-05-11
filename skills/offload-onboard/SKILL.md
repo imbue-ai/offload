@@ -32,6 +32,7 @@ Verify the following are installed and authenticated. **Do not continue until al
 
 - `uv` (**required** — Offload uses `uv` to run the Modal sandbox script regardless of project language or package manager)
 - `modal` CLI — must be installed (`pip install modal`) **and** authenticated. Run `modal profile list` to check. If not authenticated, tell the user to run `modal token new` (opens a browser, writes credentials to `~/.modal.toml`). **Wait for the user to confirm authentication before proceeding.**
+- `rsync` (**required** — Offload uses `rsync` for working directory snapshots during the full-build fallback path. Without it, if the thin-diff path fails, the entire job fails with no recovery)
 - For pytest projects: the configured Python runner (`uv`, `poetry`, or `python`) and pytest must be available locally for test discovery
 - For cargo projects: `cargo-nextest` must be installed (`cargo install cargo-nextest`)
 
@@ -46,6 +47,9 @@ Offload's Modal provider needs a Dockerfile to build sandbox images. Look for an
 **For Python projects:**
 ```dockerfile
 FROM python:<version>-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends rsync \
+    && rm -rf /var/lib/apt/lists/*
 
 # Only install git if tests or dependencies require it (not needed for thin diffs)
 # RUN apt-get update && apt-get install -y --no-install-recommends git \
@@ -65,7 +69,7 @@ WORKDIR /app
 FROM rust:<version>-slim
 
 # Only install git if tests or dependencies require it (not needed for thin diffs)
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-nextest if the project uses it
@@ -448,6 +452,9 @@ jobs:
     continue-on-error: true   # Advisory only - never blocks merging
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y rsync
 
       - name: Set up Python
         uses: actions/setup-python@v5

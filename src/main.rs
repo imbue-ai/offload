@@ -1190,7 +1190,11 @@ fn apply_diff(patch_file: &Path, project_root: &Path) -> Result<()> {
             FileOperation::Delete(path) => {
                 let path_str = path_from_utf8(path, "path in delete patch")?;
                 let target = project_root.join(path_str);
-                if target.exists() {
+                if target.is_dir() {
+                    std::fs::remove_dir(&target).with_context(|| {
+                        format!("failed to delete directory: {}", target.display())
+                    })?;
+                } else if target.exists() {
                     std::fs::remove_file(&target)
                         .with_context(|| format!("failed to delete file: {}", target.display()))?;
                 }
@@ -1259,6 +1263,16 @@ fn write_patched_file(
         std::fs::create_dir_all(parent).with_context(|| {
             format!(
                 "failed to create parent directories for {}",
+                target.display()
+            )
+        })?;
+    }
+    // If the target path is currently a directory (e.g. a directory-to-file
+    // transition in the diff), remove it before writing.
+    if target.is_dir() {
+        std::fs::remove_dir_all(target).with_context(|| {
+            format!(
+                "failed to remove existing directory at {}",
                 target.display()
             )
         })?;
@@ -1424,4 +1438,79 @@ fn show_logs(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_diff_directory_to_file_transition() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path();
+
+        // Create a directory at the path that the diff will turn into a file.
+        let dir_path = project_root.join(".claude/skills/execute-implementation-plan");
+        std::fs::create_dir_all(&dir_path)?;
+        // Put a file inside to confirm remove_dir_all handles non-empty dirs.
+        std::fs::write(dir_path.join("some-child"), b"old content")?;
+        assert!(dir_path.is_dir());
+
+        // Build a git-format patch that creates a file at the same path.
+        let patch_content = b"\
+diff --git a/a/.claude/skills/execute-implementation-plan b/b/.claude/skills/execute-implementation-plan
+new file mode 100644
+--- /dev/null
++++ b/.claude/skills/execute-implementation-plan
+@@ -0,0 +1,2 @@
++line one
++line two
+";
+        let patch_file = project_root.join("test.patch");
+        std::fs::write(&patch_file, patch_content)?;
+
+        // apply_diff should succeed despite the target being a directory.
+        apply_diff(&patch_file, project_root)?;
+
+        let target = project_root.join(".claude/skills/execute-implementation-plan");
+        assert!(target.is_file(), "expected a file, found a directory");
+        let content = std::fs::read_to_string(&target)?;
+        assert_eq!(content, "line one\nline two\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_diff_delete_directory() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path();
+
+        // Create an empty directory at the path that the diff will delete.
+        // Uses remove_dir (not remove_dir_all) so non-empty dirs fail loudly.
+        let dir_path = project_root.join("some/nested/dir");
+        std::fs::create_dir_all(&dir_path)?;
+        assert!(dir_path.is_dir());
+
+        // Build a git-format patch that deletes a file at the same path.
+        let patch_content = b"\
+diff --git a/a/some/nested/dir b/b/some/nested/dir
+deleted file mode 100644
+--- a/some/nested/dir
++++ /dev/null
+@@ -1 +0,0 @@
+-old content
+";
+        let patch_file = project_root.join("delete-dir.patch");
+        std::fs::write(&patch_file, patch_content)?;
+
+        // apply_diff should succeed despite the target being a directory.
+        apply_diff(&patch_file, project_root)?;
+
+        assert!(
+            !dir_path.exists(),
+            "expected path to be removed, but it still exists"
+        );
+
+        Ok(())
+    }
 }
