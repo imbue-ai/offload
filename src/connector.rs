@@ -154,6 +154,11 @@ impl ShellConnector {
         self
     }
 
+    /// Returns the configured timeout in seconds.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
     /// Spawns a command and returns its stdout/stderr stream along with the child handle.
     ///
     /// The returned stream yields only `Stdout` and `Stderr` lines. The caller
@@ -311,6 +316,7 @@ impl Connector for ShellConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::run_prepare_command;
 
     #[tokio::test]
     async fn test_run_stream_yields_exit_code_success() -> anyhow::Result<()> {
@@ -366,5 +372,16 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_prepare_command_times_out() {
+        let connector = ShellConnector::new().with_timeout(3600);
+        let result = run_prepare_command(&connector, "sleep 10", None, 1).await;
+        assert!(
+            matches!(&result, Err(ProviderError::Timeout(_))),
+            "expected Timeout error, got: {:?}",
+            result
+        );
     }
 }

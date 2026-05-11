@@ -307,6 +307,7 @@ pub(crate) async fn run_prepare_command(
     connector: &ShellConnector,
     command: &str,
     discovery_done: Option<&AtomicBool>,
+    timeout_secs: u64,
 ) -> ProviderResult<String> {
     let mut buffer: Vec<String> = Vec::new();
     let emit = |msg: String, buf: &mut Vec<String>| {
@@ -329,20 +330,24 @@ pub(crate) async fn run_prepare_command(
     let mut last_stdout_line = String::new();
     let mut exit_code = 0;
 
-    while let Some(line) = stream.next().await {
-        match line {
-            OutputLine::Stdout(s) => {
-                emit(format!("[prepare]   {}", s), &mut buffer);
-                last_stdout_line = s;
-            }
-            OutputLine::Stderr(s) => {
-                emit(format!("[prepare]   {}", s), &mut buffer);
-            }
-            OutputLine::ExitCode(code) => {
-                exit_code = code;
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+        while let Some(line) = stream.next().await {
+            match line {
+                OutputLine::Stdout(s) => {
+                    emit(format!("[prepare]   {}", s), &mut buffer);
+                    last_stdout_line = s;
+                }
+                OutputLine::Stderr(s) => {
+                    emit(format!("[prepare]   {}", s), &mut buffer);
+                }
+                OutputLine::ExitCode(code) => {
+                    exit_code = code;
+                }
             }
         }
-    }
+    })
+    .await
+    .map_err(|_| ProviderError::Timeout("prepare command timed out".to_string()))?;
 
     // Flush any remaining buffered output
     for buffered in buffer.drain(..) {

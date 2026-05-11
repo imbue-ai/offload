@@ -111,8 +111,13 @@ impl ImageBuilder for DefaultProvider {
         let image_id = if let Some(full_prepare_cmd) =
             self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
         {
-            let image_id =
-                run_prepare_command(&self.connector, &full_prepare_cmd, discovery_done).await?;
+            let image_id = run_prepare_command(
+                &self.connector,
+                &full_prepare_cmd,
+                discovery_done,
+                self.connector.timeout_secs(),
+            )
+            .await?;
             Some(image_id)
         } else {
             None
@@ -135,7 +140,13 @@ impl ImageBuilder for DefaultProvider {
             sandbox_project_root,
             post_patch_cmd,
         );
-        let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
+        let image_id = run_prepare_command(
+            &self.connector,
+            &cmd,
+            discovery_done,
+            self.connector.timeout_secs(),
+        )
+        .await?;
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
     }

@@ -151,7 +151,13 @@ impl ImageBuilder for ModalProvider {
 
         debug!("Running prepare command: {}", prepare_cmd);
 
-        let image_id = run_prepare_command(&self.connector, &prepare_cmd, discovery_done).await?;
+        let image_id = run_prepare_command(
+            &self.connector,
+            &prepare_cmd,
+            discovery_done,
+            self.connector.timeout_secs(),
+        )
+        .await?;
 
         debug!("Modal image prepared with ID: {}", image_id);
 
@@ -173,7 +179,13 @@ impl ImageBuilder for ModalProvider {
             sandbox_project_root,
             post_patch_cmd,
         );
-        let image_id = run_prepare_command(&self.connector, &cmd, discovery_done).await?;
+        let image_id = run_prepare_command(
+            &self.connector,
+            &cmd,
+            discovery_done,
+            self.connector.timeout_secs(),
+        )
+        .await?;
         self.image_id = Some(image_id.clone());
         Ok(Some(image_id))
     }
