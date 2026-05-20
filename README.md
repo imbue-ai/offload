@@ -183,6 +183,7 @@ Run tests in parallel.
 | `--copy-dir LOCAL:REMOTE` | Copy a directory into each sandbox (repeatable) |
 | `--env KEY=VALUE` | Set an environment variable in sandboxes (repeatable) |
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
+| `--override-image-id ID` | Escape hatch: run tests against the given pre-built Modal image ID as-is, bypassing all image build, thin-diff patch, and cache setup. Only valid with the `modal` provider |
 | `--trace` | Emit a Perfetto trace to `{output_dir}/trace.json` |
 | `--fail-fast` | Stop on first test failure. Passes a framework-level stop flag (`-x` for pytest, `--fail-fast` for nextest, `--bail` for vitest) and cancels remaining batches at the orchestrator level |
 | `--show-estimated-cost` | Show estimated sandbox cost after run (client-side estimate, may not reflect actual billing) |
