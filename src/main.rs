@@ -73,6 +73,12 @@ enum Commands {
         #[arg(long)]
         no_cache: bool,
 
+        /// Escape hatch: run tests against this pre-built Modal image ID
+        /// directly, bypassing all image build, thin-diff patch, and cache
+        /// setup. Only valid with the modal provider.
+        #[arg(long, value_name = "IMAGE_ID")]
+        override_image_id: Option<String>,
+
         /// Emit a Perfetto trace to {output_dir}/trace.json
         #[arg(long)]
         trace: bool,
@@ -224,6 +230,7 @@ async fn main() -> Result<()> {
             copy_dir,
             env_vars,
             no_cache,
+            override_image_id,
             trace,
             show_estimated_cost,
             fail_fast,
@@ -238,6 +245,7 @@ async fn main() -> Result<()> {
                 copy_dir,
                 env_vars,
                 no_cache,
+                override_image_id,
                 cli.verbose,
                 trace,
                 show_estimated_cost,
@@ -464,6 +472,7 @@ async fn run_prepare<P: SandboxProvider>(
     config_path: &Path,
     copy_dirs: &[(PathBuf, PathBuf)],
     no_cache: bool,
+    override_image_id: Option<&str>,
     tracer: &offload::trace::Tracer,
     discovery_done: &AtomicBool,
 ) -> Result<Option<String>> {
@@ -475,6 +484,7 @@ async fn run_prepare<P: SandboxProvider>(
         config,
         config_path,
         no_cache,
+        override_image_id,
         tracer,
         discovery_done,
     };
@@ -498,6 +508,7 @@ async fn run_remote_provider<P: SandboxProvider>(
     run_id: &str,
     copy_dirs: &[CopyDir],
     no_cache: bool,
+    override_image_id: Option<&str>,
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
@@ -517,6 +528,7 @@ async fn run_remote_provider<P: SandboxProvider>(
             config_path,
             copy_dir_tuples,
             no_cache,
+            override_image_id,
             tracer,
             &discovery_done,
         ),
@@ -552,6 +564,7 @@ async fn run_tests(
     copy_dir_args: Vec<String>,
     env_vars: Vec<String>,
     no_cache: bool,
+    override_image_id: Option<String>,
     verbose: bool,
     trace: bool,
     show_estimated_cost: bool,
@@ -585,6 +598,11 @@ async fn run_tests(
     // Validate --record-history flag
     if record_history && config.history.is_none() {
         anyhow::bail!("--record-history requires a [history] section in the config file");
+    }
+
+    // Validate --override-image-id flag: only the modal provider builds images.
+    if override_image_id.is_some() && !matches!(config.provider, ProviderConfig::Modal(_)) {
+        anyhow::bail!("--override-image-id is only supported with the modal provider");
     }
 
     // Generate run ID for history recording
@@ -719,6 +737,8 @@ async fn run_tests(
                 &run_id,
                 &copy_dirs,
                 no_cache,
+                // --override-image-id is rejected above for non-modal providers.
+                None,
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -744,6 +764,7 @@ async fn run_tests(
                 &run_id,
                 &copy_dirs,
                 no_cache,
+                override_image_id.as_deref(),
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -879,6 +900,7 @@ async fn build_image(config_path: &Path, no_cache: bool) -> Result<()> {
                 config_path,
                 &copy_dir_tuples,
                 no_cache,
+                None,
                 &tracer,
                 &discovery_done,
             )
@@ -893,6 +915,7 @@ async fn build_image(config_path: &Path, no_cache: bool) -> Result<()> {
                 config_path,
                 &copy_dir_tuples,
                 no_cache,
+                None,
                 &tracer,
                 &discovery_done,
             )
@@ -1512,5 +1535,30 @@ deleted file mode 100644
         );
 
         Ok(())
+    }
+
+    /// Parses CLI args and extracts `override_image_id` from a `Run` command.
+    ///
+    /// Returns the outer `Some` when the parsed command is `Run`; the inner
+    /// `Option` is the flag value. Avoids panic-family macros in tests.
+    fn parse_run_override_image_id<const N: usize>(args: [&str; N]) -> Option<Option<String>> {
+        match Cli::parse_from(args).command {
+            Commands::Run {
+                override_image_id, ..
+            } => Some(override_image_id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn run_parses_override_image_id_flag() {
+        let parsed = parse_run_override_image_id(["offload", "run", "--override-image-id", "im-x"]);
+        assert_eq!(parsed, Some(Some("im-x".to_string())));
+    }
+
+    #[test]
+    fn run_override_image_id_defaults_to_none() {
+        let parsed = parse_run_override_image_id(["offload", "run"]);
+        assert_eq!(parsed, Some(None));
     }
 }

@@ -220,6 +220,17 @@ impl SandboxProvider for ModalProvider {
     type Sandbox = DefaultSandbox;
 
     async fn prepare(&mut self, ctx: &PrepareContext<'_>) -> ProviderResult<Option<String>> {
+        // Escape hatch: when --override-image-id is set, run against the given
+        // pre-built image as-is and skip the entire setup pipeline.
+        if let Some(image_id) = ctx.override_image_id {
+            tracing::warn!(
+                "--override-image-id={image_id}: bypassing all Modal image \
+                 build/patch/cache setup; using the image as-is for this run",
+            );
+            self.image_id = Some(image_id.to_string());
+            return Ok(Some(image_id.to_string()));
+        }
+
         let result = prepare_with_prewarm(self, ctx).await?;
         self.image_id = result.clone();
         Ok(result)
@@ -467,5 +478,65 @@ mod tests {
         assert!(cmd.contains("--sandbox-project-root=/app"));
         assert!(!cmd.contains("--patch-file"));
         assert!(cmd.contains("--post-patch-cmd=scripts/regen-clients.sh"));
+    }
+
+    // -- override_image_id (--override-image-id escape hatch) tests --
+
+    /// Builds a minimal config suitable for exercising `prepare()`.
+    fn minimal_config() -> crate::config::Config {
+        crate::config::Config {
+            offload: crate::config::schema::OffloadConfig {
+                max_parallel: 1,
+                test_timeout_secs: 60,
+                working_dir: None,
+                sandbox_project_root: None,
+                sandbox_repo_root: None,
+                sandbox_init_cmd: None,
+                post_patch_cmd: None,
+            },
+            provider: crate::config::schema::ProviderConfig::Modal(ModalProviderConfig::default()),
+            framework: crate::config::schema::FrameworkConfig::Default(
+                crate::config::schema::DefaultFrameworkConfig {
+                    discover_command: "echo test".to_string(),
+                    run_command: "run {tests}".to_string(),
+                    result_file: None,
+                    working_dir: None,
+                    test_id_format: "{name}".to_string(),
+                },
+            ),
+            groups: Default::default(),
+            report: Default::default(),
+            checkpoint: None,
+            history: None,
+        }
+    }
+
+    /// With the override set, `prepare()` returns the override ID directly and
+    /// never spawns a build (a real build would shell out to `modal_sandbox.py`).
+    #[tokio::test]
+    async fn test_prepare_short_circuits_on_override_image_id() -> ProviderResult<()> {
+        let mut p = provider(ModalProviderConfig::default());
+        let config = minimal_config();
+        let discovery_done = AtomicBool::new(true);
+        let tracer = crate::trace::Tracer::noop();
+        let ctx = PrepareContext {
+            copy_dirs: &[],
+            sandbox_init_cmd: None,
+            post_patch_cmd: None,
+            repo: Path::new("/tmp"),
+            config: &config,
+            config_path: Path::new("offload.toml"),
+            no_cache: false,
+            override_image_id: Some("im-override-xyz"),
+            tracer: &tracer,
+            discovery_done: &discovery_done,
+        };
+
+        let result = p.prepare(&ctx).await?;
+
+        assert_eq!(result.as_deref(), Some("im-override-xyz"));
+        // The override ID is stored so create_sandbox() uses it.
+        assert_eq!(p.image_id.as_deref(), Some("im-override-xyz"));
+        Ok(())
     }
 }

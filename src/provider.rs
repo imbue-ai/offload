@@ -31,6 +31,12 @@ pub struct PrepareContext<'a> {
     pub config_path: &'a Path,
     /// Skip cached image lookup.
     pub no_cache: bool,
+    /// Per-invocation escape hatch: use this pre-built image ID as-is.
+    ///
+    /// When `Some`, image-building providers skip their entire setup pipeline
+    /// (build, thin-diff patch, checkpoint cache). Sourced from the
+    /// `--override-image-id` CLI flag; never from config.
+    pub override_image_id: Option<&'a str>,
     /// Tracer for performance tracing.
     pub tracer: &'a crate::trace::Tracer,
     /// Signal flag set when test discovery is complete.
@@ -573,11 +579,13 @@ mod tests {
             config: &config,
             config_path: Path::new("offload.toml"),
             no_cache: false,
+            override_image_id: None,
             tracer: &tracer,
             discovery_done: &discovery_done,
         };
         assert_eq!(ctx.repo, Path::new("/tmp"));
         assert!(!ctx.no_cache);
+        assert!(ctx.override_image_id.is_none());
         assert!(ctx.sandbox_init_cmd.is_none());
         assert!(ctx.copy_dirs.is_empty());
     }
