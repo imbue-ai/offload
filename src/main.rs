@@ -1076,6 +1076,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             sandbox_project_root: None,
             sandbox_init_cmd: None,
             post_patch_cmd: None,
+            impatiently_requeue_batches: true,
         },
         provider: provider_config,
         framework: framework_config,

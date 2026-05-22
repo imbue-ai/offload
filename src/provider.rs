@@ -555,6 +555,7 @@ mod tests {
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
+                impatiently_requeue_batches: true,
             },
             provider: crate::config::schema::ProviderConfig::Local(Default::default()),
             framework: crate::config::schema::FrameworkConfig::Default(

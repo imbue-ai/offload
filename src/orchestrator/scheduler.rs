@@ -75,16 +75,18 @@ impl Batch {
 ///
 /// Performs LPT scheduling at construction time and exposes the resulting
 /// batches through a mutex-protected queue. Workers call [`pop`](Self::pop)
-/// to pull batches. Each pop re-queues the batch (split into halves for
-/// multi-test batches, or cloned with an incremented retry counter for
-/// single-test batches) so the batch can be retried if needed; the
-/// `is_decided` check in the spawn loop skips batches whose tests already
-/// completed.
+/// to pull batches. When `impatiently_requeue_batches` is `true`, each pop
+/// re-queues the batch (split into halves for multi-test batches, or cloned
+/// with an incremented retry counter for single-test batches) so the batch
+/// can be retried if needed; the `is_decided` check in the spawn loop skips
+/// batches whose tests already completed. When `false`, batches run exactly
+/// once.
 pub struct Scheduler {
     queue: Mutex<VecDeque<ScheduledBatch>>,
     notify: tokio::sync::Notify,
     batch_count: usize,
     batch_sizes: Vec<usize>,
+    impatiently_requeue_batches: bool,
 }
 
 impl Scheduler {
@@ -107,11 +109,16 @@ impl Scheduler {
     ///   Tests not in the map use the per-group average from `group_to_default_duration`.
     /// * `group_to_default_duration` - Per-group average duration for tests without historical data.
     ///   Falls back to 1 second if the group has no entry.
+    /// * `impatiently_requeue_batches` - When true, `pop()` re-queues each
+    ///   popped batch (halving multi-test batches, incrementing the retry
+    ///   counter for single-test batches up to `MAX_SINGLE_TEST_REQUEUES`).
+    ///   When false, batches run exactly once.
     pub fn new(
         max_parallel: usize,
         tests: &[TestInstance],
         durations: &HashMap<String, Duration>,
         group_to_default_duration: &HashMap<String, Duration>,
+        impatiently_requeue_batches: bool,
     ) -> Self {
         let max_parallel = max_parallel.max(1);
 
@@ -121,6 +128,7 @@ impl Scheduler {
                 notify: tokio::sync::Notify::new(),
                 batch_count: 0,
                 batch_sizes: Vec::new(),
+                impatiently_requeue_batches,
             };
         }
 
@@ -145,6 +153,7 @@ impl Scheduler {
                 notify: tokio::sync::Notify::new(),
                 batch_count,
                 batch_sizes,
+                impatiently_requeue_batches,
             };
         }
 
@@ -215,15 +224,18 @@ impl Scheduler {
             notify: tokio::sync::Notify::new(),
             batch_count,
             batch_sizes,
+            impatiently_requeue_batches,
         }
     }
 
     /// Removes and returns the next batch from the queue, blocking if empty.
     ///
-    /// Multi-test batches are split into two halves when re-queued; single-test
-    /// batches are re-queued with an incremented retry counter up to
-    /// `MAX_SINGLE_TEST_REQUEUES` times. The `is_decided` check in the spawn
-    /// loop skips batches whose tests already completed.
+    /// When `impatiently_requeue_batches` is `true`, multi-test batches are
+    /// split into two halves when re-queued; single-test batches are re-queued
+    /// with an incremented retry counter up to `MAX_SINGLE_TEST_REQUEUES`
+    /// times. The `is_decided` check in the spawn loop skips batches whose
+    /// tests already completed. When `false`, no follow-up batches are
+    /// enqueued.
     ///
     /// Returns `None` if the mutex is poisoned.
     ///
@@ -238,22 +250,7 @@ impl Scheduler {
                 Ok(mut q) => {
                     if let Some(batch) = q.pop_front() {
                         drop(q);
-                        if batch.tests.len() > 1 {
-                            let mid = batch.tests.len() / 2;
-                            self.push(ScheduledBatch {
-                                tests: batch.tests[..mid].to_vec(),
-                                single_test_retry_counter: 0,
-                            });
-                            self.push(ScheduledBatch {
-                                tests: batch.tests[mid..].to_vec(),
-                                single_test_retry_counter: 0,
-                            });
-                        } else if batch.single_test_retry_counter < MAX_SINGLE_TEST_REQUEUES {
-                            self.push(ScheduledBatch {
-                                tests: batch.tests.clone(),
-                                single_test_retry_counter: batch.single_test_retry_counter + 1,
-                            });
-                        }
+                        self.enqueue_followups(&batch);
                         return Some(batch);
                     }
                 }
@@ -265,6 +262,36 @@ impl Scheduler {
 
             // Queue is empty — wait for a notification
             notified.await;
+        }
+    }
+
+    /// Re-queues follow-up batches for a just-popped batch, per the impatient
+    /// re-queue policy.
+    ///
+    /// Multi-test batches are split into two halves (counter reset to 0).
+    /// Single-test batches are cloned with an incremented retry counter, up
+    /// to `MAX_SINGLE_TEST_REQUEUES` times.
+    ///
+    /// No-op when `self.impatiently_requeue_batches` is `false`.
+    fn enqueue_followups(&self, batch: &ScheduledBatch) {
+        if !self.impatiently_requeue_batches {
+            return;
+        }
+        if batch.tests.len() > 1 {
+            let mid = batch.tests.len() / 2;
+            self.push(ScheduledBatch {
+                tests: batch.tests[..mid].to_vec(),
+                single_test_retry_counter: 0,
+            });
+            self.push(ScheduledBatch {
+                tests: batch.tests[mid..].to_vec(),
+                single_test_retry_counter: 0,
+            });
+        } else if batch.single_test_retry_counter < MAX_SINGLE_TEST_REQUEUES {
+            self.push(ScheduledBatch {
+                tests: batch.tests.clone(),
+                single_test_retry_counter: batch.single_test_retry_counter + 1,
+            });
         }
     }
 
@@ -311,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_schedule_empty() {
-        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new(), true);
         assert_eq!(scheduler.batch_count(), 0);
     }
 
@@ -329,7 +356,7 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // With LPT:
@@ -359,7 +386,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Each test in its own batch (3 workers, 3 tests)
@@ -382,7 +409,7 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
@@ -404,7 +431,7 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Each instance of test_a must be in a different batch
@@ -437,7 +464,7 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Verify no batch contains duplicate test IDs
@@ -466,7 +493,7 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Each instance must be in a separate batch
@@ -487,7 +514,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Two tests that each use >half the command length budget must be in separate batches
@@ -504,7 +531,7 @@ mod tests {
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
@@ -525,7 +552,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test must be alone in its batch
@@ -560,7 +587,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test in its own batch, order preserved
@@ -585,7 +612,7 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batches(&scheduler).await;
 
         // Individually-scheduled batches come first
@@ -609,7 +636,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
         assert_eq!(scheduler.batch_count(), 1);
 
         // Pop the original 2-test batch
@@ -647,7 +674,7 @@ mod tests {
         let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
         assert_eq!(scheduler.batch_count(), 1);
 
         // Pop the original single-test batch (counter = 0)
@@ -676,7 +703,7 @@ mod tests {
         let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new());
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
 
         // Pop the initial batch plus MAX_SINGLE_TEST_REQUEUES re-queued copies.
         // The initial batch has counter=0, each re-queue increments by 1.
@@ -696,6 +723,56 @@ mod tests {
         assert!(
             result.is_err(),
             "expected timeout (empty queue) after max requeues"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pop_does_not_requeue_when_flag_disabled() -> anyhow::Result<()> {
+        // --- Multi-test batch with flag=false: no halves re-queued ---
+        let records = [
+            TestRecord::new("test_a", "test-group"),
+            TestRecord::new("test_b", "test-group"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), false);
+        assert_eq!(scheduler.batch_count(), 1);
+
+        // Pop yields the batch as-is
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for batch"))?
+            .ok_or_else(|| anyhow::anyhow!("expected a batch"))?;
+        assert_eq!(batch.tests.len(), 2);
+
+        // Queue must be empty — no halves were enqueued
+        let result = tokio::time::timeout(Duration::from_millis(100), scheduler.pop()).await;
+        assert!(
+            result.is_err(),
+            "expected timeout (empty queue) when flag is false"
+        );
+
+        // --- Single-test batch with flag=false: no retry enqueued ---
+        let records = [TestRecord::new("only_test", "test-group")];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), false);
+        assert_eq!(scheduler.batch_count(), 1);
+
+        let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for singleton batch"))?
+            .ok_or_else(|| anyhow::anyhow!("expected a singleton batch"))?;
+        assert_eq!(batch.tests.len(), 1);
+        assert_eq!(batch.tests[0].id(), "only_test");
+
+        // Queue must be empty — no retry enqueued
+        let result = tokio::time::timeout(Duration::from_millis(100), scheduler.pop()).await;
+        assert!(
+            result.is_err(),
+            "expected timeout (empty queue) for singleton when flag is false"
         );
 
         Ok(())

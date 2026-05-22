@@ -756,11 +756,11 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         // Scheduler WITH history durations (max_parallel=2)
-        let with_history = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let with_history = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches_with = drain_batch_ids(&with_history).await;
 
         // Scheduler WITHOUT history (empty durations, all tests use 1s default)
-        let without_history = Scheduler::new(2, &tests, &HashMap::new(), &HashMap::new());
+        let without_history = Scheduler::new(2, &tests, &HashMap::new(), &HashMap::new(), true);
         let batches_without = drain_batch_ids(&without_history).await;
 
         // With history: LPT assigns slow (13s) alone, medium (8s) + fast (4s) together
@@ -819,7 +819,7 @@ mod tests {
 
         // Scheduler with partial durations (max_parallel=2)
         // known_slow=23s, known_fast=4s, unknown_a=1s default, unknown_b=1s default
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         let batches = drain_batch_ids(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
@@ -854,7 +854,7 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new());
+        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
         assert_eq!(scheduler.batch_count(), 2);
 
         let batches = drain_batch_ids(&scheduler).await;

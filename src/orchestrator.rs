@@ -390,6 +390,7 @@ where
             &tests_to_run,
             &durations,
             &group_to_default_duration,
+            self.config.offload.impatiently_requeue_batches,
         );
         drop(_sched_span);
 

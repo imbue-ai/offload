@@ -92,6 +92,14 @@ pub struct OffloadConfig {
     /// Optional command to run after the patch is applied to the sandbox.
     #[serde(default)]
     pub post_patch_cmd: Option<String>,
+
+    /// When true, the scheduler re-queues each batch on pop:
+    /// multi-test batches are split into halves, and single-test batches
+    /// are re-queued up to MAX_SINGLE_TEST_REQUEUES times. This hedges against
+    /// batches whose runtime exceeds expectations. When false, batches run
+    /// exactly once on the sandbox that popped them.
+    #[serde(default = "default_impatiently_requeue_batches")]
+    pub impatiently_requeue_batches: bool,
 }
 
 fn default_max_parallel() -> usize {
@@ -100,6 +108,10 @@ fn default_max_parallel() -> usize {
 
 fn default_test_timeout() -> u64 {
     900 // 15 minutes
+}
+
+fn default_impatiently_requeue_batches() -> bool {
+    true
 }
 
 /// Provider configuration specifying where tests run.
@@ -837,6 +849,7 @@ mod tests {
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
+                impatiently_requeue_batches: true,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -872,6 +885,7 @@ mod tests {
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
+                impatiently_requeue_batches: true,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -905,6 +919,7 @@ mod tests {
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
+                impatiently_requeue_batches: true,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -1116,6 +1131,7 @@ mod tests {
                 sandbox_repo_root: None,
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
+                impatiently_requeue_batches: true,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -1546,6 +1562,77 @@ default_duration_secs = 2.5
         assert_eq!(history.path, PathBuf::from("custom-history.jsonl"));
         assert_eq!(history.reservoir_size, 50);
         assert!((history.default_duration_secs - 2.5).abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    /// Test that `impatiently_requeue_batches` defaults to `true` when omitted.
+    #[test]
+    fn test_impatiently_requeue_batches_defaults_to_true() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+
+[provider]
+type = "local"
+
+[framework]
+type = "nextest"
+
+[groups.all]
+retry_count = 0
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(config.offload.impatiently_requeue_batches);
+        Ok(())
+    }
+
+    /// Test that `impatiently_requeue_batches = false` parses correctly.
+    #[test]
+    fn test_impatiently_requeue_batches_explicit_false() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+impatiently_requeue_batches = false
+
+[provider]
+type = "local"
+
+[framework]
+type = "nextest"
+
+[groups.all]
+retry_count = 0
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(!config.offload.impatiently_requeue_batches);
+        Ok(())
+    }
+
+    /// Test that `impatiently_requeue_batches = true` parses correctly and round-trips.
+    #[test]
+    fn test_impatiently_requeue_batches_explicit_true_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[offload]
+sandbox_project_root = "/app"
+impatiently_requeue_batches = true
+
+[provider]
+type = "local"
+
+[framework]
+type = "nextest"
+
+[groups.all]
+retry_count = 0
+"#;
+        let config: Config = toml::from_str(toml)?;
+        assert!(config.offload.impatiently_requeue_batches);
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+        assert!(round_tripped.offload.impatiently_requeue_batches);
         Ok(())
     }
 }
