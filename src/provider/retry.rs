@@ -87,6 +87,13 @@ mod tests {
         assert!(!is_retryable(&ProviderError::CreateFailed("c".into())));
     }
 
+    #[test]
+    fn sandbox_dead_is_not_retryable() {
+        assert!(!is_retryable(&ProviderError::SandboxDead(
+            "container finished".into()
+        )));
+    }
+
     // ── with_retry! macro behavior ───────────────────────────────────
 
     #[tokio::test]
