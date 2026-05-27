@@ -68,10 +68,9 @@ def copy_dir_to_sandbox(sandbox, local_dir: str, remote_dir: str) -> None:
     logger.info("Transferring tar archive (%d bytes) to sandbox...", len(tar_data))
 
     # Create remote directory and transfer tar
-    sandbox.mkdir(remote_dir, parents=True)
+    sandbox.filesystem.make_directory(remote_dir, create_parents=True)
     tar_remote_path = f"{remote_dir}/.transfer.tar"
-    with sandbox.open(tar_remote_path, "wb") as f:
-        f.write(tar_data)
+    sandbox.filesystem.write_bytes(tar_data, tar_remote_path)
 
     logger.info("Extracting tar archive in %s...", remote_dir)
 
@@ -88,19 +87,11 @@ def copy_from_sandbox(sandbox, remote_path: str, local_path: str) -> None:
     """Copy a file from the sandbox to local filesystem."""
     logger.info("Downloading %s to %s...", remote_path, local_path)
 
-    # Read file content directly from sandbox
-    with sandbox.open(remote_path, "rb") as f:
-        data = f.read()
-
-    logger.info("Received %d bytes", len(data))
-
     # Create parent directory if needed
     local_parent = os.path.dirname(local_path.rstrip("/")) or "."
     os.makedirs(local_parent, exist_ok=True)
 
-    # Write to local file
-    with open(local_path, "wb") as f:
-        f.write(data)
+    sandbox.filesystem.copy_to_local(remote_path, local_path)
 
     logger.info("Download complete: %s -> %s", remote_path, local_path)
 
