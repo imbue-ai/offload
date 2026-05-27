@@ -11,3 +11,19 @@ updates:
       all-actions:
         patterns:
           - "*"
+
+  # Enable version updates for Cargo (Rust)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Wait 14 days after a new release before proposing an update.
+    # Mitigates supply-chain risk from freshly-published malicious versions.
+    cooldown:
+      default-days: 14
+      include:
+        - "*"
+    groups:
+      all-cargo:
+        patterns:
+          - "*"
