@@ -38,7 +38,7 @@ futures = "0.3"
 # Serialization & Config
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -52,17 +52,17 @@ anyhow = "1"
 thiserror = "2"
 
 # Reporting
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.40", features = ["serialize"] }
 
 # Terminal UI
-indicatif = "0.17"
-console = "0.15"
+indicatif = "0.18"
+console = "0.16"
 
 # Retry
 backon = "1"
 
 # Random number generation
-rand = "0.9"
+rand = "0.10"
 
 # Patch application
 diffy = { version = "0.5", features = ["binary"] }
