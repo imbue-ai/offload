@@ -90,9 +90,7 @@ impl RunResult {
 
 /// Overall wall-clock budget for tearing down all sandboxes at the end of a run.
 ///
-/// Teardown is a single batched call (one process for Modal), so this bounds the
-/// whole operation rather than each sandbox individually. Generous enough for a
-/// large batch yet capped so a hung teardown cannot stall the run.
+/// Bounds the whole batched teardown, not each sandbox individually.
 const SANDBOX_TERMINATE_TIMEOUT_SECS: u64 = 120;
 
 /// The main orchestrator that coordinates test execution.
@@ -629,10 +627,7 @@ where
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb
         };
-        // Tear down the whole batch in one call. Providers that support batched
-        // teardown (Modal) collapse this into a single process; others fall back
-        // to the per-sandbox default. One overall timeout bounds the operation
-        // so a hung teardown cannot stall the run.
+        // Tear down the whole batch in one call, under a single overall timeout.
         match tokio::time::timeout(
             std::time::Duration::from_secs(SANDBOX_TERMINATE_TIMEOUT_SECS),
             S::terminate_many(sandboxes),

@@ -194,7 +194,7 @@ impl ImageBuilder for ModalProvider {
 /// Batched-teardown command template for Modal sandboxes.
 ///
 /// Takes the sandbox IDs to terminate on stdin (one per line); it never
-/// enumerates sandboxes by app, so it is safe while other runs share the app.
+/// enumerates sandboxes by app (concurrent runs share the Modal app).
 pub(super) const DESTROY_MANY_COMMAND: &str = "uv run @modal_sandbox.py destroy-many";
 
 /// Builds the shell command string for an incremental (thin-diff) image build.
@@ -293,8 +293,7 @@ impl SandboxProvider for ModalProvider {
             Instant::now(),
             self.cpu_cores,
         )
-        // Modal supports batched teardown: one process tears down the whole
-        // batch via stdin-delimited IDs, instead of one process per sandbox.
+        // Opt into batched teardown (IDs piped on stdin to one process).
         .with_destroy_many_command(DESTROY_MANY_COMMAND))
     }
 
@@ -453,8 +452,8 @@ mod tests {
 
     #[test]
     fn test_destroy_many_command_is_stdin_based_not_app_scoped() {
-        // The batched teardown must read IDs from stdin and must never take an
-        // app/list argument, since concurrent runs share the Modal app.
+        // The batched teardown must read IDs from stdin and never take an
+        // app/list argument (concurrent runs share the Modal app).
         assert_eq!(
             DESTROY_MANY_COMMAND,
             "uv run @modal_sandbox.py destroy-many"

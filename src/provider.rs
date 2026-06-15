@@ -300,17 +300,11 @@ pub trait Sandbox: Send {
     /// Consumes `self` so the sandbox cannot be used after termination.
     async fn terminate(mut self) -> ProviderResult<()>;
 
-    /// Terminates a batch of sandboxes, returning one result per input.
+    /// Terminates a batch of sandboxes, returning one result per input in order.
     ///
-    /// Exists so providers can collapse teardown into a single operation
-    /// instead of one process per sandbox. The default implementation simply
-    /// terminates each sandbox concurrently (preserving the historical
-    /// fan-out), so providers without a batch path — local and others — need
-    /// not change. The Modal-backed provider overrides this to issue one
-    /// batched process.
-    ///
-    /// Results are returned in input order. This is best-effort: a single
-    /// failure does not abort the rest of the batch.
+    /// The default implementation terminates each sandbox concurrently;
+    /// providers with a batch path (e.g. Modal) override it. Best-effort: a
+    /// single failure does not abort the rest of the batch.
     async fn terminate_many(sandboxes: Vec<Self>) -> Vec<ProviderResult<()>>
     where
         Self: Sized,

@@ -213,17 +213,12 @@ impl ShellConnector {
         Ok((Box::pin(combined), child))
     }
 
-    /// Executes a command, piping `stdin_data` to the child's standard input.
+    /// Executes a command, piping `stdin_data` to the child's standard input,
+    /// then closing stdin (EOF).
     ///
     /// Behaves like [`Connector::run`](crate::connector::Connector::run) but
-    /// feeds `stdin_data` to the process. The write happens in a task running
-    /// concurrently with the stdout/stderr readers so a payload larger than the
-    /// OS pipe buffer cannot deadlock (the child can drain stdin while we drain
-    /// its output). Stdin is closed (EOF) once the data has been written.
-    ///
-    /// Used for batch commands that take a newline-delimited list on stdin
-    /// (e.g. Modal's `destroy-many`), keeping large or untrusted ID lists out
-    /// of the shell command line.
+    /// feeds `stdin_data` to the process. Used for batch commands that take a
+    /// newline-delimited list on stdin (e.g. Modal's `destroy-many`).
     pub async fn run_with_stdin(
         &self,
         command: &str,
@@ -262,9 +257,7 @@ impl ShellConnector {
             .take()
             .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
 
-        // Write stdin in its own task so the child can consume input while we
-        // simultaneously drain stdout/stderr below. Dropping the handle after
-        // the write closes the pipe, signalling EOF to the child.
+        // Feed stdin from its own task, concurrent with the stdout/stderr drain below.
         let stdin_bytes = stdin_data.as_bytes().to_vec();
         let stdin_task = tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
@@ -272,7 +265,7 @@ impl ShellConnector {
             if let Err(e) = stdin_handle.write_all(&stdin_bytes).await {
                 debug!("Failed to write to stdin: {}", e);
             }
-            // Explicit shutdown closes the pipe (EOF) before the handle drops.
+            // Close stdin so the child sees EOF.
             let _ = stdin_handle.shutdown().await;
         });
 
@@ -304,8 +297,6 @@ impl ShellConnector {
                 let status = child.wait().await?;
                 let stdout = stdout_task.await.unwrap_or_default();
                 let stderr = stderr_task.await.unwrap_or_default();
-                // The writer should be done once the child has exited; awaiting
-                // it surfaces nothing but avoids leaking the task.
                 let _ = stdin_task.await;
                 Ok::<_, std::io::Error>((status, stdout, stderr))
             })
@@ -507,7 +498,6 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_stdin_empty_input() -> anyhow::Result<()> {
         let connector = ShellConnector::new();
-        // With no stdin, `cat` reads EOF immediately and exits 0 with empty stdout.
         let result = connector.run_with_stdin("cat", "").await?;
 
         assert_eq!(result.exit_code, 0);
@@ -517,9 +507,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_with_stdin_large_input_no_deadlock() -> anyhow::Result<()> {
-        // A payload larger than the OS pipe buffer (~64 KiB) would deadlock if
-        // stdin were written before draining stdout. Concurrent writing must
-        // keep this from hanging; the test timeout (TESTING.md) guards against it.
+        // Payload exceeds the OS pipe buffer (~64 KiB).
         let connector = ShellConnector::new();
         let line = "0123456789abcdef".repeat(8); // 128 bytes/line
         let payload = std::iter::repeat_n(line.as_str(), 4096)

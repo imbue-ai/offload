@@ -269,7 +269,7 @@ pub struct DefaultSandbox {
     destroy_command: String,
     /// Optional batched-teardown command, set by providers that support it
     /// (e.g. Modal). When present, [`terminate_many`](Sandbox::terminate_many)
-    /// issues one process for the whole batch instead of one per sandbox.
+    /// batches the whole teardown into one process.
     destroy_many_command: Option<String>,
     download_command: Option<String>,
     env: Vec<(String, String)>,
@@ -304,20 +304,15 @@ impl DefaultSandbox {
         }
     }
 
-    /// Sets the batched-teardown command for this sandbox.
-    ///
-    /// Builder-style so existing `new()` call sites stay unchanged (the field
-    /// defaults to `None`). Providers that support batched teardown (Modal)
-    /// call this to opt in; when set, [`terminate_many`](Sandbox::terminate_many)
-    /// pipes all sandbox IDs to a single invocation of this command.
+    /// Sets the batched-teardown command for this sandbox; when set,
+    /// [`terminate_many`](Sandbox::terminate_many) pipes all sandbox IDs to a
+    /// single invocation of it.
     pub fn with_destroy_many_command(mut self, command: impl Into<String>) -> Self {
         self.destroy_many_command = Some(command.into());
         self
     }
 
     /// Returns the configured batched-teardown command, if any.
-    ///
-    /// Test-only: lets tests assert that a provider wired up batched teardown.
     #[cfg(test)]
     pub(crate) fn destroy_many_command(&self) -> Option<&str> {
         self.destroy_many_command.as_deref()
@@ -458,11 +453,8 @@ impl Sandbox for DefaultSandbox {
     }
 
     async fn terminate_many(sandboxes: Vec<Self>) -> Vec<ProviderResult<()>> {
-        // Batch only when the first sandbox carries a destroy-many command and
-        // there is something to terminate. All sandboxes from a given provider
-        // share the same connector and command template, so the first is
-        // representative. Otherwise fall back to concurrent per-sandbox
-        // terminate (the historical behavior).
+        // Batch when a destroy-many command is configured; otherwise fall back
+        // to concurrent per-sandbox terminate.
         let batch_command = sandboxes
             .first()
             .and_then(|sb| sb.destroy_many_command.clone());
@@ -483,9 +475,8 @@ impl Sandbox for DefaultSandbox {
         let payload = Self::build_destroy_many_payload(&ids);
         debug!("Batched terminate of {} sandbox(es)", ids.len());
 
-        // One process tears down the whole batch. Best-effort: the destroy-many
-        // command is expected to exit 0 even on per-ID failures, so map the
-        // single outcome across all inputs.
+        // One process tears down the whole batch; its single outcome maps to
+        // every input.
         match connector.run_with_stdin(&command, &payload).await {
             Ok(result) => {
                 if result.exit_code != 0 {
@@ -548,9 +539,9 @@ mod tests {
         }
     }
 
-    /// Builds a sandbox with a specific id and lifecycle commands, for
+    /// Builds a sandbox with a specific id and lifecycle commands for
     /// exercising teardown. `destroy_command` and `destroy_many_command` are
-    /// real shell commands so tests can run them without a remote backend.
+    /// real shell commands.
     fn sandbox_for_teardown(
         id: &str,
         destroy_command: &str,
@@ -611,8 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_terminate_many_batched_pipes_ids_to_command() -> anyhow::Result<()> {
-        // `cat` consumes the piped IDs and exits 0, standing in for the real
-        // destroy-many process. The batch should report success for every ID.
+        // `cat` consumes the piped IDs and exits 0, standing in for destroy-many.
         let sandboxes = vec![
             sandbox_for_teardown("sb-1", "false", Some("cat")),
             sandbox_for_teardown("sb-2", "false", Some("cat")),

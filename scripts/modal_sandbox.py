@@ -457,9 +457,7 @@ def destroy(sandbox_id: str):
     logger.info("Terminated sandbox %s", sandbox_id)
 
 
-# Bound in-process terminate concurrency. One destroy-many process replaces the
-# old N-subprocess fan-out, so this cap also bounds load on Modal's shared
-# workspace rate limit (~200 ops/s across all concurrent runs).
+# Bound in-process terminate concurrency.
 DESTROY_MANY_CONCURRENCY = 32
 
 # Bounded exponential backoff for rate-limited terminate calls.
@@ -479,13 +477,7 @@ def _parse_sandbox_ids(text: str) -> list[str]:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Heuristically detect Modal/gRPC rate-limit errors.
-
-    Modal surfaces throttling as gRPC RESOURCE_EXHAUSTED or HTTP 429. The SDK
-    does not expose a single stable exception type for this across versions, so
-    match on a gRPC status code attribute when present and otherwise fall back
-    to string markers in the message.
-    """
+    """Detect Modal/gRPC rate-limit errors (gRPC RESOURCE_EXHAUSTED or HTTP 429)."""
     code = getattr(exc, "code", None)
     code_name = getattr(code, "name", None) if code is not None else None
     if code_name == "RESOURCE_EXHAUSTED":
@@ -503,20 +495,15 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 
 def _sleep(seconds: float) -> None:
-    """Block for ``seconds`` without busy-waiting.
-
-    Uses a never-set Event so backoff waits are interruptible by signals and do
-    not rely on time.sleep.
-    """
+    """Block for ``seconds`` without busy-waiting."""
     threading.Event().wait(seconds)
 
 
 def _terminate_one(sandbox_id: str) -> bool:
     """Terminate a single sandbox, retrying only on rate-limit errors.
 
-    Best-effort: returns True on success, False if the sandbox could not be
-    terminated. Never raises; per-ID failures are logged and swallowed so one
-    bad ID cannot abort the batch.
+    Best-effort: returns True on success, False otherwise. Never raises; per-ID
+    failures are logged and swallowed.
     """
     delay = DESTROY_MANY_BASE_DELAY_SECS
     for attempt in range(1, DESTROY_MANY_MAX_ATTEMPTS + 1):
@@ -545,14 +532,13 @@ def _terminate_one(sandbox_id: str) -> bool:
 def destroy_many():
     """Terminate many Modal sandboxes named on stdin (one ID per line).
 
-    Reads newline-delimited sandbox IDs from STDIN and terminates each,
-    bounding in-process concurrency to keep one teardown process polite to
-    Modal's shared-workspace rate limit. Operates ONLY on the explicit IDs
-    given on stdin; it never enumerates or terminates sandboxes by app, so it
-    is safe to run while other Offload runs share the same Modal app.
+    Reads newline-delimited sandbox IDs from STDIN and terminates each, bounding
+    in-process concurrency. Operates ONLY on the explicit IDs given on stdin; it
+    never enumerates or terminates sandboxes by app (concurrent runs share the
+    Modal app).
 
     Best-effort: per-ID failures are logged and skipped, and the command always
-    exits 0 so cleanup cannot fail the test run.
+    exits 0.
     """
     sandbox_ids = _parse_sandbox_ids(sys.stdin.read())
 
