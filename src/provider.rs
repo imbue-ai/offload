@@ -300,6 +300,21 @@ pub trait Sandbox: Send {
     /// Consumes `self` so the sandbox cannot be used after termination.
     async fn terminate(mut self) -> ProviderResult<()>;
 
+    /// Terminates a batch of sandboxes, returning one result per input in order.
+    ///
+    /// The default implementation terminates each sandbox concurrently;
+    /// providers with a batch path (e.g. Modal) override it. Best-effort: a
+    /// single failure does not abort the rest of the batch.
+    async fn terminate_many(sandboxes: Vec<Self>) -> Vec<ProviderResult<()>>
+    where
+        Self: Sized,
+    {
+        let futures = sandboxes
+            .into_iter()
+            .map(|sandbox| async move { sandbox.terminate().await });
+        futures::future::join_all(futures).await
+    }
+
     /// Returns the estimated cost incurred by this sandbox.
     ///
     /// The cost is calculated based on elapsed time since sandbox creation

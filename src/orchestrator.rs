@@ -88,6 +88,11 @@ impl RunResult {
     }
 }
 
+/// Overall wall-clock budget for tearing down all sandboxes at the end of a run.
+///
+/// Bounds the whole batched teardown, not each sandbox individually.
+const SANDBOX_TERMINATE_TIMEOUT_SECS: u64 = 120;
+
 /// The main orchestrator that coordinates test execution.
 ///
 /// The orchestrator is the top-level component that ties together:
@@ -612,32 +617,34 @@ where
                 acc
             });
 
+        let sandbox_count = sandboxes.len();
         let term_progress = if self.ci {
-            eprintln!("Terminating {} sandboxes...", sandboxes.len());
+            eprintln!("Terminating {} sandboxes...", sandbox_count);
             indicatif::ProgressBar::hidden()
         } else {
-            let pb = indicatif::ProgressBar::new(sandboxes.len() as u64);
-            if let Ok(style) = indicatif::ProgressStyle::default_bar()
-                .template("{spinner:.green} Terminating sandboxes [{bar:40.cyan/blue}] {pos}/{len}")
-            {
-                pb.set_style(style.progress_chars("#>-"));
-            }
+            let pb = indicatif::ProgressBar::new_spinner();
+            pb.set_message(format!("Terminating {} sandboxes...", sandbox_count));
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb
         };
-        let term_progress_ref = &term_progress;
-        let terminate_futures = sandboxes.into_iter().map(|sandbox| async move {
-            let id = sandbox.id().to_string();
-            match tokio::time::timeout(std::time::Duration::from_secs(30), sandbox.terminate())
-                .await
-            {
-                Ok(Err(e)) => debug!("Failed to terminate sandbox {}: {}", id, e),
-                Err(_) => debug!("Timeout terminating sandbox {}", id),
-                Ok(Ok(())) => {}
+        // Tear down the whole batch in one call, under a single overall timeout.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(SANDBOX_TERMINATE_TIMEOUT_SECS),
+            S::terminate_many(sandboxes),
+        )
+        .await
+        {
+            Ok(results) => {
+                let failed = results.iter().filter(|r| r.is_err()).count();
+                if failed > 0 {
+                    debug!(
+                        "{} of {} sandboxes failed to terminate",
+                        failed, sandbox_count
+                    );
+                }
             }
-            term_progress_ref.inc(1);
-        });
-        futures::future::join_all(terminate_futures).await;
+            Err(_) => debug!("Timeout terminating {} sandboxes", sandbox_count),
+        }
         term_progress.finish_and_clear();
         if self.ci {
             eprintln!("Sandboxes terminated.");

@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
@@ -454,6 +455,108 @@ def destroy(sandbox_id: str):
     sandbox = modal.Sandbox.from_id(sandbox_id)
     sandbox.terminate()
     logger.info("Terminated sandbox %s", sandbox_id)
+
+
+# Bound in-process terminate concurrency.
+DESTROY_MANY_CONCURRENCY = 32
+
+# Bounded exponential backoff for rate-limited terminate calls.
+DESTROY_MANY_MAX_ATTEMPTS = 5
+DESTROY_MANY_BASE_DELAY_SECS = 0.5
+DESTROY_MANY_MAX_DELAY_SECS = 8.0
+
+
+def _parse_sandbox_ids(text: str) -> list[str]:
+    """Parse newline-delimited sandbox IDs, dropping blank/whitespace-only lines."""
+    ids = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            ids.append(stripped)
+    return ids
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect Modal/gRPC rate-limit errors (gRPC RESOURCE_EXHAUSTED or HTTP 429)."""
+    code = getattr(exc, "code", None)
+    code_name = getattr(code, "name", None) if code is not None else None
+    if code_name == "RESOURCE_EXHAUSTED":
+        return True
+    status = getattr(exc, "status", None)
+    if status == 429:
+        return True
+    message = str(exc).lower()
+    return (
+        "resource_exhausted" in message
+        or "rate limit" in message
+        or "too many requests" in message
+        or "429" in message
+    )
+
+
+def _sleep(seconds: float) -> None:
+    """Block for ``seconds`` without busy-waiting."""
+    threading.Event().wait(seconds)
+
+
+def _terminate_one(sandbox_id: str) -> bool:
+    """Terminate a single sandbox, retrying only on rate-limit errors.
+
+    Best-effort: returns True on success, False otherwise. Never raises; per-ID
+    failures are logged and swallowed.
+    """
+    delay = DESTROY_MANY_BASE_DELAY_SECS
+    for attempt in range(1, DESTROY_MANY_MAX_ATTEMPTS + 1):
+        try:
+            modal.Sandbox.from_id(sandbox_id).terminate(wait=False)
+            logger.info("Terminated sandbox %s", sandbox_id)
+            return True
+        except Exception as e:
+            if _is_rate_limit_error(e) and attempt < DESTROY_MANY_MAX_ATTEMPTS:
+                logger.warning(
+                    "Rate limited terminating %s (attempt %d/%d); retrying in %.1fs",
+                    sandbox_id,
+                    attempt,
+                    DESTROY_MANY_MAX_ATTEMPTS,
+                    delay,
+                )
+                _sleep(delay)
+                delay = min(delay * 2, DESTROY_MANY_MAX_DELAY_SECS)
+                continue
+            logger.error("Failed to terminate sandbox %s: %s", sandbox_id, e)
+            return False
+    return False
+
+
+@cli.command("destroy-many")
+def destroy_many():
+    """Terminate many Modal sandboxes named on stdin (one ID per line).
+
+    Reads newline-delimited sandbox IDs from STDIN and terminates each, bounding
+    in-process concurrency. Operates ONLY on the explicit IDs given on stdin. We
+    must never enumerate or terminate sandboxes by app: concurrent runs share the
+    Modal app.
+
+    Best-effort: per-ID failures are logged and skipped, and the command always
+    exits 0.
+    """
+    sandbox_ids = _parse_sandbox_ids(sys.stdin.read())
+
+    if not sandbox_ids:
+        logger.info("destroy-many: no sandbox IDs on stdin; nothing to do")
+        return
+
+    logger.info("destroy-many: terminating %d sandbox(es)", len(sandbox_ids))
+
+    max_workers = min(DESTROY_MANY_CONCURRENCY, len(sandbox_ids))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_terminate_one, sandbox_ids))
+
+    succeeded = sum(1 for ok in results if ok)
+    failed = len(results) - succeeded
+    logger.info(
+        "destroy-many: %d terminated, %d failed (best-effort)", succeeded, failed
+    )
 
 
 @cli.command("download")
