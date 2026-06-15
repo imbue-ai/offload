@@ -193,8 +193,8 @@ impl ImageBuilder for ModalProvider {
 
 /// Batched-teardown command template for Modal sandboxes.
 ///
-/// Takes the sandbox IDs to terminate on stdin (one per line); it never
-/// enumerates sandboxes by app (concurrent runs share the Modal app).
+/// Takes the sandbox IDs to terminate on stdin (one per line). We must never
+/// enumerate sandboxes by app: concurrent runs share the Modal app.
 pub(super) const DESTROY_MANY_COMMAND: &str = "uv run @modal_sandbox.py destroy-many";
 
 /// Builds the shell command string for an incremental (thin-diff) image build.

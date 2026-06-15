@@ -533,9 +533,9 @@ def destroy_many():
     """Terminate many Modal sandboxes named on stdin (one ID per line).
 
     Reads newline-delimited sandbox IDs from STDIN and terminates each, bounding
-    in-process concurrency. Operates ONLY on the explicit IDs given on stdin; it
-    never enumerates or terminates sandboxes by app (concurrent runs share the
-    Modal app).
+    in-process concurrency. Operates ONLY on the explicit IDs given on stdin. We
+    must never enumerate or terminate sandboxes by app: concurrent runs share the
+    Modal app.
 
     Best-effort: per-ID failures are logged and skipped, and the command always
     exits 0.
