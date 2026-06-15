@@ -212,6 +212,115 @@ impl ShellConnector {
 
         Ok((Box::pin(combined), child))
     }
+
+    /// Executes a command, piping `stdin_data` to the child's standard input.
+    ///
+    /// Behaves like [`Connector::run`](crate::connector::Connector::run) but
+    /// feeds `stdin_data` to the process. The write happens in a task running
+    /// concurrently with the stdout/stderr readers so a payload larger than the
+    /// OS pipe buffer cannot deadlock (the child can drain stdin while we drain
+    /// its output). Stdin is closed (EOF) once the data has been written.
+    ///
+    /// Used for batch commands that take a newline-delimited list on stdin
+    /// (e.g. Modal's `destroy-many`), keeping large or untrusted ID lists out
+    /// of the shell command line.
+    pub async fn run_with_stdin(
+        &self,
+        command: &str,
+        stdin_data: &str,
+    ) -> ProviderResult<ExecResult> {
+        let expanded_command = bundled::expand_command(command).map_err(|e| {
+            ProviderError::ExecFailed(format!("Offload error when expanding command: {}", e))
+        })?;
+
+        debug!("Running (with stdin): {}", expanded_command);
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &expanded_command]);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to spawn: {}", e)))?;
+
+        let stdin_handle = child
+            .stdin
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdin".to_string()))?;
+        let stdout_handle = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stdout".to_string()))?;
+        let stderr_handle = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProviderError::ExecFailed("Failed to capture stderr".to_string()))?;
+
+        // Write stdin in its own task so the child can consume input while we
+        // simultaneously drain stdout/stderr below. Dropping the handle after
+        // the write closes the pipe, signalling EOF to the child.
+        let stdin_bytes = stdin_data.as_bytes().to_vec();
+        let stdin_task = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin_handle = stdin_handle;
+            if let Err(e) = stdin_handle.write_all(&stdin_bytes).await {
+                debug!("Failed to write to stdin: {}", e);
+            }
+            // Explicit shutdown closes the pipe (EOF) before the handle drops.
+            let _ = stdin_handle.shutdown().await;
+        });
+
+        let stdout_reader = BufReader::new(stdout_handle);
+        let stderr_reader = BufReader::new(stderr_handle);
+
+        let stdout_task = tokio::spawn(async move {
+            let mut lines = stdout_reader.lines();
+            let mut output = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                debug!("{}", line);
+                output.push(line);
+            }
+            output.join("\n")
+        });
+
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = stderr_reader.lines();
+            let mut output = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                debug!("{}", line);
+                output.push(line);
+            }
+            output.join("\n")
+        });
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), async {
+                let status = child.wait().await?;
+                let stdout = stdout_task.await.unwrap_or_default();
+                let stderr = stderr_task.await.unwrap_or_default();
+                // The writer should be done once the child has exited; awaiting
+                // it surfaces nothing but avoids leaking the task.
+                let _ = stdin_task.await;
+                Ok::<_, std::io::Error>((status, stdout, stderr))
+            })
+            .await
+            .map_err(|_| ProviderError::Timeout("Command timed out".to_string()))?
+            .map_err(|e| ProviderError::ExecFailed(format!("Failed to run command: {}", e)))?;
+
+        let (status, stdout, stderr) = result;
+
+        Ok(ExecResult {
+            exit_code: status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+        })
+    }
 }
 
 impl Default for ShellConnector {
@@ -383,5 +492,44 @@ mod tests {
             "expected Timeout error, got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_with_stdin_echoes_input() -> anyhow::Result<()> {
+        let connector = ShellConnector::new();
+        let result = connector.run_with_stdin("cat", "hello\nworld").await?;
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "hello\nworld");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_with_stdin_empty_input() -> anyhow::Result<()> {
+        let connector = ShellConnector::new();
+        // With no stdin, `cat` reads EOF immediately and exits 0 with empty stdout.
+        let result = connector.run_with_stdin("cat", "").await?;
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_with_stdin_large_input_no_deadlock() -> anyhow::Result<()> {
+        // A payload larger than the OS pipe buffer (~64 KiB) would deadlock if
+        // stdin were written before draining stdout. Concurrent writing must
+        // keep this from hanging; the test timeout (TESTING.md) guards against it.
+        let connector = ShellConnector::new();
+        let line = "0123456789abcdef".repeat(8); // 128 bytes/line
+        let payload = std::iter::repeat_n(line.as_str(), 4096)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let result = connector.run_with_stdin("cat", &payload).await?;
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, payload);
+        Ok(())
     }
 }
