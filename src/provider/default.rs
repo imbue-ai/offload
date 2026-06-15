@@ -228,6 +228,7 @@ impl SandboxProvider for DefaultProvider {
             connector: self.connector.clone(),
             exec_command,
             destroy_command,
+            destroy_many_command: None,
             download_command,
             env,
             created_at: Instant::now(),
@@ -266,6 +267,10 @@ pub struct DefaultSandbox {
     connector: Arc<ShellConnector>,
     exec_command: String,
     destroy_command: String,
+    /// Optional batched-teardown command, set by providers that support it
+    /// (e.g. Modal). When present, [`terminate_many`](Sandbox::terminate_many)
+    /// issues one process for the whole batch instead of one per sandbox.
+    destroy_many_command: Option<String>,
     download_command: Option<String>,
     env: Vec<(String, String)>,
     created_at: Instant,
@@ -291,11 +296,37 @@ impl DefaultSandbox {
             connector,
             exec_command,
             destroy_command,
+            destroy_many_command: None,
             download_command,
             env,
             created_at,
             cpu_cores,
         }
+    }
+
+    /// Sets the batched-teardown command for this sandbox.
+    ///
+    /// Builder-style so existing `new()` call sites stay unchanged (the field
+    /// defaults to `None`). Providers that support batched teardown (Modal)
+    /// call this to opt in; when set, [`terminate_many`](Sandbox::terminate_many)
+    /// pipes all sandbox IDs to a single invocation of this command.
+    pub fn with_destroy_many_command(mut self, command: impl Into<String>) -> Self {
+        self.destroy_many_command = Some(command.into());
+        self
+    }
+
+    /// Returns the configured batched-teardown command, if any.
+    ///
+    /// Test-only: lets tests assert that a provider wired up batched teardown.
+    #[cfg(test)]
+    pub(crate) fn destroy_many_command(&self) -> Option<&str> {
+        self.destroy_many_command.as_deref()
+    }
+
+    /// Joins sandbox IDs into the newline-delimited stdin payload for the
+    /// batched destroy command.
+    fn build_destroy_many_payload(ids: &[String]) -> String {
+        ids.join("\n")
     }
 
     /// Build the exec command with substitutions.
@@ -426,6 +457,56 @@ impl Sandbox for DefaultSandbox {
         Ok(())
     }
 
+    async fn terminate_many(sandboxes: Vec<Self>) -> Vec<ProviderResult<()>> {
+        // Batch only when the first sandbox carries a destroy-many command and
+        // there is something to terminate. All sandboxes from a given provider
+        // share the same connector and command template, so the first is
+        // representative. Otherwise fall back to concurrent per-sandbox
+        // terminate (the historical behavior).
+        let batch_command = sandboxes
+            .first()
+            .and_then(|sb| sb.destroy_many_command.clone());
+
+        let Some(command) = batch_command else {
+            let futures = sandboxes
+                .into_iter()
+                .map(|sandbox| async move { sandbox.terminate().await });
+            return futures::future::join_all(futures).await;
+        };
+
+        let connector = match sandboxes.first() {
+            Some(sb) => sb.connector.clone(),
+            None => return Vec::new(),
+        };
+
+        let ids: Vec<String> = sandboxes.iter().map(|sb| sb.id.clone()).collect();
+        let payload = Self::build_destroy_many_payload(&ids);
+        debug!("Batched terminate of {} sandbox(es)", ids.len());
+
+        // One process tears down the whole batch. Best-effort: the destroy-many
+        // command is expected to exit 0 even on per-ID failures, so map the
+        // single outcome across all inputs.
+        match connector.run_with_stdin(&command, &payload).await {
+            Ok(result) => {
+                if result.exit_code != 0 {
+                    warn!("Batched destroy command failed: {}", result.stderr);
+                }
+                ids.iter().map(|_| Ok(())).collect()
+            }
+            Err(e) => {
+                warn!("Batched destroy command could not run: {}", e);
+                ids.iter()
+                    .map(|_| {
+                        Err(ProviderError::ExecFailed(format!(
+                            "batched terminate failed: {}",
+                            e
+                        )))
+                    })
+                    .collect()
+            }
+        }
+    }
+
     fn cost_estimate(&self) -> CostEstimate {
         let elapsed = self.created_at.elapsed().as_secs_f64();
         let cpu_seconds = elapsed * self.cpu_cores;
@@ -448,6 +529,7 @@ mod tests {
             connector: Arc::new(ShellConnector::new()),
             exec_command: "exec --sandbox {sandbox_id} --cmd {command}".to_string(),
             destroy_command: "destroy {sandbox_id}".to_string(),
+            destroy_many_command: None,
             download_command: None,
             env,
             created_at: Instant::now(),
@@ -464,6 +546,124 @@ mod tests {
             env: Vec::new(),
             timeout_secs: None,
         }
+    }
+
+    /// Builds a sandbox with a specific id and lifecycle commands, for
+    /// exercising teardown. `destroy_command` and `destroy_many_command` are
+    /// real shell commands so tests can run them without a remote backend.
+    fn sandbox_for_teardown(
+        id: &str,
+        destroy_command: &str,
+        destroy_many_command: Option<&str>,
+    ) -> DefaultSandbox {
+        DefaultSandbox {
+            id: id.to_string(),
+            connector: Arc::new(ShellConnector::new()),
+            exec_command: "exec {sandbox_id} {command}".to_string(),
+            destroy_command: destroy_command.to_string(),
+            destroy_many_command: destroy_many_command.map(str::to_string),
+            download_command: None,
+            env: vec![],
+            created_at: Instant::now(),
+            cpu_cores: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_build_destroy_many_payload_joins_with_newlines() {
+        let ids = vec!["sb-1".to_string(), "sb-2".to_string(), "sb-3".to_string()];
+        assert_eq!(
+            DefaultSandbox::build_destroy_many_payload(&ids),
+            "sb-1\nsb-2\nsb-3"
+        );
+    }
+
+    #[test]
+    fn test_build_destroy_many_payload_single_id_has_no_trailing_newline() {
+        let ids = vec!["sb-only".to_string()];
+        assert_eq!(DefaultSandbox::build_destroy_many_payload(&ids), "sb-only");
+    }
+
+    #[test]
+    fn test_with_destroy_many_command_sets_field() {
+        let sandbox = sandbox_for_teardown("sb-1", "true", None)
+            .with_destroy_many_command("uv run @modal_sandbox.py destroy-many");
+        assert_eq!(
+            sandbox.destroy_many_command(),
+            Some("uv run @modal_sandbox.py destroy-many")
+        );
+    }
+
+    #[test]
+    fn test_new_defaults_destroy_many_command_to_none() {
+        let sandbox = DefaultSandbox::new(
+            "sb-1".to_string(),
+            Arc::new(ShellConnector::new()),
+            String::new(),
+            "destroy {sandbox_id}".to_string(),
+            None,
+            vec![],
+            Instant::now(),
+            1.0,
+        );
+        assert_eq!(sandbox.destroy_many_command(), None);
+    }
+
+    #[tokio::test]
+    async fn test_terminate_many_batched_pipes_ids_to_command() -> anyhow::Result<()> {
+        // `cat` consumes the piped IDs and exits 0, standing in for the real
+        // destroy-many process. The batch should report success for every ID.
+        let sandboxes = vec![
+            sandbox_for_teardown("sb-1", "false", Some("cat")),
+            sandbox_for_teardown("sb-2", "false", Some("cat")),
+            sandbox_for_teardown("sb-3", "false", Some("cat")),
+        ];
+
+        let results = DefaultSandbox::terminate_many(sandboxes).await;
+
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|r| r.is_ok()),
+            "batched terminate should succeed for all ids: {results:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_terminate_many_falls_back_to_per_sandbox_without_command() -> anyhow::Result<()> {
+        // No destroy_many_command -> fall back to the per-sandbox path, which
+        // runs each `destroy_command` (here `true`, which exits 0).
+        let sandboxes = vec![
+            sandbox_for_teardown("sb-1", "true", None),
+            sandbox_for_teardown("sb-2", "true", None),
+        ];
+
+        let results = DefaultSandbox::terminate_many(sandboxes).await;
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_terminate_many_empty_batch_returns_empty() {
+        let results = DefaultSandbox::terminate_many(vec![]).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_terminate_many_batched_is_best_effort_on_nonzero_exit() -> anyhow::Result<()> {
+        // The batch command exiting non-zero (here `false`) must not abort the
+        // batch: teardown is best-effort, so a result is still returned per id.
+        let sandboxes = vec![
+            sandbox_for_teardown("sb-1", "true", Some("false")),
+            sandbox_for_teardown("sb-2", "true", Some("false")),
+        ];
+
+        let results = DefaultSandbox::terminate_many(sandboxes).await;
+
+        assert_eq!(results.len(), 2);
+        Ok(())
     }
 
     #[test]
@@ -716,6 +916,7 @@ mod tests {
             connector: Arc::new(ShellConnector::new()),
             exec_command: String::new(),
             destroy_command: String::new(),
+            destroy_many_command: None,
             download_command: None,
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),
@@ -745,6 +946,7 @@ mod tests {
             connector: Arc::new(ShellConnector::new()),
             exec_command: String::new(),
             destroy_command: String::new(),
+            destroy_many_command: None,
             download_command: None,
             env: vec![],
             created_at: Instant::now() - std::time::Duration::from_secs(100),

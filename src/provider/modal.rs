@@ -191,6 +191,12 @@ impl ImageBuilder for ModalProvider {
     }
 }
 
+/// Batched-teardown command template for Modal sandboxes.
+///
+/// Takes the sandbox IDs to terminate on stdin (one per line); it never
+/// enumerates sandboxes by app, so it is safe while other runs share the app.
+pub(super) const DESTROY_MANY_COMMAND: &str = "uv run @modal_sandbox.py destroy-many";
+
 /// Builds the shell command string for an incremental (thin-diff) image build.
 pub(super) fn build_incremental_command(
     base_image_id: &str,
@@ -286,7 +292,10 @@ impl SandboxProvider for ModalProvider {
             env,
             Instant::now(),
             self.cpu_cores,
-        ))
+        )
+        // Modal supports batched teardown: one process tears down the whole
+        // batch via stdin-delimited IDs, instead of one process per sandbox.
+        .with_destroy_many_command(DESTROY_MANY_COMMAND))
     }
 
     fn base_env(&self) -> Vec<(String, String)> {
@@ -438,6 +447,42 @@ mod tests {
         assert!(cmd.contains("enable_docker"));
         assert!(cmd.contains("true"));
         Ok(())
+    }
+
+    // -- destroy-many wiring tests --
+
+    #[test]
+    fn test_destroy_many_command_is_stdin_based_not_app_scoped() {
+        // The batched teardown must read IDs from stdin and must never take an
+        // app/list argument, since concurrent runs share the Modal app.
+        assert_eq!(
+            DESTROY_MANY_COMMAND,
+            "uv run @modal_sandbox.py destroy-many"
+        );
+        assert!(!DESTROY_MANY_COMMAND.contains("--app"));
+        assert!(!DESTROY_MANY_COMMAND.contains("list"));
+        assert!(!DESTROY_MANY_COMMAND.contains("{sandbox_id}"));
+    }
+
+    #[test]
+    fn test_modal_sandbox_is_wired_for_batched_teardown() {
+        use crate::provider::default::DefaultSandbox;
+
+        // Mirrors how create_sandbox() constructs the sandbox: the Modal
+        // provider opts the DefaultSandbox into batched teardown.
+        let sandbox = DefaultSandbox::new(
+            "sb-modal-1".to_string(),
+            Arc::new(ShellConnector::new()),
+            "uv run @modal_sandbox.py exec {sandbox_id} {command}".to_string(),
+            "uv run @modal_sandbox.py destroy {sandbox_id}".to_string(),
+            Some("uv run @modal_sandbox.py download {sandbox_id} {paths}".to_string()),
+            vec![],
+            Instant::now(),
+            0.125,
+        )
+        .with_destroy_many_command(DESTROY_MANY_COMMAND);
+
+        assert_eq!(sandbox.destroy_many_command(), Some(DESTROY_MANY_COMMAND));
     }
 
     // -- incremental command tests --
