@@ -1,21 +1,58 @@
+# ratchets v2 schema (installed ratchets >= 0.3.1).
+#
+# v2 is explicit opt-in: a rule fires only when listed in `enabled_ratchets`
+# (directly or via a `$set-name`). The list below mirrors `ratchet-counts.toml`
+# 1:1 — every rule with a tracked budget is enabled here, preserving the
+# enforcement that v1 provided by enabling all built-ins by default.
+#
+# Rules that were explicitly disabled under v1 (`no-dataclasses-import`,
+# `rust-no-todo-comments`) are simply absent from this list, so they stay off.
+#
+# Migration reference:
+#   https://github.com/imbue-ai/ratchets/blob/main/docs/upgrade-v1-to-v2.md
+
+enabled_ratchets = [
+    "no-args-in-docstrings",
+    "no-asyncio-import",
+    "no-bare-except",
+    "no-bare-generic-types",
+    "no-bare-print",
+    "no-base-exception",
+    "no-broad-exception",
+    "no-builtin-exception-raises",
+    "no-click-echo",
+    "no-eval-usage",
+    "no-exec-usage",
+    "no-expect",
+    "no-fixme-comments",
+    "no-fstring-logging",
+    "no-global-keyword",
+    "no-if-elif-without-else",
+    "no-import-datetime",
+    "no-init-docstrings",
+    "no-init-in-non-exception-classes",
+    "no-inline-functions",
+    "no-inline-imports",
+    "no-literal-multi-options",
+    "no-namedtuple-usage",
+    "no-num-prefix",
+    "no-pandas-import",
+    "no-panic",
+    "no-relative-imports",
+    "no-returns-in-docstrings",
+    "no-time-sleep",
+    "no-todo-comments",
+    "no-trailing-comments",
+    "no-typing-builtin-imports",
+    "no-underscore-imports",
+    "no-unwrap",
+    "no-while-true",
+    "no-yaml-usage",
+]
+
 [ratchets]
-version = "1"
-
-# Languages to enable (uncomment as needed)
+version = "2"
 languages = ["rust", "python"]
-
-# File patterns to include (defaults to all)
-# include = ["src/**", "tests/**"]
-
-# File patterns to exclude
-# exclude = ["**/generated/**"]
-
-[rules]
-# Built-in rules are enabled by default
-# Disable a rule: rule-name = false
-# Configure a rule: rule-name = { severity = "warning" }
-no-dataclasses-import = false
-rust-no-todo-comments = false
 
 [output]
 format = "human"
