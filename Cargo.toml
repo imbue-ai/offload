@@ -55,7 +55,7 @@ thiserror = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 
 # Terminal UI
-indicatif = "0.17"
+indicatif = "0.18"
 console = "0.15"
 
 # Retry

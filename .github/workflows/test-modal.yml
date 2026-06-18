@@ -41,7 +41,7 @@ jobs:
       - name: Install just CLI runner
         uses: taiki-e/install-action@v2
         with:
-          tool: just@1.11.0
+          tool: just@1.47.0
 
       - name: Build offload
         run: cargo build
