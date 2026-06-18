@@ -10,21 +10,21 @@
 
 [no-bare-except]
 "." = 0
-"scripts" = 5
+"scripts" = 4
 
 [no-bare-generic-types]
 "." = 0
 
 [no-bare-print]
 "." = 0
-"scripts" = 4
+"scripts" = 3
 
 [no-base-exception]
 "." = 0
 
 [no-broad-exception]
 "." = 0
-"scripts" = 5
+"scripts" = 4
 
 [no-builtin-exception-raises]
 "." = 0
@@ -55,7 +55,7 @@
 
 [no-if-elif-without-else]
 "." = 0
-"scripts" = 3
+"scripts" = 1
 
 [no-import-datetime]
 "." = 0
@@ -120,4 +120,3 @@
 
 [no-yaml-usage]
 "." = 0
-

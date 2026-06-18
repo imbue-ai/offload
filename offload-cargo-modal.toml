@@ -5,6 +5,7 @@
 max_parallel = 4
 test_timeout_secs = 600
 sandbox_repo_root = "/app"
+sandbox_init_cmd = "apt-get update && apt-get install -y --no-install-recommends rsync"
 
 [provider]
 type = "modal"

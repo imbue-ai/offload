@@ -44,3 +44,11 @@ __pycache__/
 
 # Beads
 .beads/.br_history
+
+# beads_rust (managed by rust-bucket)
+.beads/.br_history/
+.beads/beads.db
+.beads/beads.db-wal
+
+# beads_rust (managed by rust-bucket)
+.beads/last-touched

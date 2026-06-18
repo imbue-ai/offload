@@ -26,7 +26,7 @@ jobs:
     - name: Install cargo tools
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-nextest,cargo-deny,ratchets@0.2.6
+        tool: cargo-nextest,cargo-deny@0.19.9,ratchets@0.3.1
 
     - name: Check formatting
       run: cargo fmt --check
@@ -52,7 +52,7 @@ jobs:
     - name: Install just CLI runner
       uses: taiki-e/install-action@v2
       with:
-        tool: just@1.11.0
+        tool: just@1.47.0
 
     - name: Run offload cargo-local
       run: just test-cargo-local --ci

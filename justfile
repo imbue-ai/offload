@@ -1,4 +1,7 @@
 
+# Optional so `just` still works in clones without rust-bucket applied.
+import? 'justfile-rustbucket'
+
 default: help
 
 help:
