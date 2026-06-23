@@ -24,13 +24,12 @@ pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> Stri
     result
 }
 
-/// Deserializes a `Config` from TOML, collecting the dotted paths of any keys
-/// the schema does not recognize.
+/// Deserializes a `Config`, returning the dotted paths of any keys the schema
+/// does not recognize.
 ///
-/// Unknown keys are reported, not rejected: the deserialize still succeeds and
-/// returns a usable `Config` (the schema structs intentionally do not use
-/// `deny_unknown_fields`, since rejecting a previously-valid config would be a
-/// breaking change). The returned vec holds paths like `offload.retry_cont`.
+/// Unknown keys are collected rather than rejected: the schema deliberately omits
+/// `deny_unknown_fields` because rejecting a previously-valid config would be a
+/// breaking change.
 fn deserialize_config_collecting_unknown(content: &str) -> Result<(Config, Vec<String>)> {
     let mut unknown = Vec::new();
     let de = toml::Deserializer::new(content);
@@ -302,9 +301,6 @@ mod tests {
 
     #[test]
     fn test_deserialize_collects_unknown_keys() -> Result<()> {
-        // `retry_cont` is a typo of `retry_count` under [offload], and
-        // `bogus_top_level` is not a recognized top-level key. Both must be
-        // collected, and the deserialize must still succeed.
         let toml = r#"
             bogus_top_level = "oops"
 
@@ -338,9 +334,8 @@ mod tests {
 
     #[test]
     fn test_deserialize_clean_config_has_no_unknown_keys() -> Result<()> {
-        // A fully-valid config must yield an empty unknown-keys vec, guarding
-        // against false positives where a real field (including the enum `type`
-        // discriminants) is misreported as unknown.
+        // Guards against false positives where a real field (including the
+        // internally-tagged enum `type` discriminants) is misreported as unknown.
         let toml = r#"
             [offload]
             max_parallel = 4
