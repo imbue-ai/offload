@@ -32,7 +32,7 @@ pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> Stri
 /// breaking change.
 fn deserialize_config_collecting_unknown(content: &str) -> Result<(Config, Vec<String>)> {
     let mut unknown = Vec::new();
-    let de = toml::Deserializer::new(content);
+    let de = toml::Deserializer::parse(content)?;
     let config: Config = serde_ignored::deserialize(de, |path| {
         unknown.push(path.to_string());
     })?;
