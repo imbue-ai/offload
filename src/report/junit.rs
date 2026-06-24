@@ -8,8 +8,9 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
-use quick_xml::{Reader, Writer};
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::{BytesDecl, BytesEnd, BytesRef, BytesStart, BytesText, Event};
+use quick_xml::{Reader, Writer, XmlVersion};
 use tracing::{info, warn};
 
 /// Tracks the outcome of a single test ID across execution attempts.
@@ -272,7 +273,11 @@ fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == name)
-        .and_then(|a| a.unescape_value().ok().map(|s| s.into_owned()))
+        .and_then(|a| {
+            a.normalized_value(XmlVersion::Implicit1_0)
+                .ok()
+                .map(|s| s.into_owned())
+        })
 }
 
 /// Helper to extract an i32 attribute with default 0.
@@ -285,6 +290,22 @@ fn get_attr_f64(e: &BytesStart, name: &[u8]) -> f64 {
     get_attr(e, name)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0)
+}
+
+/// Appends the resolved value of a general reference (e.g. `&gt;`, `&#62;`) to
+/// `content`.
+///
+/// quick-xml emits entity references inside text as separate `GeneralRef`
+/// events rather than unescaping them inline, so failure/error bodies must
+/// resolve them explicitly to reconstruct the original text.
+fn push_general_ref(content: &mut String, e: &BytesRef) {
+    if let Ok(Some(ch)) = e.resolve_char_ref() {
+        content.push(ch);
+    } else if let Ok(name) = e.decode()
+        && let Some(replacement) = resolve_predefined_entity(&name)
+    {
+        content.push_str(replacement);
+    }
 }
 
 /// Parses a JUnit XML string into a TestsuiteXml structure using quick-xml.
@@ -379,10 +400,13 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
             },
             Ok(Event::Text(e)) => {
                 if (in_failure || in_error)
-                    && let Ok(text) = e.unescape()
+                    && let Ok(text) = e.decode()
                 {
                     current_failure_content.push_str(&text);
                 }
+            }
+            Ok(Event::GeneralRef(e)) if in_failure || in_error => {
+                push_general_ref(&mut current_failure_content, &e);
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"testsuite" => {
@@ -625,6 +649,26 @@ mod tests {
         assert_eq!(report.total_count(), 1);
         assert_eq!(report.passed_count(), 0);
         assert_eq!(report.failed_count(), 1);
+    }
+
+    #[test]
+    fn test_parse_failure_content_resolves_entities() -> Result<(), Box<dyn std::error::Error>> {
+        // quick-xml emits entity references inside text as separate GeneralRef
+        // events; failure bodies must resolve them back into their characters.
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo.bar" name="test_fail" time="0.1">
+        <failure message="oops">expected a &lt; b &amp; b &gt; c (got &#62;)</failure>
+    </testcase>
+</testsuite>"#;
+
+        let suites = parse_all_testsuites_xml(xml);
+        let failure = suites[0].testcases[0]
+            .failure
+            .as_ref()
+            .ok_or("failure should be parsed")?;
+        assert_eq!(failure.content, "expected a < b & b > c (got >)");
+        Ok(())
     }
 
     #[test]
