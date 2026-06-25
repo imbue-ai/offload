@@ -21,24 +21,35 @@ impl Channel {
 /// Starts a timing span, logging `starting: {name}` immediately and emitting
 /// `finished: {name} [..., took {elapsed}]` when the guard is dropped or
 /// [`TimedSpan::finish`] is called.
-pub fn tracing_span(name: impl Into<String>) -> TimedSpan {
+///
+/// This is the verbose-only counterpart of [`progress_span`]: it emits via
+/// `tracing::info!`, so the paired logs appear only under `--verbose`, whereas
+/// [`progress_span`] is always visible.
+pub fn verbose_progress_span(name: impl Into<String>) -> TimedSpan {
     start(name.into(), None, Channel::Trace)
 }
 
-/// Like [`tracing_span`], but logs an initial `detail` in the start line and
-/// retains it so it also appears in the finish line.
-pub fn tracing_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
+/// Like [`verbose_progress_span`], but logs an initial `detail` in the start
+/// line and retains it so it also appears in the finish line.
+///
+/// This is the verbose-only counterpart of [`progress_span_with`]: it emits via
+/// `tracing::info!`, so the paired logs appear only under `--verbose`, whereas
+/// [`progress_span_with`] is always visible.
+pub fn verbose_progress_span_with(
+    name: impl Into<String>,
+    detail: impl std::fmt::Display,
+) -> TimedSpan {
     start(name.into(), Some(detail.to_string()), Channel::Trace)
 }
 
-/// Like [`tracing_span`], but emits to stderr so the paired logs stay visible
-/// regardless of verbosity.
+/// Like [`verbose_progress_span`], but emits to stderr so the paired logs stay
+/// visible regardless of verbosity.
 pub fn progress_span(name: impl Into<String>) -> TimedSpan {
     start(name.into(), None, Channel::Stderr)
 }
 
-/// Like [`tracing_span_with`], but emits to stderr so the paired logs stay
-/// visible regardless of verbosity.
+/// Like [`verbose_progress_span_with`], but emits to stderr so the paired logs
+/// stay visible regardless of verbosity.
 pub fn progress_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
     start(name.into(), Some(detail.to_string()), Channel::Stderr)
 }
@@ -161,14 +172,14 @@ mod tests {
 
     #[test]
     fn span_finish_does_not_panic() {
-        let mut span = tracing_span("op");
+        let mut span = verbose_progress_span("op");
         span.annotate("done");
         span.finish();
     }
 
     #[test]
     fn span_drop_does_not_panic() {
-        let mut span = tracing_span("op");
+        let mut span = verbose_progress_span("op");
         span.annotate("done");
         drop(span);
     }
