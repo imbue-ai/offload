@@ -395,7 +395,7 @@ where
             &tests_to_run,
             &durations,
             &group_to_default_duration,
-            std::time::Duration::ZERO,
+            self.config.framework.affinity_overhead(),
             self.config.offload.impatiently_requeue_batches,
         );
         drop(_sched_span);
