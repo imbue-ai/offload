@@ -1,32 +1,56 @@
-//! Emits paired `starting:`/`finished:` timing logs via `tracing`.
+//! Emits paired `starting:`/`finished:` timing logs via either `tracing` or stderr.
 
 use std::time::{Duration, Instant};
+
+/// Output channel for a [`TimedSpan`]'s paired logs.
+#[derive(Clone, Copy)]
+enum Channel {
+    Trace,
+    Stderr,
+}
+
+impl Channel {
+    fn emit(self, msg: &str) {
+        match self {
+            Channel::Trace => tracing::info!("{msg}"),
+            Channel::Stderr => eprintln!("{msg}"),
+        }
+    }
+}
 
 /// Starts a timing span, logging `starting: {name}` immediately and emitting
 /// `finished: {name} [..., took {elapsed}]` when the guard is dropped or
 /// [`TimedSpan::finish`] is called.
 pub fn timed_span(name: impl Into<String>) -> TimedSpan {
-    let name = name.into();
-    tracing::info!("{}", starting_message(&name, None));
-    TimedSpan {
-        name,
-        start: Instant::now(),
-        annotations: Vec::new(),
-        finished: false,
-    }
+    start(name.into(), None, Channel::Trace)
 }
 
 /// Like [`timed_span`], but logs an initial `detail` in the start line and
 /// retains it so it also appears in the finish line.
 pub fn timed_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
-    let name = name.into();
-    let detail = detail.to_string();
-    tracing::info!("{}", starting_message(&name, Some(&detail)));
+    start(name.into(), Some(detail.to_string()), Channel::Trace)
+}
+
+/// Like [`timed_span`], but emits to stderr so the paired logs stay visible
+/// regardless of verbosity.
+pub fn progress_span(name: impl Into<String>) -> TimedSpan {
+    start(name.into(), None, Channel::Stderr)
+}
+
+/// Like [`timed_span_with`], but emits to stderr so the paired logs stay
+/// visible regardless of verbosity.
+pub fn progress_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
+    start(name.into(), Some(detail.to_string()), Channel::Stderr)
+}
+
+fn start(name: String, detail: Option<String>, channel: Channel) -> TimedSpan {
+    channel.emit(&starting_message(&name, detail.as_deref()));
     TimedSpan {
         name,
         start: Instant::now(),
-        annotations: vec![detail],
+        annotations: detail.into_iter().collect(),
         finished: false,
+        channel,
     }
 }
 
@@ -37,6 +61,7 @@ pub struct TimedSpan {
     start: Instant,
     annotations: Vec<String>,
     finished: bool,
+    channel: Channel,
 }
 
 impl TimedSpan {
@@ -56,10 +81,11 @@ impl TimedSpan {
             return;
         }
         self.finished = true;
-        tracing::info!(
-            "{}",
-            finished_message(&self.name, &self.annotations, self.start.elapsed())
-        );
+        self.channel.emit(&finished_message(
+            &self.name,
+            &self.annotations,
+            self.start.elapsed(),
+        ));
     }
 }
 
@@ -143,6 +169,20 @@ mod tests {
     #[test]
     fn span_drop_does_not_panic() {
         let mut span = timed_span("op");
+        span.annotate("done");
+        drop(span);
+    }
+
+    #[test]
+    fn progress_span_finish_does_not_panic() {
+        let mut span = progress_span("x");
+        span.annotate("done");
+        span.finish();
+    }
+
+    #[test]
+    fn progress_span_drop_does_not_panic() {
+        let mut span = progress_span("x");
         span.annotate("done");
         drop(span);
     }
