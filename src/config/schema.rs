@@ -821,7 +821,6 @@ mod tests {
 
         let config: Config = toml::from_str(toml)?;
 
-        // max_parallel_collection is omitted, so the default applies.
         assert_eq!(config.offload.max_parallel_collection, 0);
 
         assert!(

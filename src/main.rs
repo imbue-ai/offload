@@ -341,7 +341,6 @@ async fn discover_all_tests(
                 }
             };
 
-            // Tag tests with group retry count
             let group_tests: Vec<TestRecord> = tests
                 .into_iter()
                 .map(|t| {
