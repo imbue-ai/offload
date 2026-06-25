@@ -193,7 +193,7 @@ where
         mut sandbox_pool: SandboxPool<S>,
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
-        let _run_span = timing::timed_span("test run");
+        let _run_span = timing::tracing_span("test run");
 
         // Load test durations for LPT scheduling
         // When history is enabled and the file exists, use history-based durations.

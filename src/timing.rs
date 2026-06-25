@@ -21,23 +21,23 @@ impl Channel {
 /// Starts a timing span, logging `starting: {name}` immediately and emitting
 /// `finished: {name} [..., took {elapsed}]` when the guard is dropped or
 /// [`TimedSpan::finish`] is called.
-pub fn timed_span(name: impl Into<String>) -> TimedSpan {
+pub fn tracing_span(name: impl Into<String>) -> TimedSpan {
     start(name.into(), None, Channel::Trace)
 }
 
-/// Like [`timed_span`], but logs an initial `detail` in the start line and
+/// Like [`tracing_span`], but logs an initial `detail` in the start line and
 /// retains it so it also appears in the finish line.
-pub fn timed_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
+pub fn tracing_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
     start(name.into(), Some(detail.to_string()), Channel::Trace)
 }
 
-/// Like [`timed_span`], but emits to stderr so the paired logs stay visible
+/// Like [`tracing_span`], but emits to stderr so the paired logs stay visible
 /// regardless of verbosity.
 pub fn progress_span(name: impl Into<String>) -> TimedSpan {
     start(name.into(), None, Channel::Stderr)
 }
 
-/// Like [`timed_span_with`], but emits to stderr so the paired logs stay
+/// Like [`tracing_span_with`], but emits to stderr so the paired logs stay
 /// visible regardless of verbosity.
 pub fn progress_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
     start(name.into(), Some(detail.to_string()), Channel::Stderr)
@@ -161,14 +161,14 @@ mod tests {
 
     #[test]
     fn span_finish_does_not_panic() {
-        let mut span = timed_span("op");
+        let mut span = tracing_span("op");
         span.annotate("done");
         span.finish();
     }
 
     #[test]
     fn span_drop_does_not_panic() {
-        let mut span = timed_span("op");
+        let mut span = tracing_span("op");
         span.annotate("done");
         drop(span);
     }
