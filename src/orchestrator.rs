@@ -18,6 +18,7 @@ use crate::framework::{TestFramework, TestInstance, TestRecord};
 use crate::history::{TestAttemptResult, TestHistoryStore, store::JsonlHistoryStore};
 use crate::provider::{CostEstimate, Sandbox};
 use crate::report::{MasterJunitReport, SharedJunitReport, load_test_durations, print_summary};
+use crate::timing;
 
 pub use pool::SandboxPool;
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
@@ -192,6 +193,7 @@ where
         mut sandbox_pool: SandboxPool<S>,
     ) -> anyhow::Result<RunResult> {
         let start = std::time::Instant::now();
+        let _run_span = timing::verbose_progress_span("orchestrator", "test run");
 
         // Load test durations for LPT scheduling
         // When history is enabled and the file exists, use history-based durations.

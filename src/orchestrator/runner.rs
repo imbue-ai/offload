@@ -13,6 +13,7 @@ use crate::orchestrator::completion::SharedCompletionTracker;
 use crate::provider::retry::with_retry;
 use crate::provider::{OutputLine, Sandbox};
 use crate::report::{SharedJunitReport, parse_all_testsuites_xml};
+use crate::timing;
 
 /// Count testcases in a JUnit XML string.
 fn count_testcases_in_xml(xml: &str) -> usize {
@@ -285,13 +286,13 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
     /// - `Ok(BatchOutcome::Cancelled)` if the batch was cancelled before completion
     /// - `Err(...)` if execution failed due to an infrastructure error
     pub async fn run_tests(&mut self, tests: &[TestInstance]) -> Result<BatchOutcome> {
-        let start = std::time::Instant::now();
         let expected_count = tests.len();
         let sandbox_id = self.sandbox.id().to_string();
 
-        info!(
-            "[BATCH START] Sandbox {} starting batch with {} tests",
-            sandbox_id, expected_count
+        let mut batch_span = timing::verbose_progress_span_with(
+            "batch",
+            format!("sandbox {sandbox_id}"),
+            format!("{expected_count} tests"),
         );
 
         // Log all test IDs in this batch
@@ -381,12 +382,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         };
         drop(_exec_span);
 
-        let duration = start.elapsed();
-
-        info!(
-            "[BATCH COMPLETE] Sandbox {} finished execution: exit_code={}, duration={:?}",
-            sandbox_id, exec_result.exit_code, duration
-        );
+        batch_span.annotate(format!("exit_code={}", exec_result.exit_code));
+        batch_span.finish();
 
         // Calculate unique test count (what pytest will actually produce)
         let unique_test_ids: std::collections::HashSet<_> = test_ids.iter().collect();
