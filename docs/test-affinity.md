@@ -124,5 +124,3 @@ behavior is byte-for-byte identical to today.
 3. Add `affinity_overhead_secs` config + `FrameworkConfig::affinity_overhead()`.
 4. Extend the LPT scheduler with the marginal-cost / distinct-key cost model.
 5. Wire the framework overhead from config into the scheduler in the orchestrator.
-</content>
-</invoke>
