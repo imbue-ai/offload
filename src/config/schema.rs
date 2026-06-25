@@ -411,6 +411,32 @@ impl FrameworkConfig {
             FrameworkConfig::Vitest(config) => &config.test_id_format,
         }
     }
+
+    /// Returns the per-module load overhead used by affinity-aware scheduling.
+    ///
+    /// Affinity-aware scheduling adds this overhead once per distinct module
+    /// (test key) executed in a batch. Pytest pays a per-module import cost, so
+    /// it uses a configurable default; other frameworks have no such overhead
+    /// and return [`Duration::ZERO`].
+    ///
+    /// Negative or non-finite configured values are defensively treated as
+    /// zero.
+    pub fn affinity_overhead(&self) -> std::time::Duration {
+        match self {
+            FrameworkConfig::Pytest(config) => {
+                let secs = config.affinity_overhead_secs;
+                let secs = if secs.is_finite() && secs > 0.0 {
+                    secs
+                } else {
+                    0.0
+                };
+                std::time::Duration::from_secs_f64(secs)
+            }
+            FrameworkConfig::Cargo(_)
+            | FrameworkConfig::Default(_)
+            | FrameworkConfig::Vitest(_) => std::time::Duration::ZERO,
+        }
+    }
 }
 
 /// Configuration for pytest test framework.
@@ -441,6 +467,16 @@ pub struct PytestFrameworkConfig {
     /// Default: `"{name}"` (pytest typically includes full path in name)
     #[serde(default = "default_pytest_test_id_format")]
     pub test_id_format: String,
+
+    /// Per-module load overhead used by affinity-aware scheduling, in seconds.
+    ///
+    /// Pytest imports each module once per process, so co-scheduling tests from
+    /// the same module amortizes this cost. The scheduler adds this overhead
+    /// once per distinct module in a batch.
+    ///
+    /// Default: `2.0`
+    #[serde(default = "default_pytest_affinity_overhead_secs")]
+    pub affinity_overhead_secs: f64,
 }
 
 fn default_pytest_command() -> String {
@@ -449,6 +485,10 @@ fn default_pytest_command() -> String {
 
 fn default_pytest_test_id_format() -> String {
     "{name}".to_string()
+}
+
+fn default_pytest_affinity_overhead_secs() -> f64 {
+    2.0
 }
 
 fn default_cargo_test_id_format() -> String {
@@ -1633,6 +1673,105 @@ retry_count = 0
         let serialized = toml::to_string_pretty(&config)?;
         let round_tripped: Config = toml::from_str(&serialized)?;
         assert!(round_tripped.offload.impatiently_requeue_batches);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pytest_affinity_overhead_default() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::from_secs_f64(2.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_pytest_affinity_overhead_override() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+            affinity_overhead_secs = 3.5
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::from_secs_f64(3.5)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_pytest_affinity_overhead_negative_clamps_to_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+            affinity_overhead_secs = -1.0
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::ZERO
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_pytest_affinity_overhead_is_zero() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::ZERO
+        );
         Ok(())
     }
 }
