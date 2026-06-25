@@ -538,6 +538,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
+                collection_parallelism: 8,
             },
             provider: crate::config::schema::ProviderConfig::Modal(ModalProviderConfig::default()),
             framework: crate::config::schema::FrameworkConfig::Default(
