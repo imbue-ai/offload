@@ -66,7 +66,12 @@ impl PytestFramework {
             let trimmed = line.trim();
             // Simple format: tests/test_foo.py::test_bar
             if trimmed.contains("::") && !trimmed.starts_with('<') && !trimmed.contains(' ') {
-                tests.push(TestRecord::new(trimmed, group));
+                let mut record = TestRecord::new(trimmed, group);
+                // The affinity key is the module: the substring before the first `::`.
+                if let Some((module, _)) = trimmed.split_once("::") {
+                    record = record.with_affinity_key(module);
+                }
+                tests.push(record);
             }
         }
 
@@ -302,6 +307,28 @@ mod tests {
         assert!(cmd.args.contains(&"--no-cov".to_string()));
         assert!(cmd.args.contains(&"--timeout=30".to_string()));
         assert!(cmd.args.contains(&"tests/test_a.py::test_one".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_collect_output_derives_module_affinity_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let output = "tests/test_foo.py::test_bar\n\
+            tests/test_foo.py::TestClass::test_baz\n\
+            no_separator_here\n";
+        let records = fw.parse_collect_output(output, "grp");
+
+        // The no-`::` line is not a valid test ID and yields no record.
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, "tests/test_foo.py::test_bar");
+        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(records[1].id, "tests/test_foo.py::TestClass::test_baz");
+        assert_eq!(records[1].affinity_key(), Some("tests/test_foo.py"));
         Ok(())
     }
 
