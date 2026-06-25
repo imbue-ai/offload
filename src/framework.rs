@@ -141,11 +141,6 @@ impl TestRecord {
         self
     }
 
-    /// Returns the affinity key, if any.
-    pub fn affinity_key(&self) -> Option<&str> {
-        self.affinity_key.as_deref()
-    }
-
     /// Creates a `TestInstance` handle for execution in a sandbox.
     pub fn test(&self) -> TestInstance {
         TestInstance {
@@ -503,7 +498,7 @@ mod tests {
     fn test_affinity_key_round_trips() {
         let record = TestRecord::new("tests/test_foo.py::test_bar", "test-group")
             .with_affinity_key("tests/test_foo.py");
-        assert_eq!(record.affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(record.affinity_key.as_deref(), Some("tests/test_foo.py"));
 
         let from_test = record.test();
         assert_eq!(from_test.affinity_key(), Some("tests/test_foo.py"));
@@ -515,7 +510,7 @@ mod tests {
     #[test]
     fn test_affinity_key_defaults_to_none() {
         let record = TestRecord::new("tests/test_foo.py::test_bar", "test-group");
-        assert_eq!(record.affinity_key(), None);
+        assert_eq!(record.affinity_key.as_deref(), None);
         assert_eq!(record.test().affinity_key(), None);
         assert_eq!(TestInstance::new(&record).affinity_key(), None);
     }

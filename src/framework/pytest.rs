@@ -326,9 +326,15 @@ mod tests {
         // The no-`::` line is not a valid test ID and yields no record.
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "tests/test_foo.py::test_bar");
-        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(
+            records[0].affinity_key.as_deref(),
+            Some("tests/test_foo.py")
+        );
         assert_eq!(records[1].id, "tests/test_foo.py::TestClass::test_baz");
-        assert_eq!(records[1].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(
+            records[1].affinity_key.as_deref(),
+            Some("tests/test_foo.py")
+        );
         Ok(())
     }
 

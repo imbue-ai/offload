@@ -257,8 +257,14 @@ mod tests {
             re.as_ref(),
         );
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
-        assert_eq!(records[1].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(
+            records[0].affinity_key.as_deref(),
+            Some("tests/test_foo.py")
+        );
+        assert_eq!(
+            records[1].affinity_key.as_deref(),
+            Some("tests/test_foo.py")
+        );
         Ok(())
     }
 
@@ -269,7 +275,10 @@ mod tests {
         let records =
             framework.parse_discover_output("tests/test_foo.py::test_a", "grp", re.as_ref());
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(
+            records[0].affinity_key.as_deref(),
+            Some("tests/test_foo.py")
+        );
         Ok(())
     }
 
@@ -280,7 +289,7 @@ mod tests {
         let re = framework.compile_affinity_regex()?;
         let records = framework.parse_discover_output("no_separator_here", "grp", re.as_ref());
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].affinity_key(), None);
+        assert_eq!(records[0].affinity_key.as_deref(), None);
         Ok(())
     }
 
@@ -289,6 +298,6 @@ mod tests {
         let framework = framework_with_regex(None);
         let records = framework.parse_discover_output("tests/test_foo.py::test_a", "grp", None);
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].affinity_key(), None);
+        assert_eq!(records[0].affinity_key.as_deref(), None);
     }
 }
