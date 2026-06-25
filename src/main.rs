@@ -1115,7 +1115,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             sandbox_init_cmd: None,
             post_patch_cmd: None,
             impatiently_requeue_batches: true,
-            max_parallel_collection: 8,
+            max_parallel_collection: 0,
         },
         provider: provider_config,
         framework: framework_config,
