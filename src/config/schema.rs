@@ -105,7 +105,9 @@ pub struct OffloadConfig {
     ///
     /// Per-group test discovery runs in parallel, bounded by this value.
     /// Higher values speed up discovery for projects with many groups but
-    /// increase the number of concurrent discovery processes.
+    /// increase the number of concurrent discovery processes. `0` (the
+    /// default) means use as many parallel collections as the machine has
+    /// CPU cores.
     #[serde(default = "default_max_parallel_collection")]
     pub max_parallel_collection: usize,
 }
@@ -115,7 +117,7 @@ fn default_max_parallel() -> usize {
 }
 
 fn default_max_parallel_collection() -> usize {
-    8
+    0
 }
 
 fn default_test_timeout() -> u64 {
@@ -820,7 +822,7 @@ mod tests {
         let config: Config = toml::from_str(toml)?;
 
         // max_parallel_collection is omitted, so the default applies.
-        assert_eq!(config.offload.max_parallel_collection, 8);
+        assert_eq!(config.offload.max_parallel_collection, 0);
 
         assert!(
             matches!(&config.provider, ProviderConfig::Modal(_)),

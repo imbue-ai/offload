@@ -287,7 +287,7 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
 | `post_patch_cmd` | string | (none) | Optional command to run after thin-diff patch is applied, before image materialization. Runs as an image layer. `OFFLOAD_PATCH_FILE` env var is set to the patch path when a diff exists |
 | `impatiently_requeue_batches` | boolean | `true` | When `true`, the scheduler hedges against long-running batches by re-queuing each batch on pop (see "Split-requeue hedging" below) |
-| `max_parallel_collection` | integer | `8` | Maximum number of groups whose tests are collected concurrently during discovery |
+| `max_parallel_collection` | integer | `0` | Maximum number of groups whose tests are collected concurrently during discovery; `0` (the default) means the number of CPU cores |
 
 Set `sandbox_repo_root` to tell Offload where the codebase lives in the sandbox. In monorepo setups where tests run from a subdirectory, also set `sandbox_project_root` to that subdirectory.
 

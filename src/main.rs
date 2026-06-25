@@ -308,7 +308,14 @@ async fn discover_all_tests(
 ) -> Result<Vec<TestRecord>> {
     use futures::stream::{StreamExt, TryStreamExt};
 
-    let bound = concurrency.max(1);
+    let bound = if concurrency == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        concurrency
+    }
+    .max(1);
     let group_results: Vec<Vec<TestRecord>> = futures::stream::iter(groups)
         .map(|(group_name, group_cfg)| async move {
             let tests = match framework {
