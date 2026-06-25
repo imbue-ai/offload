@@ -376,8 +376,8 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         .with_context(|| format!("failed to export tree for {}", base_sha))?;
 
     // Build base image from exported tree
-    eprintln!("[prepare] Building base image...");
     let base_image_id = {
+        let _progress = crate::timing::progress_span("base image build");
         let _span = ctx.tracer.span(
             "checkpoint_base_prepare",
             "local",
@@ -464,6 +464,7 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
     })?;
 
     let image_id = {
+        let _progress = crate::timing::progress_span("full image build");
         let _span = ctx.tracer.span(
             "image_prepare",
             "local",
@@ -490,7 +491,7 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
                 .sandbox_repo_root
                 .as_deref()
                 .unwrap_or("/app");
-            eprintln!("[prepare] Running post-patch command in fallback build...");
+            let _progress = crate::timing::progress_span("post-patch command");
             builder
                 .build_incremental(
                     &base_id,
@@ -537,7 +538,7 @@ async fn try_thin_diff<B: ImageBuilder>(
             ))
         })?;
 
-    match (&patch_file, post_patch_cmd) {
+    let _progress = match (&patch_file, post_patch_cmd) {
         (None, None) => {
             // No diff, no post_patch_cmd — reuse base image
             while !discovery_done.load(Ordering::Acquire) {
@@ -546,12 +547,8 @@ async fn try_thin_diff<B: ImageBuilder>(
             eprintln!("[prepare] No changes since checkpoint, reusing image");
             return Ok(base_image_id.to_string());
         }
-        (None, Some(_)) => {
-            eprintln!("[prepare] No changes since checkpoint, running post-patch command...");
-        }
-        (Some(_), _) => {
-            eprintln!("[prepare] Building thin diff image...");
-        }
+        (None, Some(_)) => crate::timing::progress_span("post-patch command"),
+        (Some(_), _) => crate::timing::progress_span("thin diff image build"),
     };
 
     // Route through builder's incremental build
