@@ -350,7 +350,7 @@ async fn discover_with_signal(
     groups: &HashMap<String, GroupConfig>,
     discovery_done: &AtomicBool,
 ) -> Result<Vec<TestRecord>> {
-    let mut span = offload::timing::progress_span("test discovery");
+    let mut span = offload::timing::progress_span("discover", "test discovery");
     let result = discover_all_tests(framework, groups).await;
     if let Ok(ref tests) = result {
         span.annotate(format!(
@@ -477,7 +477,7 @@ async fn run_prepare<P: SandboxProvider>(
     tracer: &offload::trace::Tracer,
     discovery_done: &AtomicBool,
 ) -> Result<Option<String>> {
-    let _span = offload::timing::progress_span("image preparation");
+    let _span = offload::timing::progress_span("prepare", "image preparation");
     let prepare_ctx = PrepareContext {
         copy_dirs,
         sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),

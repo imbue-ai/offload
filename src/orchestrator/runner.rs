@@ -290,7 +290,8 @@ impl<'a, S: Sandbox, D: TestFramework> TestRunner<'a, S, D> {
         let sandbox_id = self.sandbox.id().to_string();
 
         let mut batch_span = timing::verbose_progress_span_with(
-            format!("batch on sandbox {sandbox_id}"),
+            "batch",
+            format!("sandbox {sandbox_id}"),
             format!("{expected_count} tests"),
         );
 

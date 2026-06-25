@@ -1,4 +1,8 @@
 //! Emits paired `starting:`/`finished:` timing logs via either `tracing` or stderr.
+//!
+//! Each log line is prefixed with a bracketed `section` tag (a short category
+//! label such as `[prepare]` or `[discover]`) that mirrors the eprintln
+//! breadcrumbs and the Perfetto span category.
 
 use std::time::{Duration, Instant};
 
@@ -18,15 +22,18 @@ impl Channel {
     }
 }
 
-/// Starts a timing span, logging `starting: {name}` immediately and emitting
-/// `finished: {name} [..., took {elapsed}]` when the guard is dropped or
-/// [`TimedSpan::finish`] is called.
+/// Starts a timing span, logging `[{section}] starting: {name}` immediately and
+/// emitting `[{section}] finished: {name} [..., took {elapsed}]` when the guard
+/// is dropped or [`TimedSpan::finish`] is called.
+///
+/// `section` is a short category label (e.g. `prepare`, `discover`) that mirrors
+/// the eprintln breadcrumbs and the Perfetto span category.
 ///
 /// This is the verbose-only counterpart of [`progress_span`]: it emits via
 /// `tracing::info!`, so the paired logs appear only under `--verbose`, whereas
 /// [`progress_span`] is always visible.
-pub fn verbose_progress_span(name: impl Into<String>) -> TimedSpan {
-    start(name.into(), None, Channel::Trace)
+pub fn verbose_progress_span(section: impl Into<String>, name: impl Into<String>) -> TimedSpan {
+    start(section.into(), name.into(), None, Channel::Trace)
 }
 
 /// Like [`verbose_progress_span`], but logs an initial `detail` in the start
@@ -36,27 +43,43 @@ pub fn verbose_progress_span(name: impl Into<String>) -> TimedSpan {
 /// `tracing::info!`, so the paired logs appear only under `--verbose`, whereas
 /// [`progress_span_with`] is always visible.
 pub fn verbose_progress_span_with(
+    section: impl Into<String>,
     name: impl Into<String>,
     detail: impl std::fmt::Display,
 ) -> TimedSpan {
-    start(name.into(), Some(detail.to_string()), Channel::Trace)
+    start(
+        section.into(),
+        name.into(),
+        Some(detail.to_string()),
+        Channel::Trace,
+    )
 }
 
 /// Like [`verbose_progress_span`], but emits to stderr so the paired logs stay
 /// visible regardless of verbosity.
-pub fn progress_span(name: impl Into<String>) -> TimedSpan {
-    start(name.into(), None, Channel::Stderr)
+pub fn progress_span(section: impl Into<String>, name: impl Into<String>) -> TimedSpan {
+    start(section.into(), name.into(), None, Channel::Stderr)
 }
 
 /// Like [`verbose_progress_span_with`], but emits to stderr so the paired logs
 /// stay visible regardless of verbosity.
-pub fn progress_span_with(name: impl Into<String>, detail: impl std::fmt::Display) -> TimedSpan {
-    start(name.into(), Some(detail.to_string()), Channel::Stderr)
+pub fn progress_span_with(
+    section: impl Into<String>,
+    name: impl Into<String>,
+    detail: impl std::fmt::Display,
+) -> TimedSpan {
+    start(
+        section.into(),
+        name.into(),
+        Some(detail.to_string()),
+        Channel::Stderr,
+    )
 }
 
-fn start(name: String, detail: Option<String>, channel: Channel) -> TimedSpan {
-    channel.emit(&starting_message(&name, detail.as_deref()));
+fn start(section: String, name: String, detail: Option<String>, channel: Channel) -> TimedSpan {
+    channel.emit(&starting_message(&section, &name, detail.as_deref()));
     TimedSpan {
+        section,
         name,
         start: Instant::now(),
         annotations: detail.into_iter().collect(),
@@ -68,6 +91,7 @@ fn start(name: String, detail: Option<String>, channel: Channel) -> TimedSpan {
 /// Scoped guard that emits a `finished:` timing log on drop.
 #[must_use = "a TimedSpan emits its finish log on drop; bind it to a variable for the duration of the operation"]
 pub struct TimedSpan {
+    section: String,
     name: String,
     start: Instant,
     annotations: Vec<String>,
@@ -93,6 +117,7 @@ impl TimedSpan {
         }
         self.finished = true;
         self.channel.emit(&finished_message(
+            &self.section,
             &self.name,
             &self.annotations,
             self.start.elapsed(),
@@ -106,18 +131,23 @@ impl Drop for TimedSpan {
     }
 }
 
-fn starting_message(name: &str, detail: Option<&str>) -> String {
+fn starting_message(section: &str, name: &str, detail: Option<&str>) -> String {
     match detail {
-        Some(detail) => format!("starting: {name} [{detail}]"),
-        None => format!("starting: {name}"),
+        Some(detail) => format!("[{section}] starting: {name} [{detail}]"),
+        None => format!("[{section}] starting: {name}"),
     }
 }
 
-fn finished_message(name: &str, annotations: &[String], elapsed: Duration) -> String {
+fn finished_message(
+    section: &str,
+    name: &str,
+    annotations: &[String],
+    elapsed: Duration,
+) -> String {
     let elapsed = format_elapsed(elapsed);
     let mut parts: Vec<String> = annotations.to_vec();
     parts.push(format!("took {elapsed}"));
-    format!("finished: {name} [{}]", parts.join(", "))
+    format!("[{section}] finished: {name} [{}]", parts.join(", "))
 }
 
 fn format_elapsed(d: Duration) -> String {
@@ -147,53 +177,57 @@ mod tests {
 
     #[test]
     fn starting_message_format() {
-        assert_eq!(starting_message("upload", None), "starting: upload");
         assert_eq!(
-            starting_message("upload", Some("10 files")),
-            "starting: upload [10 files]"
+            starting_message("prepare", "base image build", None),
+            "[prepare] starting: base image build"
+        );
+        assert_eq!(
+            starting_message("prepare", "upload", Some("10 files")),
+            "[prepare] starting: upload [10 files]"
         );
     }
 
     #[test]
     fn finished_message_format() {
         assert_eq!(
-            finished_message("upload", &[], Duration::from_secs(1)),
-            "finished: upload [took 1.0s]"
+            finished_message("prepare", "upload", &[], Duration::from_secs(1)),
+            "[prepare] finished: upload [took 1.0s]"
         );
         assert_eq!(
             finished_message(
+                "prepare",
                 "upload",
                 &["10 files".into(), "2300 KB".into()],
                 Duration::from_secs(1)
             ),
-            "finished: upload [10 files, 2300 KB, took 1.0s]"
+            "[prepare] finished: upload [10 files, 2300 KB, took 1.0s]"
         );
     }
 
     #[test]
     fn span_finish_does_not_panic() {
-        let mut span = verbose_progress_span("op");
+        let mut span = verbose_progress_span("orchestrator", "op");
         span.annotate("done");
         span.finish();
     }
 
     #[test]
     fn span_drop_does_not_panic() {
-        let mut span = verbose_progress_span("op");
+        let mut span = verbose_progress_span("orchestrator", "op");
         span.annotate("done");
         drop(span);
     }
 
     #[test]
     fn progress_span_finish_does_not_panic() {
-        let mut span = progress_span("x");
+        let mut span = progress_span("prepare", "x");
         span.annotate("done");
         span.finish();
     }
 
     #[test]
     fn progress_span_drop_does_not_panic() {
-        let mut span = progress_span("x");
+        let mut span = progress_span("prepare", "x");
         span.annotate("done");
         drop(span);
     }
