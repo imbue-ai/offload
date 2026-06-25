@@ -34,6 +34,7 @@ fn write_local_config(config_path: &Path, output_dir: &Path) -> anyhow::Result<(
             sandbox_init_cmd: None,
             post_patch_cmd: None,
             impatiently_requeue_batches: true,
+            max_parallel_collection: 0,
         },
         provider: ProviderConfig::Local(LocalProviderConfig::default()),
         framework: FrameworkConfig::Cargo(CargoFrameworkConfig::default()),
