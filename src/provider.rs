@@ -571,7 +571,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
-                collection_parallelism: 8,
+                max_parallel_collection: 8,
             },
             provider: crate::config::schema::ProviderConfig::Local(Default::default()),
             framework: crate::config::schema::FrameworkConfig::Default(

@@ -534,7 +534,7 @@ async fn run_remote_provider<P: SandboxProvider>(
         discover_with_signal(
             &config.framework,
             &config.groups,
-            config.offload.collection_parallelism,
+            config.offload.max_parallel_collection,
             &discovery_done
         ),
         run_prepare(
@@ -684,7 +684,7 @@ async fn run_tests(
         let all_tests = discover_all_tests(
             &config.framework,
             &config.groups,
-            config.offload.collection_parallelism,
+            config.offload.max_parallel_collection,
         )
         .await?;
         eprintln!(
@@ -724,7 +724,7 @@ async fn run_tests(
             let all_tests = discover_all_tests(
                 &config.framework,
                 &config.groups,
-                config.offload.collection_parallelism,
+                config.offload.max_parallel_collection,
             )
             .await?;
             eprintln!(
@@ -968,7 +968,7 @@ async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let all_tests = discover_all_tests(
         &config.framework,
         &config.groups,
-        config.offload.collection_parallelism,
+        config.offload.max_parallel_collection,
     )
     .await?;
 
@@ -1108,7 +1108,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             sandbox_init_cmd: None,
             post_patch_cmd: None,
             impatiently_requeue_batches: true,
-            collection_parallelism: 8,
+            max_parallel_collection: 8,
         },
         provider: provider_config,
         framework: framework_config,

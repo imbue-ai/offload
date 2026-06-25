@@ -106,15 +106,15 @@ pub struct OffloadConfig {
     /// Per-group test discovery runs in parallel, bounded by this value.
     /// Higher values speed up discovery for projects with many groups but
     /// increase the number of concurrent discovery processes.
-    #[serde(default = "default_collection_parallelism")]
-    pub collection_parallelism: usize,
+    #[serde(default = "default_max_parallel_collection")]
+    pub max_parallel_collection: usize,
 }
 
 fn default_max_parallel() -> usize {
     10
 }
 
-fn default_collection_parallelism() -> usize {
+fn default_max_parallel_collection() -> usize {
     8
 }
 
@@ -819,8 +819,8 @@ mod tests {
 
         let config: Config = toml::from_str(toml)?;
 
-        // collection_parallelism is omitted, so the default applies.
-        assert_eq!(config.offload.collection_parallelism, 8);
+        // max_parallel_collection is omitted, so the default applies.
+        assert_eq!(config.offload.max_parallel_collection, 8);
 
         assert!(
             matches!(&config.provider, ProviderConfig::Modal(_)),
@@ -865,7 +865,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
-                collection_parallelism: 8,
+                max_parallel_collection: 8,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -902,7 +902,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
-                collection_parallelism: 8,
+                max_parallel_collection: 8,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -937,7 +937,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
-                collection_parallelism: 8,
+                max_parallel_collection: 8,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
@@ -1150,7 +1150,7 @@ mod tests {
                 sandbox_init_cmd: None,
                 post_patch_cmd: None,
                 impatiently_requeue_batches: true,
-                collection_parallelism: 8,
+                max_parallel_collection: 8,
             },
             provider: ProviderConfig::Local(LocalProviderConfig {
                 working_dir: Some(PathBuf::from(".")),
