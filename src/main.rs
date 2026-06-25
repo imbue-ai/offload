@@ -350,15 +350,16 @@ async fn discover_with_signal(
     groups: &HashMap<String, GroupConfig>,
     discovery_done: &AtomicBool,
 ) -> Result<Vec<TestRecord>> {
-    eprintln!("[discover] Discovering tests...");
+    let mut span = offload::timing::progress_span("test discovery");
     let result = discover_all_tests(framework, groups).await;
     if let Ok(ref tests) = result {
-        eprintln!(
-            "[discover] found {} tests across {} groups",
+        span.annotate(format!(
+            "{} tests across {} groups",
             tests.len(),
             groups.len()
-        );
+        ));
     }
+    span.finish();
     discovery_done.store(true, Ordering::Release);
     result
 }
@@ -476,6 +477,7 @@ async fn run_prepare<P: SandboxProvider>(
     tracer: &offload::trace::Tracer,
     discovery_done: &AtomicBool,
 ) -> Result<Option<String>> {
+    let _span = offload::timing::progress_span("image preparation");
     let prepare_ctx = PrepareContext {
         copy_dirs,
         sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
