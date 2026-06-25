@@ -1052,6 +1052,8 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             test_id_format: "{name}".into(),
             result_file: None,
             working_dir: None,
+            affinity_key_regex: None,
+            affinity_overhead_secs: 0.0,
         }),
         "vitest" => FrameworkConfig::Vitest(VitestFrameworkConfig {
             command: "npx vitest".into(),

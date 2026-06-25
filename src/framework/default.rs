@@ -37,14 +37,51 @@ impl DefaultFramework {
 
     /// Parse test discovery command output to extract test records.
     ///
-    /// Expects one test ID per line.
-    fn parse_discover_output(&self, output: &str, group: &str) -> Vec<TestRecord> {
+    /// Expects one test ID per line. When `affinity_regex` is provided, each
+    /// test's affinity key is derived from its ID: capture group 1 if the
+    /// pattern has one, otherwise the whole match. A non-matching ID gets no key.
+    fn parse_discover_output(
+        &self,
+        output: &str,
+        group: &str,
+        affinity_regex: Option<&regex::Regex>,
+    ) -> Vec<TestRecord> {
         output
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| TestRecord::new(line, group))
+            .map(|line| {
+                let mut record = TestRecord::new(line, group);
+                if let Some(key) = affinity_regex.and_then(|re| {
+                    re.captures(line)
+                        .and_then(|c| c.get(1).or_else(|| c.get(0)))
+                        .map(|m| m.as_str())
+                }) {
+                    record = record.with_affinity_key(key);
+                }
+                record
+            })
             .collect()
+    }
+
+    /// Compile the configured `affinity_key_regex`, if any.
+    ///
+    /// Returns `Ok(None)` when no pattern is configured. An invalid pattern
+    /// surfaces as a [`FrameworkError::DiscoveryFailed`] naming the offending
+    /// field.
+    fn compile_affinity_regex(&self) -> FrameworkResult<Option<regex::Regex>> {
+        self.config
+            .affinity_key_regex
+            .as_deref()
+            .map(|pattern| {
+                regex::Regex::new(pattern).map_err(|e| {
+                    FrameworkError::DiscoveryFailed(format!(
+                        "invalid affinity_key_regex '{}': {}",
+                        pattern, e
+                    ))
+                })
+            })
+            .transpose()
     }
 
     /// Substitute {tests} and {result_file} placeholders in run command.
@@ -70,6 +107,9 @@ impl TestFramework for DefaultFramework {
         filters: &str,
         group: &str,
     ) -> FrameworkResult<Vec<TestRecord>> {
+        // Compile the affinity key regex once per discovery (not per line).
+        let affinity_regex = self.compile_affinity_regex()?;
+
         // Substitute {filters} placeholder with actual filters or empty string
         let discover_command = self.config.discover_command.replace("{filters}", filters);
 
@@ -104,7 +144,7 @@ impl TestFramework for DefaultFramework {
             )));
         }
 
-        let tests = self.parse_discover_output(&stdout, group);
+        let tests = self.parse_discover_output(&stdout, group, affinity_regex.as_ref());
 
         if tests.is_empty() {
             tracing::warn!(
@@ -177,5 +217,78 @@ impl TestFramework for DefaultFramework {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn framework_with_regex(affinity_key_regex: Option<&str>) -> DefaultFramework {
+        DefaultFramework::new(DefaultFrameworkConfig {
+            discover_command: "echo".to_string(),
+            run_command: "run {tests}".to_string(),
+            result_file: None,
+            working_dir: None,
+            test_id_format: "{name}".to_string(),
+            affinity_key_regex: affinity_key_regex.map(str::to_string),
+            affinity_overhead_secs: 0.0,
+        })
+    }
+
+    #[test]
+    fn test_compile_affinity_regex_rejects_invalid_pattern() {
+        let framework = framework_with_regex(Some("(unterminated"));
+        let err = framework.compile_affinity_regex().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("affinity_key_regex"),
+            "error should name the field: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_discover_output_capture_group_is_key() -> Result<(), Box<dyn std::error::Error>> {
+        let framework = framework_with_regex(Some("^(.*?)::"));
+        let re = framework.compile_affinity_regex()?;
+        let records = framework.parse_discover_output(
+            "tests/test_foo.py::test_a\ntests/test_foo.py::test_b",
+            "grp",
+            re.as_ref(),
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
+        assert_eq!(records[1].affinity_key(), Some("tests/test_foo.py"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_discover_output_whole_match_is_key() -> Result<(), Box<dyn std::error::Error>> {
+        let framework = framework_with_regex(Some(r"^[^:]+"));
+        let re = framework.compile_affinity_regex()?;
+        let records =
+            framework.parse_discover_output("tests/test_foo.py::test_a", "grp", re.as_ref());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].affinity_key(), Some("tests/test_foo.py"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_discover_output_non_matching_id_has_no_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let framework = framework_with_regex(Some("^(.*?)::"));
+        let re = framework.compile_affinity_regex()?;
+        let records = framework.parse_discover_output("no_separator_here", "grp", re.as_ref());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].affinity_key(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_discover_output_without_regex_has_no_key() {
+        let framework = framework_with_regex(None);
+        let records = framework.parse_discover_output("tests/test_foo.py::test_a", "grp", None);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].affinity_key(), None);
     }
 }

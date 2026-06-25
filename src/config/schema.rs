@@ -424,19 +424,28 @@ impl FrameworkConfig {
     pub fn affinity_overhead(&self) -> std::time::Duration {
         match self {
             FrameworkConfig::Pytest(config) => {
-                let secs = config.affinity_overhead_secs;
-                let secs = if secs.is_finite() && secs > 0.0 {
-                    secs
-                } else {
-                    0.0
-                };
-                std::time::Duration::from_secs_f64(secs)
+                clamp_affinity_overhead(config.affinity_overhead_secs)
             }
-            FrameworkConfig::Cargo(_)
-            | FrameworkConfig::Default(_)
-            | FrameworkConfig::Vitest(_) => std::time::Duration::ZERO,
+            FrameworkConfig::Default(config) => {
+                clamp_affinity_overhead(config.affinity_overhead_secs)
+            }
+            FrameworkConfig::Cargo(_) | FrameworkConfig::Vitest(_) => std::time::Duration::ZERO,
         }
     }
+}
+
+/// Converts a configured affinity overhead in seconds into a [`Duration`].
+///
+/// Negative or non-finite values are defensively treated as zero.
+///
+/// [`Duration`]: std::time::Duration
+fn clamp_affinity_overhead(secs: f64) -> std::time::Duration {
+    let secs = if secs.is_finite() && secs > 0.0 {
+        secs
+    } else {
+        0.0
+    };
+    std::time::Duration::from_secs_f64(secs)
 }
 
 /// Configuration for pytest test framework.
@@ -616,6 +625,32 @@ pub struct DefaultFrameworkConfig {
     /// This field is required for the default framework as the format varies
     /// by test runner.
     pub test_id_format: String,
+
+    /// Regular expression that derives the per-test affinity key from a test ID.
+    ///
+    /// The affinity key is the unit that carries shared per-key load overhead
+    /// (see `affinity_overhead_secs`); co-scheduling tests with the same key in
+    /// one batch pays that overhead once instead of once per batch.
+    ///
+    /// If the pattern has a capturing group, capture group 1 is used as the key;
+    /// otherwise the whole match is the key. A test ID that does not match gets
+    /// no key (no affinity). When unset, the default framework derives no keys.
+    ///
+    /// Example: `affinity_key_regex = "^(.*?)::"` uses the module prefix
+    /// (everything before the first `::`) as the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity_key_regex: Option<String>,
+
+    /// Per-key load overhead used by affinity-aware scheduling, in seconds.
+    ///
+    /// The scheduler adds this overhead once per distinct affinity key in a
+    /// batch, rewarding the packing of tests that share a key. This is opt-in:
+    /// it defaults to `0.0`, leaving affinity-aware scheduling a no-op unless set
+    /// (and paired with `affinity_key_regex`).
+    ///
+    /// Default: `0.0`
+    #[serde(default)]
+    pub affinity_overhead_secs: f64,
 }
 
 /// Configuration for image checkpointing.
@@ -971,6 +1006,8 @@ mod tests {
                 test_id_format: "{name}".into(),
                 result_file: None,
                 working_dir: None,
+                affinity_key_regex: None,
+                affinity_overhead_secs: 0.0,
             }),
             groups: HashMap::from([(
                 "default".to_string(),
@@ -1762,6 +1799,106 @@ retry_count = 0
 
             [framework]
             type = "nextest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::ZERO
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_framework_affinity_fields_default() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "default"
+            discover_command = "echo test1"
+            run_command = "run {tests}"
+            test_id_format = "{name}"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        match &config.framework {
+            FrameworkConfig::Default(default) => {
+                assert_eq!(default.affinity_key_regex, None);
+                assert_eq!(default.affinity_overhead_secs, 0.0);
+            }
+            other => return Err(format!("expected default framework, got {other:?}").into()),
+        }
+        // Backward-compat: no affinity config means a zero overhead no-op.
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::ZERO
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_framework_affinity_fields_override() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "default"
+            discover_command = "echo test1"
+            run_command = "run {tests}"
+            test_id_format = "{name}"
+            affinity_key_regex = "^(.*?)::"
+            affinity_overhead_secs = 1.5
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+        match &config.framework {
+            FrameworkConfig::Default(default) => {
+                assert_eq!(default.affinity_key_regex.as_deref(), Some("^(.*?)::"));
+                assert_eq!(default.affinity_overhead_secs, 1.5);
+            }
+            other => return Err(format!("expected default framework, got {other:?}").into()),
+        }
+        assert_eq!(
+            config.framework.affinity_overhead(),
+            std::time::Duration::from_secs_f64(1.5)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_framework_affinity_overhead_negative_clamps_to_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "default"
+            discover_command = "echo test1"
+            run_command = "run {tests}"
+            test_id_format = "{name}"
+            affinity_overhead_secs = -2.0
 
             [groups.all]
             retry_count = 0

@@ -43,6 +43,25 @@ leave the key `None`.
 A `None` key means "no affinity" — the test contributes no overhead and gets no
 packing preference, so the scheduler degrades to today's pure-duration LPT.
 
+#### Default (custom-command) framework
+
+The generic `default` framework supports opt-in affinity via two config fields:
+
+```toml
+[framework]
+type = "default"
+discover_command = "..."
+run_command = "... {tests}"
+test_id_format = "{name}"
+affinity_key_regex = "^(.*?)::"   # derive the key from each test ID
+affinity_overhead_secs = 2.0      # per-key overhead (default 0.0 = no-op)
+```
+
+`affinity_key_regex` is applied to each discovered test ID: if the pattern has a
+capturing group, capture group 1 is the key; otherwise the whole match is the
+key. A test ID that does not match gets no key. With neither field set the
+default framework behaves exactly as before (no keys, zero overhead).
+
 ### Knob 2 — overhead magnitude (config, with a per-framework default)
 
 The cost of loading one key's worth of modules is a tuning number, exposed as

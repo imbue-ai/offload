@@ -580,6 +580,8 @@ mod tests {
                     result_file: None,
                     working_dir: None,
                     test_id_format: "{name}".to_string(),
+                    affinity_key_regex: None,
+                    affinity_overhead_secs: 0.0,
                 },
             ),
             groups: Default::default(),
