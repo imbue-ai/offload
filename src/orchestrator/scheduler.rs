@@ -32,13 +32,15 @@ const MAX_SINGLE_TEST_REQUEUES: usize = 3;
 /// A batch of tests being built by the scheduler.
 ///
 /// Tracks the tests, their cumulative expected duration, total command length,
-/// and which test IDs are present (to prevent scheduling the same test twice
-/// in one batch).
+/// which test IDs are present (to prevent scheduling the same test twice in one
+/// batch), and the set of distinct affinity keys present (to model per-key load
+/// overhead in marginal-cost assignment).
 struct Batch {
     tests: Vec<TestInstance>,
     load: Duration,
     command_len: usize,
     test_ids: HashSet<String>,
+    affinity_keys: HashSet<String>,
 }
 
 impl Batch {
@@ -48,12 +50,16 @@ impl Batch {
             load: Duration::ZERO,
             command_len: 0,
             test_ids: HashSet::new(),
+            affinity_keys: HashSet::new(),
         }
     }
 
     fn add(&mut self, test: TestInstance, duration: Duration) {
         self.command_len += test.id().len();
         self.test_ids.insert(test.id().to_string());
+        if let Some(key) = test.affinity_key() {
+            self.affinity_keys.insert(key.to_string());
+        }
         self.tests.push(test);
         self.load += duration;
     }
@@ -109,6 +115,11 @@ impl Scheduler {
     ///   Tests not in the map use the per-group average from `group_to_default_duration`.
     /// * `group_to_default_duration` - Per-group average duration for tests without historical data.
     ///   Falls back to 1 second if the group has no entry.
+    /// * `affinity_overhead` - Per-key load overhead added to a batch's marginal
+    ///   cost the first time a given affinity key is placed in it. Tests with no
+    ///   affinity key incur no overhead. With `Duration::ZERO` (or all-`None`
+    ///   keys), assignment reduces to pure-duration LPT, identical to the
+    ///   behavior without affinity.
     /// * `impatiently_requeue_batches` - When true, `pop()` re-queues each
     ///   popped batch (halving multi-test batches, incrementing the retry
     ///   counter for single-test batches up to `MAX_SINGLE_TEST_REQUEUES`).
@@ -118,6 +129,7 @@ impl Scheduler {
         tests: &[TestInstance],
         durations: &HashMap<String, Duration>,
         group_to_default_duration: &HashMap<String, Duration>,
+        affinity_overhead: Duration,
         impatiently_requeue_batches: bool,
     ) -> Self {
         let max_parallel = max_parallel.max(1);
@@ -186,13 +198,31 @@ impl Scheduler {
         let num_batches = max_parallel.min(normal_tests.len());
         let mut batches: Vec<Batch> = (0..num_batches).map(|_| Batch::new()).collect();
 
-        // LPT assignment: assign each test to the lightest eligible batch
+        // LPT assignment: assign each test to the eligible batch with the
+        // smallest marginal cost. The marginal cost of placing the test in batch
+        // `i` is the test's duration plus the affinity overhead, the latter
+        // charged only when the test introduces a new affinity key to the batch.
+        // Minimizing `load + marginal` balances load while rewarding key
+        // co-location. With `affinity_overhead == Duration::ZERO` (or a `None`
+        // key) the overhead term is zero and, since `duration` is constant across
+        // candidate batches, this is argmin-identical to `min_by_key(load)`,
+        // i.e. pure-duration LPT.
         for (test, duration) in tests_with_duration {
             let test_id = test.id();
+            let affinity_key = test.affinity_key();
 
             let target_idx = (0..batches.len())
                 .filter(|&i| !batches[i].contains(test_id) && batches[i].would_fit(test_id.len()))
-                .min_by_key(|&i| batches[i].load);
+                .min_by_key(|&i| {
+                    let needs_overhead =
+                        affinity_key.is_some_and(|key| !batches[i].affinity_keys.contains(key));
+                    let overhead = if needs_overhead {
+                        affinity_overhead
+                    } else {
+                        Duration::ZERO
+                    };
+                    batches[i].load + duration + overhead
+                });
 
             let idx = target_idx.unwrap_or_else(|| {
                 batches.push(Batch::new());
@@ -338,7 +368,14 @@ mod tests {
 
     #[test]
     fn test_schedule_empty() {
-        let scheduler = Scheduler::new(4, &[], &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            4,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
         assert_eq!(scheduler.batch_count(), 0);
     }
 
@@ -356,7 +393,8 @@ mod tests {
         durations.insert("medium_test".to_string(), Duration::from_secs(5));
         durations.insert("fast_test".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(2, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // With LPT:
@@ -386,7 +424,8 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(3));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(3, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Each test in its own batch (3 workers, 3 tests)
@@ -409,7 +448,8 @@ mod tests {
         durations.insert("known_slow".to_string(), Duration::from_secs(10));
         // unknown_test will use default of 1 second
 
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(2, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         assert_eq!(batches.len(), 2);
@@ -431,7 +471,8 @@ mod tests {
         let mut durations = HashMap::new();
         durations.insert("test_a".to_string(), Duration::from_secs(5));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(3, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Each instance of test_a must be in a different batch
@@ -464,7 +505,8 @@ mod tests {
         durations.insert("test_b".to_string(), Duration::from_secs(5));
         durations.insert("test_c".to_string(), Duration::from_secs(1));
 
-        let scheduler = Scheduler::new(3, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(3, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Verify no batch contains duplicate test IDs
@@ -493,7 +535,8 @@ mod tests {
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(2, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Each instance must be in a separate batch
@@ -514,7 +557,14 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
         let batches = drain_batches(&scheduler).await;
 
         // Two tests that each use >half the command length budget must be in separate batches
@@ -531,7 +581,14 @@ mod tests {
             .collect();
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
         let batches = drain_batches(&scheduler).await;
 
         // Total command length is ~400 chars, well under 30k — should be 1 batch
@@ -552,7 +609,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(2, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(2, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test must be alone in its batch
@@ -587,7 +645,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(4, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Each individually-scheduled test in its own batch, order preserved
@@ -612,7 +671,8 @@ mod tests {
 
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
         let durations = HashMap::new();
-        let scheduler = Scheduler::new(4, &tests, &durations, &HashMap::new(), true);
+        let scheduler =
+            Scheduler::new(4, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
         let batches = drain_batches(&scheduler).await;
 
         // Individually-scheduled batches come first
@@ -636,7 +696,14 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
         assert_eq!(scheduler.batch_count(), 1);
 
         // Pop the original 2-test batch
@@ -674,7 +741,14 @@ mod tests {
         let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
         assert_eq!(scheduler.batch_count(), 1);
 
         // Pop the original single-test batch (counter = 0)
@@ -703,7 +777,14 @@ mod tests {
         let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), true);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            true,
+        );
 
         // Pop the initial batch plus MAX_SINGLE_TEST_REQUEUES re-queued copies.
         // The initial batch has counter=0, each re-queue increments by 1.
@@ -737,7 +818,14 @@ mod tests {
         ];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), false);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(scheduler.batch_count(), 1);
 
         // Pop yields the batch as-is
@@ -758,7 +846,14 @@ mod tests {
         let records = [TestRecord::new("only_test", "test-group")];
         let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
 
-        let scheduler = Scheduler::new(1, &tests, &HashMap::new(), &HashMap::new(), false);
+        let scheduler = Scheduler::new(
+            1,
+            &tests,
+            &HashMap::new(),
+            &HashMap::new(),
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(scheduler.batch_count(), 1);
 
         let batch = tokio::time::timeout(Duration::from_millis(100), scheduler.pop())
@@ -776,5 +871,58 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Do `a1` and `a2` (the two tests sharing affinity key `modA`) land in the
+    /// same batch?
+    fn shared_key_colocated(batches: &[Vec<TestInstance>]) -> bool {
+        batches.iter().any(|b| {
+            let ids: HashSet<&str> = b.iter().map(|t| t.id()).collect();
+            ids.contains("a1") && ids.contains("a2")
+        })
+    }
+
+    #[tokio::test]
+    async fn test_affinity_overhead_colocates_shared_key() {
+        // Two tests share affinity key "modA"; a third has key "modB".
+        // Durations and max_parallel are chosen so pure-duration LPT splits the
+        // two "modA" tests across batches, but a non-zero affinity overhead
+        // packs them together (paying modA's overhead once instead of twice).
+        let records = [
+            TestRecord::new("a1", "g").with_affinity_key("modA"),
+            TestRecord::new("a2", "g").with_affinity_key("modA"),
+            TestRecord::new("b1", "g").with_affinity_key("modB"),
+        ];
+        let tests: Vec<_> = records.iter().map(|r| r.test()).collect();
+
+        let mut durations = HashMap::new();
+        durations.insert("a1".to_string(), Duration::from_secs(5));
+        durations.insert("a2".to_string(), Duration::from_secs(5));
+        durations.insert("b1".to_string(), Duration::from_secs(4));
+
+        // Zero overhead reproduces today's pure-duration LPT, which splits the
+        // shared-key tests across the two batches.
+        let zero = Scheduler::new(2, &tests, &durations, &HashMap::new(), Duration::ZERO, true);
+        let zero_batches = drain_batches(&zero).await;
+        assert!(
+            !shared_key_colocated(&zero_batches),
+            "zero overhead should reproduce the pure-LPT split of shared-key tests"
+        );
+
+        // A non-zero overhead makes co-locating the two "modA" tests cheaper than
+        // balancing load, so they share a batch.
+        let with_overhead = Scheduler::new(
+            2,
+            &tests,
+            &durations,
+            &HashMap::new(),
+            Duration::from_secs(10),
+            true,
+        );
+        let overhead_batches = drain_batches(&with_overhead).await;
+        assert!(
+            shared_key_colocated(&overhead_batches),
+            "non-zero overhead should co-locate the shared-key tests"
+        );
     }
 }
