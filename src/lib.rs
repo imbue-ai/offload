@@ -10,6 +10,7 @@ pub mod image_cache;
 pub mod orchestrator;
 pub mod provider;
 pub mod report;
+pub mod timing;
 pub mod trace;
 
 // Re-export commonly used types for convenience.
