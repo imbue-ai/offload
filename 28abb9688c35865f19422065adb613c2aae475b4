@@ -1,4 +1,7 @@
 {
+  "offload-pytest-modal.toml": {
+    "image_id": "im-uek8ud2VfwS96Mf3l133If"
+  },
   "offload-cargo-modal.toml": {
     "image_id": "im-Vap0BCNYIHhgi9qlArA5st"
   }
