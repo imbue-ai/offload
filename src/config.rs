@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use tracing::warn;
 
 /// Formats a test ID from JUnit XML attributes using the provided format string.
 ///
@@ -21,6 +22,32 @@ pub fn format_test_id(format: &str, name: &str, classname: Option<&str>) -> Stri
     result = result.replace("{name}", name);
     result = result.replace("{classname}", classname.unwrap_or(""));
     result
+}
+
+/// Deserializes a `Config`, returning the dotted paths of any keys the schema
+/// does not recognize.
+///
+/// Unknown keys are collected rather than rejected: the schema deliberately omits
+/// `deny_unknown_fields` because rejecting a previously-valid config would be a
+/// breaking change.
+fn deserialize_config_collecting_unknown(content: &str) -> Result<(Config, Vec<String>)> {
+    let mut unknown = Vec::new();
+    let de = toml::Deserializer::parse(content)?;
+    let config: Config = serde_ignored::deserialize(de, |path| {
+        unknown.push(path.to_string());
+    })?;
+    Ok((config, unknown))
+}
+
+/// Deserializes a `Config` from TOML, emitting a `tracing::warn!` for each
+/// unrecognized key so typos (e.g. `retry_cont` for `retry_count`) surface
+/// instead of being silently dropped.
+fn parse_config_warning_on_unknown(content: &str) -> Result<Config> {
+    let (config, unknown) = deserialize_config_collecting_unknown(content)?;
+    for key in &unknown {
+        warn!("Ignoring unrecognized config key: {key}");
+    }
+    Ok(config)
 }
 
 /// Loads offload configuration from a TOML file.
@@ -43,7 +70,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let mut config: Config = toml::from_str(&content)
+    let mut config = parse_config_warning_on_unknown(&content)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     expand_provider_env(&mut config.provider)?;
@@ -67,7 +94,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// - The string contains invalid TOML syntax
 /// - The configuration doesn't match the expected schema
 pub fn load_config_str(content: &str) -> Result<Config> {
-    let mut config: Config = toml::from_str(content).context("Failed to parse config")?;
+    let mut config = parse_config_warning_on_unknown(content).context("Failed to parse config")?;
 
     expand_provider_env(&mut config.provider)?;
     validate_config(&mut config)?;
@@ -271,6 +298,74 @@ fn expand_provider_env(provider: &mut ProviderConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_deserialize_collects_unknown_keys() -> Result<()> {
+        let toml = r#"
+            bogus_top_level = "oops"
+
+            [offload]
+            max_parallel = 4
+            sandbox_project_root = "/app"
+            retry_cont = 3
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let (config, unknown) = deserialize_config_collecting_unknown(toml)?;
+        assert_eq!(config.offload.max_parallel, 4);
+        assert!(
+            unknown.iter().any(|k| k == "offload.retry_cont"),
+            "expected 'offload.retry_cont' in unknown keys, got: {unknown:?}"
+        );
+        assert!(
+            unknown.iter().any(|k| k == "bogus_top_level"),
+            "expected 'bogus_top_level' in unknown keys, got: {unknown:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_deserialize_clean_config_has_no_unknown_keys() -> Result<()> {
+        // Guards against false positives where a real field (including the
+        // internally-tagged enum `type` discriminants) is misreported as unknown.
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            test_timeout_secs = 600
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+            shell = "/bin/sh"
+
+            [framework]
+            type = "pytest"
+            command = "uv run pytest"
+
+            [groups.all]
+            retry_count = 2
+            filters = "-m 'not slow'"
+
+            [report]
+            output_dir = "test-results"
+            junit = true
+        "#;
+
+        let (_config, unknown) = deserialize_config_collecting_unknown(toml)?;
+        assert!(
+            unknown.is_empty(),
+            "expected no unknown keys for a clean config, got: {unknown:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_config_with_empty_groups_returns_error() {
