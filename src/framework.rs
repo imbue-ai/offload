@@ -90,6 +90,11 @@ pub struct TestRecord {
 
     /// Whether this test should be individually scheduled (one-per-batch).
     pub schedule_individual: bool,
+
+    /// Affinity key grouping tests that share a load cost (e.g. source module).
+    ///
+    /// `None` means the test has no affinity and contributes no overhead.
+    pub affinity_key: Option<String>,
 }
 
 impl TestRecord {
@@ -108,6 +113,7 @@ impl TestRecord {
             retry_count: 0,
             group: group.into(),
             schedule_individual: false,
+            affinity_key: None,
         }
     }
 
@@ -129,12 +135,24 @@ impl TestRecord {
         self
     }
 
+    /// Sets the affinity key for this test.
+    pub fn with_affinity_key(mut self, key: impl Into<String>) -> Self {
+        self.affinity_key = Some(key.into());
+        self
+    }
+
+    /// Returns the affinity key, if any.
+    pub fn affinity_key(&self) -> Option<&str> {
+        self.affinity_key.as_deref()
+    }
+
     /// Creates a `TestInstance` handle for execution in a sandbox.
     pub fn test(&self) -> TestInstance {
         TestInstance {
             id: self.id.clone(),
             group: self.group.clone(),
             schedule_individual: self.schedule_individual,
+            affinity_key: self.affinity_key.clone(),
         }
     }
 }
@@ -145,6 +163,7 @@ pub struct TestInstance {
     id: String,
     group: String,
     schedule_individual: bool,
+    affinity_key: Option<String>,
 }
 
 impl TestInstance {
@@ -153,6 +172,7 @@ impl TestInstance {
             id: record.id.clone(),
             group: record.group.clone(),
             schedule_individual: record.schedule_individual,
+            affinity_key: record.affinity_key.clone(),
         }
     }
 
@@ -166,6 +186,10 @@ impl TestInstance {
 
     pub fn schedule_individual(&self) -> bool {
         self.schedule_individual
+    }
+
+    pub fn affinity_key(&self) -> Option<&str> {
+        self.affinity_key.as_deref()
     }
 }
 
@@ -473,6 +497,27 @@ mod tests {
         let detail = discovery_error_detail("", &long_stdout);
         assert!(detail.contains("... (truncated)"));
         assert!(detail.len() < 600);
+    }
+
+    #[test]
+    fn test_affinity_key_round_trips() {
+        let record = TestRecord::new("tests/test_foo.py::test_bar", "test-group")
+            .with_affinity_key("tests/test_foo.py");
+        assert_eq!(record.affinity_key(), Some("tests/test_foo.py"));
+
+        let from_test = record.test();
+        assert_eq!(from_test.affinity_key(), Some("tests/test_foo.py"));
+
+        let from_new = TestInstance::new(&record);
+        assert_eq!(from_new.affinity_key(), Some("tests/test_foo.py"));
+    }
+
+    #[test]
+    fn test_affinity_key_defaults_to_none() {
+        let record = TestRecord::new("tests/test_foo.py::test_bar", "test-group");
+        assert_eq!(record.affinity_key(), None);
+        assert_eq!(record.test().affinity_key(), None);
+        assert_eq!(TestInstance::new(&record).affinity_key(), None);
     }
 
     #[test]

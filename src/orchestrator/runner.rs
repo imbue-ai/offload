@@ -1005,6 +1005,7 @@ mod tests {
             retry_count: 0,
             group: "default".to_string(),
             schedule_individual: false,
+            affinity_key: None,
         };
         let test_instance = crate::framework::TestInstance::new(&test_record);
 
