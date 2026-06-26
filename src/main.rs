@@ -299,66 +299,82 @@ fn framework_type_name(framework: &FrameworkConfig) -> &'static str {
 }
 
 /// Discover tests for every group, tagging each with its group config.
+///
+/// Groups are collected concurrently, bounded by `concurrency`.
 async fn discover_all_tests(
     framework: &FrameworkConfig,
     groups: &HashMap<String, GroupConfig>,
+    concurrency: usize,
 ) -> Result<Vec<TestRecord>> {
-    let mut all_tests: Vec<TestRecord> = Vec::new();
+    use futures::stream::{StreamExt, TryStreamExt};
 
-    for (group_name, group_cfg) in groups {
-        let tests = match framework {
-            FrameworkConfig::Pytest(cfg) => {
-                PytestFramework::new(cfg.clone())?
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Cargo(cfg) => {
-                CargoFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Default(cfg) => {
-                DefaultFramework::new(cfg.clone())
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-            FrameworkConfig::Vitest(cfg) => {
-                VitestFramework::new(cfg.clone())?
-                    .discover(&[], &group_cfg.filters, group_name)
-                    .await?
-            }
-        };
-
-        // Tag tests with group retry count
-        let group_tests: Vec<TestRecord> = tests
-            .into_iter()
-            .map(|t| {
-                t.with_retry_count(group_cfg.retry_count)
-                    .with_schedule_individual(group_cfg.schedule_individual)
-            })
-            .collect();
-
-        all_tests.extend(group_tests);
+    let bound = if concurrency == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        concurrency
     }
+    .max(1);
+    let group_results: Vec<Vec<TestRecord>> = futures::stream::iter(groups)
+        .map(|(group_name, group_cfg)| async move {
+            let tests = match framework {
+                FrameworkConfig::Pytest(cfg) => {
+                    PytestFramework::new(cfg.clone())?
+                        .discover(&[], &group_cfg.filters, group_name)
+                        .await?
+                }
+                FrameworkConfig::Cargo(cfg) => {
+                    CargoFramework::new(cfg.clone())
+                        .discover(&[], &group_cfg.filters, group_name)
+                        .await?
+                }
+                FrameworkConfig::Default(cfg) => {
+                    DefaultFramework::new(cfg.clone())
+                        .discover(&[], &group_cfg.filters, group_name)
+                        .await?
+                }
+                FrameworkConfig::Vitest(cfg) => {
+                    VitestFramework::new(cfg.clone())?
+                        .discover(&[], &group_cfg.filters, group_name)
+                        .await?
+                }
+            };
 
-    Ok(all_tests)
+            let group_tests: Vec<TestRecord> = tests
+                .into_iter()
+                .map(|t| {
+                    t.with_retry_count(group_cfg.retry_count)
+                        .with_schedule_individual(group_cfg.schedule_individual)
+                })
+                .collect();
+
+            Ok::<_, anyhow::Error>(group_tests)
+        })
+        .buffer_unordered(bound)
+        .try_collect()
+        .await?;
+
+    Ok(group_results.into_iter().flatten().collect())
 }
 
 /// Discover tests concurrently with provider preparation, signalling completion.
 async fn discover_with_signal(
     framework: &FrameworkConfig,
     groups: &HashMap<String, GroupConfig>,
+    concurrency: usize,
     discovery_done: &AtomicBool,
 ) -> Result<Vec<TestRecord>> {
-    eprintln!("[discover] Discovering tests...");
-    let result = discover_all_tests(framework, groups).await;
+    let mut span = offload::timing::progress_span("discover", "test discovery");
+    let result = discover_all_tests(framework, groups, concurrency).await;
     if let Ok(ref tests) = result {
-        eprintln!(
-            "[discover] found {} tests across {} groups",
+        span.annotate(format!(
+            "{} tests across {} groups",
             tests.len(),
             groups.len()
-        );
+        ));
     }
+    span.finish();
     discovery_done.store(true, Ordering::Release);
     result
 }
@@ -476,6 +492,7 @@ async fn run_prepare<P: SandboxProvider>(
     tracer: &offload::trace::Tracer,
     discovery_done: &AtomicBool,
 ) -> Result<Option<String>> {
+    let _span = offload::timing::progress_span("prepare", "image preparation");
     let prepare_ctx = PrepareContext {
         copy_dirs,
         sandbox_init_cmd: config.offload.sandbox_init_cmd.as_deref(),
@@ -520,7 +537,12 @@ async fn run_remote_provider<P: SandboxProvider>(
     let discovery_done = AtomicBool::new(false);
 
     let (all_tests, _) = tokio::try_join!(
-        discover_with_signal(&config.framework, &config.groups, &discovery_done),
+        discover_with_signal(
+            &config.framework,
+            &config.groups,
+            config.offload.max_parallel_collection,
+            &discovery_done
+        ),
         run_prepare(
             &mut provider,
             repo,
@@ -665,7 +687,12 @@ async fn run_tests(
     // Handle collect-only: only discovery needed, no provider setup
     if collect_only {
         eprint!("Discovering tests... ");
-        let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
+        let all_tests = discover_all_tests(
+            &config.framework,
+            &config.groups,
+            config.offload.max_parallel_collection,
+        )
+        .await?;
         eprintln!(
             "found {} tests across {} groups",
             all_tests.len(),
@@ -700,7 +727,12 @@ async fn run_tests(
         ProviderConfig::Local(p_cfg) => {
             // Local provider is synchronous -- no concurrency benefit
             eprint!("Discovering tests... ");
-            let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
+            let all_tests = discover_all_tests(
+                &config.framework,
+                &config.groups,
+                config.offload.max_parallel_collection,
+            )
+            .await?;
             eprintln!(
                 "found {} tests across {} groups",
                 all_tests.len(),
@@ -939,7 +971,12 @@ async fn build_image(config_path: &Path, no_cache: bool) -> Result<()> {
 async fn collect_tests(config_path: &Path, format: &str) -> Result<()> {
     let config = config::load_config(config_path)?;
 
-    let all_tests = discover_all_tests(&config.framework, &config.groups).await?;
+    let all_tests = discover_all_tests(
+        &config.framework,
+        &config.groups,
+        config.offload.max_parallel_collection,
+    )
+    .await?;
 
     match format {
         "json" => {
@@ -1079,6 +1116,7 @@ fn init_config(provider: &str, framework: &str) -> Result<()> {
             sandbox_init_cmd: None,
             post_patch_cmd: None,
             impatiently_requeue_batches: true,
+            max_parallel_collection: 0,
         },
         provider: provider_config,
         framework: framework_config,
