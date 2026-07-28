@@ -23,6 +23,7 @@ use crate::report::junit::TestsuiteXml;
 /// - `paths`: Directories to search
 /// - `command`: Full pytest invocation command
 /// - `run_args`: Extra arguments for execution only
+/// - `discovery_args`: Extra arguments for discovery only
 pub struct PytestFramework {
     config: PytestFrameworkConfig,
     /// The program to invoke (first token of `command`).
@@ -58,6 +59,45 @@ impl PytestFramework {
         })
     }
 
+    /// Builds the full argument list (after the program) for the discovery command.
+    ///
+    /// `discovery_args` tokens are inserted after `--collect-only -q` and before the
+    /// group filters; search paths come last.
+    fn discovery_cmd_args(
+        &self,
+        search_paths: &[String],
+        filters: &str,
+    ) -> FrameworkResult<Vec<String>> {
+        let mut args: Vec<String> = self.prefix_args.clone();
+        args.push("--collect-only".to_string());
+        args.push("-q".to_string());
+
+        // Append discovery_args for test discovery only (not execution)
+        if let Some(discovery_args) = &self.config.discovery_args {
+            let tokens = shell_words::split(discovery_args).map_err(|e| {
+                FrameworkError::DiscoveryFailed(format!(
+                    "Invalid discovery_args '{}': {}",
+                    discovery_args, e
+                ))
+            })?;
+            args.extend(tokens);
+        }
+
+        // Add filters if provided
+        if !filters.is_empty() {
+            let tokens = shell_words::split(filters).map_err(|e| {
+                FrameworkError::DiscoveryFailed(format!(
+                    "Invalid filter string '{}': {}",
+                    filters, e
+                ))
+            })?;
+            args.extend(tokens);
+        }
+
+        args.extend(search_paths.iter().cloned());
+        Ok(args)
+    }
+
     /// Parse `pytest --collect-only -q` output to extract test records.
     fn parse_collect_output(&self, output: &str, group: &str) -> Vec<TestRecord> {
         let mut tests = Vec::new();
@@ -82,28 +122,8 @@ impl TestFramework for PytestFramework {
         filters: &str,
         group: &str,
     ) -> FrameworkResult<Vec<TestRecord>> {
-        // Build the pytest --collect-only command
-        let mut cmd = tokio::process::Command::new(&self.program);
-        for arg in &self.prefix_args {
-            cmd.arg(arg);
-        }
-        cmd.arg("--collect-only").arg("-q");
-
-        // Add filters if provided
-        if !filters.is_empty() {
-            let args = shell_words::split(filters).map_err(|e| {
-                FrameworkError::DiscoveryFailed(format!(
-                    "Invalid filter string '{}': {}",
-                    filters, e
-                ))
-            })?;
-            for arg in args {
-                cmd.arg(arg);
-            }
-        }
-
         // Add paths to search (caller-provided paths take precedence over config)
-        let search_paths: Vec<_> = if paths.is_empty() {
+        let search_paths: Vec<String> = if paths.is_empty() {
             self.config
                 .paths
                 .as_deref()
@@ -118,8 +138,11 @@ impl TestFramework for PytestFramework {
                 .collect()
         };
 
-        for path in &search_paths {
-            cmd.arg(path);
+        // Build the pytest --collect-only command
+        let cmd_args = self.discovery_cmd_args(&search_paths, filters)?;
+        let mut cmd = tokio::process::Command::new(&self.program);
+        for arg in &cmd_args {
+            cmd.arg(arg);
         }
 
         // Build a display string for the command before running it
@@ -130,6 +153,9 @@ impl TestFramework for PytestFramework {
         }
         cmd_parts.push("--collect-only");
         cmd_parts.push("-q");
+        if let Some(discovery_args) = &self.config.discovery_args {
+            cmd_parts.push(discovery_args);
+        }
         let filter_display: String;
         if !filters.is_empty() {
             filter_display = filters.to_string();
@@ -288,6 +314,100 @@ mod tests {
     }
 
     #[test]
+    fn test_discovery_cmd_args_without_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string()];
+        let args = fw.discovery_cmd_args(&paths, "-m 'not slow'")?;
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                "not slow",
+                "tests"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_cmd_args_with_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--no-cov".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string()];
+        let args = fw.discovery_cmd_args(&paths, "-m 'not slow'")?;
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "--no-cov",
+                "-m",
+                "not slow",
+                "tests"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_cmd_args_with_discovery_args_no_filters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            discovery_args: Some("--no-cov -p no:cacheprovider".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string(), "examples".to_string()];
+        let args = fw.discovery_cmd_args(&paths, "")?;
+        assert_eq!(
+            args,
+            vec![
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "--no-cov",
+                "-p",
+                "no:cacheprovider",
+                "tests",
+                "examples"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_cmd_args_rejects_invalid_quoting() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--no-cov 'unclosed".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string()];
+        match fw.discovery_cmd_args(&paths, "") {
+            Err(e) => assert!(matches!(e, FrameworkError::DiscoveryFailed(_))),
+            Ok(_) => return Err("expected DiscoveryFailed for unbalanced quoting".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_execution_command_with_run_args() -> Result<(), Box<dyn std::error::Error>> {
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
@@ -302,6 +422,22 @@ mod tests {
         assert!(cmd.args.contains(&"--no-cov".to_string()));
         assert!(cmd.args.contains(&"--timeout=30".to_string()));
         assert!(cmd.args.contains(&"tests/test_a.py::test_one".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_excludes_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            discovery_args: Some("--no-cov".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+        assert!(!cmd.args.contains(&"--no-cov".to_string()));
+        assert!(!cmd.args.contains(&"--collect-only".to_string()));
         Ok(())
     }
 

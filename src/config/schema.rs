@@ -446,6 +446,12 @@ pub struct PytestFrameworkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_args: Option<String>,
 
+    /// Extra arguments appended only during test discovery (`--collect-only`), not execution.
+    ///
+    /// Example: `--no-cov` to skip coverage tracing during collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_args: Option<String>,
+
     /// Format string for constructing test IDs from JUnit XML attributes.
     ///
     /// Available placeholders:
@@ -1103,6 +1109,45 @@ mod tests {
         if let FrameworkConfig::Pytest(ref pytest) = round_tripped.framework {
             assert_eq!(pytest.command, "uv run pytest");
             assert_eq!(pytest.run_args.as_deref(), Some("--no-cov"));
+        } else {
+            return Err("Expected Pytest framework after round-trip".into());
+        }
+
+        Ok(())
+    }
+
+    /// Test that the `discovery_args` field round-trips through TOML serialization.
+    #[test]
+    fn test_pytest_discovery_args_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let toml_str = r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+            command = "uv run pytest"
+            discovery_args = "--no-cov"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config: Config = toml::from_str(toml_str)?;
+
+        if let FrameworkConfig::Pytest(ref pytest) = config.framework {
+            assert_eq!(pytest.discovery_args.as_deref(), Some("--no-cov"));
+        } else {
+            return Err("Expected Pytest framework".into());
+        }
+
+        let serialized = toml::to_string_pretty(&config)?;
+        let round_tripped: Config = toml::from_str(&serialized)?;
+
+        if let FrameworkConfig::Pytest(ref pytest) = round_tripped.framework {
+            assert_eq!(pytest.discovery_args.as_deref(), Some("--no-cov"));
         } else {
             return Err("Expected Pytest framework after round-trip".into());
         }
