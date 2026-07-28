@@ -267,7 +267,7 @@ impl TestFramework for CargoFramework {
                 let canonical = format!(
                     "{} {}",
                     testcase.classname.as_deref().unwrap_or(""),
-                    &testcase.name
+                    testcase.name
                 );
                 if !batch_set.contains(canonical.as_str()) {
                     return Err(FrameworkError::Other(anyhow::anyhow!(
