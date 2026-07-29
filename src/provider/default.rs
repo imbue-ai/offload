@@ -345,7 +345,7 @@ impl DefaultSandbox {
         // OFFLOAD_ROOT literal.
         for (key, value) in &cmd.env {
             let resolved = match &offload_root {
-                Some(root) => value.replace("{root}", root),
+                Some(root) => crate::framework::env::resolve_root_placeholder(value, root),
                 None => value.clone(),
             };
             env_entries.push(format!("{}={}", key, shell_words::quote(&resolved)));
@@ -356,13 +356,10 @@ impl DefaultSandbox {
         // expands it.
         if !cmd.path_prepend.is_empty() {
             let root = offload_root.as_deref().unwrap_or("");
-            let dirs = cmd
-                .path_prepend
-                .iter()
-                .map(|dir| Path::new(root).join(dir).to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(":");
-            env_entries.push(format!("PATH={}:\"$PATH\"", shell_words::quote(&dirs)));
+            env_entries.push(crate::framework::env::shell_path_prepend_entry(
+                &cmd.path_prepend,
+                root,
+            ));
         }
 
         let env_prefix = env_entries.join(" ");
