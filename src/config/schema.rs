@@ -455,6 +455,20 @@ pub struct PytestFrameworkConfig {
     /// Default: `"{name}"` (pytest typically includes full path in name)
     #[serde(default = "default_pytest_test_id_format")]
     pub test_id_format: String,
+
+    /// Environment variables to set for test discovery and execution.
+    ///
+    /// These are merged with (and override) the current environment.
+    /// Values support the `{root}` placeholder, which resolves to the local
+    /// working directory during test discovery and to `OFFLOAD_ROOT`
+    /// (`sandbox_project_root`) during sandbox execution.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    /// Root-relative directories prepended to `PATH` for test discovery and
+    /// execution (e.g. `[".venv/bin"]`). `{root}` resolves as in [`Self::env`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepend_path: Option<Vec<String>>,
 }
 
 fn default_pytest_command() -> String {
@@ -495,6 +509,21 @@ pub struct VitestFrameworkConfig {
     /// Default: `"{classname} > {name}"`
     #[serde(default = "default_vitest_test_id_format")]
     pub test_id_format: String,
+
+    /// Environment variables to set for test discovery and execution.
+    ///
+    /// These are merged with (and override) the current environment.
+    /// Values support the `{root}` placeholder, which resolves to the local
+    /// working directory during test discovery and to `OFFLOAD_ROOT`
+    /// (`sandbox_project_root`) during sandbox execution.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    /// Root-relative directories prepended to `PATH` for test discovery and
+    /// execution (e.g. `["node_modules/.bin"]`). `{root}` resolves as in
+    /// [`Self::env`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepend_path: Option<Vec<String>>,
 }
 
 impl Default for VitestFrameworkConfig {
@@ -503,6 +532,8 @@ impl Default for VitestFrameworkConfig {
             command: default_vitest_command(),
             run_args: None,
             test_id_format: default_vitest_test_id_format(),
+            env: HashMap::new(),
+            prepend_path: None,
         }
     }
 }

@@ -846,4 +846,127 @@ mod tests {
         assert_eq!(config.offload.sandbox_repo_root.as_deref(), Some("/app"));
         Ok(())
     }
+
+    #[test]
+    fn test_pytest_framework_env_and_prepend_path_parse() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+            command = ".venv/bin/pytest"
+            prepend_path = [".venv/bin"]
+
+            [framework.env]
+            VIRTUAL_ENV = "{root}/.venv"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        let FrameworkConfig::Pytest(cfg) = &config.framework else {
+            anyhow::bail!("expected pytest framework config");
+        };
+        assert_eq!(
+            cfg.env.get("VIRTUAL_ENV").map(String::as_str),
+            Some("{root}/.venv"),
+            "env values keep the {{root}} placeholder for resolution at run time"
+        );
+        assert_eq!(
+            cfg.prepend_path.as_deref(),
+            Some([".venv/bin".to_string()].as_slice())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_pytest_framework_env_and_prepend_path_default() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        let FrameworkConfig::Pytest(cfg) = &config.framework else {
+            anyhow::bail!("expected pytest framework config");
+        };
+        assert!(cfg.env.is_empty());
+        assert_eq!(cfg.prepend_path, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_vitest_framework_env_and_prepend_path_parse() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "vitest"
+            prepend_path = ["node_modules/.bin"]
+
+            [framework.env]
+            NODE_ENV = "test"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        let FrameworkConfig::Vitest(cfg) = &config.framework else {
+            anyhow::bail!("expected vitest framework config");
+        };
+        assert_eq!(cfg.env.get("NODE_ENV").map(String::as_str), Some("test"));
+        assert_eq!(
+            cfg.prepend_path.as_deref(),
+            Some(["node_modules/.bin".to_string()].as_slice())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_vitest_framework_env_and_prepend_path_default() -> Result<()> {
+        let toml = r#"
+            [offload]
+            max_parallel = 4
+            sandbox_repo_root = "/app"
+
+            [provider]
+            type = "local"
+
+            [framework]
+            type = "vitest"
+
+            [groups.all]
+            retry_count = 0
+        "#;
+
+        let config = load_config_str(toml)?;
+        let FrameworkConfig::Vitest(cfg) = &config.framework else {
+            anyhow::bail!("expected vitest framework config");
+        };
+        assert!(cfg.env.is_empty());
+        assert_eq!(cfg.prepend_path, None);
+        Ok(())
+    }
 }
