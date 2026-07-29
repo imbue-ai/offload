@@ -124,14 +124,19 @@ impl Sandbox for LocalSandbox {
             process.env(key, value);
         }
 
-        // Merge PATH: root-anchored prepend dirs ahead of the sandbox env's
+        // Merge PATH: root-anchored prepend dirs ahead of an explicit
+        // command env PATH when one is configured, else the sandbox env's
         // PATH, falling back to the process env's PATH.
         if !cmd.path_prepend.is_empty() {
-            let existing = self
-                .env
-                .iter()
-                .find(|(k, _)| k == "PATH")
-                .map(|(_, v)| v.clone())
+            let existing = cmd_env
+                .get("PATH")
+                .cloned()
+                .or_else(|| {
+                    self.env
+                        .iter()
+                        .find(|(k, _)| k == "PATH")
+                        .map(|(_, v)| v.clone())
+                })
                 .or_else(|| std::env::var("PATH").ok())
                 .unwrap_or_default();
             let merged = crate::framework::env::prepended_path(
@@ -276,6 +281,45 @@ mod tests {
         assert_eq!(
             stdout_lines.get(1).map(String::as_str),
             Some(expected_root.as_str())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exec_stream_explicit_env_path_takes_precedence_over_sandbox_path() -> anyhow::Result<()>
+    {
+        let working_dir = std::env::temp_dir();
+        let mut sandbox = LocalSandbox {
+            id: "local-env-path".to_string(),
+            working_dir: working_dir.clone(),
+            env: vec![("PATH".to_string(), "/sandbox/bin".to_string())],
+            shell: "/bin/sh".to_string(),
+        };
+        let mut cmd = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf '%s\\n' \"$PATH\"");
+        cmd.env
+            .push(("PATH".to_string(), "{root}/custom/bin".to_string()));
+        cmd.path_prepend = vec!["tools/bin".to_string()];
+
+        let (mut stream, mut child) = sandbox.exec_stream(&cmd).await?;
+        let mut stdout_lines = Vec::new();
+        while let Some(line) = stream.next().await {
+            if let OutputLine::Stdout(text) = line {
+                stdout_lines.push(text);
+            }
+        }
+        let status = child.wait().await?;
+        assert!(status.success());
+
+        let expected_path = format!(
+            "{}:{}/custom/bin",
+            working_dir.join("tools/bin").display(),
+            working_dir.display()
+        );
+        assert_eq!(
+            stdout_lines.first().map(String::as_str),
+            Some(expected_path.as_str())
         );
         Ok(())
     }

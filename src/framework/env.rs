@@ -12,6 +12,12 @@
 //! providers render a `PATH=...` string with `$PATH` left for the remote
 //! shell to expand. The string-rendering helpers and the value-computing
 //! helpers both build on the same anchoring core.
+//!
+//! Precedence rule shared by both contexts: `prepend_path` dirs are placed
+//! ahead of an explicit `env` `PATH` value when one is configured, and only
+//! fall back to the ambient PATH (`$PATH` for remote shells, the process
+//! PATH locally) when no explicit `env` `PATH` is set. Neither value is
+//! dropped.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -78,19 +84,33 @@ pub fn prepended_path(prepend: &[String], root: &Path, existing_path: &str) -> S
 
 /// Render the `PATH=...` env entry for a remote shell command: the
 /// root-anchored `prepend` dirs shell-quoted and colon-joined, followed by
-/// an unquoted `:"$PATH"` suffix left for the remote shell to expand.
-/// Callers skip rendering entirely when `prepend` is empty.
-pub fn shell_path_prepend_entry(prepend: &[String], root: &str) -> String {
-    let dirs = anchored_dirs(prepend, Path::new(root)).join(":");
-    format!("PATH={}:\"$PATH\"", shell_words::quote(&dirs))
+/// the base PATH. The base is the explicit env `PATH` value
+/// (`explicit_path`, already `{root}`-resolved, shell-quoted here) when one
+/// is configured; otherwise an unquoted `:"$PATH"` suffix left for the
+/// remote shell to expand. Either way the rendered command carries a
+/// single `PATH` entry, so neither value is dropped or clobbered. Callers
+/// skip rendering entirely when `prepend` is empty.
+pub fn shell_path_prepend_entry(
+    prepend: &[String],
+    root: &str,
+    explicit_path: Option<&str>,
+) -> String {
+    let joined = anchored_dirs(prepend, Path::new(root)).join(":");
+    let dirs = shell_words::quote(&joined);
+    match explicit_path {
+        Some(path) => format!("PATH={}:{}", dirs, shell_words::quote(path)),
+        None => format!("PATH={}:\"$PATH\"", dirs),
+    }
 }
 
 /// Compute the environment overrides for a local discovery command:
 /// the config env entries with `{root}` resolved against `root`, sorted by
-/// key for determinism, plus a `PATH` entry prepending the root-anchored
-/// `prepend_path` dirs to `existing_path` when `prepend_path` is non-empty.
-/// Returns an empty vec when neither field is set, leaving the child
-/// environment untouched.
+/// key for determinism, plus the root-anchored `prepend_path` dirs
+/// prepended to `PATH` when `prepend_path` is non-empty. Precedence: an
+/// explicit env `PATH` entry is the base for the prepend (merged in place,
+/// never duplicated or dropped); `existing_path` is only the fallback when
+/// no explicit env `PATH` is configured. Returns an empty vec when neither
+/// field is set, leaving the child environment untouched.
 pub fn discovery_env(
     env: &HashMap<String, String>,
     prepend_path: Option<&[String]>,
@@ -102,10 +122,16 @@ pub fn discovery_env(
     if let Some(dirs) = prepend_path
         && !dirs.is_empty()
     {
-        entries.push((
-            "PATH".to_string(),
-            prepended_path(dirs, root, existing_path),
-        ));
+        let base = entries
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .unwrap_or(existing_path);
+        let merged = prepended_path(dirs, root, base);
+        match entries.iter_mut().find(|(key, _)| key == "PATH") {
+            Some(entry) => entry.1 = merged,
+            None => entries.push(("PATH".to_string(), merged)),
+        }
     }
     entries
 }
@@ -148,7 +174,7 @@ mod tests {
     fn test_shell_path_prepend_entry_quotes_dirs_and_defers_path() {
         let prepend = vec![".venv/bin".to_string(), "scripts".to_string()];
         assert_eq!(
-            shell_path_prepend_entry(&prepend, "/app"),
+            shell_path_prepend_entry(&prepend, "/app", None),
             "PATH=/app/.venv/bin:/app/scripts:\"$PATH\""
         );
     }
@@ -157,7 +183,7 @@ mod tests {
     fn test_shell_path_prepend_entry_quotes_dirs_with_spaces() {
         let prepend = vec!["my tools/bin".to_string()];
         assert_eq!(
-            shell_path_prepend_entry(&prepend, "/app"),
+            shell_path_prepend_entry(&prepend, "/app", None),
             "PATH='/app/my tools/bin':\"$PATH\""
         );
     }
@@ -166,8 +192,26 @@ mod tests {
     fn test_shell_path_prepend_entry_absolute_entry_left_unchanged() {
         let prepend = vec!["/opt/tools/bin".to_string()];
         assert_eq!(
-            shell_path_prepend_entry(&prepend, "/app"),
+            shell_path_prepend_entry(&prepend, "/app", None),
             "PATH=/opt/tools/bin:\"$PATH\""
+        );
+    }
+
+    #[test]
+    fn test_shell_path_prepend_entry_prepends_onto_explicit_path() {
+        let prepend = vec![".venv/bin".to_string()];
+        assert_eq!(
+            shell_path_prepend_entry(&prepend, "/app", Some("/custom/bin")),
+            "PATH=/app/.venv/bin:/custom/bin"
+        );
+    }
+
+    #[test]
+    fn test_shell_path_prepend_entry_quotes_explicit_path_with_spaces() {
+        let prepend = vec![".venv/bin".to_string()];
+        assert_eq!(
+            shell_path_prepend_entry(&prepend, "/app", Some("/my tools/bin")),
+            "PATH=/app/.venv/bin:'/my tools/bin'"
         );
     }
 
@@ -299,5 +343,29 @@ mod tests {
 
         let entries = discovery_env(&HashMap::new(), Some(&[]), Path::new("/repo"), "/usr/bin");
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_discovery_env_prepends_onto_explicit_env_path() {
+        let env = HashMap::from([("PATH".to_string(), "{root}/custom/bin".to_string())]);
+        let prepend = vec![".venv/bin".to_string()];
+        let entries = discovery_env(&env, Some(&prepend), Path::new("/repo"), "/usr/bin");
+        assert_eq!(
+            entries,
+            vec![(
+                "PATH".to_string(),
+                "/repo/.venv/bin:/repo/custom/bin".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn test_discovery_env_explicit_path_alone_passes_through() {
+        let env = HashMap::from([("PATH".to_string(), "/custom/bin".to_string())]);
+        let entries = discovery_env(&env, None, Path::new("/repo"), "/usr/bin");
+        assert_eq!(
+            entries,
+            vec![("PATH".to_string(), "/custom/bin".to_string())]
+        );
     }
 }

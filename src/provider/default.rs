@@ -342,16 +342,25 @@ impl DefaultSandbox {
             .collect::<Vec<_>>();
 
         // Command-scoped env entries, with `{root}` resolved to the
-        // OFFLOAD_ROOT literal.
+        // OFFLOAD_ROOT literal. An explicit PATH entry is held back when
+        // path_prepend is set: it becomes the base of the merged PATH
+        // entry below instead of a standalone entry that would be clobbered
+        // by (or clobber) the prepend.
+        let mut explicit_path: Option<String> = None;
         for (key, value) in &cmd.env {
             let resolved = match &offload_root {
                 Some(root) => crate::framework::env::resolve_root_placeholder(value, root),
                 None => value.clone(),
             };
+            if key == "PATH" && !cmd.path_prepend.is_empty() {
+                explicit_path = Some(resolved);
+                continue;
+            }
             env_entries.push(format!("{}={}", key, shell_words::quote(&resolved)));
         }
 
-        // PATH prepend: shell-quoted colon-joined root-anchored dirs,
+        // PATH prepend: shell-quoted colon-joined root-anchored dirs ahead
+        // of the explicit env PATH when one is configured, otherwise
         // followed by an unquoted :"$PATH" suffix so the remote shell
         // expands it.
         if !cmd.path_prepend.is_empty() {
@@ -359,6 +368,7 @@ impl DefaultSandbox {
             env_entries.push(crate::framework::env::shell_path_prepend_entry(
                 &cmd.path_prepend,
                 root,
+                explicit_path.as_deref(),
             ));
         }
 
@@ -972,6 +982,30 @@ mod tests {
         let result = sandbox.build_exec_command(&command);
 
         assert_eq!(result, "exec --sandbox sb-test-123 --cmd 'pytest -v'");
+    }
+
+    #[test]
+    fn test_build_exec_command_env_path_and_path_prepend_merge() {
+        let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
+        let mut command = cmd("pytest", &[]);
+        command
+            .env
+            .push(("PATH".to_string(), "{root}/custom/bin".to_string()));
+        command.path_prepend = vec![".venv/bin".to_string()];
+
+        let result = sandbox.build_exec_command(&command);
+
+        // The explicit env PATH is the base: a single merged PATH entry,
+        // no :"$PATH" suffix, no standalone duplicate.
+        assert!(
+            result.contains("PATH=/app/.venv/bin:/app/custom/bin"),
+            "PATH entry should prepend dirs ahead of explicit env PATH: {result}"
+        );
+        assert_eq!(
+            result.matches("PATH=").count(),
+            1,
+            "exactly one PATH entry should be rendered: {result}"
+        );
     }
 
     #[test]
