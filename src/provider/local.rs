@@ -127,7 +127,7 @@ impl Sandbox for LocalSandbox {
         // Merge PATH: root-anchored prepend dirs ahead of an explicit
         // command env PATH when one is configured, else the sandbox env's
         // PATH, falling back to the process env's PATH.
-        if !cmd.path_prepend.is_empty() {
+        if !cmd.prepend_path.is_empty() {
             let existing = cmd_env
                 .get("PATH")
                 .cloned()
@@ -140,7 +140,7 @@ impl Sandbox for LocalSandbox {
                 .or_else(|| std::env::var("PATH").ok())
                 .unwrap_or_default();
             let merged = crate::framework::env::prepended_path(
-                &cmd.path_prepend,
+                &cmd.prepend_path,
                 &self.working_dir,
                 &existing,
             );
@@ -258,7 +258,7 @@ mod tests {
             .arg("printf '%s\\n' \"$PATH\"; printf '%s\\n' \"$MYROOT\"");
         cmd.env
             .push(("MYROOT".to_string(), "{root}/sub".to_string()));
-        cmd.path_prepend = vec!["tools/bin".to_string()];
+        cmd.prepend_path = vec!["tools/bin".to_string()];
 
         let (mut stream, mut child) = sandbox.exec_stream(&cmd).await?;
         let mut stdout_lines = Vec::new();
@@ -300,7 +300,7 @@ mod tests {
             .arg("printf '%s\\n' \"$PATH\"");
         cmd.env
             .push(("PATH".to_string(), "{root}/custom/bin".to_string()));
-        cmd.path_prepend = vec!["tools/bin".to_string()];
+        cmd.prepend_path = vec!["tools/bin".to_string()];
 
         let (mut stream, mut child) = sandbox.exec_stream(&cmd).await?;
         let mut stdout_lines = Vec::new();

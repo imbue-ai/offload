@@ -56,7 +56,7 @@ pub(crate) fn attach_execution_env(
         cmd.env.push((key.clone(), value.clone()));
     }
     if let Some(dirs) = prepend_path {
-        cmd.path_prepend.extend(dirs.iter().cloned());
+        cmd.prepend_path.extend(dirs.iter().cloned());
     }
 }
 

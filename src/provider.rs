@@ -154,7 +154,7 @@ pub struct Command {
     ///
     /// Providers anchor these to the sandbox project root and place them
     /// ahead of the sandbox's existing `PATH`.
-    pub path_prepend: Vec<String>,
+    pub prepend_path: Vec<String>,
 
     /// Maximum execution time in seconds.
     ///
@@ -170,7 +170,7 @@ impl Command {
             args: Vec::new(),
             working_dir: None,
             env: Vec::new(),
-            path_prepend: Vec::new(),
+            prepend_path: Vec::new(),
             timeout_secs: None,
         }
     }
@@ -192,12 +192,12 @@ impl Command {
     }
 
     /// Adds root-relative directories to prepend to `PATH` at execution time.
-    pub fn path_prepend<I, S>(mut self, dirs: I) -> Self
+    pub fn prepend_path<I, S>(mut self, dirs: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.path_prepend.extend(dirs.into_iter().map(Into::into));
+        self.prepend_path.extend(dirs.into_iter().map(Into::into));
         self
     }
 

@@ -343,7 +343,7 @@ impl DefaultSandbox {
 
         // Command-scoped env entries, with `{root}` resolved to the
         // OFFLOAD_ROOT literal. An explicit PATH entry is held back when
-        // path_prepend is set: it becomes the base of the merged PATH
+        // prepend_path is set: it becomes the base of the merged PATH
         // entry below instead of a standalone entry that would be clobbered
         // by (or clobber) the prepend.
         let mut explicit_path: Option<String> = None;
@@ -352,7 +352,7 @@ impl DefaultSandbox {
                 Some(root) => crate::framework::env::resolve_root_placeholder(value, root),
                 None => value.clone(),
             };
-            if key == "PATH" && !cmd.path_prepend.is_empty() {
+            if key == "PATH" && !cmd.prepend_path.is_empty() {
                 explicit_path = Some(resolved);
                 continue;
             }
@@ -363,10 +363,10 @@ impl DefaultSandbox {
         // of the explicit env PATH when one is configured, otherwise
         // followed by an unquoted :"$PATH" suffix so the remote shell
         // expands it.
-        if !cmd.path_prepend.is_empty() {
+        if !cmd.prepend_path.is_empty() {
             let root = offload_root.as_deref().unwrap_or("");
             env_entries.push(crate::framework::env::shell_path_prepend_entry(
-                &cmd.path_prepend,
+                &cmd.prepend_path,
                 root,
                 explicit_path.as_deref(),
             ));
@@ -575,7 +575,7 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             working_dir: None,
             env: Vec::new(),
-            path_prepend: Vec::new(),
+            prepend_path: Vec::new(),
             timeout_secs: None,
         }
     }
@@ -959,10 +959,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_exec_command_path_prepend_renders_path_entry() {
+    fn test_build_exec_command_prepend_path_renders_path_entry() {
         let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
         let mut command = cmd("pytest", &[]);
-        command.path_prepend = vec![".venv/bin".to_string(), "scripts".to_string()];
+        command.prepend_path = vec![".venv/bin".to_string(), "scripts".to_string()];
 
         let result = sandbox.build_exec_command(&command);
 
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_exec_command_empty_path_prepend_is_byte_identical() {
+    fn test_build_exec_command_empty_prepend_path_is_byte_identical() {
         let sandbox = sandbox_with_env(vec![]);
         let command = cmd("pytest", &["-v"]);
 
@@ -985,13 +985,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_exec_command_env_path_and_path_prepend_merge() {
+    fn test_build_exec_command_env_path_and_prepend_path_merge() {
         let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
         let mut command = cmd("pytest", &[]);
         command
             .env
             .push(("PATH".to_string(), "{root}/custom/bin".to_string()));
-        command.path_prepend = vec![".venv/bin".to_string()];
+        command.prepend_path = vec![".venv/bin".to_string()];
 
         let result = sandbox.build_exec_command(&command);
 
