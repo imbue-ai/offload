@@ -190,6 +190,12 @@ impl TestFramework for VitestFramework {
             }
         }
 
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+
         // Build a display string for the command before running it
         let mut cmd_parts: Vec<&str> = Vec::new();
         cmd_parts.push(&self.program);
@@ -290,6 +296,12 @@ impl TestFramework for VitestFramework {
                 }
             }
         }
+
+        super::env::attach_execution_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        );
 
         cmd
     }
@@ -863,6 +875,85 @@ mod tests {
             cmd_no.args
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_attaches_env_and_prepend_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            env: HashMap::from([
+                ("CI".to_string(), "1".to_string()),
+                ("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string()),
+            ]),
+            prepend_path: Some(vec!["node_modules/.bin".to_string()]),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+
+        // Env entries are sorted by key; `{root}` stays unresolved for the
+        // provider to resolve at execution time.
+        assert_eq!(
+            cmd.env,
+            vec![
+                ("CI".to_string(), "1".to_string()),
+                ("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())
+            ]
+        );
+        assert_eq!(cmd.prepend_path, vec!["node_modules/.bin".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_default_env_and_prepend_path_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+
+        assert!(cmd.env.is_empty());
+        assert!(cmd.prepend_path.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_discover_applies_env_and_prepend_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let script = dir.path().join("fake-vitest");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '[{\"name\": \"%s\", \"file\": \"%s/x.test.ts\"}]' \"$OFFLOAD_FAKE_ROOT\" \"$(pwd)\"\n",
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+
+        let config = VitestFrameworkConfig {
+            command: "fake-vitest".to_string(),
+            env: HashMap::from([("OFFLOAD_FAKE_ROOT".to_string(), "{root}/marker".to_string())]),
+            prepend_path: Some(vec![dir.path().to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+
+        let tests = fw.discover(&[], "", "grp").await?;
+
+        let cwd = std::env::current_dir()?;
+        let expected = format!("x.test.ts > {}/marker", cwd.display());
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].id, expected);
         Ok(())
     }
 }

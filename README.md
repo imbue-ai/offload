@@ -361,6 +361,8 @@ The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `
 | `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
 | `discovery_args` | string | (none) | Extra arguments for test discovery only, e.g. `--no-cov` to skip coverage tracing during collection |
 | `test_id_format` | string | `"{name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
+| `env` | table | `{}` | Environment variables for test discovery and execution. Values support the `{root}` placeholder: the local working directory during discovery, `OFFLOAD_ROOT` (`sandbox_project_root`) during sandbox execution |
+| `prepend_path` | list | (none) | Root-relative directories prepended to `PATH` for discovery and execution (e.g. `[".venv/bin"]`); `{root}` resolves as in `env` |
 
 #### `type = "nextest"`
 
@@ -393,6 +395,8 @@ Custom shell commands for test discovery and execution.
 | `command` | string | `"npx vitest"` | Full command prefix for vitest invocation |
 | `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
 | `test_id_format` | string | `"{classname} > {name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
+| `env` | table | `{}` | Environment variables for test discovery and execution. Values support the `{root}` placeholder: the local working directory during discovery, `OFFLOAD_ROOT` (`sandbox_project_root`) during sandbox execution |
+| `prepend_path` | list | (none) | Root-relative directories prepended to `PATH` for discovery and execution (e.g. `["node_modules/.bin"]`); `{root}` resolves as in `env` |
 
 ### `[groups.NAME]` -- Test Groups
 
@@ -521,6 +525,24 @@ filters = "-k test_flaky"
 [report]
 output_dir = "test-results"
 ```
+
+### Pytest with a Local Virtualenv
+
+Repos managed as uv workspaces can point Offload directly at the project
+virtualenv instead of wrapping every invocation in `uv run`, which needs
+network access that sandboxes may not have:
+
+```toml
+[framework]
+type = "pytest"
+command = ".venv/bin/pytest"
+prepend_path = [".venv/bin"]
+env = { VIRTUAL_ENV = "{root}/.venv" }
+```
+
+Because `{root}` resolves to the local working directory during discovery and
+to `OFFLOAD_ROOT` during sandbox execution, the same relative paths work in
+both contexts.
 
 ### Cargo Tests on Modal (`offload-cargo-modal.toml`)
 

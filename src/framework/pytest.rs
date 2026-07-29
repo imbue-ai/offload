@@ -145,6 +145,12 @@ impl TestFramework for PytestFramework {
             cmd.arg(arg);
         }
 
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+
         // Build a display string for the command before running it
         let mut cmd_parts: Vec<&str> = Vec::new();
         cmd_parts.push(&self.program);
@@ -233,6 +239,12 @@ impl TestFramework for PytestFramework {
             cmd = cmd.arg(test.id());
         }
 
+        super::env::attach_execution_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        );
+
         cmd
     }
 
@@ -267,6 +279,8 @@ impl TestFramework for PytestFramework {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::config::PytestFrameworkConfig;
     use crate::framework::TestInstance;
@@ -457,6 +471,78 @@ mod tests {
         let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
         assert!(!cmd_no.args.contains(&"-x".to_string()));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_attaches_env_and_prepend_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            env: HashMap::from([("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]),
+            prepend_path: Some(vec![".venv/bin".to_string()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+
+        // `{root}` is left unresolved; providers resolve it at execution time.
+        assert_eq!(
+            cmd.env,
+            vec![("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]
+        );
+        assert_eq!(cmd.prepend_path, vec![".venv/bin".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_default_env_and_prepend_path_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+
+        assert!(cmd.env.is_empty());
+        assert!(cmd.prepend_path.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_discover_applies_env_and_prepend_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let script = dir.path().join("fake-pytest");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s::test_echoed\\n' \"$OFFLOAD_FAKE_ROOT\"\n",
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+
+        let config = PytestFrameworkConfig {
+            command: "fake-pytest".to_string(),
+            env: HashMap::from([("OFFLOAD_FAKE_ROOT".to_string(), "{root}/marker".to_string())]),
+            prepend_path: Some(vec![dir.path().to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+
+        let tests = fw.discover(&[], "", "grp").await?;
+
+        let cwd = std::env::current_dir()?;
+        let expected = format!("{}/marker::test_echoed", cwd.display());
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].id, expected);
         Ok(())
     }
 }

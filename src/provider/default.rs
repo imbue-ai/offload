@@ -326,13 +326,53 @@ impl DefaultSandbox {
 
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
+        // OFFLOAD_ROOT anchors the `cd` prefix, `{root}` resolution in
+        // command env values, and PATH prepend dirs.
+        let offload_root = self
+            .env
+            .iter()
+            .find(|(k, _)| k == "OFFLOAD_ROOT")
+            .map(|(_, v)| v.clone());
+
         // Build env var prefix (KEY=value KEY2=value2 ...)
-        let env_prefix = self
+        let mut env_entries = self
             .env
             .iter()
             .map(|(k, v)| format!("{}={}", k, shell_words::quote(v)))
-            .collect::<Vec<_>>()
-            .join(" ");
+            .collect::<Vec<_>>();
+
+        // Command-scoped env entries, with `{root}` resolved to the
+        // OFFLOAD_ROOT literal. An explicit PATH entry is held back when
+        // prepend_path is set: it becomes the base of the merged PATH
+        // entry below instead of a standalone entry that would be clobbered
+        // by (or clobber) the prepend.
+        let mut explicit_path: Option<String> = None;
+        for (key, value) in &cmd.env {
+            let resolved = match &offload_root {
+                Some(root) => crate::framework::env::resolve_root_placeholder(value, root),
+                None => value.clone(),
+            };
+            if key == "PATH" && !cmd.prepend_path.is_empty() {
+                explicit_path = Some(resolved);
+                continue;
+            }
+            env_entries.push(format!("{}={}", key, shell_words::quote(&resolved)));
+        }
+
+        // PATH prepend: shell-quoted colon-joined root-anchored dirs ahead
+        // of the explicit env PATH when one is configured, otherwise
+        // followed by an unquoted :"$PATH" suffix so the remote shell
+        // expands it.
+        if !cmd.prepend_path.is_empty() {
+            let root = offload_root.as_deref().unwrap_or("");
+            env_entries.push(crate::framework::env::shell_path_prepend_entry(
+                &cmd.prepend_path,
+                root,
+                explicit_path.as_deref(),
+            ));
+        }
+
+        let env_prefix = env_entries.join(" ");
 
         // Build the inner command with properly escaped arguments
         let program_and_args = std::iter::once(cmd.program.as_str())
@@ -349,8 +389,8 @@ impl DefaultSandbox {
         };
 
         // Prepend cd to project root if OFFLOAD_ROOT is set
-        let inner_cmd = match self.env.iter().find(|(k, _)| k == "OFFLOAD_ROOT") {
-            Some((_, root)) => format!("cd {} && {}", shell_words::quote(root), inner_cmd),
+        let inner_cmd = match &offload_root {
+            Some(root) => format!("cd {} && {}", shell_words::quote(root), inner_cmd),
             None => inner_cmd,
         };
 
@@ -535,6 +575,7 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             working_dir: None,
             env: Vec::new(),
+            prepend_path: Vec::new(),
             timeout_secs: None,
         }
     }
@@ -894,6 +935,76 @@ mod tests {
         assert!(
             cd_pos < env_pos,
             "cd should appear before env prefix: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_resolves_root_in_command_env() {
+        let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
+        let mut command = cmd("pytest", &["-v"]);
+        command
+            .env
+            .push(("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string()));
+
+        let result = sandbox.build_exec_command(&command);
+
+        assert!(
+            result.contains("VIRTUAL_ENV=/app/.venv"),
+            "command env value should have {{root}} resolved to OFFLOAD_ROOT: {result}"
+        );
+        assert!(
+            !result.contains("{root}"),
+            "no unresolved placeholder should remain: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_prepend_path_renders_path_entry() {
+        let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
+        let mut command = cmd("pytest", &[]);
+        command.prepend_path = vec![".venv/bin".to_string(), "scripts".to_string()];
+
+        let result = sandbox.build_exec_command(&command);
+
+        // Root-anchored dirs are colon-joined and quoted; the :"$PATH"
+        // suffix stays unquoted so the remote shell expands it.
+        assert!(
+            result.contains("PATH=/app/.venv/bin:/app/scripts:\"$PATH\""),
+            "PATH entry should prepend root-anchored dirs before $PATH: {result}"
+        );
+    }
+
+    #[test]
+    fn test_build_exec_command_empty_prepend_path_is_byte_identical() {
+        let sandbox = sandbox_with_env(vec![]);
+        let command = cmd("pytest", &["-v"]);
+
+        let result = sandbox.build_exec_command(&command);
+
+        assert_eq!(result, "exec --sandbox sb-test-123 --cmd 'pytest -v'");
+    }
+
+    #[test]
+    fn test_build_exec_command_env_path_and_prepend_path_merge() {
+        let sandbox = sandbox_with_env(vec![("OFFLOAD_ROOT".to_string(), "/app".to_string())]);
+        let mut command = cmd("pytest", &[]);
+        command
+            .env
+            .push(("PATH".to_string(), "{root}/custom/bin".to_string()));
+        command.prepend_path = vec![".venv/bin".to_string()];
+
+        let result = sandbox.build_exec_command(&command);
+
+        // The explicit env PATH is the base: a single merged PATH entry,
+        // no :"$PATH" suffix, no standalone duplicate.
+        assert!(
+            result.contains("PATH=/app/.venv/bin:/app/custom/bin"),
+            "PATH entry should prepend dirs ahead of explicit env PATH: {result}"
+        );
+        assert_eq!(
+            result.matches("PATH=").count(),
+            1,
+            "exactly one PATH entry should be rendered: {result}"
         );
     }
 
