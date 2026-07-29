@@ -10,14 +10,12 @@
 //! substitution rules but differ in output shape: local providers need a
 //! concrete merged `PATH` value for `process.env`, while remote-shell
 //! providers render a `PATH=...` string with `$PATH` left for the remote
-//! shell to expand. The string-rendering helpers and the value-computing
-//! helpers both build on the same anchoring core.
+//! shell to expand.
 //!
 //! Precedence rule shared by both contexts: `prepend_path` dirs are placed
 //! ahead of an explicit `env` `PATH` value when one is configured, and only
 //! fall back to the ambient PATH (`$PATH` for remote shells, the process
-//! PATH locally) when no explicit `env` `PATH` is set. Neither value is
-//! dropped.
+//! PATH locally) when no explicit `env` `PATH` is set.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,9 +88,8 @@ pub(crate) fn prepended_path(prepend: &[String], root: &Path, existing_path: &st
 /// the base PATH. The base is the explicit env `PATH` value
 /// (`explicit_path`, already `{root}`-resolved, shell-quoted here) when one
 /// is configured; otherwise an unquoted `:"$PATH"` suffix left for the
-/// remote shell to expand. Either way the rendered command carries a
-/// single `PATH` entry, so neither value is dropped or clobbered. Callers
-/// skip rendering entirely when `prepend` is empty.
+/// remote shell to expand. Callers skip rendering entirely when `prepend`
+/// is empty.
 pub(crate) fn shell_path_prepend_entry(
     prepend: &[String],
     root: &str,
@@ -110,10 +107,10 @@ pub(crate) fn shell_path_prepend_entry(
 /// the config env entries with `{root}` resolved against `root`, sorted by
 /// key for determinism, plus the root-anchored `prepend_path` dirs
 /// prepended to `PATH` when `prepend_path` is non-empty. Precedence: an
-/// explicit env `PATH` entry is the base for the prepend (merged in place,
-/// never duplicated or dropped); `existing_path` is only the fallback when
-/// no explicit env `PATH` is configured. Returns an empty vec when neither
-/// field is set, leaving the child environment untouched.
+/// explicit env `PATH` entry is the base for the prepend; `existing_path`
+/// is only the fallback when no explicit env `PATH` is configured. Returns
+/// an empty vec when neither field is set, leaving the child environment
+/// untouched.
 fn discovery_env(
     env: &HashMap<String, String>,
     prepend_path: Option<&[String]>,
