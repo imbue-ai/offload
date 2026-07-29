@@ -146,7 +146,15 @@ pub struct Command {
     /// Environment variables to set for this command.
     ///
     /// These are merged with (and override) the sandbox's environment.
+    /// Values may contain the `{root}` placeholder, which providers resolve
+    /// to the sandbox project root at execution time.
     pub env: Vec<(String, String)>,
+
+    /// Root-relative directories to prepend to `PATH` at execution time.
+    ///
+    /// Providers anchor these to the sandbox project root and place them
+    /// ahead of the sandbox's existing `PATH`.
+    pub path_prepend: Vec<String>,
 
     /// Maximum execution time in seconds.
     ///
@@ -162,6 +170,7 @@ impl Command {
             args: Vec::new(),
             working_dir: None,
             env: Vec::new(),
+            path_prepend: Vec::new(),
             timeout_secs: None,
         }
     }
@@ -179,6 +188,16 @@ impl Command {
         S: Into<String>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Adds root-relative directories to prepend to `PATH` at execution time.
+    pub fn path_prepend<I, S>(mut self, dirs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.path_prepend.extend(dirs.into_iter().map(Into::into));
         self
     }
 

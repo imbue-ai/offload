@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::provider::Command;
+
 /// Substitute the `{root}` placeholder in each env value.
 pub fn resolve_env(entries: &HashMap<String, String>, root: &Path) -> HashMap<String, String> {
     let root = root.to_string_lossy();
@@ -16,6 +18,26 @@ pub fn resolve_env(entries: &HashMap<String, String>, root: &Path) -> HashMap<St
         .iter()
         .map(|(key, value)| (key.clone(), value.replace("{root}", root.as_ref())))
         .collect()
+}
+
+/// Attach framework env entries and `PATH` prepend dirs to an execution
+/// command. `{root}` placeholders in env values are left unresolved —
+/// providers resolve them against the sandbox project root at execution
+/// time. Env entries are sorted by key so rendered commands are
+/// deterministic.
+pub(crate) fn attach_execution_env(
+    cmd: &mut Command,
+    env: &HashMap<String, String>,
+    prepend_path: Option<&[String]>,
+) {
+    let mut entries: Vec<(&String, &String)> = env.iter().collect();
+    entries.sort_by_key(|(key, _)| *key);
+    for (key, value) in entries {
+        cmd.env.push((key.clone(), value.clone()));
+    }
+    if let Some(dirs) = prepend_path {
+        cmd.path_prepend.extend(dirs.iter().cloned());
+    }
 }
 
 /// Build a `PATH` value with each `prepend` dir anchored at `root` placed

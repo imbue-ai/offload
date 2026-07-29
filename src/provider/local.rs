@@ -114,8 +114,32 @@ impl Sandbox for LocalSandbox {
         for (key, value) in &self.env {
             process.env(key, value);
         }
-        for (key, value) in &cmd.env {
+        // Resolve `{root}` in command env values against the sandbox
+        // working directory.
+        let cmd_env = crate::framework::env::resolve_env(
+            &cmd.env.iter().cloned().collect(),
+            &self.working_dir,
+        );
+        for (key, value) in &cmd_env {
             process.env(key, value);
+        }
+
+        // Merge PATH: root-anchored prepend dirs ahead of the sandbox env's
+        // PATH, falling back to the process env's PATH.
+        if !cmd.path_prepend.is_empty() {
+            let existing = self
+                .env
+                .iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.clone())
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let merged = crate::framework::env::prepended_path(
+                &cmd.path_prepend,
+                &self.working_dir,
+                &existing,
+            );
+            process.env("PATH", merged);
         }
 
         if let Some(dir) = &cmd.working_dir {
@@ -213,6 +237,48 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exec_stream_prepends_path_and_resolves_root() -> anyhow::Result<()> {
+        let working_dir = std::env::temp_dir();
+        let mut sandbox = LocalSandbox {
+            id: "local-env".to_string(),
+            working_dir: working_dir.clone(),
+            env: vec![("PATH".to_string(), "/sandbox/bin".to_string())],
+            shell: "/bin/sh".to_string(),
+        };
+        // Absolute path: the merged PATH below intentionally lacks /bin.
+        let mut cmd = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf '%s\\n' \"$PATH\"; printf '%s\\n' \"$MYROOT\"");
+        cmd.env
+            .push(("MYROOT".to_string(), "{root}/sub".to_string()));
+        cmd.path_prepend = vec!["tools/bin".to_string()];
+
+        let (mut stream, mut child) = sandbox.exec_stream(&cmd).await?;
+        let mut stdout_lines = Vec::new();
+        while let Some(line) = stream.next().await {
+            if let OutputLine::Stdout(text) = line {
+                stdout_lines.push(text);
+            }
+        }
+        let status = child.wait().await?;
+        assert!(status.success());
+
+        // PATH is the root-anchored prepend dir ahead of the sandbox env's PATH.
+        let expected_path = format!("{}:/sandbox/bin", working_dir.join("tools/bin").display());
+        assert_eq!(
+            stdout_lines.first().map(String::as_str),
+            Some(expected_path.as_str())
+        );
+        // `{root}` in command env values resolves to the sandbox working dir.
+        let expected_root = format!("{}/sub", working_dir.display());
+        assert_eq!(
+            stdout_lines.get(1).map(String::as_str),
+            Some(expected_root.as_str())
+        );
+        Ok(())
+    }
 
     #[test]
     fn local_sandbox_cost_estimate_is_zero() {

@@ -207,6 +207,12 @@ impl TestFramework for PytestFramework {
             cmd = cmd.arg(test.id());
         }
 
+        super::env::attach_execution_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        );
+
         cmd
     }
 
@@ -241,6 +247,8 @@ impl TestFramework for PytestFramework {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::config::PytestFrameworkConfig;
     use crate::framework::TestInstance;
@@ -321,6 +329,48 @@ mod tests {
         let cmd_no = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
         assert!(!cmd_no.args.contains(&"-x".to_string()));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_attaches_env_and_path_prepend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            env: HashMap::from([("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]),
+            prepend_path: Some(vec![".venv/bin".to_string()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+
+        // `{root}` is left unresolved; providers resolve it at execution time.
+        assert_eq!(
+            cmd.env,
+            vec![("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]
+        );
+        assert_eq!(cmd.path_prepend, vec![".venv/bin".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_default_env_and_path_prepend_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "python -m pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let record = TestRecord::new("tests/test_a.py::test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/junit.xml", false);
+
+        assert!(cmd.env.is_empty());
+        assert!(cmd.path_prepend.is_empty());
         Ok(())
     }
 }

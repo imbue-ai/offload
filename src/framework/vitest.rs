@@ -291,6 +291,12 @@ impl TestFramework for VitestFramework {
             }
         }
 
+        super::env::attach_execution_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        );
+
         cmd
     }
 
@@ -863,6 +869,55 @@ mod tests {
             cmd_no.args
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_attaches_env_and_path_prepend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            env: HashMap::from([
+                ("CI".to_string(), "1".to_string()),
+                ("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string()),
+            ]),
+            prepend_path: Some(vec!["node_modules/.bin".to_string()]),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+
+        // Env entries are sorted by key; `{root}` stays unresolved for the
+        // provider to resolve at execution time.
+        assert_eq!(
+            cmd.env,
+            vec![
+                ("CI".to_string(), "1".to_string()),
+                ("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())
+            ]
+        );
+        assert_eq!(cmd.path_prepend, vec!["node_modules/.bin".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execution_command_default_env_and_path_prepend_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig {
+            command: "npx vitest".to_string(),
+            ..Default::default()
+        };
+        let fw = VitestFramework::new(config)?;
+        let record = TestRecord::new("tests/a.test.ts > suite > test_one", "grp");
+        let tests = vec![TestInstance::new(&record)];
+
+        let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
+
+        assert!(cmd.env.is_empty());
+        assert!(cmd.path_prepend.is_empty());
         Ok(())
     }
 }
