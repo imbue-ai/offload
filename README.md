@@ -359,6 +359,7 @@ The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `
 | `paths` | list | (none) | Optional directories to search for tests. When omitted, pytest uses its own default discovery |
 | `command` | string | `"python -m pytest"` | Full command prefix for pytest invocation (e.g. `"uv run pytest"`) |
 | `run_args` | string | (none) | Extra arguments for test execution only (not discovery) |
+| `discovery_args` | string | (none) | Extra arguments for test discovery only, e.g. `--no-cov` to skip coverage tracing during collection |
 | `test_id_format` | string | `"{name}"` | Format for matching test IDs from JUnit XML (`{name}`, `{classname}`) |
 | `env` | table | `{}` | Environment variables for test discovery and execution. Values support the `{root}` placeholder: the local working directory during discovery, `OFFLOAD_ROOT` (`sandbox_project_root`) during sandbox execution |
 | `prepend_path` | list | (none) | Root-relative directories prepended to `PATH` for discovery and execution (e.g. `[".venv/bin"]`); `{root}` resolves as in `env` |
