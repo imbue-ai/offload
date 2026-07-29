@@ -1,7 +1,7 @@
 //! Test framework traits and implementations for discovery, execution, and result parsing.
 pub mod cargo;
 pub mod default;
-pub mod env;
+pub(crate) mod env;
 pub mod pytest;
 pub mod vitest;
 

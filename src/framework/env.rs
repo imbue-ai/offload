@@ -27,12 +27,15 @@ use crate::provider::Command;
 
 /// Substitute the `{root}` placeholder in a single env value against a
 /// root anchor string.
-pub fn resolve_root_placeholder(value: &str, root: &str) -> String {
+pub(crate) fn resolve_root_placeholder(value: &str, root: &str) -> String {
     value.replace("{root}", root)
 }
 
 /// Substitute the `{root}` placeholder in each env value.
-pub fn resolve_env(entries: &HashMap<String, String>, root: &Path) -> HashMap<String, String> {
+pub(crate) fn resolve_env(
+    entries: &HashMap<String, String>,
+    root: &Path,
+) -> HashMap<String, String> {
     let root = root.to_string_lossy();
     entries
         .iter()
@@ -71,7 +74,7 @@ fn anchored_dirs(prepend: &[String], root: &Path) -> Vec<String> {
 
 /// Build a `PATH` value with each `prepend` dir anchored at `root` placed
 /// before `existing_path`, all joined with `:`.
-pub fn prepended_path(prepend: &[String], root: &Path, existing_path: &str) -> String {
+pub(crate) fn prepended_path(prepend: &[String], root: &Path, existing_path: &str) -> String {
     if prepend.is_empty() {
         return existing_path.to_string();
     }
@@ -90,7 +93,7 @@ pub fn prepended_path(prepend: &[String], root: &Path, existing_path: &str) -> S
 /// remote shell to expand. Either way the rendered command carries a
 /// single `PATH` entry, so neither value is dropped or clobbered. Callers
 /// skip rendering entirely when `prepend` is empty.
-pub fn shell_path_prepend_entry(
+pub(crate) fn shell_path_prepend_entry(
     prepend: &[String],
     root: &str,
     explicit_path: Option<&str>,
@@ -111,7 +114,7 @@ pub fn shell_path_prepend_entry(
 /// never duplicated or dropped); `existing_path` is only the fallback when
 /// no explicit env `PATH` is configured. Returns an empty vec when neither
 /// field is set, leaving the child environment untouched.
-pub fn discovery_env(
+fn discovery_env(
     env: &HashMap<String, String>,
     prepend_path: Option<&[String]>,
     root: &Path,
