@@ -326,8 +326,6 @@ impl DefaultSandbox {
 
     /// Build the exec command with substitutions.
     fn build_exec_command(&self, cmd: &Command) -> String {
-        // OFFLOAD_ROOT anchors the `cd` prefix, `{root}` resolution in
-        // command env values, and PATH prepend dirs.
         let offload_root = self
             .env
             .iter()
@@ -359,10 +357,6 @@ impl DefaultSandbox {
             env_entries.push(format!("{}={}", key, shell_words::quote(&resolved)));
         }
 
-        // PATH prepend: shell-quoted colon-joined root-anchored dirs ahead
-        // of the explicit env PATH when one is configured, otherwise
-        // followed by an unquoted :"$PATH" suffix so the remote shell
-        // expands it.
         if !cmd.prepend_path.is_empty() {
             let root = offload_root.as_deref().unwrap_or("");
             env_entries.push(crate::framework::env::shell_path_prepend_entry(
@@ -966,8 +960,7 @@ mod tests {
 
         let result = sandbox.build_exec_command(&command);
 
-        // Root-anchored dirs are colon-joined and quoted; the :"$PATH"
-        // suffix stays unquoted so the remote shell expands it.
+        // The :"$PATH" suffix stays unquoted so the remote shell expands it.
         assert!(
             result.contains("PATH=/app/.venv/bin:/app/scripts:\"$PATH\""),
             "PATH entry should prepend root-anchored dirs before $PATH: {result}"
@@ -995,8 +988,8 @@ mod tests {
 
         let result = sandbox.build_exec_command(&command);
 
-        // The explicit env PATH is the base: a single merged PATH entry,
-        // no :"$PATH" suffix, no standalone duplicate.
+        // The explicit env PATH is the base: one merged PATH entry, no
+        // standalone duplicate.
         assert!(
             result.contains("PATH=/app/.venv/bin:/app/custom/bin"),
             "PATH entry should prepend dirs ahead of explicit env PATH: {result}"

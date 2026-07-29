@@ -896,8 +896,8 @@ mod tests {
 
         let cmd = fw.produce_test_execution_command(&tests, "/tmp/out.json", false);
 
-        // Env entries are sorted by key; `{root}` stays unresolved for the
-        // provider to resolve at execution time.
+        // `{root}` stays unresolved for the provider to resolve at
+        // execution time.
         assert_eq!(
             cmd.env,
             vec![

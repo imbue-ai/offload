@@ -114,8 +114,6 @@ impl Sandbox for LocalSandbox {
         for (key, value) in &self.env {
             process.env(key, value);
         }
-        // Resolve `{root}` in command env values against the sandbox
-        // working directory.
         let cmd_env = crate::framework::env::resolve_env(
             &cmd.env.iter().cloned().collect(),
             &self.working_dir,
@@ -124,9 +122,6 @@ impl Sandbox for LocalSandbox {
             process.env(key, value);
         }
 
-        // Merge PATH: root-anchored prepend dirs ahead of an explicit
-        // command env PATH when one is configured, else the sandbox env's
-        // PATH, falling back to the process env's PATH.
         if !cmd.prepend_path.is_empty() {
             let existing = cmd_env
                 .get("PATH")
@@ -270,13 +265,11 @@ mod tests {
         let status = child.wait().await?;
         assert!(status.success());
 
-        // PATH is the root-anchored prepend dir ahead of the sandbox env's PATH.
         let expected_path = format!("{}:/sandbox/bin", working_dir.join("tools/bin").display());
         assert_eq!(
             stdout_lines.first().map(String::as_str),
             Some(expected_path.as_str())
         );
-        // `{root}` in command env values resolves to the sandbox working dir.
         let expected_root = format!("{}/sub", working_dir.display());
         assert_eq!(
             stdout_lines.get(1).map(String::as_str),
