@@ -122,6 +122,12 @@ impl TestFramework for PytestFramework {
             cmd.arg(path);
         }
 
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+
         // Build a display string for the command before running it
         let mut cmd_parts: Vec<&str> = Vec::new();
         cmd_parts.push(&self.program);
@@ -371,6 +377,36 @@ mod tests {
 
         assert!(cmd.env.is_empty());
         assert!(cmd.path_prepend.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_discover_applies_env_and_prepend_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let script = dir.path().join("fake-pytest");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s::test_echoed\\n' \"$OFFLOAD_FAKE_ROOT\"\n",
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+
+        let config = PytestFrameworkConfig {
+            command: "fake-pytest".to_string(),
+            env: HashMap::from([("OFFLOAD_FAKE_ROOT".to_string(), "{root}/marker".to_string())]),
+            prepend_path: Some(vec![dir.path().to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+
+        let tests = fw.discover(&[], "", "grp").await?;
+
+        let cwd = std::env::current_dir()?;
+        let expected = format!("{}/marker::test_echoed", cwd.display());
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].id, expected);
         Ok(())
     }
 }

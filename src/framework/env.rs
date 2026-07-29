@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::{FrameworkError, FrameworkResult};
 use crate::provider::Command;
 
 /// Substitute the `{root}` placeholder in each env value.
@@ -54,6 +55,48 @@ pub fn prepended_path(prepend: &[String], root: &Path, existing_path: &str) -> S
         return dirs.join(":");
     }
     format!("{}:{}", dirs.join(":"), existing_path)
+}
+
+/// Compute the environment overrides for a local discovery command:
+/// the config env entries with `{root}` resolved against `root`, sorted by
+/// key for determinism, plus a `PATH` entry prepending the root-anchored
+/// `prepend_path` dirs to `existing_path` when `prepend_path` is non-empty.
+/// Returns an empty vec when neither field is set, leaving the child
+/// environment untouched.
+pub fn discovery_env(
+    env: &HashMap<String, String>,
+    prepend_path: Option<&[String]>,
+    root: &Path,
+    existing_path: &str,
+) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = resolve_env(env, root).into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some(dirs) = prepend_path
+        && !dirs.is_empty()
+    {
+        entries.push((
+            "PATH".to_string(),
+            prepended_path(dirs, root, existing_path),
+        ));
+    }
+    entries
+}
+
+/// Apply framework env entries and `prepend_path` to a local discovery
+/// command, resolving `{root}` against the local working directory.
+pub(crate) fn apply_discovery_env(
+    cmd: &mut tokio::process::Command,
+    env: &HashMap<String, String>,
+    prepend_path: Option<&[String]>,
+) -> FrameworkResult<()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        FrameworkError::DiscoveryFailed(format!("Failed to get current directory: {}", e))
+    })?;
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    for (key, value) in discovery_env(env, prepend_path, &cwd, &existing_path) {
+        cmd.env(key, value);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -121,5 +164,72 @@ mod tests {
         let prepend = vec!["/opt/tools/bin".to_string()];
         let path = prepended_path(&prepend, Path::new("/app"), "/usr/bin");
         assert_eq!(path, "/opt/tools/bin:/usr/bin");
+    }
+
+    #[test]
+    fn test_discovery_env_resolves_root_against_cwd() {
+        let env = HashMap::from([("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]);
+        let entries = discovery_env(&env, None, Path::new("/repo"), "/usr/bin");
+        assert_eq!(
+            entries,
+            vec![("VIRTUAL_ENV".to_string(), "/repo/.venv".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_discovery_env_prepends_path_after_env_entries() {
+        let env = HashMap::from([("VIRTUAL_ENV".to_string(), "{root}/.venv".to_string())]);
+        let prepend = vec![".venv/bin".to_string(), "scripts".to_string()];
+        let entries = discovery_env(&env, Some(&prepend), Path::new("/repo"), "/usr/bin:/bin");
+        assert_eq!(
+            entries,
+            vec![
+                ("VIRTUAL_ENV".to_string(), "/repo/.venv".to_string()),
+                (
+                    "PATH".to_string(),
+                    "/repo/.venv/bin:/repo/scripts:/usr/bin:/bin".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_discovery_env_sorts_entries_by_key() {
+        let env = HashMap::from([
+            ("ZULU".to_string(), "1".to_string()),
+            ("ALPHA".to_string(), "2".to_string()),
+        ]);
+        let entries = discovery_env(&env, None, Path::new("/repo"), "/usr/bin");
+        assert_eq!(
+            entries,
+            vec![
+                ("ALPHA".to_string(), "2".to_string()),
+                ("ZULU".to_string(), "1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_discovery_env_prepend_only_emits_only_path() {
+        let prepend = vec![".venv/bin".to_string()];
+        let entries = discovery_env(
+            &HashMap::new(),
+            Some(&prepend),
+            Path::new("/repo"),
+            "/usr/bin",
+        );
+        assert_eq!(
+            entries,
+            vec![("PATH".to_string(), "/repo/.venv/bin:/usr/bin".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_discovery_env_absent_fields_produce_no_overrides() {
+        let entries = discovery_env(&HashMap::new(), None, Path::new("/repo"), "/usr/bin");
+        assert!(entries.is_empty());
+
+        let entries = discovery_env(&HashMap::new(), Some(&[]), Path::new("/repo"), "/usr/bin");
+        assert!(entries.is_empty());
     }
 }
