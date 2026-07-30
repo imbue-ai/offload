@@ -379,7 +379,7 @@ async fn discover_with_signal(
     result
 }
 
-/// Dispatch test execution to the appropriate framework, using the given sandbox pool.
+/// Dispatch test execution to the appropriate framework.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_framework<S: offload::provider::Sandbox>(
     config: &Config,
@@ -716,7 +716,6 @@ async fn run_tests(
         return Ok(());
     }
 
-    // Convert copy_dirs to tuples once (used by all providers)
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
         .iter()
         .map(|cd| (cd.local.clone(), cd.remote.clone()))

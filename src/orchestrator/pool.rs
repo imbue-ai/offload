@@ -95,9 +95,9 @@ impl<S: Sandbox> SandboxPool<S> {
 
     /// Terminates every sandbox in the pool, consuming it.
     ///
-    /// Used to tear down a pre-warmed pool that will never run tests (discovery
-    /// failed or produced no tests) so the sandboxes do not leak. Returns one
-    /// result per sandbox; termination is best-effort.
+    /// Used to tear down a pre-warmed pool that will never run tests, so the
+    /// sandboxes do not leak. Returns one result per sandbox; termination is
+    /// best-effort.
     pub async fn terminate_all(self) -> Vec<ProviderResult<()>> {
         S::terminate_many(self.sandboxes).await
     }
@@ -153,9 +153,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Fake sandbox that records terminations into a shared counter.
-    ///
-    /// The counter is an `Arc<AtomicUsize>` because [`Sandbox`] requires `Send`
-    /// and the counter is shared across every sandbox in a pool plus the test.
     struct FakeSandbox {
         id: String,
         terminate_count: Arc<AtomicUsize>,
