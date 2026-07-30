@@ -1,14 +1,20 @@
 //! Pytest framework implementation using `pytest --collect-only` for discovery.
 
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
+use super::pytest_filter::{FilterComponent, emit_hoisted_args, hoist_common_components};
+use super::pytest_single_pass::{
+    GroupSpec, PartitionConfig, PartitionReport, Routing, group_spec_from_components,
+    records_from_report, route_group,
+};
 use super::{
     FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
     discovery_error_detail,
 };
-use crate::config::PytestFrameworkConfig;
+use crate::config::{GroupConfig, PytestFrameworkConfig};
 use crate::provider::Command;
 use crate::report::junit::TestsuiteXml;
 
@@ -112,18 +118,10 @@ impl PytestFramework {
 
         tests
     }
-}
 
-#[async_trait]
-impl TestFramework for PytestFramework {
-    async fn discover(
-        &self,
-        paths: &[PathBuf],
-        filters: &str,
-        group: &str,
-    ) -> FrameworkResult<Vec<TestRecord>> {
-        // Add paths to search (caller-provided paths take precedence over config)
-        let search_paths: Vec<String> = if paths.is_empty() {
+    /// Resolve the discovery search paths, preferring caller paths over config.
+    fn discovery_search_paths(&self, paths: &[PathBuf]) -> Vec<String> {
+        if paths.is_empty() {
             self.config
                 .paths
                 .as_deref()
@@ -136,7 +134,200 @@ impl TestFramework for PytestFramework {
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
+        }
+    }
+
+    /// Discover every group in one pytest collection pass, partitioned by the
+    /// bundled `offload_partition` plugin.
+    ///
+    /// Groups whose filters use tokens the plugin cannot model (or that fail to
+    /// parse) fall back to legacy per-group `discover`. Every remaining group
+    /// forms the single-pass pool; if the pool collection fails for any reason
+    /// the legacy path would have survived, the whole pool falls back per-group
+    /// rather than failing the run.
+    pub async fn discover_all_groups(
+        &self,
+        groups: &HashMap<String, GroupConfig>,
+    ) -> FrameworkResult<Vec<TestRecord>> {
+        let mut pool: Vec<(String, Vec<FilterComponent>)> = Vec::new();
+        let mut records: Vec<TestRecord> = Vec::new();
+
+        for (name, cfg) in groups {
+            match route_group(&cfg.filters) {
+                Ok(Routing::Pool(components)) => pool.push((name.clone(), components)),
+                Ok(Routing::Fallback) => {
+                    tracing::warn!(
+                        "Could not collect group {} in one pass due to unsupported pytest collection args: {}. Falling back to individual group collection. Remove unsupported args to speed up collection.",
+                        name,
+                        cfg.filters
+                    );
+                    records.extend(self.discover_group_legacy(name, cfg).await?);
+                }
+                Err(_) => {
+                    records.extend(self.discover_group_legacy(name, cfg).await?);
+                }
+            }
+        }
+
+        if pool.is_empty() {
+            return Ok(records);
+        }
+
+        let pool_records = match self.collect_pool(&pool, groups).await {
+            Ok(pool_records) => pool_records,
+            Err(err) => {
+                tracing::warn!(
+                    "Single-pass pytest collection failed ({}); falling back to individual collection for {} pool group(s).",
+                    err,
+                    pool.len()
+                );
+                let mut legacy = Vec::new();
+                for (name, _) in &pool {
+                    if let Some(cfg) = groups.get(name) {
+                        legacy.extend(self.discover_group_legacy(name, cfg).await?);
+                    }
+                }
+                legacy
+            }
         };
+
+        records.extend(pool_records);
+        Ok(records)
+    }
+
+    /// Discover one group through the legacy per-group path, tagging records.
+    async fn discover_group_legacy(
+        &self,
+        name: &str,
+        cfg: &GroupConfig,
+    ) -> FrameworkResult<Vec<TestRecord>> {
+        let tests = self.discover(&[], &cfg.filters, name).await?;
+        Ok(tests
+            .into_iter()
+            .map(|t| {
+                t.with_retry_count(cfg.retry_count)
+                    .with_schedule_individual(cfg.schedule_individual)
+            })
+            .collect())
+    }
+
+    /// Run the single collection pass for the eligible pool and map the plugin
+    /// report into tagged records.
+    ///
+    /// Any launch failure, missing/empty/malformed report, or serialization
+    /// error surfaces as `Err`, which the caller treats as a signal to fall
+    /// back to legacy per-group collection for the whole pool.
+    async fn collect_pool(
+        &self,
+        pool: &[(String, Vec<FilterComponent>)],
+        groups: &HashMap<String, GroupConfig>,
+    ) -> FrameworkResult<Vec<TestRecord>> {
+        let all_components: Vec<Vec<FilterComponent>> = pool
+            .iter()
+            .map(|(_, components)| components.clone())
+            .collect();
+        let hoisted = hoist_common_components(&all_components).unwrap_or_default();
+        let hoisted_args = emit_hoisted_args(&hoisted);
+
+        let mut group_specs: BTreeMap<String, GroupSpec> = BTreeMap::new();
+        for (name, components) in pool {
+            group_specs.insert(name.clone(), group_spec_from_components(components));
+        }
+
+        // The temp files must outlive the collection command: the config is
+        // read by the plugin and the out file is written by it.
+        let out_file = tempfile::NamedTempFile::new().map_err(FrameworkError::Io)?;
+        let out_path = out_file.path().to_path_buf();
+
+        let partition_config = PartitionConfig {
+            groups: group_specs,
+            out: out_path.clone(),
+        };
+        let config_json = serde_json::to_string(&partition_config).map_err(|e| {
+            FrameworkError::DiscoveryFailed(format!("failed to serialize partition config: {e}"))
+        })?;
+
+        let cfg_file = tempfile::NamedTempFile::new().map_err(FrameworkError::Io)?;
+        let cfg_path = cfg_file.path().to_path_buf();
+        std::fs::write(&cfg_path, &config_json).map_err(FrameworkError::Io)?;
+
+        let scripts_dir = crate::bundled::scripts_dir().map_err(|e| {
+            FrameworkError::DiscoveryFailed(format!("failed to locate bundled scripts: {e}"))
+        })?;
+        let pythonpath = build_pythonpath(&scripts_dir)?;
+
+        let mut cmd = tokio::process::Command::new(&self.program);
+        for arg in &self.prefix_args {
+            cmd.arg(arg);
+        }
+        cmd.arg("--collect-only").arg("-q");
+        for arg in &hoisted_args {
+            cmd.arg(arg);
+        }
+        let search_paths = self.discovery_search_paths(&[]);
+        for path in &search_paths {
+            cmd.arg(path);
+        }
+        cmd.arg("-p").arg("offload_partition");
+        cmd.env("PYTHONPATH", &pythonpath);
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+        cmd.env("OFFLOAD_PARTITION_CONFIG", &cfg_path);
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| FrameworkError::DiscoveryFailed(e.to_string()))?;
+
+        let report_str = match std::fs::read_to_string(&out_path) {
+            Ok(contents) if !contents.trim().is_empty() => contents,
+            _ => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(FrameworkError::DiscoveryFailed(format!(
+                    "offload_partition produced no usable output ({}): {}",
+                    output.status,
+                    discovery_error_detail(&stderr, &stdout)
+                )));
+            }
+        };
+        drop(cfg_file);
+        drop(out_file);
+
+        let report: PartitionReport = serde_json::from_str(&report_str).map_err(|e| {
+            FrameworkError::DiscoveryFailed(format!("partition output was not valid JSON: {e}"))
+        })?;
+
+        for (name, _) in pool {
+            let count = report.groups.get(name).map(Vec::len).unwrap_or(0);
+            if count == 0 {
+                tracing::warn!("No tests discovered for group '{}'.", name);
+            }
+        }
+
+        Ok(records_from_report(&report, groups))
+    }
+}
+
+/// Build a `PYTHONPATH` value with `scripts_dir` prepended to any existing one.
+fn build_pythonpath(scripts_dir: &Path) -> FrameworkResult<std::ffi::OsString> {
+    let mut entries: Vec<PathBuf> = vec![scripts_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PYTHONPATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(entries)
+        .map_err(|e| FrameworkError::DiscoveryFailed(format!("failed to build PYTHONPATH: {e}")))
+}
+
+#[async_trait]
+impl TestFramework for PytestFramework {
+    async fn discover(
+        &self,
+        paths: &[PathBuf],
+        filters: &str,
+        group: &str,
+    ) -> FrameworkResult<Vec<TestRecord>> {
+        // Add paths to search (caller-provided paths take precedence over config)
+        let search_paths = self.discovery_search_paths(paths);
 
         // Build the pytest --collect-only command
         let cmd_args = self.discovery_cmd_args(&search_paths, filters)?;

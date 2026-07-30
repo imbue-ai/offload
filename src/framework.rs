@@ -4,6 +4,7 @@ pub mod default;
 pub(crate) mod env;
 pub mod pytest;
 pub mod pytest_filter;
+pub mod pytest_single_pass;
 pub mod vitest;
 
 use std::path::PathBuf;

@@ -308,6 +308,14 @@ async fn discover_all_tests(
 ) -> Result<Vec<TestRecord>> {
     use futures::stream::{StreamExt, TryStreamExt};
 
+    // Pytest discovers all groups in a single collection pass (with per-group
+    // legacy fallback for ineligible groups); the other frameworks discover
+    // each group independently.
+    if let FrameworkConfig::Pytest(cfg) = framework {
+        let fw = PytestFramework::new(cfg.clone())?;
+        return Ok(fw.discover_all_groups(groups).await?);
+    }
+
     let bound = if concurrency == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -319,10 +327,10 @@ async fn discover_all_tests(
     let group_results: Vec<Vec<TestRecord>> = futures::stream::iter(groups)
         .map(|(group_name, group_cfg)| async move {
             let tests = match framework {
-                FrameworkConfig::Pytest(cfg) => {
-                    PytestFramework::new(cfg.clone())?
-                        .discover(&[], &group_cfg.filters, group_name)
-                        .await?
+                FrameworkConfig::Pytest(_) => {
+                    return Err(anyhow!(
+                        "pytest discovery is handled in a single pass, not the per-group loop"
+                    ));
                 }
                 FrameworkConfig::Cargo(cfg) => {
                     CargoFramework::new(cfg.clone())
