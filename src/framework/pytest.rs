@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use super::pytest_filter::{FilterComponent, emit_hoisted_args, hoist_common_components};
 use super::pytest_single_pass::{
-    GroupSpec, PartitionConfig, PartitionReport, Routing, group_spec_from_components,
-    records_from_report, route_group,
+    GroupSpec, PartitionConfig, PartitionReport, Routing, effective_components,
+    group_spec_from_components, records_from_report, route_group,
 };
 use super::{
     FrameworkError, FrameworkResult, TestFramework, TestInstance, TestRecord,
@@ -222,9 +222,13 @@ impl PytestFramework {
         pool: &[(String, Vec<FilterComponent>)],
         groups: &HashMap<String, GroupConfig>,
     ) -> FrameworkResult<Vec<TestRecord>> {
+        // Hoist over each group's effective (last-wins) filter so a non-last
+        // but common mark/keyword can never pre-narrow the shared collection.
+        // The per-group spec below keeps the raw components: its own last-wins
+        // collapse already yields the group's true effective filter.
         let all_components: Vec<Vec<FilterComponent>> = pool
             .iter()
-            .map(|(_, components)| components.clone())
+            .map(|(_, components)| effective_components(components))
             .collect();
         let hoisted = hoist_common_components(&all_components).unwrap_or_default();
         let hoisted_args = emit_hoisted_args(&hoisted);

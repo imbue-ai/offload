@@ -87,6 +87,39 @@ pub(crate) fn group_spec_from_components(components: &[FilterComponent]) -> Grou
     spec
 }
 
+/// Collapse a pool group's parsed components to the effective filter pytest
+/// would apply: only the last `Mark` and last `Keyword` survive (argparse
+/// treats `-m`/`-k` as single-valued), while `Deselect`/`Ignore`/`IgnoreGlob`
+/// accumulate in their original relative order.
+///
+/// Hoisting must run over these normalized lists so a non-last but common
+/// mark/keyword can never be emitted onto the shared `--collect-only` command
+/// line, where pytest's built-in deselection would pre-narrow the collection
+/// ahead of the per-group plugin spec. This mirrors the last-wins rule in
+/// [`group_spec_from_components`]. Pool groups contain no `Unknown` by
+/// construction; any such component is dropped.
+pub(crate) fn effective_components(components: &[FilterComponent]) -> Vec<FilterComponent> {
+    let last_mark = components
+        .iter()
+        .rposition(|c| matches!(c, FilterComponent::Mark(_)));
+    let last_keyword = components
+        .iter()
+        .rposition(|c| matches!(c, FilterComponent::Keyword(_)));
+
+    components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| match component {
+            FilterComponent::Mark(_) => (Some(index) == last_mark).then(|| component.clone()),
+            FilterComponent::Keyword(_) => (Some(index) == last_keyword).then(|| component.clone()),
+            FilterComponent::Deselect(_)
+            | FilterComponent::Ignore(_)
+            | FilterComponent::IgnoreGlob(_) => Some(component.clone()),
+            FilterComponent::Unknown(_) => None,
+        })
+        .collect()
+}
+
 /// Build tagged `TestRecord`s from a plugin report.
 ///
 /// Each node ID becomes a record tagged with its group's `retry_count` and
@@ -117,6 +150,7 @@ pub(crate) fn records_from_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::pytest_filter::hoist_common_components;
 
     #[test]
     fn test_group_spec_last_wins_mark_and_keyword() -> Result<(), Box<dyn std::error::Error>> {
@@ -124,6 +158,94 @@ mod tests {
         let spec = group_spec_from_components(&components);
         assert_eq!(spec.mark.as_deref(), Some("bar"));
         assert_eq!(spec.keyword.as_deref(), Some("b"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_components_keeps_last_mark_and_keyword()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let components = parse_filter_string("-m foo -m bar -k a -k b")?;
+        let effective = effective_components(&components);
+        assert_eq!(
+            effective,
+            vec![
+                FilterComponent::Mark("bar".to_string()),
+                FilterComponent::Keyword("b".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_components_preserves_deselect_ignore_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let components = parse_filter_string(
+            "--deselect a.py -m foo --ignore x -m bar --ignore-glob '*_y.py' --deselect b.py",
+        )?;
+        let effective = effective_components(&components);
+        assert_eq!(
+            effective,
+            vec![
+                FilterComponent::Deselect("a.py".to_string()),
+                FilterComponent::Ignore("x".to_string()),
+                FilterComponent::Mark("bar".to_string()),
+                FilterComponent::IgnoreGlob("*_y.py".to_string()),
+                FilterComponent::Deselect("b.py".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_hoisting_drops_non_last_common_mark() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Group A `-m foo -m bar`, group B `-m foo -m baz`: `foo` is common but
+        // non-last. After normalization the effective marks (`bar`/`baz`) differ,
+        // so nothing hoists and `foo` never reaches the shared command line.
+        let a = effective_components(&parse_filter_string("-m foo -m bar")?);
+        let b = effective_components(&parse_filter_string("-m foo -m baz")?);
+        let hoisted = hoist_common_components(&[a, b]).ok_or("expected Some hoist")?;
+        assert!(!hoisted.contains(&FilterComponent::Mark("foo".to_string())));
+        assert!(hoisted.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_hoisting_hoists_last_common_mark() -> Result<(), Box<dyn std::error::Error>> {
+        // Both groups `-m x -m y`: the effective mark `y` is common, so only `y`
+        // hoists; the non-last `x` does not.
+        let a = effective_components(&parse_filter_string("-m x -m y")?);
+        let b = effective_components(&parse_filter_string("-m x -m y")?);
+        let hoisted = hoist_common_components(&[a, b]).ok_or("expected Some hoist")?;
+        assert_eq!(hoisted, vec![FilterComponent::Mark("y".to_string())]);
+        assert!(!hoisted.contains(&FilterComponent::Mark("x".to_string())));
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_hoisting_drops_non_last_common_keyword()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let a = effective_components(&parse_filter_string("-k foo -k bar")?);
+        let b = effective_components(&parse_filter_string("-k foo -k baz")?);
+        let hoisted = hoist_common_components(&[a, b]).ok_or("expected Some hoist")?;
+        assert!(!hoisted.contains(&FilterComponent::Keyword("foo".to_string())));
+        assert!(hoisted.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_hoisting_single_mark_per_group_is_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Realistic config: one `-m` per group. Normalization is a no-op, so
+        // hoisting behaves exactly as it did over the raw components.
+        let a_raw = parse_filter_string("-m 'not slow' --ignore tests/integration")?;
+        let b_raw = parse_filter_string("-m 'not slow' --deselect tests/test_old.py")?;
+        let a = effective_components(&a_raw);
+        let b = effective_components(&b_raw);
+        assert_eq!(a, a_raw);
+        assert_eq!(b, b_raw);
+        let hoisted = hoist_common_components(&[a, b]).ok_or("expected Some hoist")?;
+        assert_eq!(hoisted, vec![FilterComponent::Mark("not slow".to_string())]);
         Ok(())
     }
 
