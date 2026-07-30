@@ -137,6 +137,22 @@ impl PytestFramework {
         }
     }
 
+    /// Seed the `pytest --collect-only -q` command shared by both discovery paths.
+    ///
+    /// Returns the program, its prefix args, the collect-only flags, and
+    /// `PYTHONDONTWRITEBYTECODE=1` so neither the legacy per-group pass nor the
+    /// single-pass pool writes `__pycache__` for a throwaway collection. Callers
+    /// append their own filters, search paths, plugin selection, and extra env.
+    fn collect_only_command(&self) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(&self.program);
+        for arg in &self.prefix_args {
+            cmd.arg(arg);
+        }
+        cmd.arg("--collect-only").arg("-q");
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+        cmd
+    }
+
     /// Discover every group in one pytest collection pass, partitioned by the
     /// bundled `offload_partition` plugin.
     ///
@@ -260,11 +276,7 @@ impl PytestFramework {
         })?;
         let pythonpath = build_pythonpath(&scripts_dir)?;
 
-        let mut cmd = tokio::process::Command::new(&self.program);
-        for arg in &self.prefix_args {
-            cmd.arg(arg);
-        }
-        cmd.arg("--collect-only").arg("-q");
+        let mut cmd = self.collect_only_command();
         for arg in &hoisted_args {
             cmd.arg(arg);
         }
@@ -274,7 +286,6 @@ impl PytestFramework {
         }
         cmd.arg("-p").arg("offload_partition");
         cmd.env("PYTHONPATH", &pythonpath);
-        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
         cmd.env("OFFLOAD_PARTITION_CONFIG", &cfg_path);
 
         let output = cmd
