@@ -3,6 +3,7 @@ pub mod cargo;
 pub mod default;
 pub(crate) mod env;
 pub mod pytest;
+pub mod pytest_filter;
 pub mod vitest;
 
 use std::path::PathBuf;
