@@ -19,7 +19,7 @@ use offload::framework::{
     pytest::PytestFramework, vitest::VitestFramework,
 };
 use offload::image_cache;
-use offload::orchestrator::{Orchestrator, SandboxPool};
+use offload::orchestrator::{Orchestrator, SandboxPool, resolve_prewarm};
 use offload::provider::{
     PrepareContext, SandboxProvider, default::DefaultProvider, local::LocalProvider,
     modal::ModalProvider,
@@ -530,13 +530,12 @@ async fn run_remote_provider<P: SandboxProvider>(
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
-    let (all_tests, _) = tokio::try_join!(
-        discover_with_signal(
-            &config.framework,
-            &config.groups,
-            config.offload.max_parallel_collection,
-            &discovery_done
-        ),
+    // Pre-warm the sandbox pool concurrently with discovery. Pool creation needs
+    // the prepared image (so it chains after `run_prepare`) but not the test
+    // list, so it can overlap discovery. Use `tokio::join!` rather than
+    // `try_join!`: `try_join!` would drop an already-completed pool when the
+    // discovery branch errors, leaking those sandboxes.
+    let prepare_and_prewarm = async {
         run_prepare(
             &mut provider,
             repo,
@@ -547,29 +546,39 @@ async fn run_remote_provider<P: SandboxProvider>(
             override_image_id,
             tracer,
             &discovery_done,
+        )
+        .await?;
+        prewarm_pool(&provider, config, copy_dir_tuples, ci, tracer).await
+    };
+
+    let (tests_result, pool_result) = tokio::join!(
+        discover_with_signal(
+            &config.framework,
+            &config.groups,
+            config.offload.max_parallel_collection,
+            &discovery_done
         ),
-    )?;
+        prepare_and_prewarm,
+    );
 
-    if all_tests.is_empty() {
-        return Ok(None);
+    match resolve_prewarm(tests_result, pool_result).await? {
+        None => Ok(None),
+        Some((all_tests, pool)) => dispatch_framework(
+            config,
+            config_filename,
+            run_id,
+            &all_tests,
+            pool,
+            verbose,
+            tracer,
+            show_estimated_cost,
+            fail_fast,
+            ci,
+            record_history,
+        )
+        .await
+        .map(Some),
     }
-
-    let pool = prewarm_pool(&provider, config, copy_dir_tuples, ci, tracer).await?;
-    dispatch_framework(
-        config,
-        config_filename,
-        run_id,
-        &all_tests,
-        pool,
-        verbose,
-        tracer,
-        show_estimated_cost,
-        fail_fast,
-        ci,
-        record_history,
-    )
-    .await
-    .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
