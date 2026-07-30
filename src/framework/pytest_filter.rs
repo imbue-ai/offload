@@ -155,10 +155,6 @@ pub fn hoist_common_components(
         }
     }
 
-    if group_components.len() == 1 {
-        return Some(group_components[0].clone());
-    }
-
     let first = &group_components[0];
     let mut hoisted = Vec::new();
 
