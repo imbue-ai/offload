@@ -716,7 +716,7 @@ async fn run_tests(
         return Ok(());
     }
 
-    // Convert copy_dirs to tuples once (used by Default and Modal providers)
+    // Convert copy_dirs to tuples once (used by all providers)
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
         .iter()
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
@@ -832,9 +832,9 @@ async fn run_tests(
 
 /// Build the sandbox config and pre-populate a sandbox pool from the given provider.
 ///
-/// Serially creates `max_parallel` sandboxes under the `sandbox_pool_create`
-/// trace span. Extracted from [`run_all_tests`] so pool creation can be
-/// scheduled independently of framework dispatch.
+/// Concurrently creates `max_parallel` sandboxes under the `sandbox_pool_create`
+/// trace span, so pool creation can be scheduled independently of framework
+/// dispatch.
 async fn prewarm_pool<P: SandboxProvider>(
     provider: &P,
     config: &Config,
