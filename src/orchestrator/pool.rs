@@ -4,7 +4,6 @@
 //! test run and retry attempts, avoiding the overhead of creating new sandboxes.
 
 use crate::config::SandboxConfig;
-use crate::framework::TestRecord;
 use crate::provider::retry::with_retry;
 use crate::provider::{ProviderError, ProviderResult, Sandbox, SandboxProvider};
 use futures::StreamExt;
@@ -121,10 +120,10 @@ impl<S: Sandbox> Default for SandboxPool<S> {
 /// - discovery `Ok` but pool `Err`: propagate the pool error (no pool to clean);
 /// - discovery `Ok` with no tests: terminate the pool and return `Ok(None)`;
 /// - discovery `Ok` with tests and pool `Ok`: return `Ok(Some((tests, pool)))`.
-pub async fn resolve_prewarm<S: Sandbox>(
-    tests: anyhow::Result<Vec<TestRecord>>,
+pub async fn resolve_prewarm<S: Sandbox, T>(
+    tests: anyhow::Result<Vec<T>>,
     pool: anyhow::Result<SandboxPool<S>>,
-) -> anyhow::Result<Option<(Vec<TestRecord>, SandboxPool<S>)>> {
+) -> anyhow::Result<Option<(Vec<T>, SandboxPool<S>)>> {
     match (tests, pool) {
         (Err(discovery_err), Ok(pool)) => {
             pool.terminate_all().await;
@@ -146,6 +145,7 @@ pub async fn resolve_prewarm<S: Sandbox>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::TestRecord;
     use crate::provider::{CostEstimate, OutputStream, PrepareContext};
     use async_trait::async_trait;
     use std::path::Path;
@@ -267,7 +267,7 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let pool = populated_pool(3, &counter);
 
-        let resolved = resolve_prewarm(Ok(Vec::new()), Ok(pool)).await?;
+        let resolved = resolve_prewarm(Ok(Vec::<TestRecord>::new()), Ok(pool)).await?;
 
         assert!(resolved.is_none());
         assert_eq!(counter.load(Ordering::Acquire), 3);
