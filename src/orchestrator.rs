@@ -20,7 +20,7 @@ use crate::provider::{CostEstimate, Sandbox};
 use crate::report::{MasterJunitReport, SharedJunitReport, load_test_durations, print_summary};
 use crate::timing;
 
-pub use pool::SandboxPool;
+pub use pool::{SandboxPool, resolve_prewarm};
 pub use runner::{BatchOutcome, OutputCallback, TestRunner};
 pub use scheduler::Scheduler;
 

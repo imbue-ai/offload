@@ -19,7 +19,7 @@ use offload::framework::{
     pytest::PytestFramework, vitest::VitestFramework,
 };
 use offload::image_cache;
-use offload::orchestrator::{Orchestrator, SandboxPool};
+use offload::orchestrator::{Orchestrator, SandboxPool, resolve_prewarm};
 use offload::provider::{
     PrepareContext, SandboxProvider, default::DefaultProvider, local::LocalProvider,
     modal::ModalProvider,
@@ -379,15 +379,14 @@ async fn discover_with_signal(
     result
 }
 
-/// Dispatch test execution to the appropriate framework, using the given provider.
+/// Dispatch test execution to the appropriate framework.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_framework<P: offload::provider::SandboxProvider>(
+async fn dispatch_framework<S: offload::provider::Sandbox>(
     config: &Config,
     config_filename: &str,
     run_id: &str,
     all_tests: &[TestRecord],
-    provider: P,
-    copy_dirs: &[CopyDir],
+    sandbox_pool: SandboxPool<S>,
     verbose: bool,
     tracer: &offload::trace::Tracer,
     show_estimated_cost: bool,
@@ -402,9 +401,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 config_filename,
                 run_id,
                 all_tests,
-                provider,
                 PytestFramework::new(f_cfg.clone())?,
-                copy_dirs,
+                sandbox_pool,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -420,9 +418,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 config_filename,
                 run_id,
                 all_tests,
-                provider,
                 CargoFramework::new(f_cfg.clone()),
-                copy_dirs,
+                sandbox_pool,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -443,9 +440,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 config_filename,
                 run_id,
                 all_tests,
-                provider,
                 DefaultFramework::new(f_cfg.clone()),
-                copy_dirs,
+                sandbox_pool,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -461,9 +457,8 @@ async fn dispatch_framework<P: offload::provider::SandboxProvider>(
                 config_filename,
                 run_id,
                 all_tests,
-                provider,
                 VitestFramework::new(f_cfg.clone())?,
-                copy_dirs,
+                sandbox_pool,
                 verbose,
                 tracer,
                 show_estimated_cost,
@@ -523,7 +518,6 @@ async fn run_remote_provider<P: SandboxProvider>(
     copy_dir_tuples: &[(PathBuf, PathBuf)],
     config_filename: &str,
     run_id: &str,
-    copy_dirs: &[CopyDir],
     no_cache: bool,
     override_image_id: Option<&str>,
     verbose: bool,
@@ -536,13 +530,12 @@ async fn run_remote_provider<P: SandboxProvider>(
 ) -> Result<Option<i32>> {
     let discovery_done = AtomicBool::new(false);
 
-    let (all_tests, _) = tokio::try_join!(
-        discover_with_signal(
-            &config.framework,
-            &config.groups,
-            config.offload.max_parallel_collection,
-            &discovery_done
-        ),
+    // Pre-warm the sandbox pool concurrently with discovery. Pool creation needs
+    // the prepared image (so it chains after `run_prepare`) but not the test
+    // list, so it can overlap discovery. Use `tokio::join!` rather than
+    // `try_join!`: `try_join!` would drop an already-completed pool when the
+    // discovery branch errors, leaking those sandboxes.
+    let prepare_and_prewarm = async {
         run_prepare(
             &mut provider,
             repo,
@@ -553,29 +546,39 @@ async fn run_remote_provider<P: SandboxProvider>(
             override_image_id,
             tracer,
             &discovery_done,
+        )
+        .await?;
+        prewarm_pool(&provider, config, copy_dir_tuples, ci, tracer).await
+    };
+
+    let (tests_result, pool_result) = tokio::join!(
+        discover_with_signal(
+            &config.framework,
+            &config.groups,
+            config.offload.max_parallel_collection,
+            &discovery_done
         ),
-    )?;
+        prepare_and_prewarm,
+    );
 
-    if all_tests.is_empty() {
-        return Ok(None);
+    match resolve_prewarm(tests_result, pool_result).await? {
+        None => Ok(None),
+        Some((all_tests, pool)) => dispatch_framework(
+            config,
+            config_filename,
+            run_id,
+            &all_tests,
+            pool,
+            verbose,
+            tracer,
+            show_estimated_cost,
+            fail_fast,
+            ci,
+            record_history,
+        )
+        .await
+        .map(Some),
     }
-
-    dispatch_framework(
-        config,
-        config_filename,
-        run_id,
-        &all_tests,
-        provider,
-        copy_dirs,
-        verbose,
-        tracer,
-        show_estimated_cost,
-        fail_fast,
-        ci,
-        record_history,
-    )
-    .await
-    .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -713,7 +716,6 @@ async fn run_tests(
         return Ok(());
     }
 
-    // Convert copy_dirs to tuples once (used by Default and Modal providers)
     let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
         .iter()
         .map(|cd| (cd.local.clone(), cd.remote.clone()))
@@ -742,13 +744,14 @@ async fn run_tests(
                 info!("No tests to run");
                 return Ok(());
             }
+            let provider = LocalProvider::new(p_cfg.clone());
+            let pool = prewarm_pool(&provider, &config, &copy_dir_tuples, ci, &tracer).await?;
             dispatch_framework(
                 &config,
                 &config_filename,
                 &run_id,
                 &all_tests,
-                LocalProvider::new(p_cfg.clone()),
-                &copy_dirs,
+                pool,
                 verbose,
                 &tracer,
                 show_estimated_cost,
@@ -767,7 +770,6 @@ async fn run_tests(
                 &copy_dir_tuples,
                 &config_filename,
                 &run_id,
-                &copy_dirs,
                 no_cache,
                 // --override-image-id is rejected above for non-modal providers.
                 None,
@@ -794,7 +796,6 @@ async fn run_tests(
                 &copy_dir_tuples,
                 &config_filename,
                 &run_id,
-                &copy_dirs,
                 no_cache,
                 override_image_id.as_deref(),
                 verbose,
@@ -828,35 +829,18 @@ async fn run_tests(
     Ok(())
 }
 
-/// Run all tests with a single orchestrator call.
-/// Returns the exit code (0 = success, 1 = failures/not run, 2 = flaky only).
-#[allow(clippy::too_many_arguments)]
-async fn run_all_tests<P, D>(
-    config: &config::Config,
-    config_filename: &str,
-    run_id: &str,
-    tests: &[TestRecord],
-    provider: P,
-    framework: D,
-    copy_dirs: &[CopyDir],
-    verbose: bool,
-    tracer: &offload::trace::Tracer,
-    show_estimated_cost: bool,
-    fail_fast: bool,
+/// Build the sandbox config and pre-populate a sandbox pool from the given provider.
+///
+/// Concurrently creates `max_parallel` sandboxes under the `sandbox_pool_create`
+/// trace span, so pool creation can be scheduled independently of framework
+/// dispatch.
+async fn prewarm_pool<P: SandboxProvider>(
+    provider: &P,
+    config: &Config,
+    copy_dir_tuples: &[(PathBuf, PathBuf)],
     ci: bool,
-    record_history: bool,
-) -> Result<i32>
-where
-    P: offload::provider::SandboxProvider,
-    D: TestFramework,
-{
-    // Convert CopyDir to tuples
-    let copy_dir_tuples: Vec<(PathBuf, PathBuf)> = copy_dirs
-        .iter()
-        .map(|cd| (cd.local.clone(), cd.remote.clone()))
-        .collect();
-
-    // Pre-populate sandbox pool
+    tracer: &offload::trace::Tracer,
+) -> Result<SandboxPool<P::Sandbox>> {
     let mut env = provider.base_env();
     env.push((
         "OFFLOAD_ROOT".to_string(),
@@ -875,7 +859,7 @@ where
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         env,
-        copy_dirs: copy_dir_tuples.clone(),
+        copy_dirs: copy_dir_tuples.to_vec(),
     };
 
     let mut sandbox_pool = SandboxPool::new();
@@ -886,11 +870,35 @@ where
         offload::trace::TID_MAIN,
     );
     sandbox_pool
-        .populate(config.offload.max_parallel, &provider, &sandbox_config, ci)
+        .populate(config.offload.max_parallel, provider, &sandbox_config, ci)
         .await
         .context("Failed to create sandboxes")?;
     drop(_pool_span);
 
+    Ok(sandbox_pool)
+}
+
+/// Run all tests with a single orchestrator call.
+/// Returns the exit code (0 = success, 1 = failures/not run, 2 = flaky only).
+#[allow(clippy::too_many_arguments)]
+async fn run_all_tests<S, D>(
+    config: &config::Config,
+    config_filename: &str,
+    run_id: &str,
+    tests: &[TestRecord],
+    framework: D,
+    sandbox_pool: SandboxPool<S>,
+    verbose: bool,
+    tracer: &offload::trace::Tracer,
+    show_estimated_cost: bool,
+    fail_fast: bool,
+    ci: bool,
+    record_history: bool,
+) -> Result<i32>
+where
+    S: offload::provider::Sandbox,
+    D: TestFramework,
+{
     let orchestrator = Orchestrator::new(
         config.clone(),
         config_filename.to_string(),
