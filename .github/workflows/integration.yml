@@ -34,7 +34,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Install just
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.3
       with:
         tool: just
 

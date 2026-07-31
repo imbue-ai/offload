@@ -24,7 +24,7 @@ jobs:
       uses: Swatinem/rust-cache@v2
 
     - name: Install cargo tools
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.3
       with:
         tool: cargo-nextest,cargo-deny@0.19.9,ratchets@0.3.1
 
@@ -50,7 +50,7 @@ jobs:
       uses: astral-sh/setup-uv@v7
 
     - name: Install just CLI runner
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@v2.85.3
       with:
         tool: just@1.47.0
 
