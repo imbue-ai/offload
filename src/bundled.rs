@@ -143,6 +143,15 @@ fn ensure_scripts_extracted() -> BundledResult<PathBuf> {
     }
 }
 
+/// Returns the on-disk directory holding the extracted bundled scripts.
+///
+/// Callers that must reference a bundled script by filesystem path (for
+/// example, to place it on `PYTHONPATH`) use this instead of `@name` command
+/// expansion. Extraction happens lazily on first use and is cached thereafter.
+pub fn scripts_dir() -> BundledResult<PathBuf> {
+    ensure_scripts_extracted()
+}
+
 /// Returns the compiled regex for script patterns.
 fn get_script_pattern() -> BundledResult<&'static Regex> {
     let result = SCRIPT_PATTERN.get_or_init(|| {
