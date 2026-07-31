@@ -282,30 +282,10 @@ impl PytestFramework {
         let scripts_dir = crate::bundled::scripts_dir().map_err(|e| {
             FrameworkError::DiscoveryFailed(format!("failed to locate bundled scripts: {e}"))
         })?;
-        let pythonpath = build_pythonpath(&scripts_dir)?;
 
-        let mut cmd = self.collect_only_command();
-        // discovery_args precede the hoisted filters, matching the legacy order.
-        for arg in self.discovery_args_tokens()? {
-            cmd.arg(arg);
-        }
-        for arg in &hoisted_args {
-            cmd.arg(arg);
-        }
         let search_paths = self.discovery_search_paths(&[]);
-        for path in &search_paths {
-            cmd.arg(path);
-        }
-        cmd.arg("-p").arg("offload_partition");
-        super::env::apply_discovery_env(
-            &mut cmd,
-            &self.config.env,
-            self.config.prepend_path.as_deref(),
-        )?;
-        // The plugin PYTHONPATH is set last so it overrides any config `env`
-        // PYTHONPATH; `offload_partition` must remain importable.
-        cmd.env("PYTHONPATH", &pythonpath);
-        cmd.env("OFFLOAD_PARTITION_CONFIG", &cfg_path);
+        let mut cmd =
+            self.build_pool_command(&scripts_dir, &cfg_path, &hoisted_args, &search_paths)?;
 
         let output = cmd
             .output()
@@ -340,13 +320,78 @@ impl PytestFramework {
 
         Ok(records_from_report(&report, groups))
     }
+
+    /// Assemble the single-pass pool collection command from explicit inputs:
+    /// the shared collect-only base, `discovery_args`, the hoisted filters,
+    /// search paths, the `offload_partition` plugin selection, and the
+    /// discovery env (including the plugin-aware PYTHONPATH).
+    ///
+    /// Kept a pure function of its arguments so it is unit-testable without
+    /// launching pytest; the caller owns the temp-file lifetime behind
+    /// `cfg_path`.
+    fn build_pool_command(
+        &self,
+        scripts_dir: &Path,
+        cfg_path: &Path,
+        hoisted_args: &[String],
+        search_paths: &[String],
+    ) -> FrameworkResult<tokio::process::Command> {
+        let mut cmd = self.collect_only_command();
+        // discovery_args precede the hoisted filters, matching the legacy order.
+        for arg in self.discovery_args_tokens()? {
+            cmd.arg(arg);
+        }
+        for arg in hoisted_args {
+            cmd.arg(arg);
+        }
+        for path in search_paths {
+            cmd.arg(path);
+        }
+        cmd.arg("-p").arg("offload_partition");
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+        // PYTHONPATH is set last as the sole authority. `scripts_dir` stays
+        // first so `offload_partition` imports; the config `env` PYTHONPATH is
+        // honored — folded into the base after `scripts_dir` — when set, else
+        // the process PYTHONPATH.
+        let base = match self.config.env.get("PYTHONPATH") {
+            Some(value) => {
+                let cwd = std::env::current_dir().map_err(|e| {
+                    FrameworkError::DiscoveryFailed(format!(
+                        "Failed to get current directory: {}",
+                        e
+                    ))
+                })?;
+                Some(super::env::resolve_root_placeholder(
+                    value,
+                    cwd.to_string_lossy().as_ref(),
+                ))
+            }
+            None => None,
+        };
+        let pythonpath = build_pythonpath(scripts_dir, base.as_deref())?;
+        cmd.env("PYTHONPATH", &pythonpath);
+        cmd.env("OFFLOAD_PARTITION_CONFIG", cfg_path);
+        Ok(cmd)
+    }
 }
 
-/// Build a `PYTHONPATH` value with `scripts_dir` prepended to any existing one.
-fn build_pythonpath(scripts_dir: &Path) -> FrameworkResult<std::ffi::OsString> {
+/// Build a `PYTHONPATH` with `scripts_dir` first, followed by `base` when given
+/// (the config `env` PYTHONPATH) or the process `PYTHONPATH` otherwise.
+///
+/// `scripts_dir` stays first so the bundled `offload_partition` plugin imports.
+fn build_pythonpath(scripts_dir: &Path, base: Option<&str>) -> FrameworkResult<std::ffi::OsString> {
     let mut entries: Vec<PathBuf> = vec![scripts_dir.to_path_buf()];
-    if let Some(existing) = std::env::var_os("PYTHONPATH") {
-        entries.extend(std::env::split_paths(&existing));
+    match base {
+        Some(base) => entries.extend(std::env::split_paths(base)),
+        None => {
+            if let Some(existing) = std::env::var_os("PYTHONPATH") {
+                entries.extend(std::env::split_paths(&existing));
+            }
+        }
     }
     std::env::join_paths(entries)
         .map_err(|e| FrameworkError::DiscoveryFailed(format!("failed to build PYTHONPATH: {e}")))
@@ -570,6 +615,95 @@ mod tests {
             key == OsStr::new("PYTHONDONTWRITEBYTECODE") && value == Some(OsStr::new("1"))
         });
         assert!(sets_bytecode);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_pool_command_args_and_env() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::OsStr;
+        use std::path::Path;
+
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--no-cov".to_string()),
+            env: HashMap::from([
+                ("PYTHONPATH".to_string(), "{root}/mysrc".to_string()),
+                ("SOME_VAR".to_string(), "{root}/v".to_string()),
+            ]),
+            prepend_path: Some(vec![".venv/bin".to_string()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+
+        let scripts_dir = Path::new("/fake/scripts");
+        let cfg_path = Path::new("/fake/partition-config.json");
+        let hoisted_args = vec!["-m".to_string(), "not slow".to_string()];
+        let search_paths = vec!["tests".to_string()];
+
+        let cmd = fw.build_pool_command(scripts_dir, cfg_path, &hoisted_args, &search_paths)?;
+        let std_cmd = cmd.as_std();
+
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "--no-cov",
+                "-m",
+                "not slow",
+                "tests",
+                "-p",
+                "offload_partition",
+            ]
+        );
+
+        let cwd = std::env::current_dir()?;
+        let cwd_str = cwd.to_string_lossy().into_owned();
+
+        let expected_some_var = format!("{}/v", cwd_str);
+        let has_some_var = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("SOME_VAR") && v == Some(OsStr::new(expected_some_var.as_str()))
+        });
+        assert!(has_some_var, "SOME_VAR should resolve {{root}} against cwd");
+
+        let expected_venv = format!("{}/.venv/bin", cwd_str);
+        let has_venv_on_path = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("PATH")
+                && v.map(|val| val.to_string_lossy().contains(&expected_venv))
+                    .unwrap_or(false)
+        });
+        assert!(has_venv_on_path, "PATH should contain the prepend_path dir");
+
+        let scripts_prefix = scripts_dir.to_string_lossy().into_owned();
+        let expected_mysrc = format!("{}/mysrc", cwd_str);
+        let pythonpath_ok = std_cmd.get_envs().any(|(k, v)| {
+            if k != OsStr::new("PYTHONPATH") {
+                return false;
+            }
+            match v {
+                Some(val) => {
+                    let val = val.to_string_lossy();
+                    val.starts_with(&scripts_prefix) && val.contains(&expected_mysrc)
+                }
+                None => false,
+            }
+        });
+        assert!(
+            pythonpath_ok,
+            "PYTHONPATH should start with scripts_dir and honor the config PYTHONPATH"
+        );
+
+        let has_cfg = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("OFFLOAD_PARTITION_CONFIG") && v == Some(cfg_path.as_os_str())
+        });
+        assert!(has_cfg, "OFFLOAD_PARTITION_CONFIG should be the cfg_path");
+
         Ok(())
     }
 
