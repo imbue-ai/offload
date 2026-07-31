@@ -163,7 +163,6 @@ fn partitions_collected_items_per_group() -> Result<()> {
         "`all` group must equal pytest --collect-only order"
     );
 
-    // slow is exactly the slow-marked fixture; flaky is exactly the test_flaky node.
     let quick_maffs = format!("{TEST_PATH}/test_math.py::test_quick_maffs");
     let flaky_node = format!("{TEST_PATH}/test_flaky.py::test_flaky");
     assert_eq!(slow, BTreeSet::from([quick_maffs]));
@@ -171,24 +170,20 @@ fn partitions_collected_items_per_group() -> Result<()> {
     assert!(all.is_superset(&slow));
     assert!(all.is_superset(&flaky));
 
-    // unit excludes both the slow and the flaky items and nothing else.
     assert_eq!(
         unit,
         &(&all - &slow) - &flaky,
         "unit must exclude slow + flaky"
     );
 
-    // deselect drops every node under the deselected file.
     let math = nodes_with_prefix(&all, &format!("{TEST_PATH}/test_math.py"));
     assert!(!math.is_empty(), "fixtures should include math tests");
     assert_eq!(deselect_math, &all - &math);
 
-    // ignore drops every node whose file was ignored by path.
     let strings = nodes_with_prefix(&all, &format!("{TEST_PATH}/test_strings.py"));
     assert!(!strings.is_empty(), "fixtures should include string tests");
     assert_eq!(ignore_strings, &all - &strings);
 
-    // ignore_glob drops every node whose file matched the glob.
     let lists = nodes_with_prefix(&all, &format!("{TEST_PATH}/test_lists.py"));
     assert!(!lists.is_empty(), "fixtures should include list tests");
     assert_eq!(ignore_glob_lists, &all - &lists);
