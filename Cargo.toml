@@ -1,6 +1,6 @@
 [package]
 name = "offload"
-version = "0.9.10"
+version = "0.9.11"
 edition = "2024"
 description = "Flexible parallel test runner with pluggable cloud providers"
 license = "MIT"
