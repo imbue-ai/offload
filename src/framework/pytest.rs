@@ -65,6 +65,23 @@ impl PytestFramework {
         })
     }
 
+    /// Tokenize the configured `discovery_args`, returning an empty vec when none are set.
+    ///
+    /// Shared by the legacy per-group discovery command and the single-pass
+    /// pool command so both honor `discovery_args` with identical parsing and
+    /// error reporting.
+    fn discovery_args_tokens(&self) -> FrameworkResult<Vec<String>> {
+        match &self.config.discovery_args {
+            Some(discovery_args) => shell_words::split(discovery_args).map_err(|e| {
+                FrameworkError::DiscoveryFailed(format!(
+                    "Invalid discovery_args '{}': {}",
+                    discovery_args, e
+                ))
+            }),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Builds the full argument list (after the program) for the discovery command.
     ///
     /// `discovery_args` tokens are inserted after `--collect-only -q` and before the
@@ -79,15 +96,7 @@ impl PytestFramework {
         args.push("-q".to_string());
 
         // Append discovery_args for test discovery only (not execution)
-        if let Some(discovery_args) = &self.config.discovery_args {
-            let tokens = shell_words::split(discovery_args).map_err(|e| {
-                FrameworkError::DiscoveryFailed(format!(
-                    "Invalid discovery_args '{}': {}",
-                    discovery_args, e
-                ))
-            })?;
-            args.extend(tokens);
-        }
+        args.extend(self.discovery_args_tokens()?);
 
         // Add filters if provided
         if !filters.is_empty() {
@@ -277,6 +286,10 @@ impl PytestFramework {
         let pythonpath = build_pythonpath(&scripts_dir)?;
 
         let mut cmd = self.collect_only_command();
+        // discovery_args precede the hoisted filters, matching the legacy order.
+        for arg in self.discovery_args_tokens()? {
+            cmd.arg(arg);
+        }
         for arg in &hoisted_args {
             cmd.arg(arg);
         }
@@ -285,6 +298,13 @@ impl PytestFramework {
             cmd.arg(path);
         }
         cmd.arg("-p").arg("offload_partition");
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+        // The plugin PYTHONPATH is set last so it overrides any config `env`
+        // PYTHONPATH; `offload_partition` must remain importable.
         cmd.env("PYTHONPATH", &pythonpath);
         cmd.env("OFFLOAD_PARTITION_CONFIG", &cfg_path);
 
@@ -624,6 +644,32 @@ mod tests {
             Err(e) => assert!(matches!(e, FrameworkError::DiscoveryFailed(_))),
             Ok(_) => return Err("expected DiscoveryFailed for unbalanced quoting".into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_args_tokens_shared_by_both_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--ignore examples/tests/sub".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        assert_eq!(
+            fw.discovery_args_tokens()?,
+            vec!["--ignore", "examples/tests/sub"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_args_tokens_empty_when_unset() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        assert!(fw.discovery_args_tokens()?.is_empty());
         Ok(())
     }
 

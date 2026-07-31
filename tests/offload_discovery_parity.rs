@@ -10,9 +10,11 @@
 //!
 //! The scenarios cover `-m`, `-k`, `-m`+`-k`, `--deselect`, `--ignore` of a
 //! subdirectory, `--ignore-glob`, empty (match-all) filters, common-filter
-//! hoisting (the same `-m` in every group), and a group whose filter carries a
+//! hoisting (the same `-m` in every group), a group whose filter carries a
 //! token the single-pass router does not model (`-p no:cacheprovider`) and which
-//! both paths therefore route through legacy collection.
+//! both paths therefore route through legacy collection, and a framework-level
+//! `discovery_args` that must narrow the collected set identically on both paths
+//! (guarding the single-pass path against dropping `discovery_args`).
 //!
 //! Like `tests/offload_partition_plugin.rs`, the test skips gracefully
 //! (returning `Ok(())`) when `uv`/pytest is unavailable, so the Rust suite stays
@@ -53,11 +55,13 @@ fn pytest_available() -> bool {
         && command_succeeds("uv", &["run", "--with=pytest", "pytest", "--version"])
 }
 
-/// Build the pytest framework shared by both discovery paths.
-fn build_framework() -> Result<PytestFramework> {
+/// Build the pytest framework shared by both discovery paths, optionally
+/// setting the framework-level `discovery_args`.
+fn build_framework_with(discovery_args: Option<&str>) -> Result<PytestFramework> {
     let config = PytestFrameworkConfig {
         command: "uv run --with=pytest pytest".into(),
         paths: Some(vec![TEST_PATH.into()]),
+        discovery_args: discovery_args.map(str::to_string),
         ..Default::default()
     };
     Ok(PytestFramework::new(config)?)
@@ -110,12 +114,21 @@ fn bucket_by_group(
 
 /// Run both discovery paths for `groups` and assert byte-identical per-group IDs.
 async fn assert_group_parity(groups: HashMap<String, GroupConfig>) -> Result<()> {
+    assert_group_parity_with(groups, None).await
+}
+
+/// Run both discovery paths for `groups` under the given framework-level
+/// `discovery_args` and assert byte-identical per-group IDs.
+async fn assert_group_parity_with(
+    groups: HashMap<String, GroupConfig>,
+    discovery_args: Option<&str>,
+) -> Result<()> {
     if !pytest_available() {
         eprintln!("skipping discovery parity test: pytest unavailable via `uv run --with=pytest`");
         return Ok(());
     }
 
-    let framework = build_framework()?;
+    let framework = build_framework_with(discovery_args)?;
 
     let legacy = legacy_by_group(&framework, &groups).await?;
     let single_records = framework.discover_all_groups(&groups).await?;
@@ -168,4 +181,16 @@ async fn single_pass_matches_legacy_with_unknown_token_fallback() -> Result<()> 
         group("pool_all", ""),
     ]);
     assert_group_parity(groups).await
+}
+
+/// A framework-level `discovery_args` (`--ignore` of the `sub` subdirectory)
+/// must be honored on both discovery paths. Both groups are poolable (empty
+/// filter and a plain `-m`), so the single-pass pool is exercised rather than
+/// the per-group fallback. Without the single-pass path applying
+/// `discovery_args`, the pool would still collect `examples/tests/sub`, so its
+/// two tests would appear only on the single-pass side and break parity.
+#[tokio::test]
+async fn single_pass_honors_discovery_args() -> Result<()> {
+    let groups = HashMap::from([group("pool_all", ""), group("pool_mark", "-m 'not slow'")]);
+    assert_group_parity_with(groups, Some("--ignore examples/tests/sub")).await
 }
