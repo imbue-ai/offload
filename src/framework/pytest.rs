@@ -65,31 +65,35 @@ impl PytestFramework {
         })
     }
 
-    /// Builds the full argument list (after the program) for the discovery command.
+    /// Tokenize the configured `discovery_args`, returning an empty vec when none are set.
     ///
-    /// `discovery_args` tokens are inserted after `--collect-only -q` and before the
-    /// group filters; search paths come last.
-    fn discovery_cmd_args(
-        &self,
-        search_paths: &[String],
-        filters: &str,
-    ) -> FrameworkResult<Vec<String>> {
-        let mut args: Vec<String> = self.prefix_args.clone();
-        args.push("--collect-only".to_string());
-        args.push("-q".to_string());
-
-        // Append discovery_args for test discovery only (not execution)
-        if let Some(discovery_args) = &self.config.discovery_args {
-            let tokens = shell_words::split(discovery_args).map_err(|e| {
+    /// Shared by both discovery paths so they parse and report `discovery_args`
+    /// errors identically.
+    fn discovery_args_tokens(&self) -> FrameworkResult<Vec<String>> {
+        match &self.config.discovery_args {
+            Some(discovery_args) => shell_words::split(discovery_args).map_err(|e| {
                 FrameworkError::DiscoveryFailed(format!(
                     "Invalid discovery_args '{}': {}",
                     discovery_args, e
                 ))
-            })?;
-            args.extend(tokens);
+            }),
+            None => Ok(Vec::new()),
         }
+    }
 
-        // Add filters if provided
+    /// Build the discovery-command tail appended after the shared collect-only
+    /// base: `discovery_args` tokens, then the group filters, then search paths.
+    ///
+    /// The shared base is supplied by [`collect_only_command`](Self::collect_only_command);
+    /// both the executed command and its display string derive their tail here
+    /// so the two can never drift.
+    fn discovery_extra_args(
+        &self,
+        search_paths: &[String],
+        filters: &str,
+    ) -> FrameworkResult<Vec<String>> {
+        let mut args = self.discovery_args_tokens()?;
+
         if !filters.is_empty() {
             let tokens = shell_words::split(filters).map_err(|e| {
                 FrameworkError::DiscoveryFailed(format!(
@@ -274,19 +278,10 @@ impl PytestFramework {
         let scripts_dir = crate::bundled::scripts_dir().map_err(|e| {
             FrameworkError::DiscoveryFailed(format!("failed to locate bundled scripts: {e}"))
         })?;
-        let pythonpath = build_pythonpath(&scripts_dir)?;
 
-        let mut cmd = self.collect_only_command();
-        for arg in &hoisted_args {
-            cmd.arg(arg);
-        }
         let search_paths = self.discovery_search_paths(&[]);
-        for path in &search_paths {
-            cmd.arg(path);
-        }
-        cmd.arg("-p").arg("offload_partition");
-        cmd.env("PYTHONPATH", &pythonpath);
-        cmd.env("OFFLOAD_PARTITION_CONFIG", &cfg_path);
+        let mut cmd =
+            self.build_pool_command(&scripts_dir, &cfg_path, &hoisted_args, &search_paths)?;
 
         let output = cmd
             .output()
@@ -321,13 +316,73 @@ impl PytestFramework {
 
         Ok(records_from_report(&report, groups))
     }
+
+    /// Assemble the single-pass pool collection command from explicit inputs.
+    ///
+    /// Kept a pure function of its arguments so it is unit-testable without
+    /// launching pytest; the caller owns the temp-file lifetime behind
+    /// `cfg_path`.
+    fn build_pool_command(
+        &self,
+        scripts_dir: &Path,
+        cfg_path: &Path,
+        hoisted_args: &[String],
+        search_paths: &[String],
+    ) -> FrameworkResult<tokio::process::Command> {
+        let mut cmd = self.collect_only_command();
+        // discovery_args precede the hoisted filters, matching the legacy order.
+        for arg in self.discovery_args_tokens()? {
+            cmd.arg(arg);
+        }
+        for arg in hoisted_args {
+            cmd.arg(arg);
+        }
+        for path in search_paths {
+            cmd.arg(path);
+        }
+        cmd.arg("-p").arg("offload_partition");
+        super::env::apply_discovery_env(
+            &mut cmd,
+            &self.config.env,
+            self.config.prepend_path.as_deref(),
+        )?;
+        // Set PYTHONPATH last so it wins over any value apply_discovery_env
+        // took from the config `env`.
+        let base = match self.config.env.get("PYTHONPATH") {
+            Some(value) => {
+                let cwd = std::env::current_dir().map_err(|e| {
+                    FrameworkError::DiscoveryFailed(format!(
+                        "Failed to get current directory: {}",
+                        e
+                    ))
+                })?;
+                Some(super::env::resolve_root_placeholder(
+                    value,
+                    cwd.to_string_lossy().as_ref(),
+                ))
+            }
+            None => None,
+        };
+        let pythonpath = build_pythonpath(scripts_dir, base.as_deref())?;
+        cmd.env("PYTHONPATH", &pythonpath);
+        cmd.env("OFFLOAD_PARTITION_CONFIG", cfg_path);
+        Ok(cmd)
+    }
 }
 
-/// Build a `PYTHONPATH` value with `scripts_dir` prepended to any existing one.
-fn build_pythonpath(scripts_dir: &Path) -> FrameworkResult<std::ffi::OsString> {
+/// Build a `PYTHONPATH` with `scripts_dir` first, followed by `base` when given
+/// (the config `env` PYTHONPATH) or the process `PYTHONPATH` otherwise.
+///
+/// `scripts_dir` stays first so the bundled `offload_partition` plugin imports.
+fn build_pythonpath(scripts_dir: &Path, base: Option<&str>) -> FrameworkResult<std::ffi::OsString> {
     let mut entries: Vec<PathBuf> = vec![scripts_dir.to_path_buf()];
-    if let Some(existing) = std::env::var_os("PYTHONPATH") {
-        entries.extend(std::env::split_paths(&existing));
+    match base {
+        Some(base) => entries.extend(std::env::split_paths(base)),
+        None => {
+            if let Some(existing) = std::env::var_os("PYTHONPATH") {
+                entries.extend(std::env::split_paths(&existing));
+            }
+        }
     }
     std::env::join_paths(entries)
         .map_err(|e| FrameworkError::DiscoveryFailed(format!("failed to build PYTHONPATH: {e}")))
@@ -344,10 +399,11 @@ impl TestFramework for PytestFramework {
         // Add paths to search (caller-provided paths take precedence over config)
         let search_paths = self.discovery_search_paths(paths);
 
-        // Build the pytest --collect-only command
-        let cmd_args = self.discovery_cmd_args(&search_paths, filters)?;
-        let mut cmd = tokio::process::Command::new(&self.program);
-        for arg in &cmd_args {
+        // Reuse the shared collect-only base so legacy discovery matches the
+        // single-pass pool.
+        let extra_args = self.discovery_extra_args(&search_paths, filters)?;
+        let mut cmd = self.collect_only_command();
+        for arg in &extra_args {
             cmd.arg(arg);
         }
 
@@ -357,7 +413,8 @@ impl TestFramework for PytestFramework {
             self.config.prepend_path.as_deref(),
         )?;
 
-        // Build a display string for the command before running it
+        // Build a display string that mirrors the executed command; its tail
+        // comes from the same discovery_extra_args value.
         let mut cmd_parts: Vec<&str> = Vec::new();
         cmd_parts.push(&self.program);
         for arg in &self.prefix_args {
@@ -365,16 +422,8 @@ impl TestFramework for PytestFramework {
         }
         cmd_parts.push("--collect-only");
         cmd_parts.push("-q");
-        if let Some(discovery_args) = &self.config.discovery_args {
-            cmd_parts.push(discovery_args);
-        }
-        let filter_display: String;
-        if !filters.is_empty() {
-            filter_display = filters.to_string();
-            cmd_parts.push(&filter_display);
-        }
-        for path in &search_paths {
-            cmd_parts.push(path);
+        for arg in &extra_args {
+            cmd_parts.push(arg);
         }
         let cmd_display = cmd_parts.join(" ");
 
@@ -534,39 +583,60 @@ mod tests {
     }
 
     #[test]
-    fn test_discovery_cmd_args_without_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_collect_only_command_base_and_bytecode_env() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::OsStr;
+
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
             ..Default::default()
         };
         let fw = PytestFramework::new(config)?;
-        let paths = vec!["tests".to_string()];
-        let args = fw.discovery_cmd_args(&paths, "-m 'not slow'")?;
-        assert_eq!(
-            args,
-            vec![
-                "run",
-                "pytest",
-                "--collect-only",
-                "-q",
-                "-m",
-                "not slow",
-                "tests"
-            ]
-        );
+        let cmd = fw.collect_only_command();
+        let std_cmd = cmd.as_std();
+
+        assert_eq!(std_cmd.get_program(), OsStr::new("uv"));
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["run", "pytest", "--collect-only", "-q"]);
+
+        let sets_bytecode = std_cmd.get_envs().any(|(key, value)| {
+            key == OsStr::new("PYTHONDONTWRITEBYTECODE") && value == Some(OsStr::new("1"))
+        });
+        assert!(sets_bytecode);
         Ok(())
     }
 
     #[test]
-    fn test_discovery_cmd_args_with_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_build_pool_command_args_and_env() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::OsStr;
+        use std::path::Path;
+
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
             discovery_args: Some("--no-cov".to_string()),
+            env: HashMap::from([
+                ("PYTHONPATH".to_string(), "{root}/mysrc".to_string()),
+                ("SOME_VAR".to_string(), "{root}/v".to_string()),
+            ]),
+            prepend_path: Some(vec![".venv/bin".to_string()]),
             ..Default::default()
         };
         let fw = PytestFramework::new(config)?;
-        let paths = vec!["tests".to_string()];
-        let args = fw.discovery_cmd_args(&paths, "-m 'not slow'")?;
+
+        let scripts_dir = Path::new("/fake/scripts");
+        let cfg_path = Path::new("/fake/partition-config.json");
+        let hoisted_args = vec!["-m".to_string(), "not slow".to_string()];
+        let search_paths = vec!["tests".to_string()];
+
+        let cmd = fw.build_pool_command(scripts_dir, cfg_path, &hoisted_args, &search_paths)?;
+        let std_cmd = cmd.as_std();
+
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![
@@ -577,14 +647,86 @@ mod tests {
                 "--no-cov",
                 "-m",
                 "not slow",
-                "tests"
+                "tests",
+                "-p",
+                "offload_partition",
             ]
         );
+
+        let cwd = std::env::current_dir()?;
+        let cwd_str = cwd.to_string_lossy().into_owned();
+
+        let expected_some_var = format!("{}/v", cwd_str);
+        let has_some_var = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("SOME_VAR") && v == Some(OsStr::new(expected_some_var.as_str()))
+        });
+        assert!(has_some_var, "SOME_VAR should resolve {{root}} against cwd");
+
+        let expected_venv = format!("{}/.venv/bin", cwd_str);
+        let has_venv_on_path = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("PATH")
+                && v.map(|val| val.to_string_lossy().contains(&expected_venv))
+                    .unwrap_or(false)
+        });
+        assert!(has_venv_on_path, "PATH should contain the prepend_path dir");
+
+        let scripts_prefix = scripts_dir.to_string_lossy().into_owned();
+        let expected_mysrc = format!("{}/mysrc", cwd_str);
+        let pythonpath_ok = std_cmd.get_envs().any(|(k, v)| {
+            if k != OsStr::new("PYTHONPATH") {
+                return false;
+            }
+            match v {
+                Some(val) => {
+                    let val = val.to_string_lossy();
+                    val.starts_with(&scripts_prefix) && val.contains(&expected_mysrc)
+                }
+                None => false,
+            }
+        });
+        assert!(
+            pythonpath_ok,
+            "PYTHONPATH should start with scripts_dir and honor the config PYTHONPATH"
+        );
+
+        let has_cfg = std_cmd.get_envs().any(|(k, v)| {
+            k == OsStr::new("OFFLOAD_PARTITION_CONFIG") && v == Some(cfg_path.as_os_str())
+        });
+        assert!(has_cfg, "OFFLOAD_PARTITION_CONFIG should be the cfg_path");
+
         Ok(())
     }
 
     #[test]
-    fn test_discovery_cmd_args_with_discovery_args_no_filters()
+    fn test_discovery_extra_args_without_discovery_args() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string()];
+        let args = fw.discovery_extra_args(&paths, "-m 'not slow'")?;
+        assert_eq!(args, vec!["-m", "not slow", "tests"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_extra_args_with_discovery_args() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--no-cov".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        let paths = vec!["tests".to_string()];
+        let args = fw.discovery_extra_args(&paths, "-m 'not slow'")?;
+        assert_eq!(args, vec!["--no-cov", "-m", "not slow", "tests"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_extra_args_with_discovery_args_no_filters()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = PytestFrameworkConfig {
             command: "python -m pytest".to_string(),
@@ -593,26 +735,17 @@ mod tests {
         };
         let fw = PytestFramework::new(config)?;
         let paths = vec!["tests".to_string(), "examples".to_string()];
-        let args = fw.discovery_cmd_args(&paths, "")?;
+        let args = fw.discovery_extra_args(&paths, "")?;
         assert_eq!(
             args,
-            vec![
-                "-m",
-                "pytest",
-                "--collect-only",
-                "-q",
-                "--no-cov",
-                "-p",
-                "no:cacheprovider",
-                "tests",
-                "examples"
-            ]
+            vec!["--no-cov", "-p", "no:cacheprovider", "tests", "examples"]
         );
         Ok(())
     }
 
     #[test]
-    fn test_discovery_cmd_args_rejects_invalid_quoting() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_discovery_extra_args_rejects_invalid_quoting() -> Result<(), Box<dyn std::error::Error>>
+    {
         let config = PytestFrameworkConfig {
             command: "uv run pytest".to_string(),
             discovery_args: Some("--no-cov 'unclosed".to_string()),
@@ -620,10 +753,36 @@ mod tests {
         };
         let fw = PytestFramework::new(config)?;
         let paths = vec!["tests".to_string()];
-        match fw.discovery_cmd_args(&paths, "") {
+        match fw.discovery_extra_args(&paths, "") {
             Err(e) => assert!(matches!(e, FrameworkError::DiscoveryFailed(_))),
             Ok(_) => return Err("expected DiscoveryFailed for unbalanced quoting".into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_args_tokens_shared_by_both_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            discovery_args: Some("--ignore examples/tests/sub".to_string()),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        assert_eq!(
+            fw.discovery_args_tokens()?,
+            vec!["--ignore", "examples/tests/sub"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_discovery_args_tokens_empty_when_unset() -> Result<(), Box<dyn std::error::Error>> {
+        let config = PytestFrameworkConfig {
+            command: "uv run pytest".to_string(),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+        assert!(fw.discovery_args_tokens()?.is_empty());
         Ok(())
     }
 
@@ -749,6 +908,35 @@ mod tests {
         let expected = format!("{}/marker::test_echoed", cwd.display());
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].id, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_discover_sets_dont_write_bytecode() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let script = dir.path().join("fake-pytest");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'dontwrite_%s::test_bytecode\\n' \"$PYTHONDONTWRITEBYTECODE\"\n",
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+
+        let config = PytestFrameworkConfig {
+            command: "fake-pytest".to_string(),
+            prepend_path: Some(vec![dir.path().to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let fw = PytestFramework::new(config)?;
+
+        let tests = fw.discover(&[], "", "grp").await?;
+
+        // The shared collect-only base exports PYTHONDONTWRITEBYTECODE=1, so the
+        // fake pytest echoes `1`. If discover stopped reusing that base the id
+        // would lose the `1` and this assertion would fail.
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].id, "dontwrite_1::test_bytecode");
         Ok(())
     }
 }
