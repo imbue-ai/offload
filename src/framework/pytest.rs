@@ -67,9 +67,8 @@ impl PytestFramework {
 
     /// Tokenize the configured `discovery_args`, returning an empty vec when none are set.
     ///
-    /// Shared by the legacy per-group discovery command and the single-pass
-    /// pool command so both honor `discovery_args` with identical parsing and
-    /// error reporting.
+    /// Shared by both discovery paths so they parse and report `discovery_args`
+    /// errors identically.
     fn discovery_args_tokens(&self) -> FrameworkResult<Vec<String>> {
         match &self.config.discovery_args {
             Some(discovery_args) => shell_words::split(discovery_args).map_err(|e| {
@@ -85,8 +84,7 @@ impl PytestFramework {
     /// Build the discovery-command tail appended after the shared collect-only
     /// base: `discovery_args` tokens, then the group filters, then search paths.
     ///
-    /// The program, prefix, `--collect-only -q`, and `PYTHONDONTWRITEBYTECODE`
-    /// base is supplied by [`collect_only_command`](Self::collect_only_command);
+    /// The shared base is supplied by [`collect_only_command`](Self::collect_only_command);
     /// both the executed command and its display string derive their tail here
     /// so the two can never drift.
     fn discovery_extra_args(
@@ -94,10 +92,8 @@ impl PytestFramework {
         search_paths: &[String],
         filters: &str,
     ) -> FrameworkResult<Vec<String>> {
-        // Append discovery_args for test discovery only (not execution)
         let mut args = self.discovery_args_tokens()?;
 
-        // Add filters if provided
         if !filters.is_empty() {
             let tokens = shell_words::split(filters).map_err(|e| {
                 FrameworkError::DiscoveryFailed(format!(
@@ -321,10 +317,7 @@ impl PytestFramework {
         Ok(records_from_report(&report, groups))
     }
 
-    /// Assemble the single-pass pool collection command from explicit inputs:
-    /// the shared collect-only base, `discovery_args`, the hoisted filters,
-    /// search paths, the `offload_partition` plugin selection, and the
-    /// discovery env (including the plugin-aware PYTHONPATH).
+    /// Assemble the single-pass pool collection command from explicit inputs.
     ///
     /// Kept a pure function of its arguments so it is unit-testable without
     /// launching pytest; the caller owns the temp-file lifetime behind
@@ -353,10 +346,8 @@ impl PytestFramework {
             &self.config.env,
             self.config.prepend_path.as_deref(),
         )?;
-        // PYTHONPATH is set last as the sole authority. `scripts_dir` stays
-        // first so `offload_partition` imports; the config `env` PYTHONPATH is
-        // honored — folded into the base after `scripts_dir` — when set, else
-        // the process PYTHONPATH.
+        // Set PYTHONPATH last so it wins over any value apply_discovery_env
+        // took from the config `env`.
         let base = match self.config.env.get("PYTHONPATH") {
             Some(value) => {
                 let cwd = std::env::current_dir().map_err(|e| {
@@ -408,9 +399,8 @@ impl TestFramework for PytestFramework {
         // Add paths to search (caller-provided paths take precedence over config)
         let search_paths = self.discovery_search_paths(paths);
 
-        // Reuse the shared collect-only base (program, prefix, `--collect-only
-        // -q`, PYTHONDONTWRITEBYTECODE) so legacy discovery matches the
-        // single-pass pool, then append the discovery_args/filters/paths tail.
+        // Reuse the shared collect-only base so legacy discovery matches the
+        // single-pass pool.
         let extra_args = self.discovery_extra_args(&search_paths, filters)?;
         let mut cmd = self.collect_only_command();
         for arg in &extra_args {

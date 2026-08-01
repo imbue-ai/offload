@@ -186,9 +186,7 @@ async fn single_pass_matches_legacy_with_unknown_token_fallback() -> Result<()> 
 /// A framework-level `discovery_args` (`--ignore` of the `sub` subdirectory)
 /// must be honored on both discovery paths. Both groups are poolable (empty
 /// filter and a plain `-m`), so the single-pass pool is exercised rather than
-/// the per-group fallback. Without the single-pass path applying
-/// `discovery_args`, the pool would still collect `examples/tests/sub`, so its
-/// two tests would appear only on the single-pass side and break parity.
+/// the per-group fallback.
 #[tokio::test]
 async fn single_pass_honors_discovery_args() -> Result<()> {
     let groups = HashMap::from([group("pool_all", ""), group("pool_mark", "-m 'not slow'")]);
