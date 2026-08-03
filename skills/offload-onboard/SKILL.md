@@ -146,6 +146,19 @@ post_patch_cmd = "make generate-client"
 
 Unlike `sandbox_init_cmd` (which runs once during base image builds), `post_patch_cmd` runs after every patch, ensuring derived artifacts match the patched source. The `OFFLOAD_PATCH_FILE` env var is set when a diff exists.
 
+**Optional: skip coverage tracing during discovery (`pytest-cov`)**
+
+If the project uses `pytest-cov`, coverage tracing runs even during `pytest --collect-only`, roughly doubling local discovery time. Set `discovery_args` under `[framework]` so Offload skips it during collection (discovery only — test-run coverage is unaffected):
+
+```toml
+[framework]
+type = "pytest"
+command = "uv run pytest"
+discovery_args = "--no-cov"   # skip coverage tracing during --collect-only
+```
+
+Only set this when `pytest-cov` is installed; `pytest --collect-only --no-cov` is a usage error without the plugin. Keep it out of group `filters`, which are test selectors.
+
 **When to use `type = "default"` for the framework:**
 
 The built-in `pytest` and `cargo` frameworks cover straightforward setups. Fall back to `type = "default"` for the `[framework]` section when:
@@ -202,6 +215,7 @@ Configuration reference for fields used above:
 **`[framework]`** (pytest)
 - `paths`: Directories to search for tests (default: `["tests"]`)
 - `command`: Full command prefix for pytest invocation (e.g. `"uv run pytest"`). Replaces the legacy `python`/`extra_args` fields
+- `discovery_args`: Extra args appended only during discovery (`--collect-only`), not execution — e.g. `--no-cov` to skip coverage tracing when the project uses `pytest-cov`
 
 **`[groups.<name>]`**
 - `retry_count`: Number of retries for failed tests (0 = no retries, 1 = catches transient failures)
