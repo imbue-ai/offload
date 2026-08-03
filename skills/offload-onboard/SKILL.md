@@ -154,7 +154,7 @@ If the project uses `pytest-cov`, coverage tracing runs even during `pytest --co
 [framework]
 type = "pytest"
 command = "uv run pytest"
-discovery_args = "--no-cov"   # skip coverage tracing during --collect-only
+discovery_args = "--no-cov"
 ```
 
 Only set this when `pytest-cov` is installed; `pytest --collect-only --no-cov` is a usage error without the plugin. Keep it out of group `filters`, which are test selectors.

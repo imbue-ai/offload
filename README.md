@@ -370,7 +370,7 @@ The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `
 [framework]
 type = "pytest"
 command = "uv run pytest"
-discovery_args = "--no-cov"   # skip coverage tracing during --collect-only
+discovery_args = "--no-cov"
 ```
 
 `--no-cov` only exists when `pytest-cov` is installed; leave it unset for repos without the plugin (`pytest --collect-only --no-cov` errors otherwise).
