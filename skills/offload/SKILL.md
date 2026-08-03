@@ -256,4 +256,5 @@ filters = "-k test_flaky"
 ```
 
 - `filters` is passed to the framework during discovery (pytest args, nextest args, or substituted into `{filters}` for the default framework).
+- Discovery-only arguments that are not test selectors -- e.g. `--no-cov` to skip coverage tracing during `--collect-only` -- belong in the framework-level `discovery_args`, not in `filters`.
 - `retry_count = 0` means no retries. Failed tests that pass on retry are marked flaky (exit code 2).

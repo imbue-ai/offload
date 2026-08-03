@@ -364,6 +364,17 @@ The `type` field selects the framework. One of: `pytest`, `nextest`, `vitest`, `
 | `env` | table | `{}` | Environment variables for test discovery and execution. Values support the `{root}` placeholder: the local working directory during discovery, `OFFLOAD_ROOT` (`sandbox_project_root`) during sandbox execution |
 | `prepend_path` | list | (none) | Root-relative directories prepended to `PATH` for discovery and execution (e.g. `[".venv/bin"]`); `{root}` resolves as in `env` |
 
+**Recipe -- skip coverage tracing during discovery.** If your repo uses `pytest-cov`, coverage tracing starts even for `pytest --collect-only`, which roughly doubles discovery time. Set `discovery_args = "--no-cov"` so Offload skips it during collection -- this affects discovery only, leaving your test-run coverage untouched, and keeps the flag out of group `filters` (which are test selectors):
+
+```toml
+[framework]
+type = "pytest"
+command = "uv run pytest"
+discovery_args = "--no-cov"
+```
+
+`--no-cov` only exists when `pytest-cov` is installed; leave it unset for repos without the plugin (`pytest --collect-only --no-cov` errors otherwise).
+
 #### `type = "nextest"`
 
 Requires [cargo-nextest](https://nexte.st/).
