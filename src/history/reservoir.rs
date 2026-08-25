@@ -103,7 +103,7 @@ impl WeightedReservoir {
     /// reservoir selection.
     pub fn merge(&mut self, other: &WeightedReservoir) {
         // Combine all samples
-        let mut all_samples: Vec<Sample> = self.samples.drain(..).collect();
+        let mut all_samples: Vec<Sample> = std::mem::take(&mut self.samples);
         all_samples.extend(other.samples.iter().cloned());
 
         // Deduplicate by timestamp (same timestamp = same sample)

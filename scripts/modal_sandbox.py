@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11,<3.12"
 # dependencies = [
-#     "modal==1.4.3",
+#     "modal==1.5.4",
 #     "click>=8.0",
 #     "dockerfile-parse>=2.0.0",
 # ]
@@ -29,6 +29,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
+
+# Default to Modal's v2 sandbox backend (faster scheduling, higher rate limits,
+# better reliability). Overridable via the environment; becomes Modal's default in 1.6.0.
+os.environ.setdefault("MODAL_SANDBOX_V2", "1")
 import modal
 from dockerfile_parse import DockerfileParser
 
