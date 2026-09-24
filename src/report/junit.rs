@@ -481,7 +481,7 @@ fn escape_attribute_value(value: &str) -> String {
 /// The `(&str, &str)` form of `push_attribute` re-escapes the value with
 /// quick-xml's `escape`, which would turn `&#10;` into `&amp;#10;`. The
 /// byte-slice form writes the value verbatim.
-fn push_text_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
+pub(crate) fn push_text_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
     let escaped = escape_attribute_value(value);
     elem.push_attribute((key.as_bytes(), escaped.as_bytes()));
 }

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::config::VitestFrameworkConfig;
 use crate::provider::Command;
-use crate::report::junit::TestsuiteXml;
+use crate::report::junit::{TestsuiteXml, push_text_attribute};
 
 /// Test framework for JavaScript/TypeScript vitest projects.
 ///
@@ -407,7 +407,7 @@ impl TestFramework for VitestFramework {
 
         // Write <testsuites>
         let mut ts_elem = BytesStart::new("testsuites");
-        ts_elem.push_attribute(("name", "vitest tests"));
+        push_text_attribute(&mut ts_elem, "name", "vitest tests");
         let tests_str = total_tests.to_string();
         let failures_str = total_failures.to_string();
         let time_str = format!("{:.6}", total_time);
@@ -423,7 +423,7 @@ impl TestFramework for VitestFramework {
             }
 
             let mut s_elem = BytesStart::new("testsuite");
-            s_elem.push_attribute(("name", suite.name.as_str()));
+            push_text_attribute(&mut s_elem, "name", &suite.name);
             let suite_tests_str = suite.tests.to_string();
             let suite_failures_str = suite.failures.to_string();
             let suite_time_str = format!("{:.6}", suite.time);
@@ -436,8 +436,8 @@ impl TestFramework for VitestFramework {
 
             for tc in &suite.cases {
                 let mut tc_elem = BytesStart::new("testcase");
-                tc_elem.push_attribute(("classname", tc.classname.as_str()));
-                tc_elem.push_attribute(("name", tc.name.as_str()));
+                push_text_attribute(&mut tc_elem, "classname", &tc.classname);
+                push_text_attribute(&mut tc_elem, "name", &tc.name);
                 tc_elem.push_attribute(("time", format!("{:.6}", tc.time).as_str()));
 
                 if let Some(ref msg) = tc.failure_message {
@@ -445,7 +445,7 @@ impl TestFramework for VitestFramework {
 
                     let mut fail_elem = BytesStart::new("failure");
                     let first_line = msg.lines().next().unwrap_or("");
-                    fail_elem.push_attribute(("message", first_line));
+                    push_text_attribute(&mut fail_elem, "message", first_line);
                     let _ = writer.write_event(Event::Start(fail_elem));
                     let _ = writer.write_event(Event::Text(BytesText::new(msg)));
                     let _ = writer.write_event(Event::End(BytesEnd::new("failure")));
@@ -715,6 +715,42 @@ mod tests {
             junit
         );
         assert!(junit.contains("<failure"), "should have failure element");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xml_from_report_escapes_tab_in_name() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig::default();
+        let fw = VitestFramework::new(config)?;
+
+        let json = r#"{
+            "testResults": [{
+                "name": "/project/tests/tabbed.test.ts",
+                "assertionResults": [
+                    {
+                        "ancestorTitles": [],
+                        "title": "before\tafter",
+                        "status": "passed",
+                        "duration": 1.0,
+                        "failureMessages": []
+                    }
+                ]
+            }]
+        }"#;
+
+        let junit = fw.xml_from_report(json)?;
+
+        assert!(
+            junit.contains("name=\"before&#9;after\""),
+            "tab in a test name must survive as a character reference. Got: {}",
+            junit
+        );
+        assert!(
+            !junit.contains("before\tafter"),
+            "tab must not be written literally. Got: {}",
+            junit
+        );
 
         Ok(())
     }
