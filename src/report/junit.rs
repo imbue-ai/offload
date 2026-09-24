@@ -475,13 +475,13 @@ fn escape_attribute_value(value: &str) -> String {
     escaped
 }
 
-/// Adds an attribute whose value is arbitrary text rather than a formatted
-/// number.
+/// Adds an attribute to `elem`, escaping its value.
 ///
-/// The `(&str, &str)` form of `push_attribute` re-escapes the value with
-/// quick-xml's `escape`, which would turn `&#10;` into `&amp;#10;`. The
-/// byte-slice form writes the value verbatim.
-pub(crate) fn push_text_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
+/// Every attribute written by a JUnit writer goes through here, so no value is
+/// exempt from escaping. The `(&str, &str)` form of `push_attribute` re-escapes
+/// the value with quick-xml's `escape`, which would turn `&#10;` into
+/// `&amp;#10;`; the byte-slice form writes the escaped value verbatim.
+pub(crate) fn push_escaped_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
     let escaped = escape_attribute_value(value);
     elem.push_attribute((key.as_bytes(), escaped.as_bytes()));
 }
@@ -500,11 +500,15 @@ fn write_testsuites_xml(
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 
     let mut testsuites_elem = BytesStart::new("testsuites");
-    push_text_attribute(&mut testsuites_elem, "name", "offload");
-    testsuites_elem.push_attribute(("tests", total_tests.to_string().as_str()));
-    testsuites_elem.push_attribute(("failures", total_failures.to_string().as_str()));
-    testsuites_elem.push_attribute(("errors", total_errors.to_string().as_str()));
-    testsuites_elem.push_attribute(("time", format!("{:.3}", total_time).as_str()));
+    push_escaped_attribute(&mut testsuites_elem, "name", "offload");
+    push_escaped_attribute(&mut testsuites_elem, "tests", &total_tests.to_string());
+    push_escaped_attribute(
+        &mut testsuites_elem,
+        "failures",
+        &total_failures.to_string(),
+    );
+    push_escaped_attribute(&mut testsuites_elem, "errors", &total_errors.to_string());
+    push_escaped_attribute(&mut testsuites_elem, "time", &format!("{:.3}", total_time));
     let _ = writer.write_event(Event::Start(testsuites_elem));
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 
@@ -522,17 +526,17 @@ fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
     let _ = writer.write_event(Event::Text(BytesText::new("  ")));
 
     let mut elem = BytesStart::new("testsuite");
-    push_text_attribute(&mut elem, "name", &suite.name);
-    elem.push_attribute(("tests", suite.tests.to_string().as_str()));
-    elem.push_attribute(("failures", suite.failures.to_string().as_str()));
-    elem.push_attribute(("errors", suite.errors.to_string().as_str()));
-    elem.push_attribute(("skipped", suite.skipped.to_string().as_str()));
-    elem.push_attribute(("time", format!("{:.3}", suite.time).as_str()));
+    push_escaped_attribute(&mut elem, "name", &suite.name);
+    push_escaped_attribute(&mut elem, "tests", &suite.tests.to_string());
+    push_escaped_attribute(&mut elem, "failures", &suite.failures.to_string());
+    push_escaped_attribute(&mut elem, "errors", &suite.errors.to_string());
+    push_escaped_attribute(&mut elem, "skipped", &suite.skipped.to_string());
+    push_escaped_attribute(&mut elem, "time", &format!("{:.3}", suite.time));
     if let Some(ref ts) = suite.timestamp {
-        push_text_attribute(&mut elem, "timestamp", ts);
+        push_escaped_attribute(&mut elem, "timestamp", ts);
     }
     if let Some(ref hn) = suite.hostname {
-        push_text_attribute(&mut elem, "hostname", hn);
+        push_escaped_attribute(&mut elem, "hostname", hn);
     }
     let _ = writer.write_event(Event::Start(elem));
 
@@ -546,11 +550,11 @@ fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
 
 fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
     let mut elem = BytesStart::new("testcase");
-    push_text_attribute(&mut elem, "name", &tc.name);
+    push_escaped_attribute(&mut elem, "name", &tc.name);
     if let Some(ref cn) = tc.classname {
-        push_text_attribute(&mut elem, "classname", cn);
+        push_escaped_attribute(&mut elem, "classname", cn);
     }
-    elem.push_attribute(("time", format!("{:.3}", tc.time).as_str()));
+    push_escaped_attribute(&mut elem, "time", &format!("{:.3}", tc.time));
 
     let has_content = tc.failure.is_some() || tc.error.is_some();
 
@@ -571,7 +575,7 @@ fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
 fn write_failure_or_error(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, failure: &FailureXml) {
     let mut elem = BytesStart::new(tag);
     if let Some(ref msg) = failure.message {
-        push_text_attribute(&mut elem, "message", msg);
+        push_escaped_attribute(&mut elem, "message", msg);
     }
     let _ = writer.write_event(Event::Start(elem));
     let _ = writer.write_event(Event::Text(BytesText::new(&failure.content)));
