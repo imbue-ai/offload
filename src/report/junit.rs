@@ -450,13 +450,10 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
     testsuites
 }
 
-/// Escapes a string for use as an XML attribute value.
-///
-/// Extends the usual `< > & ' "` escaping with character references for
-/// whitespace. Attribute-value normalization (XML 1.0 section 3.3.3) replaces
-/// literal newline, carriage-return and tab characters with spaces, so
-/// multi-line failure messages only survive a round trip when written as
-/// `&#10;`, `&#13;` and `&#9;`.
+/// Attribute-value normalization (XML 1.0 section 3.3.3) replaces literal
+/// newline, carriage-return and tab characters with spaces, so multi-line
+/// failure messages only survive a round trip when written as character
+/// references.
 fn escape_attribute_value(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -475,12 +472,9 @@ fn escape_attribute_value(value: &str) -> String {
     escaped
 }
 
-/// Adds an attribute to `elem`, escaping its value.
-///
-/// Every attribute written by a JUnit writer goes through here, so no value is
-/// exempt from escaping. The `(&str, &str)` form of `push_attribute` re-escapes
-/// the value with quick-xml's `escape`, which would turn `&#10;` into
-/// `&amp;#10;`; the byte-slice form writes the escaped value verbatim.
+/// quick-xml's `(&str, &str)` form of `push_attribute` would escape the
+/// value a second time, turning `&#10;` into `&amp;#10;`. The byte-slice
+/// form writes it verbatim.
 pub(crate) fn push_escaped_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
     let escaped = escape_attribute_value(value);
     elem.push_attribute((key.as_bytes(), escaped.as_bytes()));
@@ -1022,14 +1016,13 @@ mod tests {
         assert_eq!(report.failed_count(), 0);
     }
 
-    /// Runs a JUnit document through the parse -> merge -> write pipeline.
     fn round_trip(xml: &str) -> Result<String, Box<dyn std::error::Error>> {
         let mut report = MasterJunitReport::new(1);
         report.add_junit_xml(parse_all_testsuites_xml(xml))?;
         Ok(write_testsuites_xml(report.testsuites(), 1, 1, 0, 0.1))
     }
 
-    /// Returns the still-escaped `message` attribute value from serialized XML.
+    /// Returns the `message` attribute value without unescaping it.
     fn message_attribute_value(xml: &str) -> Option<&str> {
         let start = xml.find("message=\"")? + "message=\"".len();
         let rest = xml.get(start..)?;
