@@ -1,0 +1,13 @@
+[rule]
+id = "no-raw-push-attribute"
+description = "Disallow quick-xml push_attribute outside the escaping helper - it omits whitespace character references"
+severity = "error"
+
+[match]
+language = "rust"
+query = """
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @method)
+  (#eq? @method "push_attribute")) @violation
+"""

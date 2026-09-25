@@ -38,6 +38,7 @@ enabled_ratchets = [
     "no-num-prefix",
     "no-pandas-import",
     "no-panic",
+    "no-raw-push-attribute",
     "no-relative-imports",
     "no-returns-in-docstrings",
     "no-time-sleep",
