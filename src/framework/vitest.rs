@@ -11,7 +11,7 @@ use super::{
 };
 use crate::config::VitestFrameworkConfig;
 use crate::provider::Command;
-use crate::report::junit::TestsuiteXml;
+use crate::report::junit::{TestsuiteXml, push_escaped_attribute};
 
 /// Test framework for JavaScript/TypeScript vitest projects.
 ///
@@ -407,14 +407,11 @@ impl TestFramework for VitestFramework {
 
         // Write <testsuites>
         let mut ts_elem = BytesStart::new("testsuites");
-        ts_elem.push_attribute(("name", "vitest tests"));
-        let tests_str = total_tests.to_string();
-        let failures_str = total_failures.to_string();
-        let time_str = format!("{:.6}", total_time);
-        ts_elem.push_attribute(("tests", tests_str.as_str()));
-        ts_elem.push_attribute(("failures", failures_str.as_str()));
-        ts_elem.push_attribute(("errors", "0"));
-        ts_elem.push_attribute(("time", time_str.as_str()));
+        push_escaped_attribute(&mut ts_elem, "name", "vitest tests");
+        push_escaped_attribute(&mut ts_elem, "tests", &total_tests.to_string());
+        push_escaped_attribute(&mut ts_elem, "failures", &total_failures.to_string());
+        push_escaped_attribute(&mut ts_elem, "errors", "0");
+        push_escaped_attribute(&mut ts_elem, "time", &format!("{:.6}", total_time));
         let _ = writer.write_event(Event::Start(ts_elem));
 
         for suite in &suites {
@@ -423,29 +420,26 @@ impl TestFramework for VitestFramework {
             }
 
             let mut s_elem = BytesStart::new("testsuite");
-            s_elem.push_attribute(("name", suite.name.as_str()));
-            let suite_tests_str = suite.tests.to_string();
-            let suite_failures_str = suite.failures.to_string();
-            let suite_time_str = format!("{:.6}", suite.time);
-            s_elem.push_attribute(("tests", suite_tests_str.as_str()));
-            s_elem.push_attribute(("failures", suite_failures_str.as_str()));
-            s_elem.push_attribute(("errors", "0"));
-            s_elem.push_attribute(("skipped", "0"));
-            s_elem.push_attribute(("time", suite_time_str.as_str()));
+            push_escaped_attribute(&mut s_elem, "name", &suite.name);
+            push_escaped_attribute(&mut s_elem, "tests", &suite.tests.to_string());
+            push_escaped_attribute(&mut s_elem, "failures", &suite.failures.to_string());
+            push_escaped_attribute(&mut s_elem, "errors", "0");
+            push_escaped_attribute(&mut s_elem, "skipped", "0");
+            push_escaped_attribute(&mut s_elem, "time", &format!("{:.6}", suite.time));
             let _ = writer.write_event(Event::Start(s_elem));
 
             for tc in &suite.cases {
                 let mut tc_elem = BytesStart::new("testcase");
-                tc_elem.push_attribute(("classname", tc.classname.as_str()));
-                tc_elem.push_attribute(("name", tc.name.as_str()));
-                tc_elem.push_attribute(("time", format!("{:.6}", tc.time).as_str()));
+                push_escaped_attribute(&mut tc_elem, "classname", &tc.classname);
+                push_escaped_attribute(&mut tc_elem, "name", &tc.name);
+                push_escaped_attribute(&mut tc_elem, "time", &format!("{:.6}", tc.time));
 
                 if let Some(ref msg) = tc.failure_message {
                     let _ = writer.write_event(Event::Start(tc_elem));
 
                     let mut fail_elem = BytesStart::new("failure");
                     let first_line = msg.lines().next().unwrap_or("");
-                    fail_elem.push_attribute(("message", first_line));
+                    push_escaped_attribute(&mut fail_elem, "message", first_line);
                     let _ = writer.write_event(Event::Start(fail_elem));
                     let _ = writer.write_event(Event::Text(BytesText::new(msg)));
                     let _ = writer.write_event(Event::End(BytesEnd::new("failure")));
@@ -715,6 +709,42 @@ mod tests {
             junit
         );
         assert!(junit.contains("<failure"), "should have failure element");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_xml_from_report_escapes_tab_in_name() -> Result<(), Box<dyn std::error::Error>> {
+        let config = VitestFrameworkConfig::default();
+        let fw = VitestFramework::new(config)?;
+
+        let json = r#"{
+            "testResults": [{
+                "name": "/project/tests/tabbed.test.ts",
+                "assertionResults": [
+                    {
+                        "ancestorTitles": [],
+                        "title": "before\tafter",
+                        "status": "passed",
+                        "duration": 1.0,
+                        "failureMessages": []
+                    }
+                ]
+            }]
+        }"#;
+
+        let junit = fw.xml_from_report(json)?;
+
+        assert!(
+            junit.contains("name=\"before&#9;after\""),
+            "tab in a test name must survive as a character reference. Got: {}",
+            junit
+        );
+        assert!(
+            !junit.contains("before\tafter"),
+            "tab must not be written literally. Got: {}",
+            junit
+        );
 
         Ok(())
     }

@@ -450,6 +450,36 @@ pub fn parse_all_testsuites_xml(xml: &str) -> Vec<TestsuiteXml> {
     testsuites
 }
 
+/// Attribute-value normalization (XML 1.0 section 3.3.3) replaces literal
+/// newline, carriage-return and tab characters with spaces, so multi-line
+/// failure messages only survive a round trip when written as character
+/// references.
+fn escape_attribute_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            '\n' => escaped.push_str("&#10;"),
+            '\r' => escaped.push_str("&#13;"),
+            '\t' => escaped.push_str("&#9;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+/// quick-xml's `(&str, &str)` form of `push_attribute` would escape the
+/// value a second time, turning `&#10;` into `&amp;#10;`. The byte-slice
+/// form writes it verbatim.
+pub(crate) fn push_escaped_attribute(elem: &mut BytesStart<'_>, key: &str, value: &str) {
+    let escaped = escape_attribute_value(value);
+    elem.push_attribute((key.as_bytes(), escaped.as_bytes()));
+}
+
 /// Writes testsuites to XML string using quick-xml Writer.
 fn write_testsuites_xml(
     testsuites: &[TestsuiteXml],
@@ -464,11 +494,15 @@ fn write_testsuites_xml(
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 
     let mut testsuites_elem = BytesStart::new("testsuites");
-    testsuites_elem.push_attribute(("name", "offload"));
-    testsuites_elem.push_attribute(("tests", total_tests.to_string().as_str()));
-    testsuites_elem.push_attribute(("failures", total_failures.to_string().as_str()));
-    testsuites_elem.push_attribute(("errors", total_errors.to_string().as_str()));
-    testsuites_elem.push_attribute(("time", format!("{:.3}", total_time).as_str()));
+    push_escaped_attribute(&mut testsuites_elem, "name", "offload");
+    push_escaped_attribute(&mut testsuites_elem, "tests", &total_tests.to_string());
+    push_escaped_attribute(
+        &mut testsuites_elem,
+        "failures",
+        &total_failures.to_string(),
+    );
+    push_escaped_attribute(&mut testsuites_elem, "errors", &total_errors.to_string());
+    push_escaped_attribute(&mut testsuites_elem, "time", &format!("{:.3}", total_time));
     let _ = writer.write_event(Event::Start(testsuites_elem));
     let _ = writer.write_event(Event::Text(BytesText::new("\n")));
 
@@ -486,17 +520,17 @@ fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
     let _ = writer.write_event(Event::Text(BytesText::new("  ")));
 
     let mut elem = BytesStart::new("testsuite");
-    elem.push_attribute(("name", suite.name.as_str()));
-    elem.push_attribute(("tests", suite.tests.to_string().as_str()));
-    elem.push_attribute(("failures", suite.failures.to_string().as_str()));
-    elem.push_attribute(("errors", suite.errors.to_string().as_str()));
-    elem.push_attribute(("skipped", suite.skipped.to_string().as_str()));
-    elem.push_attribute(("time", format!("{:.3}", suite.time).as_str()));
+    push_escaped_attribute(&mut elem, "name", &suite.name);
+    push_escaped_attribute(&mut elem, "tests", &suite.tests.to_string());
+    push_escaped_attribute(&mut elem, "failures", &suite.failures.to_string());
+    push_escaped_attribute(&mut elem, "errors", &suite.errors.to_string());
+    push_escaped_attribute(&mut elem, "skipped", &suite.skipped.to_string());
+    push_escaped_attribute(&mut elem, "time", &format!("{:.3}", suite.time));
     if let Some(ref ts) = suite.timestamp {
-        elem.push_attribute(("timestamp", ts.as_str()));
+        push_escaped_attribute(&mut elem, "timestamp", ts);
     }
     if let Some(ref hn) = suite.hostname {
-        elem.push_attribute(("hostname", hn.as_str()));
+        push_escaped_attribute(&mut elem, "hostname", hn);
     }
     let _ = writer.write_event(Event::Start(elem));
 
@@ -510,11 +544,11 @@ fn write_testsuite(writer: &mut Writer<Cursor<Vec<u8>>>, suite: &TestsuiteXml) {
 
 fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
     let mut elem = BytesStart::new("testcase");
-    elem.push_attribute(("name", tc.name.as_str()));
+    push_escaped_attribute(&mut elem, "name", &tc.name);
     if let Some(ref cn) = tc.classname {
-        elem.push_attribute(("classname", cn.as_str()));
+        push_escaped_attribute(&mut elem, "classname", cn);
     }
-    elem.push_attribute(("time", format!("{:.3}", tc.time).as_str()));
+    push_escaped_attribute(&mut elem, "time", &format!("{:.3}", tc.time));
 
     let has_content = tc.failure.is_some() || tc.error.is_some();
 
@@ -535,7 +569,7 @@ fn write_testcase(writer: &mut Writer<Cursor<Vec<u8>>>, tc: &TestcaseXml) {
 fn write_failure_or_error(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, failure: &FailureXml) {
     let mut elem = BytesStart::new(tag);
     if let Some(ref msg) = failure.message {
-        elem.push_attribute(("message", msg.as_str()));
+        push_escaped_attribute(&mut elem, "message", msg);
     }
     let _ = writer.write_event(Event::Start(elem));
     let _ = writer.write_event(Event::Text(BytesText::new(&failure.content)));
@@ -980,5 +1014,93 @@ mod tests {
         assert_eq!(report.total_count(), 2);
         assert_eq!(report.passed_count(), 2);
         assert_eq!(report.failed_count(), 0);
+    }
+
+    fn round_trip(xml: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let mut report = MasterJunitReport::new(1);
+        report.add_junit_xml(parse_all_testsuites_xml(xml))?;
+        Ok(write_testsuites_xml(report.testsuites(), 1, 1, 0, 0.1))
+    }
+
+    /// Returns the `message` attribute value without unescaping it.
+    fn message_attribute_value(xml: &str) -> Option<&str> {
+        let start = xml.find("message=\"")? + "message=\"".len();
+        let rest = xml.get(start..)?;
+        let end = rest.find('"')?;
+        rest.get(..end)
+    }
+
+    fn round_tripped_message(xml: &str) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(parse_all_testsuites_xml(xml)
+            .first()
+            .and_then(|suite| suite.testcases.first())
+            .and_then(|tc| tc.failure.as_ref())
+            .and_then(|failure| failure.message.as_deref())
+            .ok_or("message should survive the round trip")?
+            .to_string())
+    }
+
+    #[test]
+    fn test_multiline_message_survives_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo.bar" name="test_fail" time="0.1">
+        <failure message="line one&#10;line two&#10;line three">trace</failure>
+    </testcase>
+</testsuite>"#;
+
+        let serialized = round_trip(xml)?;
+        assert!(
+            serialized.contains("&#10;"),
+            "no character ref: {serialized}"
+        );
+
+        let raw = message_attribute_value(&serialized).ok_or("no message attribute written")?;
+        assert!(!raw.contains('\n'), "literal newline in message: {raw}");
+
+        let message = round_tripped_message(&serialized)?;
+        assert_eq!(
+            message.lines().collect::<Vec<_>>(),
+            vec!["line one", "line two", "line three"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_tab_and_carriage_return_escaped_as_character_refs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo.bar" name="test_fail" time="0.1">
+        <failure message="col&#9;umn&#13;return">trace</failure>
+    </testcase>
+</testsuite>"#;
+
+        let serialized = round_trip(xml)?;
+        let raw = message_attribute_value(&serialized).ok_or("no message attribute written")?;
+        assert_eq!(raw, "col&#9;umn&#13;return");
+        assert_eq!(round_tripped_message(&serialized)?, "col\tumn\rreturn");
+        Ok(())
+    }
+
+    #[test]
+    fn test_predefined_entities_escaped_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<?xml version="1.0"?>
+<testsuite name="test" tests="1" failures="1">
+    <testcase classname="foo.bar" name="test_fail" time="0.1">
+        <failure message="a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;">trace</failure>
+    </testcase>
+</testsuite>"#;
+
+        let serialized = round_trip(xml)?;
+        let raw = message_attribute_value(&serialized).ok_or("no message attribute written")?;
+        assert_eq!(raw, "a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;");
+        assert_eq!(raw.matches("&amp;").count(), 1);
+        assert!(!serialized.contains("&amp;amp;"), "double escaped: {raw}");
+        assert_eq!(
+            round_tripped_message(&serialized)?,
+            "a & b < c > d \"e\" 'f'"
+        );
+        Ok(())
     }
 }

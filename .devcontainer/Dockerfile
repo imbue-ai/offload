@@ -46,7 +46,7 @@ RUN set -eux; \
 ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
 
 # Installs ratchets (pinned) for validating project ratchets
-RUN cargo install ratchets@0.3.1
+RUN cargo install ratchets@0.4.0
 
 # Installs cargo-deny (pinned) for security, license, and dependency policy checks
 # Version must support the deny.toml schema v2 (cargo-deny >= 0.14)

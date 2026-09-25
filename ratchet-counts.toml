@@ -88,6 +88,10 @@
 [no-panic]
 "." = 1
 
+[no-raw-push-attribute]
+"." = 0
+"src/report" = 1
+
 [no-relative-imports]
 "." = 0
 
