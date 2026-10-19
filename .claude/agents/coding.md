@@ -16,6 +16,7 @@ Before starting any work, read the documents listed under "Hard requirements" in
 ## Core principles
 - **Your task is to complete coding to a tight specification with precision.**
 - The bead (`br show <id>`) is that specification; the delegation prompt adds files to read and context. If the prompt disagrees with the bead on a requirement, report FAIL naming both texts before implementing anything; the Coordinator amends the bead and re-delegates.
+- The bead's Done line and its stated constraints are the contract; a shape it introduces with "for example" or "one way" is a sketch. You may build a different shape when the contract still holds, and the commit body then says what you built instead and why, so the Judge rules on the contract rather than on the sketch.
 - You are one of many agents. It is okay to fail if your lessons will help the next coding agent pass.
 - If you CANNOT complete your task as given, please FAIL and notify your coordinator.
 - You are working in a maturing codebase with other agents. Always look carefully to reuse existing solutions.
@@ -36,6 +37,9 @@ Before starting any work, read the documents listed under "Hard requirements" in
 - The harness may surface stale rust-analyzer / IDE diagnostics that disagree with a clean `cargo check`. **The source of truth is `cargo check --all-targets`, `cargo clippy --all-targets --all-features`, and `cargo nextest run`** — if those pass, ignore editor diagnostics.
 - Benign hints like inactive `#[cfg(not(...))]` blocks are expected and not failures.
 - If you see an editor diagnostic but `cargo check` is clean, do not start a fix; verify against cargo and proceed.
+
+## Stale artifacts and toolchain crashes
+`target/` is shared by every agent that runs in this worktree, and cargo decides freshness by file mtime. If a test fails with the behaviour your diff removed, or a run dies in rustc, clang, or the linker rather than in a test, `touch` the source file you changed (or run `cargo clean -p offload`) and rerun once before reading the result as real.
 
 ## Conform to lint policy — including in test code
 The repo's lint/policy rules apply to ALL code, **including test code** (`#[cfg(test)]` modules and `tests/`). Do NOT route around a rule by relocating code, carving out `#[cfg(test)]`, adding `allow`/`exclude` entries, or raising a threshold — make the code conform.

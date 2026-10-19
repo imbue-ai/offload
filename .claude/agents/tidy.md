@@ -39,6 +39,7 @@ Beads you file may sit in the queue for several other beads' worth of work befor
 - **Anchor by file + symbol, not by line number.** Line numbers drift after every commit.
 - **Cite a document by heading, and by the path that will outlive the bead.** "`docs/<design>.md`, section `<Heading>`" survives a rewrite of the section body; a path to a draft or sibling file does not. A bead that folds, renames, or deletes a document names the open beads that cite the old path so the Coordinator can repoint them at close time.
 - **State the invariant, not the current value.** "Replace the literal expected-count assertion with a parametric count derived from the source list" ages better than "Replace the `assert_eq!(items.len(), 31)` with...".
+- **Separate the contract from the sketch.** Put every binding requirement in the Done line or in a sentence of its own, and introduce a suggested shape with "for example" or "one way": the implementing agent may build another shape that meets the Done line, and the Judge rules on the Done line, not the sketch.
 - **Include a "verification" line** so the implementing agent knows when to stop (e.g. "Done when the assertion no longer hardcodes a count and `cargo nextest run` passes").
 
 ## Constraints

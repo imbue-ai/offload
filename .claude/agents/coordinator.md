@@ -99,6 +99,7 @@ Mitigation when authoring bead descriptions from a plan:
 - For each promised behavior, mark it explicitly as **must-land in this bead** or **may be deferred (file follow-up)**. Default is must-land; deferral requires a one-line justification (e.g. "pre-existing gap; out of plan's stated scope for this phase").
 - When Judge surfaces a gap that matches a "may be deferred" marker, the Coordinator files a follow-up bead and closes the current one as PASS.
 - When Judge surfaces a gap with no marker, treat it as a real fail and retry.
+- When the plan's invariant is that one artifact covers everything another component reads (a cache key over a build's inputs, a digest over an upload), enumerate the read side from its implementation, not from the plan's prose, before writing the beads that build the covering side, and give every enumerated input a field or a bead. For the Modal builder the implementation is the SDK the bundled script pins; `.claude/agents/judge.md` ("An input the key does not carry") says how to read it. The six cache-key plan items were written from the prose, and the invoking directory, file mode bits, and escaping symlinks each became a review finding and a P1 bead after the last item shipped.
 
 ## Commit-message escaping
 Apostrophes (e.g. `it's`) in bash heredocs can break `git commit -m`. When a commit message contains single quotes, write the message to a temp file and use `-F`:
