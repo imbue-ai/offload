@@ -295,16 +295,86 @@ pub struct ResolvedBase {
     pub recipe: Recipe,
 }
 
+/// The tree a base-image build reads from, so a cached image depends only on the checkpoint
+/// export (or the fallback's snapshot) and never on the live working tree.
+pub(crate) struct BuildContext<'a> {
+    /// Directory the image is built from: an export of the checkpoint tree, or a snapshot of
+    /// the invoking directory.
+    pub dir: &'a Path,
+    /// The invoking directory relative to `root`; empty when `dir` is a snapshot of the invoking
+    /// directory itself.
+    pub cwd_rel: &'a Path,
+    /// The on-disk directory `dir` mirrors (the repository root for an export, the invoking
+    /// directory for a snapshot), so absolute sources under it map to their copy in `dir`.
+    pub root: &'a Path,
+}
+
+impl BuildContext<'_> {
+    /// The context's copy of the invoking directory, which `include_cwd` adds to the image as
+    /// `/app`.
+    pub(crate) fn include_dir(&self) -> PathBuf {
+        normalized(self.dir.join(self.cwd_rel))
+    }
+
+    /// Where the builder reads a copy source: relative sources from the invoking directory's
+    /// copy, absolute sources under `root` from theirs, and anything else as given because the
+    /// context holds no counterpart.
+    pub(crate) fn resolve_source(&self, source: &Path) -> PathBuf {
+        if !source.is_absolute() {
+            return normalized(self.include_dir().join(source));
+        }
+        match source.strip_prefix(self.root) {
+            Ok(inside) => normalized(self.dir.join(inside)),
+            Err(_) => source.to_path_buf(),
+        }
+    }
+
+    /// `source:target` copy specs with every source resolved, config entries first and runtime
+    /// `--copy-dir` pairs second, which is the order the recipe records.
+    pub(crate) fn copy_specs(
+        &self,
+        config_copy_dirs: &[String],
+        runtime_copy_dirs: &[(PathBuf, PathBuf)],
+    ) -> Vec<String> {
+        let config = config_copy_dirs
+            .iter()
+            .map(|spec| match spec.split_once(':') {
+                Some((source, target)) => {
+                    format!(
+                        "{}:{}",
+                        self.resolve_source(Path::new(source)).display(),
+                        target
+                    )
+                }
+                None => spec.clone(),
+            });
+        let runtime = runtime_copy_dirs.iter().map(|(source, target)| {
+            format!(
+                "{}:{}",
+                self.resolve_source(source).display(),
+                target.display()
+            )
+        });
+        config.chain(runtime).collect()
+    }
+}
+
+/// Drop the `.` components and trailing separators that `Path::join` leaves in place.
+fn normalized(path: PathBuf) -> PathBuf {
+    path.components().collect()
+}
+
 /// Provider-specific image build operations.
 #[async_trait::async_trait]
 pub(crate) trait ImageBuilder: Send {
-    /// Build an image from scratch (full prepare).
+    /// Build the base image, reading every file from `build_ctx` rather than the working
+    /// tree: a cached image must depend only on the checkpoint export it was built from.
     async fn build_full(
         &mut self,
         copy_dirs: &[(PathBuf, PathBuf)],
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-        context_dir: Option<&Path>,
+        build_ctx: &BuildContext<'_>,
     ) -> ProviderResult<Option<String>>;
 
     /// Build a thin-diff image on top of a base image.
@@ -538,6 +608,13 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     git::export_tree(ctx.repo, base_sha, tree_dir.path())
         .await
         .with_context(|| format!("failed to export tree for {}", base_sha))?;
+    let repo_root = git::repo_root(ctx.repo).await?;
+    let cwd_rel = git::path_within_repo(ctx.repo).await?;
+    let build_ctx = BuildContext {
+        dir: tree_dir.path(),
+        cwd_rel: &cwd_rel,
+        root: &repo_root,
+    };
 
     // Build base image from exported tree
     let base_image_id = {
@@ -552,7 +629,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
             ctx.copy_dirs,
             ctx.config.offload.sandbox_init_cmd.as_deref(),
             None,
-            Some(tree_dir.path()),
+            &build_ctx,
         ))
         .context("Failed to build base image")?
     };
@@ -626,6 +703,13 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
     let context_snapshot = snapshot_working_directory(ctx.tracer).map_err(|e| {
         ProviderError::ExecFailed(format!("failed to snapshot working directory: {e}"))
     })?;
+    let invoking_dir = std::env::current_dir()
+        .map_err(|e| ProviderError::ExecFailed(format!("failed to get current directory: {e}")))?;
+    let build_ctx = BuildContext {
+        dir: context_snapshot.path(),
+        cwd_rel: Path::new(""),
+        root: &invoking_dir,
+    };
 
     let image_id = {
         let _progress = crate::timing::progress_span("prepare", "full image build");
@@ -639,7 +723,7 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
             ctx.copy_dirs,
             ctx.sandbox_init_cmd,
             Some(ctx.discovery_done),
-            Some(context_snapshot.path()),
+            &build_ctx,
         ))
         .map_err(|e| ProviderError::ExecFailed(format!("Failed to prepare provider: {e}")))?
     };
@@ -1545,6 +1629,79 @@ mod tests {
         }
     }
 
+    // ---- Tests for BuildContext ----
+
+    /// A context exported to `/ctx` from a repository at `/repo` invoked from its `sub/`.
+    fn build_context() -> BuildContext<'static> {
+        BuildContext {
+            dir: Path::new("/ctx"),
+            cwd_rel: Path::new("sub"),
+            root: Path::new("/repo"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_source_relative_is_under_the_invoking_directory_in_the_context() -> Result<()> {
+        let ctx = build_context();
+        assert_eq!(
+            ctx.resolve_source(Path::new("./data")),
+            PathBuf::from("/ctx/sub/data")
+        );
+        assert_eq!(
+            ctx.resolve_source(Path::new("data")),
+            PathBuf::from("/ctx/sub/data")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_source_absolute_inside_the_repository_maps_into_the_context() -> Result<()> {
+        let ctx = build_context();
+        assert_eq!(
+            ctx.resolve_source(Path::new("/repo/other/data")),
+            PathBuf::from("/ctx/other/data")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_source_absolute_outside_the_repository_is_unchanged() -> Result<()> {
+        let ctx = build_context();
+        assert_eq!(
+            ctx.resolve_source(Path::new("/elsewhere/data")),
+            PathBuf::from("/elsewhere/data")
+        );
+        // A sibling whose name merely starts with the root's name is outside it.
+        assert_eq!(
+            ctx.resolve_source(Path::new("/repo-archive/data")),
+            PathBuf::from("/repo-archive/data")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_include_dir_is_the_context_at_the_invoking_directory() -> Result<()> {
+        assert_eq!(build_context().include_dir(), PathBuf::from("/ctx/sub"));
+        let snapshot = BuildContext {
+            dir: Path::new("/snap"),
+            cwd_rel: Path::new(""),
+            root: Path::new("/repo/sub"),
+        };
+        assert_eq!(snapshot.include_dir(), PathBuf::from("/snap"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_specs_resolve_sources_and_keep_targets_in_builder_order() -> Result<()> {
+        let config = vec!["./data:/data".to_string(), "no-colon".to_string()];
+        let runtime = vec![(PathBuf::from("/repo/tests"), PathBuf::from("/app/tests"))];
+        assert_eq!(
+            build_context().copy_specs(&config, &runtime),
+            vec!["/ctx/sub/data:/data", "no-colon", "/ctx/tests:/app/tests"]
+        );
+        Ok(())
+    }
+
     // ---- Mock ImageBuilder for testing ----
 
     /// A mock implementation of `ImageBuilder` that records calls.
@@ -1571,7 +1728,7 @@ mod tests {
             _copy_dirs: &[(PathBuf, PathBuf)],
             _sandbox_init_cmd: Option<&str>,
             _discovery_done: Option<&AtomicBool>,
-            _context_dir: Option<&Path>,
+            _build_ctx: &BuildContext<'_>,
         ) -> crate::provider::ProviderResult<Option<String>> {
             self.build_full_calls += 1;
             let id = format!("im-mock-{}", self.build_full_calls);
@@ -1605,7 +1762,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_image_builder_build_full() {
         let mut builder = MockImageBuilder::new();
-        let result = builder.build_full(&[], None, None, None).await;
+        let result = builder.build_full(&[], None, None, &build_context()).await;
         assert!(result.is_ok());
         assert_eq!(
             result.as_ref().ok().and_then(|r| r.as_deref()),

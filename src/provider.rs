@@ -23,7 +23,8 @@ pub struct PrepareContext<'a> {
     pub sandbox_init_cmd: Option<&'a str>,
     /// Optional command to run after the patch is applied.
     pub post_patch_cmd: Option<&'a str>,
-    /// Path to the git repository root.
+    /// The invoking directory; git derives the repository root and this directory's path
+    /// within it from here.
     pub repo: &'a Path,
     /// Loaded configuration.
     pub config: &'a crate::config::Config,

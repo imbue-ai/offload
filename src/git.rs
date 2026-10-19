@@ -81,6 +81,13 @@ pub async fn repo_root(repo: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
+/// Return `dir`'s path relative to the repository root as git reports it (empty at the root),
+/// so a builder can find the invoking directory's copy inside an exported tree.
+pub async fn path_within_repo(dir: &Path) -> Result<PathBuf> {
+    let prefix = run_git(dir, &["rev-parse", "--show-prefix"]).await?;
+    Ok(PathBuf::from(prefix))
+}
+
 /// Read the offload-images note for a given commit.
 ///
 /// Returns `Ok(None)` if the notes ref or the note for this commit doesn't exist.
@@ -970,6 +977,16 @@ mod tests {
             merged.get("offload.toml"),
             Some(&ImageEntry::legacy("im-b"))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_path_within_repo() -> Result<()> {
+        let repo = init_temp_repo()?;
+        let sub = repo.path().join("sub").join("dir");
+        std::fs::create_dir_all(&sub)?;
+        assert_eq!(path_within_repo(repo.path()).await?, PathBuf::new());
+        assert_eq!(path_within_repo(&sub).await?, PathBuf::from("sub/dir"));
         Ok(())
     }
 

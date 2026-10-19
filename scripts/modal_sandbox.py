@@ -110,12 +110,13 @@ def cli():
 DOCKERIGNORE_FILE = ".dockerignore"
 
 
-def read_dockerignore_patterns() -> list[str]:
-    """Read patterns from .dockerignore file."""
-    if not os.path.isfile(DOCKERIGNORE_FILE):
+def read_dockerignore_patterns(context_dir: str) -> list[str]:
+    """Read patterns from the build context's .dockerignore file."""
+    dockerignore = Path(context_dir) / DOCKERIGNORE_FILE
+    if not dockerignore.is_file():
         return []
     patterns = []
-    with open(DOCKERIGNORE_FILE) as f:
+    with open(dockerignore) as f:
         for line in f:
             line = line.strip()
             # Skip empty lines and comments
@@ -129,7 +130,7 @@ _LAYER_BOUNDARY_INSTRUCTIONS = frozenset({"RUN", "COPY", "ADD"})
 
 def _build_image_from_dockerfile(
     dockerfile_path: str,
-    context_dir: str = ".",
+    context_dir: str,
 ) -> modal.Image:
     """Parse a Dockerfile and build a Modal image with per-layer caching.
 
@@ -148,8 +149,8 @@ def _build_image_from_dockerfile(
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpfile = Path(tmpdir) / "Dockerfile"
-        # When context_dir is provided, resolve the Dockerfile relative to it
-        # so that checkpoint builds use the Dockerfile from the exported tree.
+        # The Dockerfile is read from the build context (the exported checkpoint
+        # tree), never from the process working directory.
         resolved_dockerfile = Path(context_dir) / dockerfile_path
         with open(resolved_dockerfile) as f:
             dockerfile_contents = f.read()
@@ -162,7 +163,9 @@ def _build_image_from_dockerfile(
                 "Multistage Dockerfiles are not supported for per-layer "
                 "decomposition; falling back to monolithic from_dockerfile()"
             )
-            return modal.Image.from_dockerfile(dockerfile_path, context_dir=context_dir)
+            return modal.Image.from_dockerfile(
+                str(resolved_dockerfile), context_dir=context_dir
+            )
 
         # Find the last FROM instruction
         last_from_index = None
@@ -222,7 +225,7 @@ def _build_image_from_dockerfile(
 
 
 def _build_fresh_base_image(
-    app, dockerfile_path: str | None, context_dir: str = "."
+    app, dockerfile_path: str | None, context_dir: str
 ) -> tuple[modal.Image, str]:
     """Build a fresh base image (no caching)."""
     if dockerfile_path is None:
@@ -244,18 +247,18 @@ def _build_final_image(
     app,
     base_img: modal.Image,
     base_img_id: str,
-    include_cwd: bool,
+    include_dir: str | None,
     copy_dirs: tuple[str, ...],
     ignore_patterns: list[str],
     sandbox_init_cmd: str | None = None,
 ) -> str:
-    """Build final image with cwd/copy-dirs on top of base. Returns image_id."""
+    """Build final image with the include dir and copy-dirs on top of base. Returns image_id."""
     final_img = base_img
 
-    if include_cwd:
-        logger.info("Adding current directory as /app...")
+    if include_dir is not None:
+        logger.info("Adding %s as /app...", include_dir)
         final_img = final_img.add_local_dir(
-            ".", "/app", copy=True, ignore=ignore_patterns
+            include_dir, "/app", copy=True, ignore=ignore_patterns
         )
 
     # Add user-specified directories
@@ -328,23 +331,29 @@ def _derive_image_from_base(
 @click.option(
     "--include-cwd",
     is_flag=True,
-    help="Include current directory in the image (added after cache lookup)",
+    help="Include the build context (--context-dir) in the image at /app",
+)
+@click.option(
+    "--include-dir",
+    default=None,
+    help="Directory to include in the image at /app; overrides --include-cwd",
 )
 @click.option(
     "--copy-dir",
     "copy_dirs",
     multiple=True,
-    help="Copy local dir into image (format: local_path:remote_path)",
+    help="Copy a local dir into the image, as given (format: local_path:remote_path)",
 )
 @click.option(
     "--sandbox-init-cmd",
     default=None,
-    help="Command to run during image build after cwd/copy-dirs are applied",
+    help="Command to run during image build after the include dir and copy-dirs are applied",
 )
 @click.option(
     "--context-dir",
-    default=".",
-    help="Docker build context directory",
+    default=None,
+    help="Docker build context; the Dockerfile and .dockerignore are read from it "
+    "(required unless --from-base-image is set)",
 )
 @click.option(
     "--cached",
@@ -375,9 +384,10 @@ def _derive_image_from_base(
 def prepare(
     dockerfile_path: str | None,
     include_cwd: bool,
+    include_dir: str | None,
     copy_dirs: tuple[str, ...],
     sandbox_init_cmd: str | None,
-    context_dir: str,
+    context_dir: str | None,
     cached: bool,
     from_base_image: str | None,
     patch_file: str | None,
@@ -386,10 +396,14 @@ def prepare(
 ):
     """Prepare a Modal image (build only, no sandbox creation).
 
-    DOCKERFILE_PATH: Optional path to a Dockerfile. If provided, builds from
-    that Dockerfile. If omitted, builds the default pytest image.
+    DOCKERFILE_PATH: Optional path to a Dockerfile, relative to --context-dir.
+    If provided, builds from that Dockerfile. If omitted, builds the default
+    pytest image.
 
-    The --include-cwd and --copy-dir options add source code to the image.
+    Every path is taken from an explicit argument; nothing is resolved against
+    the process working directory, so the image depends only on the build
+    context Offload exported. --include-dir and --copy-dir add source code to
+    the image; --include-cwd is shorthand for --include-dir=CONTEXT_DIR.
 
     When --from-base-image is set, builds incrementally from the given base
     image by applying the patch file (if provided) on top of it.
@@ -418,19 +432,27 @@ def prepare(
         return
 
     # Standard (full build) mode
-    # Read ignore patterns from .dockerignore
-    ignore_patterns = read_dockerignore_patterns()
+    if context_dir is None:
+        logger.error("Error: --context-dir is required for a full build")
+        sys.exit(1)
+    if include_dir is None and include_cwd:
+        include_dir = context_dir
+
+    ignore_patterns = read_dockerignore_patterns(context_dir)
     if ignore_patterns:
         logger.debug(
-            "Using %d ignore patterns from %s", len(ignore_patterns), DOCKERIGNORE_FILE
+            "Using %d ignore patterns from %s",
+            len(ignore_patterns),
+            Path(context_dir) / DOCKERIGNORE_FILE,
         )
 
     # Determine app name based on whether we have a Dockerfile
     if dockerfile_path is None:
         app_name = "offload-sandbox"
     else:
-        if not os.path.isfile(dockerfile_path):
-            logger.error("Error: Dockerfile not found: %s", dockerfile_path)
+        resolved_dockerfile = Path(context_dir) / dockerfile_path
+        if not resolved_dockerfile.is_file():
+            logger.error("Error: Dockerfile not found: %s", resolved_dockerfile)
             sys.exit(1)
         app_name = "offload-dockerfile-sandbox"
 
@@ -443,7 +465,7 @@ def prepare(
             app,
             base_image,
             base_image_id,
-            include_cwd,
+            include_dir,
             copy_dirs,
             ignore_patterns,
             sandbox_init_cmd=sandbox_init_cmd,
