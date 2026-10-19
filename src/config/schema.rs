@@ -207,12 +207,8 @@ pub struct ModalProviderConfig {
     #[serde(default)]
     pub dockerfile: Option<String>,
 
-    /// Whether to include the current working directory in the image.
-    ///
-    /// When enabled, the entire current working directory is copied
-    /// into the sandbox image during preparation.
-    ///
-    /// Default: false
+    /// Adds the directory `offload` is run in to the image at `/app`; a checkpoint build takes
+    /// that directory's copy from the exported checkpoint tree, not the live working tree.
     #[serde(default)]
     pub include_cwd: bool,
 
