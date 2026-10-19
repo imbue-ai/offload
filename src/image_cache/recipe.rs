@@ -81,6 +81,10 @@ pub struct EscapingSymlinks {
 /// missing, so its later appearance is a cache miss.
 pub const ABSENT_SOURCE: &str = "absent";
 
+/// Stands in for the permission bits in the digest record of a symlink to a directory, which
+/// the walk lists but never enters; not octal, so it cannot collide with a file's bits.
+const DIR_LINK: &str = "link";
+
 impl Recipe {
     /// Derives the recipe from the loaded config without touching the disk: `cwd_rel`, the
     /// invoking directory relative to the repository root, becomes the directory `include_cwd`
@@ -259,17 +263,25 @@ fn modal_script_digest() -> Option<String> {
 
 /// Hex SHA-256 over `paths` under `root` in the given order, each as its path, a newline, its
 /// permission bits in unpadded octal, a newline, its decimal length, a newline, and its bytes,
-/// so a rename, chmod, resize, or edit changes the digest.
+/// so a rename, chmod, resize, or edit changes the digest. A symlink to a file is read through,
+/// contributing its target's bits, length, and bytes under the link's path, because the
+/// builder's upload resolves the link and sends the target as a regular file there. A symlink
+/// to a directory, which that upload's walk never descends, contributes the [`hash_dir_link`]
+/// record instead, so a retargeted link changes the digest.
 fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in paths {
         let file_path = root.join(path);
+        hasher.update(path.as_bytes());
+        hasher.update(b"\n");
+        if file_path.is_symlink() && file_path.is_dir() {
+            hash_dir_link(&mut hasher, &file_path)?;
+            continue;
+        }
         let mut file = File::open(&file_path)
             .with_context(|| format!("failed to open {}", file_path.display()))?;
         let metadata = file.metadata()?;
         let mode = permission_bits(&metadata);
-        hasher.update(path.as_bytes());
-        hasher.update(b"\n");
         hasher.update(format!("{mode:o}").as_bytes());
         hasher.update(b"\n");
         hasher.update(metadata.len().to_string().as_bytes());
@@ -278,6 +290,21 @@ fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
             .with_context(|| format!("failed to read {}", file_path.display()))?;
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Feeds `hasher` what follows the path in the record of the symlink to a directory at `link`:
+/// [`DIR_LINK`], a newline, the decimal length of the target the link names, a newline, and
+/// that target as written, so the record delimits itself the way a file's does.
+fn hash_dir_link(hasher: &mut Sha256, link: &Path) -> Result<()> {
+    let target = std::fs::read_link(link)
+        .with_context(|| format!("failed to read link {}", link.display()))?;
+    let target = target.as_os_str().as_encoded_bytes();
+    hasher.update(DIR_LINK.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(target.len().to_string().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(target);
+    Ok(())
 }
 
 /// The permission bits the builder's tar upload records for a file, `st_mode & 0o7777`, so
@@ -294,8 +321,8 @@ fn permission_bits(_metadata: &Metadata) -> u32 {
     0
 }
 
-/// [`digest_files`] over every file under `dir`, walked in sorted path order and following
-/// symlinks, for a copy source the export holds no copy of.
+/// [`digest_files`] over every entry under `dir`, walked in sorted path order without entering
+/// a symlinked directory, for a copy source the export holds no copy of.
 fn digest_dir(dir: &Path) -> Result<String> {
     let mut paths = Vec::new();
     collect_files(dir, Path::new(""), &mut paths)?;
@@ -326,7 +353,9 @@ fn digest_symlink_targets(root: &Path, links: &[String]) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Appends every file under `root.join(prefix)` to `paths`, relative to `root`.
+/// Appends every entry under `root.join(prefix)` that is not a real directory to `paths`,
+/// relative to `root`, descending real directories only: a symlink to a directory is listed
+/// once and never entered, as in the builder's upload walk, so a link cycle cannot recurse.
 fn collect_files(root: &Path, prefix: &Path, paths: &mut Vec<String>) -> Result<()> {
     let dir = root.join(prefix);
     let entries =
@@ -334,7 +363,7 @@ fn collect_files(root: &Path, prefix: &Path, paths: &mut Vec<String>) -> Result<
     for entry in entries {
         let entry = entry?;
         let relative = prefix.join(entry.file_name());
-        if entry.path().is_dir() {
+        if entry.path().symlink_metadata()?.is_dir() {
             collect_files(root, &relative, paths)?;
         } else {
             paths.push(relative.to_string_lossy().into_owned());
@@ -626,6 +655,46 @@ mod tests {
         assert_ne!(
             digest_files(dir.path(), &reversed)?,
             digest_files(dir.path(), &paths)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn digest_dir_lists_a_symlink_to_a_directory_once_without_entering_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a"), "x")?;
+        set_mode(&dir.path().join("a"), 0o644)?;
+        std::fs::create_dir(dir.path().join("sub"))?;
+        std::fs::write(dir.path().join("sub/b"), "yz")?;
+        set_mode(&dir.path().join("sub/b"), 0o755)?;
+        let link = dir.path().join("loop");
+        std::os::unix::fs::symlink(".", &link)?;
+        assert_eq!(
+            digest_dir(dir.path())?,
+            sha256_hex(concat!("a\n644\n1\nx", "loop\nlink\n1\n.", "sub/b\n755\n2\nyz").as_bytes())
+        );
+        std::fs::remove_file(&link)?;
+        std::os::unix::fs::symlink("sub", &link)?;
+        assert_eq!(
+            digest_dir(dir.path())?,
+            sha256_hex(
+                concat!("a\n644\n1\nx", "loop\nlink\n3\nsub", "sub/b\n755\n2\nyz").as_bytes()
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn digest_dir_reads_a_symlink_to_a_file_through_to_its_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("target"), "x")?;
+        set_mode(&dir.path().join("target"), 0o644)?;
+        std::os::unix::fs::symlink("target", dir.path().join("alias"))?;
+        assert_eq!(
+            digest_dir(dir.path())?,
+            sha256_hex(concat!("alias\n644\n1\nx", "target\n644\n1\nx").as_bytes())
         );
         Ok(())
     }
