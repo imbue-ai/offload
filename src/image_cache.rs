@@ -19,11 +19,13 @@
 
 pub mod recipe;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
+use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -120,36 +122,23 @@ async fn read_cached_image_for_commit(
     commit_sha: &str,
     recipe: &Recipe,
 ) -> Result<Option<CachedImage>> {
-    let wanted = serde_json::to_value(recipe).context("failed to serialize recipe")?;
-    let note = git::read_note(repo, commit_sha)
-        .await
-        .context("failed to read git note for checkpoint commit")?;
-
-    let Some(contents) = note else {
+    let Some(verdicts) = classify_note(repo, commit_sha, recipe).await? else {
         return Ok(None);
     };
 
-    let hit = contents
-        .values()
-        .find(|entry| entry.recipe.as_ref() == Some(&wanted) && !entry.image_id.is_empty());
-    if let Some(entry) = hit {
+    if let Some(image_id) = matching_image(&verdicts) {
         return Ok(Some(CachedImage {
-            image_id: entry.image_id.clone(),
+            image_id: image_id.to_string(),
         }));
     }
 
-    let legacy = contents
-        .values()
-        .filter(|entry| entry.recipe.is_none())
+    let legacy = verdicts
+        .iter()
+        .filter(|entry| entry.verdict == Verdict::Legacy)
         .count();
-    let different = contents
-        .values()
-        .filter(|entry| {
-            entry
-                .recipe
-                .as_ref()
-                .is_some_and(|stored| *stored != wanted)
-        })
+    let different = verdicts
+        .iter()
+        .filter(|entry| matches!(entry.verdict, Verdict::Differs(_)))
         .count();
     eprintln!(
         "[cache] No entry on {} matches the current recipe: {} written by an older Offload (no recipe), {} with a different recipe",
@@ -158,6 +147,126 @@ async fn read_cached_image_for_commit(
         different
     );
     Ok(None)
+}
+
+/// Why a note entry does or does not serve the current recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// The stored recipe equals the current one and the entry carries an image.
+    Matches,
+    /// The dotted JSON paths at which the stored recipe differs from the current one, plus
+    /// `image_id` when the entry carries no image.
+    Differs(Vec<String>),
+    /// No stored recipe: written by an older Offload and never served.
+    Legacy,
+}
+
+/// One note entry classified against the current recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntryVerdict {
+    name: String,
+    image_id: String,
+    verdict: Verdict,
+}
+
+/// Read the note on `commit_sha` and classify its entries against `recipe`; `None` when the
+/// commit carries no note.
+async fn classify_note(
+    repo: &Path,
+    commit_sha: &str,
+    recipe: &Recipe,
+) -> Result<Option<Vec<EntryVerdict>>> {
+    let current = serde_json::to_value(recipe).context("failed to serialize recipe")?;
+    let note = git::read_note(repo, commit_sha)
+        .await
+        .context("failed to read git note for checkpoint commit")?;
+    Ok(note.map(|contents| classify_entries(&contents, &current)))
+}
+
+/// Classify every entry of a note against the current recipe, ordered by entry name so the
+/// lookup and `offload checkpoint-status` agree on which match comes first.
+fn classify_entries(contents: &git::NoteContents, current: &Value) -> Vec<EntryVerdict> {
+    contents
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(name, entry)| EntryVerdict {
+            name: name.clone(),
+            image_id: entry.image_id.clone(),
+            verdict: classify_entry(entry, current),
+        })
+        .collect()
+}
+
+/// An entry matches only when its stored recipe equals `current` and it carries an image.
+fn classify_entry(entry: &git::ImageEntry, current: &Value) -> Verdict {
+    let Some(stored) = entry.recipe.as_ref() else {
+        return Verdict::Legacy;
+    };
+    let mut paths = differing_paths(stored, current);
+    if entry.image_id.is_empty() {
+        paths.push("image_id".to_string());
+    }
+    if paths.is_empty() {
+        Verdict::Matches
+    } else {
+        Verdict::Differs(paths)
+    }
+}
+
+/// The image served for the current recipe: the first entry that matches.
+fn matching_image(verdicts: &[EntryVerdict]) -> Option<&str> {
+    verdicts
+        .iter()
+        .find(|entry| entry.verdict == Verdict::Matches)
+        .map(|entry| entry.image_id.as_str())
+}
+
+/// Dotted JSON paths at which `stored` differs from `current`.  Objects are descended, a key on
+/// one side only is a difference at that key, and arrays and scalars are compared whole; a
+/// stored value that is not an object at all is reported as `recipe`.
+fn differing_paths(stored: &Value, current: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    collect_differing_paths(stored, current, None, &mut paths);
+    paths
+}
+
+/// Recursive worker for [`differing_paths`]; `path` is the dotted prefix of the values being
+/// compared, `None` at the root.
+fn collect_differing_paths(
+    stored: &Value,
+    current: &Value,
+    path: Option<&str>,
+    paths: &mut Vec<String>,
+) {
+    match (stored, current) {
+        (Value::Object(stored_fields), Value::Object(current_fields)) => {
+            let keys: BTreeSet<&String> =
+                stored_fields.keys().chain(current_fields.keys()).collect();
+            for key in keys {
+                let child = match path {
+                    Some(prefix) => format!("{prefix}.{key}"),
+                    None => key.clone(),
+                };
+                match (stored_fields.get(key), current_fields.get(key)) {
+                    (Some(a), Some(b)) => collect_differing_paths(a, b, Some(&child), paths),
+                    _ => paths.push(child),
+                }
+            }
+        }
+        _ if stored != current => paths.push(path.unwrap_or("recipe").to_string()),
+        _ => {}
+    }
+}
+
+/// The `offload checkpoint-status` line for one entry.
+fn entry_line(entry: &EntryVerdict) -> String {
+    let state = match &entry.verdict {
+        Verdict::Matches => "matches".to_string(),
+        Verdict::Differs(paths) => format!("differs: {}", paths.join(", ")),
+        Verdict::Legacy => "legacy (written by an older Offload)".to_string(),
+    };
+    format!("  {} {} {}", entry.name, entry.image_id, state)
 }
 
 /// Which caching mode determined the base commit.
@@ -282,7 +391,9 @@ pub async fn resolve_base(
     }
 }
 
-/// The note entry for a freshly built base image and the recipe name it is stored under.
+/// The note entry for a freshly built base image and the recipe name it is stored under.  The
+/// config path is provenance only, so one that cannot be made repo-relative is left out rather
+/// than blocking the write.
 async fn recipe_note_entry(
     repo: &Path,
     image_id: &str,
@@ -292,12 +403,12 @@ async fn recipe_note_entry(
     let repo_root = git::repo_root(repo)
         .await
         .context("failed to get repo root for note")?;
-    let config_path = git::canonicalize_config_path(&config_path.to_string_lossy(), &repo_root)
-        .context("failed to canonicalize config path for note")?;
+    let config_path =
+        git::canonicalize_config_path(&config_path.to_string_lossy(), &repo_root).ok();
     let entry = git::ImageEntry {
         image_id: image_id.to_string(),
         recipe: Some(serde_json::to_value(recipe).context("failed to serialize recipe")?),
-        config_path: Some(config_path),
+        config_path,
         offload_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         built_at: Some(humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string()),
     };
@@ -690,13 +801,14 @@ pub(crate) fn snapshot_working_directory(tracer: &Tracer) -> Result<tempfile::Te
     Ok(snapshot)
 }
 
-/// Print a human-readable summary of the cache state for the current HEAD.
+/// Print a human-readable summary of the cache state for the current HEAD, ending with one
+/// line per note entry on the base commit saying why it does or does not match.
 pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> anyhow::Result<()> {
     let path = Path::new(config_path);
     let config = crate::config::load_config(path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
 
-    // The key `offload build` would look up: no runtime copy dirs.
+    // The recipe `offload build` would look up: no runtime copy dirs.
     let Some(recipe) = Recipe::from_config(&config, &[]) else {
         println!("Provider caches no images; nothing to look up.");
         return Ok(());
@@ -711,8 +823,10 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
         .context("Failed to get HEAD SHA")?;
     let short_head = &head[..8.min(head.len())];
 
-    if let Some(ref checkpoint_cfg) = config.checkpoint {
-        let info = resolve_checkpoint(repo, &recipe, checkpoint_cfg, false)
+    // The resolvers only pick the base commit here; its note is classified below so every
+    // entry is explained instead of reduced to a hit or a miss.
+    let verdicts = if let Some(ref checkpoint_cfg) = config.checkpoint {
+        let info = resolve_checkpoint(repo, &recipe, checkpoint_cfg, true)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -734,8 +848,9 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
             None => "unknown distance".to_string(),
         };
 
-        match info.cached_image {
-            Some(cached) => {
+        let verdicts = classify_note(repo, &info.checkpoint_sha, &recipe).await?;
+        match verdicts.as_deref().and_then(matching_image) {
+            Some(image_id) => {
                 let run_mode = if info.checkpoint_sha == head {
                     "use checkpoint image directly (HEAD is the checkpoint)".to_string()
                 } else {
@@ -752,7 +867,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
                     "Base commit:        {} (checkpoint, {})",
                     short_base, distance_label
                 );
-                println!("Cached image:       {}", cached.image_id);
+                println!("Cached image:       {}", image_id);
                 println!("Next run mode:      {}", run_mode);
             }
             None => {
@@ -765,8 +880,9 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
                 println!("Next run mode:      full build (no cached checkpoint image)");
             }
         }
+        verdicts
     } else {
-        let info = resolve_latest_commit(repo, &recipe, false)
+        let info = resolve_latest_commit(repo, &recipe, true)
             .await
             .context("Failed to resolve latest commit")?;
 
@@ -778,11 +894,12 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
 
         let short_base = &info.head_sha[..8.min(info.head_sha.len())];
 
-        match info.cached_image {
-            Some(cached) => {
+        let verdicts = classify_note(repo, &info.head_sha, &recipe).await?;
+        match verdicts.as_deref().and_then(matching_image) {
+            Some(image_id) => {
                 println!("HEAD:               {}", short_head);
                 println!("Base commit:        {} (latest commit, HEAD)", short_base);
-                println!("Cached image:       {}", cached.image_id);
+                println!("Cached image:       {}", image_id);
                 println!("Next run mode:      thin diff (uncommitted changes only)");
             }
             None => {
@@ -792,6 +909,16 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
                 println!("Next run mode:      full build (no cached image for HEAD)");
             }
         }
+        verdicts
+    };
+
+    println!("Recipe:             {}", recipe.name()?);
+    let entries = verdicts.as_deref().unwrap_or_default();
+    if entries.is_empty() {
+        println!("  (no note on this commit)");
+    }
+    for entry in entries {
+        println!("{}", entry_line(entry));
     }
 
     Ok(())
@@ -808,6 +935,7 @@ mod tests {
     use std::path::Path;
 
     use anyhow::bail;
+    use serde_json::json;
 
     /// Helper: create a temp directory with an initialized git repo and one commit.
     fn init_temp_repo() -> Result<tempfile::TempDir> {
@@ -940,6 +1068,15 @@ mod tests {
         write_note_in(dir, sha, &contents)
     }
 
+    /// Helper: the verdict for one note entry.
+    fn entry_verdict(name: &str, image_id: &str, verdict: Verdict) -> EntryVerdict {
+        EntryVerdict {
+            name: name.to_string(),
+            image_id: image_id.to_string(),
+            verdict,
+        }
+    }
+
     // ---- Tests for resolve_checkpoint ----
 
     #[tokio::test]
@@ -1035,8 +1172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_checkpoint_misses_when_sandbox_init_cmd_changes()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_resolve_checkpoint_misses_when_sandbox_init_cmd_changes() -> Result<()> {
         let dir = init_temp_repo()?;
 
         std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu:22.04")?;
@@ -1060,7 +1196,7 @@ mod tests {
 
         let result = resolve_checkpoint(dir.path(), &recipe_for(&changed)?, &cfg, false).await?;
 
-        let info = result.ok_or("should find checkpoint")?;
+        let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
         assert!(
             info.cached_image.is_none(),
@@ -1121,8 +1257,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_configs_differing_only_in_report_share_one_entry()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_configs_differing_only_in_report_share_one_entry() -> Result<()> {
         let dir = init_temp_repo()?;
         let head = head_sha_in(dir.path())?;
 
@@ -1138,18 +1273,17 @@ mod tests {
         for lookup in [&recipe, &other_recipe] {
             let info = resolve_latest_commit(dir.path(), lookup, false)
                 .await?
-                .ok_or("should find latest commit")?;
-            let cached = info.cached_image.ok_or("should have cached image")?;
+                .context("should find latest commit")?;
+            let cached = info.cached_image.context("should have cached image")?;
             assert_eq!(cached.image_id, "im-shared");
         }
-        let note = read_note_in(dir.path(), &head)?.ok_or("note should exist")?;
+        let note = read_note_in(dir.path(), &head)?.context("note should exist")?;
         assert_eq!(note.len(), 1, "one recipe means one entry");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_stored_recipe_with_extra_key_does_not_match()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_stored_recipe_with_extra_key_does_not_match() -> Result<()> {
         let dir = init_temp_repo()?;
         let head = head_sha_in(dir.path())?;
 
@@ -1157,7 +1291,7 @@ mod tests {
         let mut stored = serde_json::to_value(&recipe)?;
         stored
             .as_object_mut()
-            .ok_or("recipe serializes to an object")?
+            .context("recipe serializes to an object")?
             .insert("newer_field".to_string(), serde_json::Value::Bool(true));
         let mut contents = NoteContents::new();
         contents.insert(
@@ -1171,7 +1305,7 @@ mod tests {
 
         let info = resolve_latest_commit(dir.path(), &recipe, false)
             .await?
-            .ok_or("should find latest commit")?;
+            .context("should find latest commit")?;
         assert!(
             info.cached_image.is_none(),
             "an entry with a field this version does not know must not match"
@@ -1180,7 +1314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_legacy_only_note_misses() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_legacy_only_note_misses() -> Result<()> {
         let dir = init_temp_repo()?;
         let head = head_sha_in(dir.path())?;
 
@@ -1191,7 +1325,7 @@ mod tests {
         let recipe = recipe_for(&minimal_modal_config())?;
         let info = resolve_latest_commit(dir.path(), &recipe, false)
             .await?
-            .ok_or("should find latest commit")?;
+            .context("should find latest commit")?;
         assert!(
             info.cached_image.is_none(),
             "entries without a recipe never match"
@@ -1199,11 +1333,140 @@ mod tests {
         Ok(())
     }
 
+    // ---- Tests for entry classification ----
+
+    #[test]
+    fn test_differing_paths_reports_top_level_fields_whole() -> Result<()> {
+        let stored = json!({"format": 1, "copy_dirs": [], "sandbox_init_cmd": "bash old.sh"});
+        let current = json!({
+            "format": 1,
+            "copy_dirs": [{"source": "data", "target": "/data", "content": null}],
+            "sandbox_init_cmd": "bash new.sh"
+        });
+        assert_eq!(
+            differing_paths(&stored, &current),
+            vec!["copy_dirs", "sandbox_init_cmd"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_differing_paths_descends_into_the_builder() -> Result<()> {
+        let stored = json!({"builder": {"modal": {"script": "9b1d", "dockerfile": "Dockerfile"}}});
+        let current =
+            json!({"builder": {"modal": {"script": "9b1d", "dockerfile": "other/Dockerfile"}}});
+        assert_eq!(
+            differing_paths(&stored, &current),
+            vec!["builder.modal.dockerfile"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_differing_paths_reports_a_key_on_one_side_only() -> Result<()> {
+        let stored = json!({"format": 1, "newer_field": true});
+        let current = json!({"format": 1, "export_extras": null});
+        assert_eq!(
+            differing_paths(&stored, &current),
+            vec!["export_extras", "newer_field"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_differing_paths_is_empty_for_equal_values() -> Result<()> {
+        let recipe = serde_json::to_value(recipe_for(&minimal_modal_config())?)?;
+        assert!(differing_paths(&recipe, &recipe).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_classify_entries_explains_every_entry() -> Result<()> {
+        let current = serde_json::to_value(recipe_for(&minimal_modal_config())?)?;
+        let mut changed = minimal_modal_config();
+        changed.offload.sandbox_init_cmd = Some("bash other.sh".to_string());
+        let other = serde_json::to_value(recipe_for(&changed)?)?;
+
+        let mut contents = NoteContents::new();
+        contents.insert(
+            "recipe:aaaa".to_string(),
+            ImageEntry {
+                recipe: Some(current.clone()),
+                ..ImageEntry::legacy("im-hit")
+            },
+        );
+        contents.insert(
+            "recipe:bbbb".to_string(),
+            ImageEntry {
+                recipe: Some(other),
+                ..ImageEntry::legacy("im-other")
+            },
+        );
+        contents.insert(
+            "recipe:cccc".to_string(),
+            ImageEntry {
+                recipe: Some(current.clone()),
+                ..ImageEntry::legacy("")
+            },
+        );
+        contents.insert("offload.toml".to_string(), ImageEntry::legacy("im-legacy"));
+
+        assert_eq!(
+            classify_entries(&contents, &current),
+            vec![
+                entry_verdict("offload.toml", "im-legacy", Verdict::Legacy),
+                entry_verdict("recipe:aaaa", "im-hit", Verdict::Matches),
+                entry_verdict(
+                    "recipe:bbbb",
+                    "im-other",
+                    Verdict::Differs(vec!["sandbox_init_cmd".to_string()])
+                ),
+                entry_verdict(
+                    "recipe:cccc",
+                    "",
+                    Verdict::Differs(vec!["image_id".to_string()])
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_entry_line_states_each_verdict() -> Result<()> {
+        assert_eq!(
+            entry_line(&entry_verdict(
+                "recipe:3f9c2a7b1e5d4c08",
+                "im-abc",
+                Verdict::Matches
+            )),
+            "  recipe:3f9c2a7b1e5d4c08 im-abc matches"
+        );
+        assert_eq!(
+            entry_line(&entry_verdict(
+                "recipe:9c0d1e2f3a4b5c6d",
+                "im-def",
+                Verdict::Differs(vec![
+                    "builder.modal.dockerfile".to_string(),
+                    "sandbox_init_cmd".to_string()
+                ])
+            )),
+            "  recipe:9c0d1e2f3a4b5c6d im-def differs: builder.modal.dockerfile, sandbox_init_cmd"
+        );
+        assert_eq!(
+            entry_line(&entry_verdict(
+                "offload-modal.toml",
+                "im-ghi",
+                Verdict::Legacy
+            )),
+            "  offload-modal.toml im-ghi legacy (written by an older Offload)"
+        );
+        Ok(())
+    }
+
     // ---- Tests for write_note_for_commit ----
 
     #[tokio::test]
-    async fn test_write_note_for_commit_writes_entry_under_recipe_name()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_write_note_for_commit_writes_entry_under_recipe_name() -> Result<()> {
         let dir = init_temp_repo()?;
         let head = head_sha_in(dir.path())?;
         let mut legacy = NoteContents::new();
@@ -1220,11 +1483,11 @@ mod tests {
         )
         .await;
 
-        let note = read_note_in(dir.path(), &head)?.ok_or("note should exist")?;
+        let note = read_note_in(dir.path(), &head)?.context("note should exist")?;
         assert_eq!(note.len(), 2, "the legacy entry is kept beside the new one");
         let entry = note
             .get(&recipe.name()?)
-            .ok_or("entry under the recipe name")?;
+            .context("entry under the recipe name")?;
         assert_eq!(entry.image_id, "im-built");
         assert_eq!(entry.recipe, Some(serde_json::to_value(&recipe)?));
         assert_eq!(entry.config_path.as_deref(), Some("offload.toml"));
@@ -1232,7 +1495,32 @@ mod tests {
             entry.offload_version.as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
-        humantime::parse_rfc3339(entry.built_at.as_deref().ok_or("built_at should be set")?)?;
+        humantime::parse_rfc3339(
+            entry
+                .built_at
+                .as_deref()
+                .context("built_at should be set")?,
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recipe_note_entry_omits_a_config_path_outside_the_repo() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let recipe = recipe_for(&minimal_modal_config())?;
+
+        let (name, entry) = recipe_note_entry(
+            dir.path(),
+            "im-built",
+            &recipe,
+            Path::new("/outside-the-repo/offload.toml"),
+        )
+        .await?;
+
+        assert_eq!(name, recipe.name()?);
+        assert_eq!(entry.image_id, "im-built");
+        assert_eq!(entry.recipe, Some(serde_json::to_value(&recipe)?));
+        assert_eq!(entry.config_path, None);
         Ok(())
     }
 

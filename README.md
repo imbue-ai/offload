@@ -193,7 +193,7 @@ Run tests in parallel.
 
 Build the sandbox image without running tests. Prepares the provider image
 (resolving cache, building if needed) and writes the image ID to git notes
-under the recipe key (see [Image Cache](#image-cache)).
+under the recipe name (see [Image Cache](#image-cache)).
 The image ID is printed to stdout on success.
 
 | Flag | Description |
@@ -203,8 +203,10 @@ The image ID is printed to stdout on success.
 ### `offload checkpoint-status`
 
 Show the image cache state for the current HEAD. Prints HEAD, the checkpoint
-commit and its distance from HEAD, the current recipe digest, the cached image
-or the reason for a miss, and the mode the next run would use.
+commit and its distance from HEAD, the cached image, the mode the next run
+would use, and the current recipe name followed by one line per entry on the
+checkpoint saying whether it matches, which recipe fields differ, or that it
+is a legacy entry written by an older Offload.
 
 | Flag | Description |
 |------|-------------|
@@ -657,7 +659,7 @@ Offload caches base image IDs in git notes under `refs/notes/offload-images`. No
 
 A cached base image is identified by the checkpoint commit plus the image recipe stored in its note entry, compared for equality; the recipe digest is only the entry's name. The recipe is the provider type and its builder inputs (`dockerfile`, `include_cwd`, and the bundled builder script for the Modal provider; `prepare_command` and `working_dir` for the default provider), `copy_dirs` and `--copy-dir` in order, `sandbox_init_cmd`, and the content of copy sources outside the repository and of the gitignored files the build copies in. Configs that share a recipe share one base image. Changing `post_patch_cmd`, `[framework]`, `[groups]`, `[report]`, `sandbox_project_root`, `env`, `cpu_cores`, or `memory_gb` does not rebuild the base.
 
-Entries written by Offload versions before this scheme are ignored, so the first run after upgrading rebuilds once per recipe. Pass `--no-cache` to `offload run` or `offload build` to skip the lookup and force a fresh build; nothing is written to the notes in that case. `offload checkpoint-status` shows the current key and explains a miss. The full design is in [plans/image-cache-key.spec.md](plans/image-cache-key.spec.md).
+Entries written by Offload versions before this scheme are ignored, so the first run after upgrading rebuilds once per recipe. Pass `--no-cache` to `offload run` or `offload build` to skip the lookup and force a fresh build; nothing is written to the notes in that case. `offload checkpoint-status` lists each entry and why it does or does not match. The full design is in [plans/image-cache-key.spec.md](plans/image-cache-key.spec.md).
 
 ## Environment Variable Expansion
 
