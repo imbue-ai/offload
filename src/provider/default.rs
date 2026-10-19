@@ -65,8 +65,10 @@ impl DefaultProvider {
 
     /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
     ///
-    /// Copy sources are resolved into the build context; the user-authored `prepare_command`
-    /// itself is appended to verbatim, so its own `--include-cwd` keeps its meaning.
+    /// Copy sources are resolved into the build context, relative ones against `working_dir`
+    /// when it is set because that is where `prepare_command` runs; the user-authored
+    /// `prepare_command` itself is appended to verbatim, so its own `--include-cwd` keeps its
+    /// meaning.
     fn build_prepare_command(
         &self,
         copy_dirs: &[(PathBuf, PathBuf)],
@@ -76,7 +78,13 @@ impl DefaultProvider {
         let prepare_cmd = self.config.prepare_command.as_ref()?;
         let mut full = prepare_cmd.clone();
 
-        for spec in build_ctx.copy_specs(&self.config.copy_dirs, copy_dirs) {
+        let copy_specs = match &self.config.working_dir {
+            Some(working_dir) => {
+                build_ctx.copy_specs_from(working_dir, &self.config.copy_dirs, copy_dirs)
+            }
+            None => build_ctx.copy_specs(&self.config.copy_dirs, copy_dirs),
+        };
+        for spec in copy_specs {
             full.push_str(&format!(" --copy-dir={}", shell_words::quote(&spec)));
         }
 
@@ -1111,6 +1119,104 @@ mod tests {
                  --context-dir=/ctx"
             )
         );
+    }
+
+    /// `modal_script_config` whose `prepare_command` runs in `working_dir` and copies `data`
+    /// relative to it.
+    fn working_dir_config(working_dir: Option<&str>) -> DefaultProviderConfig {
+        DefaultProviderConfig {
+            working_dir: working_dir.map(PathBuf::from),
+            copy_dirs: vec!["data:/data".to_string()],
+            ..modal_script_config(Some("uv run @modal_sandbox.py prepare Dockerfile"))
+        }
+    }
+
+    #[test]
+    fn test_build_prepare_command_without_working_dir_reads_source_from_invoking_directory() {
+        let provider = DefaultProvider::from_config(working_dir_config(None));
+        assert_eq!(
+            provider
+                .build_prepare_command(&[], None, &build_context())
+                .as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/sub/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_relative_source_against_relative_working_dir() {
+        let provider = DefaultProvider::from_config(working_dir_config(Some("scripts")));
+        assert_eq!(
+            provider
+                .build_prepare_command(&[], None, &build_context())
+                .as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/sub/scripts/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_relative_source_against_working_dir_under_root() {
+        let provider = DefaultProvider::from_config(working_dir_config(Some("/repo/scripts")));
+        assert_eq!(
+            provider
+                .build_prepare_command(&[], None, &build_context())
+                .as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/scripts/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    /// A `working_dir` outside the repository has no copy in the context, so its sources stay
+    /// live paths.
+    #[test]
+    fn test_build_prepare_command_reads_relative_source_live_under_working_dir_outside_root() {
+        let provider = DefaultProvider::from_config(working_dir_config(Some("/elsewhere")));
+        assert_eq!(
+            provider
+                .build_prepare_command(&[], None, &build_context())
+                .as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/elsewhere/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_absolute_sources_regardless_of_working_dir() {
+        for working_dir in ["scripts", "/repo/scripts", "/elsewhere"] {
+            let provider = DefaultProvider::from_config(DefaultProviderConfig {
+                copy_dirs: vec!["/repo/lib:/app/lib".to_string()],
+                ..working_dir_config(Some(working_dir))
+            });
+            let runtime_dirs = vec![(
+                PathBuf::from("/other/fixtures"),
+                PathBuf::from("/app/fixtures"),
+            )];
+            assert_eq!(
+                provider
+                    .build_prepare_command(&runtime_dirs, None, &build_context())
+                    .as_deref(),
+                Some(
+                    "uv run @modal_sandbox.py prepare Dockerfile \
+                     --copy-dir=/ctx/lib:/app/lib \
+                     --copy-dir=/other/fixtures:/app/fixtures \
+                     --context-dir=/ctx"
+                ),
+                "working_dir {working_dir}"
+            );
+        }
     }
 
     /// Integration test for Modal sandbox download functionality via DefaultProvider.
