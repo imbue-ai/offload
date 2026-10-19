@@ -31,6 +31,14 @@ pub(super) fn init_repo_in(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Helper: commit a symlink at `link` under `dir` that points at `target`.
+pub(super) fn commit_symlink(dir: &Path, link: &str, target: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, dir.join(link))?;
+    git_cmd(dir, &["add", link])?;
+    git_cmd(dir, &["commit", "-m", "add symlink"])?;
+    Ok(())
+}
+
 /// Helper: run a git command in a directory and return stdout.
 pub(super) fn git_cmd(dir: &Path, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new("git")

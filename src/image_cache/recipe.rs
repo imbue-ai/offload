@@ -28,6 +28,7 @@ pub struct Recipe {
     pub copy_dirs: Vec<CopyDir>,
     pub sandbox_init_cmd: Option<String>,
     pub export_extras: Option<ExportExtras>,
+    pub escaping_symlinks: Option<EscapingSymlinks>,
 }
 
 /// What turns the recipe into an image, carrying only the fields that builder reads.
@@ -67,8 +68,17 @@ pub struct ExportExtras {
     pub content: String,
 }
 
-/// Recorded as a copy source's `content` when it lies outside the repository and is missing, so
-/// its later appearance is a cache miss.
+/// The tracked symlinks whose targets lie outside the repository or are missing, which the
+/// export carries as links the builder follows into the live tree, with one digest of those
+/// targets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EscapingSymlinks {
+    pub paths: Vec<String>,
+    pub content: String,
+}
+
+/// Recorded for a copy source outside the repository, or a tracked symlink's target, that is
+/// missing, so its later appearance is a cache miss.
 pub const ABSENT_SOURCE: &str = "absent";
 
 impl Recipe {
@@ -125,6 +135,7 @@ impl Recipe {
             copy_dirs,
             sandbox_init_cmd,
             export_extras: None,
+            escaping_symlinks: None,
         })
     }
 
@@ -139,10 +150,10 @@ impl Recipe {
 
 /// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] for the
 /// invoking directory, with each copy source inside the repository rewritten to the
-/// repository-relative path the build reads, and digests of the two live-tree inputs a base
-/// build still reads, copy sources outside the repository and the gitignored files
-/// `export_tree` copies in, so a change in what enters the image is a cache miss. `None` when
-/// the provider builds no base image.
+/// repository-relative path the build reads, and digests of the live-tree inputs a base build
+/// still reads, copy sources outside the repository, the gitignored files `export_tree` copies
+/// in, and the targets of tracked symlinks that lead out of the repository, so a change in what
+/// enters the image is a cache miss. `None` when the provider builds no base image.
 pub(crate) async fn current_recipe(
     repo: &Path,
     config: &Config,
@@ -161,6 +172,7 @@ pub(crate) async fn current_recipe(
             record_copy_source(&root, &live, dir)?;
         }
         recipe.export_extras = export_extras(&root)?;
+        recipe.escaping_symlinks = escaping_symlinks(&root)?;
         Ok(Some(recipe))
     })
     .await?
@@ -200,6 +212,28 @@ fn export_extras(root: &Path) -> Result<Option<ExportExtras>> {
     }
     let content = digest_files(root, &paths)?;
     Ok(Some(ExportExtras { paths, content }))
+}
+
+/// The tracked symlinks that lead out of the repository with one digest of their targets, which
+/// the builder reads live by following the link the export carries; `None` when every tracked
+/// link resolves inside the repository, where the export holds its target.
+fn escaping_symlinks(root: &Path) -> Result<Option<EscapingSymlinks>> {
+    let paths: Vec<String> = git::tracked_symlinks(root)?
+        .into_iter()
+        .filter(|link| symlink_escapes(root, link))
+        .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let content = digest_symlink_targets(root, &paths)?;
+    Ok(Some(EscapingSymlinks { paths, content }))
+}
+
+/// Whether the symlink at `link` under `root` leads out of the repository: its target resolves
+/// outside the root, or is missing and so cannot be placed inside it.
+fn symlink_escapes(root: &Path, link: &str) -> bool {
+    let path = root.join(link);
+    !path.exists() || path_under_root(root, &path).is_none()
 }
 
 impl CopyDir {
@@ -269,6 +303,29 @@ fn digest_dir(dir: &Path) -> Result<String> {
     digest_files(dir, &paths)
 }
 
+/// One digest over the targets of the symlinks `links` under `root`, each as its path, a
+/// newline, its target's digest ([`digest_dir`] for a directory, [`digest_files`] for a file,
+/// [`ABSENT_SOURCE`] for a dangling link), and a newline, so an edit, a replacement, or an
+/// appearance of a target changes the digest.
+fn digest_symlink_targets(root: &Path, links: &[String]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    for link in links {
+        let target = root.join(link);
+        let content = if target.is_dir() {
+            digest_dir(&target)?
+        } else if target.exists() {
+            digest_files(root, std::slice::from_ref(link))?
+        } else {
+            ABSENT_SOURCE.to_string()
+        };
+        hasher.update(link.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(content.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Appends every file under `root.join(prefix)` to `paths`, relative to `root`.
 fn collect_files(root: &Path, prefix: &Path, paths: &mut Vec<String>) -> Result<()> {
     let dir = root.join(prefix);
@@ -301,7 +358,7 @@ mod tests {
     use crate::config::{ModalProviderConfig, load_config_str};
     use crate::image_cache::BuildContext;
     use crate::image_cache::test_support::{
-        git_cmd, init_repo_in, init_temp_repo, minimal_modal_config,
+        commit_symlink, git_cmd, init_repo_in, init_temp_repo, minimal_modal_config,
     };
 
     const MODAL_PROVIDER: &str = r#"
@@ -365,8 +422,9 @@ mod tests {
             copy_dirs: vec![],
             sandbox_init_cmd: Some("bash system/scripts/offload_sandbox_init.sh".to_string()),
             export_extras: None,
+            escaping_symlinks: None,
         };
-        assert_eq!(recipe.name()?, "recipe:ba79b860a7dfd4bd");
+        assert_eq!(recipe.name()?, "recipe:67e87d914c2c1417");
         Ok(())
     }
 
@@ -385,6 +443,10 @@ mod tests {
                 paths: vec!["build/out".to_string()],
                 content: "c0ffee".to_string(),
             }),
+            escaping_symlinks: Some(EscapingSymlinks {
+                paths: vec!["model".to_string()],
+                content: "f00d".to_string(),
+            }),
         };
         let expected = json!({
             "format": 1,
@@ -397,7 +459,8 @@ mod tests {
             },
             "copy_dirs": [{"source": "data", "target": "/data", "content": null}],
             "sandbox_init_cmd": "bash init.sh",
-            "export_extras": {"paths": ["build/out"], "content": "c0ffee"}
+            "export_extras": {"paths": ["build/out"], "content": "c0ffee"},
+            "escaping_symlinks": {"paths": ["model"], "content": "f00d"}
         });
         assert_eq!(serde_json::to_value(&recipe)?, expected);
         assert_eq!(serde_json::from_value::<Recipe>(expected)?, recipe);
@@ -415,6 +478,7 @@ mod tests {
             copy_dirs: vec![],
             sandbox_init_cmd: None,
             export_extras: None,
+            escaping_symlinks: None,
         };
         let expected = json!({
             "format": 1,
@@ -423,7 +487,8 @@ mod tests {
             },
             "copy_dirs": [],
             "sandbox_init_cmd": null,
-            "export_extras": null
+            "export_extras": null,
+            "escaping_symlinks": null
         });
         assert_eq!(serde_json::to_value(&recipe)?, expected);
         assert_eq!(serde_json::from_value::<Recipe>(expected)?, recipe);
@@ -446,6 +511,7 @@ mod tests {
         );
         assert_eq!(recipe.sandbox_init_cmd.as_deref(), Some("bash init.sh"));
         assert_eq!(recipe.export_extras, None);
+        assert_eq!(recipe.escaping_symlinks, None);
         Ok(())
     }
 
@@ -871,6 +937,88 @@ mod tests {
             first_copy_content(&recipe)?,
             Some(digest_dir(Path::new(source))?.as_str())
         );
+        Ok(())
+    }
+
+    /// Helper: the escaping symlinks the recipe records.
+    fn escaping_symlinks_of(recipe: &Recipe) -> Result<&EscapingSymlinks> {
+        recipe
+            .escaping_symlinks
+            .as_ref()
+            .context("expected escaping symlinks")
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_digests_a_tracked_symlink_to_a_directory_outside_the_repository()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("model.bin"), "weights")?;
+        commit_symlink(dir.path(), "data", outside.path())?;
+        let config = minimal_modal_config();
+        let before = current_recipe_in(dir.path(), &config).await?;
+        let symlinks = escaping_symlinks_of(&before)?;
+        assert_eq!(symlinks.paths, vec!["data"]);
+        assert_eq!(symlinks.content.len(), 64);
+        assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
+        std::fs::write(outside.path().join("model.bin"), "weights v2")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(escaping_symlinks_of(&after)?.paths, symlinks.paths);
+        assert_ne!(escaping_symlinks_of(&after)?.content, symlinks.content);
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_digests_a_tracked_symlink_to_a_file_outside_the_repository()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        let model = outside.path().join("model.bin");
+        std::fs::write(&model, "weights")?;
+        commit_symlink(dir.path(), "model", &model)?;
+        let config = minimal_modal_config();
+        let before = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(escaping_symlinks_of(&before)?.paths, vec!["model"]);
+        std::fs::write(&model, "weights v2")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_ignores_a_tracked_symlink_whose_target_is_inside_the_repository()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        commit_symlink(dir.path(), "readme-link", Path::new("README.md"))?;
+        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
+        assert_eq!(recipe.escaping_symlinks, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_escaping_symlinks_is_none_without_tracked_symlinks() -> Result<()>
+    {
+        let dir = init_temp_repo()?;
+        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
+        assert_eq!(recipe.escaping_symlinks, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_marks_a_dangling_tracked_symlink_absent() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        let missing = outside.path().join("gone");
+        commit_symlink(dir.path(), "late", &missing)?;
+        let config = minimal_modal_config();
+        let before = current_recipe_in(dir.path(), &config).await?;
+        let symlinks = escaping_symlinks_of(&before)?;
+        assert_eq!(symlinks.paths, vec!["late"]);
+        assert_eq!(symlinks.content, sha256_hex(b"late\nabsent\n"));
+        std::fs::write(&missing, "late")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_ne!(after.name()?, before.name()?);
         Ok(())
     }
 }

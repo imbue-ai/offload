@@ -43,6 +43,7 @@ A cached base image is identified by the checkpoint SHA and the recipe. The reci
 | `copy_dirs` | `[provider].copy_dirs` followed by the `--copy-dir` flags, in order | Directories added to the image, as the builder receives them. Each entry is `{source, target, content}`; `source` is the repository-relative path of a source inside the repository, whatever spelling and invoking directory named it, and the path as written for one outside; `content` is the source's content digest when the source lies outside the repository (`absent` when it does not exist on disk), otherwise null |
 | `sandbox_init_cmd` | `[offload].sandbox_init_cmd` | Runs as the last base-image layer. Empty is normalized to absent |
 | `export_extras` | files `export_tree` copies from the live tree | `{paths, content}`: the sorted paths of the gitignored but not dockerignored files that enter the export, and one digest of their content. Null when there are none |
+| `escaping_symlinks` | tracked symlinks whose targets lie outside the repository | `{paths, content}`: the sorted repository-relative paths of the tracked symlinks whose targets resolve outside the repository or are missing, and one digest of those targets, a missing one as `absent`. The export carries each link and the builder follows it into the live tree. Null when there are none |
 
 Values are taken verbatim from the loaded config. Environment expansion applies only to `[provider].env`, so no value enters a note that is not already in the committed TOML.
 
@@ -65,6 +66,7 @@ The base build is a function of the checkpoint tree and the recipe.
 - Rust resolves every path the builder reads against the exported checkpoint tree and passes it as an explicit argument: the Dockerfile, the directory that `include_cwd` adds (the export at the invoking directory's path relative to the repository root), `.dockerignore`, and each copy source. The script reads nothing relative to its own working directory.
 - A copy source whose canonical path lies outside the repository has no counterpart in the export. It is passed as given, and its content digest is recorded in its `copy_dirs` entry; a source that does not exist on disk is recorded as `absent`, so its later appearance is a miss.
 - The gitignored but not dockerignored files that `export_tree` copies from the live tree are recorded in `export_extras`. For a repository whose `.dockerignore` excludes everything `.gitignore` excludes, the set is empty and costs nothing.
+- A tracked symlink is exported as a link, which the builder follows. One whose target resolves inside the repository reads the export's copy of that target. One whose target lies outside the repository reads live content, so those links are recorded in `escaping_symlinks` with one digest of their targets; a dangling link is recorded as `absent`, so its target's later appearance is a miss.
 
 The sandbox ends up with the same files as before: what the live tree used to bake into the base now arrives through the export plus the thin diff.
 
@@ -87,7 +89,8 @@ The note stays a flat JSON object. Every value is an entry with a required `imag
       },
       "copy_dirs": [],
       "sandbox_init_cmd": "default-workspace-template-seed && bash system/scripts/offload_sandbox_init.sh",
-      "export_extras": null
+      "export_extras": null,
+      "escaping_symlinks": null
     },
     "config_path": "offload-modal.toml",
     "offload_version": "0.9.15",

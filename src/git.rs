@@ -417,6 +417,30 @@ pub(crate) fn export_extra_paths(repo_root: &Path) -> Result<Vec<String>> {
     Ok(paths)
 }
 
+/// The sorted repo-relative paths of the symlinks in the index (`ls-files --stage` mode
+/// `120000`), shared with the image cache recipe because a link the export carries can lead the
+/// builder out of the checkpoint tree into live content.
+pub(crate) fn tracked_symlinks(repo_root: &Path) -> Result<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "--stage", "-z"])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to list tracked files")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git ls-files --stage failed: {}", stderr.trim());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut paths: Vec<String> = stdout
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\t'))
+        .filter(|(info, _)| info.starts_with("120000 "))
+        .map(|(_, path)| path.to_string())
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
 /// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
 ///
 /// Uses a temporary git index so that both tracked modifications and untracked
@@ -1319,6 +1343,19 @@ mod tests {
 
         // fetch_notes should return Ok(()) even though remote has no notes ref
         fetch_notes(dir.path(), "origin").await?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_tracked_symlinks_lists_only_mode_120000_entries() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::write(dir.path().join("plain.txt"), "plain")?;
+        std::os::unix::fs::symlink("README.md", dir.path().join("to-readme"))?;
+        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("dangling"))?;
+        git_in(dir.path(), &["add", "plain.txt", "to-readme", "dangling"])?;
+        git_in(dir.path(), &["commit", "-m", "add links"])?;
+        std::os::unix::fs::symlink("README.md", dir.path().join("untracked"))?;
+        assert_eq!(tracked_symlinks(dir.path())?, vec!["dangling", "to-readme"]);
         Ok(())
     }
 }
