@@ -7,8 +7,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::path_under_root;
 use crate::bundled::SCRIPTS_DIR;
 use crate::config::{Config, ProviderConfig};
+use crate::git;
 
 /// Version of the Rust side of the image pipeline; bumped when export rules or argument
 /// passing change what an unchanged recipe builds.
@@ -127,6 +129,78 @@ impl Recipe {
     }
 }
 
+/// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] plus
+/// digests of the two live-tree inputs a base build still reads, copy sources outside the
+/// repository and the gitignored files `export_tree` copies in, so a change in either is a
+/// cache miss. `None` when the provider builds no base image.
+pub(crate) async fn current_recipe(
+    repo: &Path,
+    config: &Config,
+    copy_dirs: &[(PathBuf, PathBuf)],
+) -> Result<Option<Recipe>> {
+    let Some(mut recipe) = Recipe::from_config(config, copy_dirs) else {
+        return Ok(None);
+    };
+    let root = git::repo_root(repo).await?;
+    let origin = copy_origin(repo, config);
+    let sources: Vec<PathBuf> = recipe
+        .copy_dirs
+        .iter()
+        .map(|dir| origin.join(&dir.source))
+        .collect();
+    let (contents, export_extras) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<Option<String>>, Option<ExportExtras>)> {
+            let contents = sources
+                .iter()
+                .map(|source| copy_source_content(&root, source))
+                .collect::<Result<Vec<_>>>()?;
+            Ok((contents, export_extras(&root)?))
+        },
+    )
+    .await??;
+    for (dir, content) in recipe.copy_dirs.iter_mut().zip(contents) {
+        dir.content = content;
+    }
+    recipe.export_extras = export_extras;
+    Ok(Some(recipe))
+}
+
+/// The directory a relative copy source is written against, matching the builders: the
+/// default provider's `working_dir` when set, otherwise the invoking directory.
+fn copy_origin(repo: &Path, config: &Config) -> PathBuf {
+    match &config.provider {
+        ProviderConfig::Default(default) => match &default.working_dir {
+            Some(working_dir) => repo.join(working_dir),
+            None => repo.to_path_buf(),
+        },
+        ProviderConfig::Modal(_) | ProviderConfig::Local(_) => repo.to_path_buf(),
+    }
+}
+
+/// What the recipe records for a copy source at `live`: nothing inside the repository, where
+/// the build reads the export, [`ABSENT_SOURCE`] for a missing source outside it, and otherwise
+/// a digest of the live directory the build reads.
+fn copy_source_content(root: &Path, live: &Path) -> Result<Option<String>> {
+    if path_under_root(root, live).is_some() {
+        return Ok(None);
+    }
+    if !live.exists() {
+        return Ok(Some(ABSENT_SOURCE.to_string()));
+    }
+    digest_dir(live).map(Some)
+}
+
+/// The files `export_tree` copies in from the live tree with their digest; `None` when there
+/// are none, so a repository whose `.dockerignore` covers its `.gitignore` pays nothing.
+fn export_extras(root: &Path) -> Result<Option<ExportExtras>> {
+    let paths = git::export_extra_paths(root)?;
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let content = digest_files(root, &paths)?;
+    Ok(Some(ExportExtras { paths, content }))
+}
+
 impl CopyDir {
     /// Splits a config `local:remote` entry at its first colon; a missing colon leaves `target`
     /// empty so the recipe still records the entry.
@@ -204,7 +278,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::load_config_str;
+    use crate::config::{ModalProviderConfig, load_config_str};
+    use crate::image_cache::test_support::{git_cmd, init_temp_repo, minimal_modal_config};
 
     const MODAL_PROVIDER: &str = r#"
         type = "modal"
@@ -441,6 +516,170 @@ mod tests {
         assert_eq!(
             modal_script_digest().ok_or("bundled script missing")?,
             first
+        );
+        Ok(())
+    }
+
+    /// Helper: a Modal config with the given `local:remote` copy dirs.
+    fn modal_config_with_copy_dirs(copy_dirs: Vec<String>) -> Config {
+        let mut config = minimal_modal_config();
+        config.provider = ProviderConfig::Modal(ModalProviderConfig {
+            dockerfile: Some("Dockerfile".to_string()),
+            copy_dirs,
+            ..ModalProviderConfig::default()
+        });
+        config
+    }
+
+    /// Helper: a default-provider config whose `prepare_command` runs in `working_dir` with one
+    /// `local:remote` copy dir.
+    fn default_config_in(working_dir: &Path, copy_dir: &str) -> Result<Config> {
+        load_config_str(&format!(
+            r#"
+            [offload]
+            sandbox_project_root = "/app"
+
+            [provider]
+            type = "default"
+            prepare_command = "./prepare.sh"
+            create_command = "create"
+            exec_command = "exec {{command}}"
+            destroy_command = "destroy"
+            working_dir = "{}"
+            copy_dirs = ["{}"]
+
+            [framework]
+            type = "pytest"
+
+            [groups.all]
+            retry_count = 0
+            "#,
+            working_dir.display(),
+            copy_dir
+        ))
+    }
+
+    /// Helper: commit a `.gitignore` for tarballs and a `.dockerignore` for logs.
+    fn commit_ignore_files(dir: &Path) -> Result<()> {
+        std::fs::write(dir.join(".gitignore"), "*.tar.gz\n")?;
+        std::fs::write(dir.join(".dockerignore"), "*.log\n")?;
+        git_cmd(dir, &["add", ".gitignore", ".dockerignore"])?;
+        git_cmd(dir, &["commit", "-m", "add ignore files"])?;
+        Ok(())
+    }
+
+    /// Helper: the recipe `offload build` would look up from `dir` with `config`.
+    async fn current_recipe_in(dir: &Path, config: &Config) -> Result<Recipe> {
+        current_recipe(dir, config, &[])
+            .await?
+            .context("expected a recipe")
+    }
+
+    /// Helper: the `content` recorded for the recipe's first copy dir.
+    fn first_copy_content(recipe: &Recipe) -> Result<Option<&str>> {
+        let first = recipe.copy_dirs.first().context("expected a copy dir")?;
+        Ok(first.content.as_deref())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_export_extras_are_the_gitignored_files_the_export_copies()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        commit_ignore_files(dir.path())?;
+        std::fs::write(dir.path().join("build.tar.gz"), "artifact")?;
+        std::fs::write(dir.path().join("debug.log"), "dockerignored")?;
+        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
+        let extras = recipe.export_extras.context("expected export extras")?;
+        assert_eq!(extras.paths, vec!["build.tar.gz"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_export_extras_is_none_without_gitignored_files() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
+        assert_eq!(recipe.export_extras, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_name_changes_when_an_export_extra_changes() -> Result<()> {
+        let dir = init_temp_repo()?;
+        commit_ignore_files(dir.path())?;
+        std::fs::write(dir.path().join("build.tar.gz"), "artifact")?;
+        let config = minimal_modal_config();
+        let before = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
+        std::fs::write(dir.path().join("build.tar.gz"), "artifact v2")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(
+            after.export_extras.as_ref().map(|extras| &extras.paths),
+            before.export_extras.as_ref().map(|extras| &extras.paths)
+        );
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_digests_a_copy_source_outside_the_repository() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("model.bin"), "weights")?;
+        let config =
+            modal_config_with_copy_dirs(vec![format!("{}:/data", outside.path().display())]);
+        let before = current_recipe_in(dir.path(), &config).await?;
+        let digest = first_copy_content(&before)?.context("expected a digest")?;
+        assert_eq!(digest.len(), 64);
+        assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
+        std::fs::write(outside.path().join("model.bin"), "weights v2")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_ne!(first_copy_content(&after)?, Some(digest));
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_leaves_a_copy_source_inside_the_repository_undigested()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::create_dir(dir.path().join("data"))?;
+        std::fs::write(dir.path().join("data/seed.txt"), "seed")?;
+        let absolute = dir.path().join("data").display().to_string();
+        for source in ["data", absolute.as_str()] {
+            let config = modal_config_with_copy_dirs(vec![format!("{source}:/data")]);
+            let recipe = current_recipe_in(dir.path(), &config).await?;
+            assert_eq!(first_copy_content(&recipe)?, None, "source {source}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_marks_a_missing_copy_source_absent() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        let missing = outside.path().join("gone");
+        let config = modal_config_with_copy_dirs(vec![format!("{}:/data", missing.display())]);
+        let before = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(first_copy_content(&before)?, Some("absent"));
+        std::fs::create_dir(&missing)?;
+        std::fs::write(missing.join("late.txt"), "late")?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_resolves_default_provider_sources_against_its_working_dir()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::create_dir(outside.path().join("data"))?;
+        std::fs::write(outside.path().join("data/seed.txt"), "seed")?;
+        let config = default_config_in(outside.path(), "data:/data")?;
+        let recipe = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(
+            first_copy_content(&recipe)?,
+            Some(digest_dir(&outside.path().join("data"))?.as_str())
         );
         Ok(())
     }

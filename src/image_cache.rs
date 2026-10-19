@@ -17,24 +17,29 @@
 //! stored as git notes (`refs/notes/offload-images`) so they travel with the
 //! repo and are shared across machines.
 
+mod build_context;
 pub mod recipe;
+#[cfg(test)]
+mod test_support;
+mod verdict;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
-use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::config::Config;
 use crate::config::schema::CheckpointConfig;
-use crate::config::{Config, ProviderConfig};
 use crate::git;
 use crate::provider::{PrepareContext, ProviderError, ProviderResult};
 use crate::trace::Tracer;
 use crate::with_retry;
-use recipe::{ABSENT_SOURCE, ExportExtras, Recipe};
+pub(crate) use build_context::{BuildContext, path_under_root};
+use recipe::Recipe;
+pub(crate) use recipe::current_recipe;
+use verdict::{Verdict, classify_note, entry_line, matching_image};
 
 /// A provider-specific opaque image identifier read from a git note.
 #[derive(Debug, Clone)]
@@ -149,126 +154,6 @@ async fn read_cached_image_for_commit(
     Ok(None)
 }
 
-/// Why a note entry does or does not serve the current recipe.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Verdict {
-    /// The stored recipe equals the current one and the entry carries an image.
-    Matches,
-    /// The dotted JSON paths at which the stored recipe differs from the current one, plus
-    /// `image_id` when the entry carries no image.
-    Differs(Vec<String>),
-    /// No stored recipe: written by an older Offload and never served.
-    Legacy,
-}
-
-/// One note entry classified against the current recipe.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EntryVerdict {
-    name: String,
-    image_id: String,
-    verdict: Verdict,
-}
-
-/// Read the note on `commit_sha` and classify its entries against `recipe`; `None` when the
-/// commit carries no note.
-async fn classify_note(
-    repo: &Path,
-    commit_sha: &str,
-    recipe: &Recipe,
-) -> Result<Option<Vec<EntryVerdict>>> {
-    let current = serde_json::to_value(recipe).context("failed to serialize recipe")?;
-    let note = git::read_note(repo, commit_sha)
-        .await
-        .context("failed to read git note for checkpoint commit")?;
-    Ok(note.map(|contents| classify_entries(&contents, &current)))
-}
-
-/// Classify every entry of a note against the current recipe, ordered by entry name so the
-/// lookup and `offload checkpoint-status` agree on which match comes first.
-fn classify_entries(contents: &git::NoteContents, current: &Value) -> Vec<EntryVerdict> {
-    contents
-        .iter()
-        .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .map(|(name, entry)| EntryVerdict {
-            name: name.clone(),
-            image_id: entry.image_id.clone(),
-            verdict: classify_entry(entry, current),
-        })
-        .collect()
-}
-
-/// An entry matches only when its stored recipe equals `current` and it carries an image.
-fn classify_entry(entry: &git::ImageEntry, current: &Value) -> Verdict {
-    let Some(stored) = entry.recipe.as_ref() else {
-        return Verdict::Legacy;
-    };
-    let mut paths = differing_paths(stored, current);
-    if entry.image_id.is_empty() {
-        paths.push("image_id".to_string());
-    }
-    if paths.is_empty() {
-        Verdict::Matches
-    } else {
-        Verdict::Differs(paths)
-    }
-}
-
-/// The image served for the current recipe: the first entry that matches.
-fn matching_image(verdicts: &[EntryVerdict]) -> Option<&str> {
-    verdicts
-        .iter()
-        .find(|entry| entry.verdict == Verdict::Matches)
-        .map(|entry| entry.image_id.as_str())
-}
-
-/// Dotted JSON paths at which `stored` differs from `current`.  Objects are descended, a key on
-/// one side only is a difference at that key, and arrays and scalars are compared whole; a
-/// stored value that is not an object at all is reported as `recipe`.
-fn differing_paths(stored: &Value, current: &Value) -> Vec<String> {
-    let mut paths = Vec::new();
-    collect_differing_paths(stored, current, None, &mut paths);
-    paths
-}
-
-/// Recursive worker for [`differing_paths`]; `path` is the dotted prefix of the values being
-/// compared, `None` at the root.
-fn collect_differing_paths(
-    stored: &Value,
-    current: &Value,
-    path: Option<&str>,
-    paths: &mut Vec<String>,
-) {
-    match (stored, current) {
-        (Value::Object(stored_fields), Value::Object(current_fields)) => {
-            let keys: BTreeSet<&String> =
-                stored_fields.keys().chain(current_fields.keys()).collect();
-            for key in keys {
-                let child = match path {
-                    Some(prefix) => format!("{prefix}.{key}"),
-                    None => key.clone(),
-                };
-                match (stored_fields.get(key), current_fields.get(key)) {
-                    (Some(a), Some(b)) => collect_differing_paths(a, b, Some(&child), paths),
-                    _ => paths.push(child),
-                }
-            }
-        }
-        _ if stored != current => paths.push(path.unwrap_or("recipe").to_string()),
-        _ => {}
-    }
-}
-
-/// The `offload checkpoint-status` line for one entry.
-fn entry_line(entry: &EntryVerdict) -> String {
-    let state = match &entry.verdict {
-        Verdict::Matches => "matches".to_string(),
-        Verdict::Differs(paths) => format!("differs: {}", paths.join(", ")),
-        Verdict::Legacy => "legacy (written by an older Offload)".to_string(),
-    };
-    format!("  {} {} {}", entry.name, entry.image_id, state)
-}
-
 /// Which caching mode determined the base commit.
 pub enum BaseKind {
     /// Base is the nearest ancestor touching a `build_inputs` file.
@@ -293,112 +178,6 @@ pub struct ResolvedBase {
     pub kind: BaseKind,
     /// The recipe the lookup used, so a base built after a miss is written under the same key.
     pub recipe: Recipe,
-}
-
-/// The tree a base-image build reads from, so a cached image depends only on the checkpoint
-/// export (or the fallback's snapshot) and never on the live working tree.
-pub(crate) struct BuildContext<'a> {
-    /// Directory the image is built from: an export of the checkpoint tree, or a snapshot of
-    /// the invoking directory.
-    pub dir: &'a Path,
-    /// The invoking directory relative to `root`; empty when `dir` is a snapshot of the invoking
-    /// directory itself.
-    pub cwd_rel: &'a Path,
-    /// The on-disk directory `dir` mirrors (the repository root for an export, the invoking
-    /// directory for a snapshot), so absolute sources under it map to their copy in `dir`.
-    pub root: &'a Path,
-}
-
-impl BuildContext<'_> {
-    /// The context's copy of the invoking directory, which `include_cwd` adds to the image as
-    /// `/app`.
-    pub(crate) fn include_dir(&self) -> PathBuf {
-        normalized(self.dir.join(self.cwd_rel))
-    }
-
-    /// Where the builder reads a copy source: the source's live location (relative sources
-    /// resolve against the invoking directory) is mapped to its copy in the context when it lies
-    /// under `root`, and read as given otherwise because the context holds no counterpart.
-    pub(crate) fn resolve_source(&self, source: &Path) -> PathBuf {
-        let live = self.root.join(self.cwd_rel).join(source);
-        match path_under_root(self.root, &live) {
-            Some(inside) => normalized(self.dir.join(inside)),
-            None => live,
-        }
-    }
-
-    /// [`Self::resolve_source`] for a builder whose relative sources are written relative to
-    /// `origin` rather than the invoking directory: the default provider runs the user's
-    /// `prepare_command` in `[provider].working_dir`, so a relative source has always meant a
-    /// path under that directory for it. An absolute source ignores the origin.
-    pub(crate) fn resolve_source_from(&self, origin: &Path, source: &Path) -> PathBuf {
-        self.resolve_source(&origin.join(source))
-    }
-
-    /// `source:target` copy specs with every source resolved, config entries first and runtime
-    /// `--copy-dir` pairs second, which is the order the recipe records.
-    pub(crate) fn copy_specs(
-        &self,
-        config_copy_dirs: &[String],
-        runtime_copy_dirs: &[(PathBuf, PathBuf)],
-    ) -> Vec<String> {
-        copy_specs_with(
-            |source| self.resolve_source(source),
-            config_copy_dirs,
-            runtime_copy_dirs,
-        )
-    }
-
-    /// [`Self::copy_specs`] for a builder whose relative sources are written relative to
-    /// `origin`; see [`Self::resolve_source_from`].
-    pub(crate) fn copy_specs_from(
-        &self,
-        origin: &Path,
-        config_copy_dirs: &[String],
-        runtime_copy_dirs: &[(PathBuf, PathBuf)],
-    ) -> Vec<String> {
-        copy_specs_with(
-            |source| self.resolve_source_from(origin, source),
-            config_copy_dirs,
-            runtime_copy_dirs,
-        )
-    }
-}
-
-/// Formats copy specs with each source passed through `resolve`, config entries first and
-/// runtime `--copy-dir` pairs second; a config entry without a `:` is passed through as written.
-fn copy_specs_with(
-    resolve: impl Fn(&Path) -> PathBuf,
-    config_copy_dirs: &[String],
-    runtime_copy_dirs: &[(PathBuf, PathBuf)],
-) -> Vec<String> {
-    let config = config_copy_dirs
-        .iter()
-        .map(|spec| match spec.split_once(':') {
-            Some((source, target)) => {
-                format!("{}:{}", resolve(Path::new(source)).display(), target)
-            }
-            None => spec.clone(),
-        });
-    let runtime = runtime_copy_dirs
-        .iter()
-        .map(|(source, target)| format!("{}:{}", resolve(source).display(), target.display()));
-    config.chain(runtime).collect()
-}
-
-/// Drop the `.` components and trailing separators that `Path::join` leaves in place.
-fn normalized(path: PathBuf) -> PathBuf {
-    path.components().collect()
-}
-
-/// `path` relative to `root` when it lies inside, so the build and the recipe classify a copy
-/// source identically: both are canonicalized when they exist, because a spelling through a
-/// symlink (macOS `/var` for `/private/var`) must not be inside for one and outside for the
-/// other, and a path that does not exist is compared as written.
-pub(crate) fn path_under_root(root: &Path, path: &Path) -> Option<PathBuf> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    path.strip_prefix(root).ok().map(Path::to_path_buf)
 }
 
 /// Provider-specific image build operations.
@@ -431,78 +210,6 @@ pub(crate) enum PrewarmOutcome {
     Resolved { image_id: String },
     /// No image produced — caller should fall back to a full build.
     CacheMiss,
-}
-
-/// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] plus
-/// digests of the two live-tree inputs a base build still reads, copy sources outside the
-/// repository and the gitignored files `export_tree` copies in, so a change in either is a
-/// cache miss. `None` when the provider builds no base image.
-pub(crate) async fn current_recipe(
-    repo: &Path,
-    config: &Config,
-    copy_dirs: &[(PathBuf, PathBuf)],
-) -> Result<Option<Recipe>> {
-    let Some(mut recipe) = Recipe::from_config(config, copy_dirs) else {
-        return Ok(None);
-    };
-    let root = git::repo_root(repo).await?;
-    let origin = copy_origin(repo, config);
-    let sources: Vec<PathBuf> = recipe
-        .copy_dirs
-        .iter()
-        .map(|dir| origin.join(&dir.source))
-        .collect();
-    let (contents, export_extras) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<Option<String>>, Option<ExportExtras>)> {
-            let contents = sources
-                .iter()
-                .map(|source| copy_source_content(&root, source))
-                .collect::<Result<Vec<_>>>()?;
-            Ok((contents, export_extras(&root)?))
-        },
-    )
-    .await??;
-    for (dir, content) in recipe.copy_dirs.iter_mut().zip(contents) {
-        dir.content = content;
-    }
-    recipe.export_extras = export_extras;
-    Ok(Some(recipe))
-}
-
-/// The directory a relative copy source is written against, matching the builders: the
-/// default provider's `working_dir` when set, otherwise the invoking directory.
-fn copy_origin(repo: &Path, config: &Config) -> PathBuf {
-    match &config.provider {
-        ProviderConfig::Default(default) => match &default.working_dir {
-            Some(working_dir) => repo.join(working_dir),
-            None => repo.to_path_buf(),
-        },
-        ProviderConfig::Modal(_) | ProviderConfig::Local(_) => repo.to_path_buf(),
-    }
-}
-
-/// What the recipe records for a copy source at `live`: nothing inside the repository, where
-/// the build reads the export, [`ABSENT_SOURCE`] for a missing source outside it, and otherwise
-/// a digest of the live directory the build reads.
-fn copy_source_content(root: &Path, live: &Path) -> Result<Option<String>> {
-    if path_under_root(root, live).is_some() {
-        return Ok(None);
-    }
-    if !live.exists() {
-        return Ok(Some(ABSENT_SOURCE.to_string()));
-    }
-    recipe::digest_dir(live).map(Some)
-}
-
-/// The files `export_tree` copies in from the live tree with their digest; `None` when there
-/// are none, so a repository whose `.dockerignore` covers its `.gitignore` pays nothing.
-fn export_extras(root: &Path) -> Result<Option<ExportExtras>> {
-    let paths = git::export_extra_paths(root)?;
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    let content = recipe::digest_files(root, &paths)?;
-    Ok(Some(ExportExtras { paths, content }))
 }
 
 /// Pick the base commit and (optionally) its cached image before provider dispatch.
@@ -673,7 +380,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         .as_deref()
         .context("sandbox_repo_root not set (config validation should have filled this)")?;
 
-    // --- Stage 1: Cache hit -- thin diff on cached image ---
+    // Stage 1 (cache hit): thin diff on the cached image
     if let Some(cached_id) = resolved.cached_image_id.as_deref() {
         eprintln!(
             "[cache] {} hit: using cached image from {}",
@@ -707,7 +414,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         }
     }
 
-    // --- Stage 2: Base build -- export tree, build base, write note, thin diff ---
+    // Stage 2 (base build): export the tree, build the base, write the note, thin diff
     if ctx.no_cache {
         eprintln!(
             "[prepare] --no-cache with {}: building from {} (no cache lookup)",
@@ -1132,159 +839,14 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::{
-        DefaultFrameworkConfig, FrameworkConfig, ModalProviderConfig, OffloadConfig,
-        ProviderConfig, load_config_str,
+    use super::test_support::{
+        build_context, git_cmd, head_sha_in, init_temp_repo, minimal_modal_config, read_note_in,
+        recipe_for, write_note_in, write_recipe_entry_in,
     };
-    use crate::git::{ImageEntry, NOTES_REF, NoteContents};
+    use super::*;
+    use crate::git::{ImageEntry, NoteContents};
 
     use std::path::Path;
-
-    use anyhow::bail;
-    use serde_json::json;
-
-    /// Helper: create a temp directory with an initialized git repo and one commit.
-    fn init_temp_repo() -> Result<tempfile::TempDir> {
-        let dir = tempfile::tempdir()?;
-        git_cmd(dir.path(), &["init"])?;
-        git_cmd(dir.path(), &["config", "user.email", "test@test.com"])?;
-        git_cmd(dir.path(), &["config", "user.name", "Test"])?;
-        let readme = dir.path().join("README.md");
-        std::fs::write(&readme, "# test repo")?;
-        git_cmd(dir.path(), &["add", "README.md"])?;
-        git_cmd(dir.path(), &["commit", "-m", "initial commit"])?;
-        Ok(dir)
-    }
-
-    /// Helper: run a git command in a directory and return stdout.
-    fn git_cmd(dir: &Path, args: &[&str]) -> Result<String> {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("git {} failed: {}", args.join(" "), stderr.trim());
-        }
-        Ok(String::from_utf8(output.stdout)?.trim().to_string())
-    }
-
-    /// Helper: write a git note in a specific directory.
-    fn write_note_in(dir: &Path, sha: &str, contents: &NoteContents) -> Result<()> {
-        // Read existing note to merge
-        let existing = read_note_in(dir, sha)?;
-        let mut merged = existing.unwrap_or_default();
-        for (key, value) in contents {
-            merged.insert(key.clone(), value.clone());
-        }
-        let json = serde_json::to_string_pretty(&merged)?;
-
-        let tmp = tempfile::NamedTempFile::new()?;
-        std::fs::write(tmp.path(), json.as_bytes())?;
-
-        git_cmd(
-            dir,
-            &[
-                "notes",
-                "--ref",
-                NOTES_REF,
-                "add",
-                "-f",
-                "-F",
-                &tmp.path().to_string_lossy(),
-                sha,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// Helper: read a git note in a specific directory.
-    fn read_note_in(dir: &Path, sha: &str) -> Result<Option<NoteContents>> {
-        let output = std::process::Command::new("git")
-            .args(["notes", "--ref", NOTES_REF, "show", sha])
-            .current_dir(dir)
-            .output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stderr_lower = stderr.to_lowercase();
-            if stderr_lower.contains("no note found") || stderr_lower.contains("not a valid ref") {
-                return Ok(None);
-            }
-            bail!("git notes show failed: {}", stderr.trim());
-        }
-        let json = String::from_utf8(output.stdout)?;
-        let contents: NoteContents = serde_json::from_str(&json)?;
-        Ok(Some(contents))
-    }
-
-    /// Helper: get HEAD SHA in a directory.
-    fn head_sha_in(dir: &Path) -> Result<String> {
-        git_cmd(dir, &["rev-parse", "HEAD"])
-    }
-
-    /// Helper: a minimal Modal config; tests change the one field they vary.
-    fn minimal_modal_config() -> Config {
-        Config {
-            offload: OffloadConfig {
-                max_parallel: 1,
-                test_timeout_secs: 60,
-                working_dir: None,
-                sandbox_project_root: Some("/app".to_string()),
-                sandbox_repo_root: Some("/app".to_string()),
-                sandbox_init_cmd: Some("bash init.sh".to_string()),
-                post_patch_cmd: None,
-                impatiently_requeue_batches: true,
-                max_parallel_collection: 0,
-            },
-            provider: ProviderConfig::Modal(ModalProviderConfig {
-                dockerfile: Some("Dockerfile".to_string()),
-                ..ModalProviderConfig::default()
-            }),
-            framework: FrameworkConfig::Default(DefaultFrameworkConfig {
-                discover_command: "echo test".to_string(),
-                run_command: "run {tests}".to_string(),
-                result_file: None,
-                working_dir: None,
-                test_id_format: "{name}".to_string(),
-            }),
-            groups: Default::default(),
-            report: Default::default(),
-            checkpoint: None,
-            history: None,
-        }
-    }
-
-    /// Helper: the recipe `offload build` derives from `config` (no runtime copy dirs).
-    fn recipe_for(config: &Config) -> Result<Recipe> {
-        Recipe::from_config(config, &[]).context("the Modal provider should yield a recipe")
-    }
-
-    /// Helper: write an entry for `recipe` on `sha` the way a current Offload does.
-    fn write_recipe_entry_in(dir: &Path, sha: &str, recipe: &Recipe, image_id: &str) -> Result<()> {
-        let entry = ImageEntry {
-            recipe: Some(serde_json::to_value(recipe)?),
-            ..ImageEntry::legacy(image_id)
-        };
-        let mut contents = NoteContents::new();
-        contents.insert(recipe.name()?, entry);
-        write_note_in(dir, sha, &contents)
-    }
-
-    /// Helper: the verdict for one note entry.
-    fn entry_verdict(name: &str, image_id: &str, verdict: Verdict) -> EntryVerdict {
-        EntryVerdict {
-            name: name.to_string(),
-            image_id: image_id.to_string(),
-            verdict,
-        }
-    }
-
-    // ---- Tests for resolve_checkpoint ----
 
     #[tokio::test]
     async fn test_resolve_checkpoint_finds_nearest() -> Result<()> {
@@ -1412,8 +974,6 @@ mod tests {
         Ok(())
     }
 
-    // ---- Tests for resolve_latest_commit ----
-
     #[tokio::test]
     async fn test_resolve_latest_commit_hit() -> Result<()> {
         let dir = init_temp_repo()?;
@@ -1540,138 +1100,6 @@ mod tests {
         Ok(())
     }
 
-    // ---- Tests for entry classification ----
-
-    #[test]
-    fn test_differing_paths_reports_top_level_fields_whole() -> Result<()> {
-        let stored = json!({"format": 1, "copy_dirs": [], "sandbox_init_cmd": "bash old.sh"});
-        let current = json!({
-            "format": 1,
-            "copy_dirs": [{"source": "data", "target": "/data", "content": null}],
-            "sandbox_init_cmd": "bash new.sh"
-        });
-        assert_eq!(
-            differing_paths(&stored, &current),
-            vec!["copy_dirs", "sandbox_init_cmd"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_differing_paths_descends_into_the_builder() -> Result<()> {
-        let stored = json!({"builder": {"modal": {"script": "9b1d", "dockerfile": "Dockerfile"}}});
-        let current =
-            json!({"builder": {"modal": {"script": "9b1d", "dockerfile": "other/Dockerfile"}}});
-        assert_eq!(
-            differing_paths(&stored, &current),
-            vec!["builder.modal.dockerfile"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_differing_paths_reports_a_key_on_one_side_only() -> Result<()> {
-        let stored = json!({"format": 1, "newer_field": true});
-        let current = json!({"format": 1, "export_extras": null});
-        assert_eq!(
-            differing_paths(&stored, &current),
-            vec!["export_extras", "newer_field"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_differing_paths_is_empty_for_equal_values() -> Result<()> {
-        let recipe = serde_json::to_value(recipe_for(&minimal_modal_config())?)?;
-        assert!(differing_paths(&recipe, &recipe).is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn test_classify_entries_explains_every_entry() -> Result<()> {
-        let current = serde_json::to_value(recipe_for(&minimal_modal_config())?)?;
-        let mut changed = minimal_modal_config();
-        changed.offload.sandbox_init_cmd = Some("bash other.sh".to_string());
-        let other = serde_json::to_value(recipe_for(&changed)?)?;
-
-        let mut contents = NoteContents::new();
-        contents.insert(
-            "recipe:aaaa".to_string(),
-            ImageEntry {
-                recipe: Some(current.clone()),
-                ..ImageEntry::legacy("im-hit")
-            },
-        );
-        contents.insert(
-            "recipe:bbbb".to_string(),
-            ImageEntry {
-                recipe: Some(other),
-                ..ImageEntry::legacy("im-other")
-            },
-        );
-        contents.insert(
-            "recipe:cccc".to_string(),
-            ImageEntry {
-                recipe: Some(current.clone()),
-                ..ImageEntry::legacy("")
-            },
-        );
-        contents.insert("offload.toml".to_string(), ImageEntry::legacy("im-legacy"));
-
-        assert_eq!(
-            classify_entries(&contents, &current),
-            vec![
-                entry_verdict("offload.toml", "im-legacy", Verdict::Legacy),
-                entry_verdict("recipe:aaaa", "im-hit", Verdict::Matches),
-                entry_verdict(
-                    "recipe:bbbb",
-                    "im-other",
-                    Verdict::Differs(vec!["sandbox_init_cmd".to_string()])
-                ),
-                entry_verdict(
-                    "recipe:cccc",
-                    "",
-                    Verdict::Differs(vec!["image_id".to_string()])
-                ),
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_entry_line_states_each_verdict() -> Result<()> {
-        assert_eq!(
-            entry_line(&entry_verdict(
-                "recipe:3f9c2a7b1e5d4c08",
-                "im-abc",
-                Verdict::Matches
-            )),
-            "  recipe:3f9c2a7b1e5d4c08 im-abc matches"
-        );
-        assert_eq!(
-            entry_line(&entry_verdict(
-                "recipe:9c0d1e2f3a4b5c6d",
-                "im-def",
-                Verdict::Differs(vec![
-                    "builder.modal.dockerfile".to_string(),
-                    "sandbox_init_cmd".to_string()
-                ])
-            )),
-            "  recipe:9c0d1e2f3a4b5c6d im-def differs: builder.modal.dockerfile, sandbox_init_cmd"
-        );
-        assert_eq!(
-            entry_line(&entry_verdict(
-                "offload-modal.toml",
-                "im-ghi",
-                Verdict::Legacy
-            )),
-            "  offload-modal.toml im-ghi legacy (written by an older Offload)"
-        );
-        Ok(())
-    }
-
-    // ---- Tests for write_note_for_commit ----
-
     #[tokio::test]
     async fn test_write_note_for_commit_writes_entry_under_recipe_name() -> Result<()> {
         let dir = init_temp_repo()?;
@@ -1731,8 +1159,6 @@ mod tests {
         Ok(())
     }
 
-    // ---- Tests for snapshot_working_directory ----
-
     #[test]
     fn test_snapshot_working_directory_creates_copy() {
         let tracer = Tracer::noop();
@@ -1751,332 +1177,6 @@ mod tests {
             assert!(has_entries, "snapshot should contain files from cwd");
         }
     }
-
-    // ---- Tests for current_recipe ----
-
-    /// Helper: a Modal config with the given `local:remote` copy dirs.
-    fn modal_config_with_copy_dirs(copy_dirs: Vec<String>) -> Config {
-        let mut config = minimal_modal_config();
-        config.provider = ProviderConfig::Modal(ModalProviderConfig {
-            dockerfile: Some("Dockerfile".to_string()),
-            copy_dirs,
-            ..ModalProviderConfig::default()
-        });
-        config
-    }
-
-    /// Helper: a default-provider config whose `prepare_command` runs in `working_dir` with one
-    /// `local:remote` copy dir.
-    fn default_config_in(working_dir: &Path, copy_dir: &str) -> Result<Config> {
-        load_config_str(&format!(
-            r#"
-            [offload]
-            sandbox_project_root = "/app"
-
-            [provider]
-            type = "default"
-            prepare_command = "./prepare.sh"
-            create_command = "create"
-            exec_command = "exec {{command}}"
-            destroy_command = "destroy"
-            working_dir = "{}"
-            copy_dirs = ["{}"]
-
-            [framework]
-            type = "pytest"
-
-            [groups.all]
-            retry_count = 0
-            "#,
-            working_dir.display(),
-            copy_dir
-        ))
-    }
-
-    /// Helper: commit a `.gitignore` for tarballs and a `.dockerignore` for logs.
-    fn commit_ignore_files(dir: &Path) -> Result<()> {
-        std::fs::write(dir.join(".gitignore"), "*.tar.gz\n")?;
-        std::fs::write(dir.join(".dockerignore"), "*.log\n")?;
-        git_cmd(dir, &["add", ".gitignore", ".dockerignore"])?;
-        git_cmd(dir, &["commit", "-m", "add ignore files"])?;
-        Ok(())
-    }
-
-    /// Helper: the recipe `offload build` would look up from `dir` with `config`.
-    async fn current_recipe_in(dir: &Path, config: &Config) -> Result<Recipe> {
-        current_recipe(dir, config, &[])
-            .await?
-            .context("expected a recipe")
-    }
-
-    /// Helper: the `content` recorded for the recipe's first copy dir.
-    fn first_copy_content(recipe: &Recipe) -> Result<Option<&str>> {
-        let first = recipe.copy_dirs.first().context("expected a copy dir")?;
-        Ok(first.content.as_deref())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_export_extras_are_the_gitignored_files_the_export_copies()
-    -> Result<()> {
-        let dir = init_temp_repo()?;
-        commit_ignore_files(dir.path())?;
-        std::fs::write(dir.path().join("build.tar.gz"), "artifact")?;
-        std::fs::write(dir.path().join("debug.log"), "dockerignored")?;
-        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
-        let extras = recipe.export_extras.context("expected export extras")?;
-        assert_eq!(extras.paths, vec!["build.tar.gz"]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_export_extras_is_none_without_gitignored_files() -> Result<()> {
-        let dir = init_temp_repo()?;
-        let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
-        assert_eq!(recipe.export_extras, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_name_changes_when_an_export_extra_changes() -> Result<()> {
-        let dir = init_temp_repo()?;
-        commit_ignore_files(dir.path())?;
-        std::fs::write(dir.path().join("build.tar.gz"), "artifact")?;
-        let config = minimal_modal_config();
-        let before = current_recipe_in(dir.path(), &config).await?;
-        assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
-        std::fs::write(dir.path().join("build.tar.gz"), "artifact v2")?;
-        let after = current_recipe_in(dir.path(), &config).await?;
-        assert_eq!(
-            after.export_extras.as_ref().map(|extras| &extras.paths),
-            before.export_extras.as_ref().map(|extras| &extras.paths)
-        );
-        assert_ne!(after.name()?, before.name()?);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_digests_a_copy_source_outside_the_repository() -> Result<()> {
-        let dir = init_temp_repo()?;
-        let outside = tempfile::tempdir()?;
-        std::fs::write(outside.path().join("model.bin"), "weights")?;
-        let config =
-            modal_config_with_copy_dirs(vec![format!("{}:/data", outside.path().display())]);
-        let before = current_recipe_in(dir.path(), &config).await?;
-        let digest = first_copy_content(&before)?.context("expected a digest")?;
-        assert_eq!(digest.len(), 64);
-        assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
-        std::fs::write(outside.path().join("model.bin"), "weights v2")?;
-        let after = current_recipe_in(dir.path(), &config).await?;
-        assert_ne!(first_copy_content(&after)?, Some(digest));
-        assert_ne!(after.name()?, before.name()?);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_leaves_a_copy_source_inside_the_repository_undigested()
-    -> Result<()> {
-        let dir = init_temp_repo()?;
-        std::fs::create_dir(dir.path().join("data"))?;
-        std::fs::write(dir.path().join("data/seed.txt"), "seed")?;
-        let absolute = dir.path().join("data").display().to_string();
-        for source in ["data", absolute.as_str()] {
-            let config = modal_config_with_copy_dirs(vec![format!("{source}:/data")]);
-            let recipe = current_recipe_in(dir.path(), &config).await?;
-            assert_eq!(first_copy_content(&recipe)?, None, "source {source}");
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_marks_a_missing_copy_source_absent() -> Result<()> {
-        let dir = init_temp_repo()?;
-        let outside = tempfile::tempdir()?;
-        let missing = outside.path().join("gone");
-        let config = modal_config_with_copy_dirs(vec![format!("{}:/data", missing.display())]);
-        let before = current_recipe_in(dir.path(), &config).await?;
-        assert_eq!(first_copy_content(&before)?, Some("absent"));
-        std::fs::create_dir(&missing)?;
-        std::fs::write(missing.join("late.txt"), "late")?;
-        let after = current_recipe_in(dir.path(), &config).await?;
-        assert_ne!(after.name()?, before.name()?);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_current_recipe_resolves_default_provider_sources_against_its_working_dir()
-    -> Result<()> {
-        let dir = init_temp_repo()?;
-        let outside = tempfile::tempdir()?;
-        std::fs::create_dir(outside.path().join("data"))?;
-        std::fs::write(outside.path().join("data/seed.txt"), "seed")?;
-        let config = default_config_in(outside.path(), "data:/data")?;
-        let recipe = current_recipe_in(dir.path(), &config).await?;
-        assert_eq!(
-            first_copy_content(&recipe)?,
-            Some(recipe::digest_dir(&outside.path().join("data"))?.as_str())
-        );
-        Ok(())
-    }
-
-    // ---- Tests for path_under_root ----
-
-    #[test]
-    fn test_path_under_root_sees_through_a_symlinked_spelling() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let root = dir.path().join("repo");
-        std::fs::create_dir_all(root.join("data"))?;
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&root, &link)?;
-        assert_eq!(
-            path_under_root(&root, &link.join("data")),
-            Some(PathBuf::from("data"))
-        );
-        assert_eq!(
-            path_under_root(&link, &root.join("data")),
-            Some(PathBuf::from("data"))
-        );
-        Ok(())
-    }
-
-    // ---- Tests for BuildContext ----
-
-    /// A context exported to `/ctx` from a repository at `/repo` invoked from its `sub/`.
-    fn build_context() -> BuildContext<'static> {
-        BuildContext {
-            dir: Path::new("/ctx"),
-            cwd_rel: Path::new("sub"),
-            root: Path::new("/repo"),
-        }
-    }
-
-    #[test]
-    fn test_resolve_source_relative_is_under_the_invoking_directory_in_the_context() -> Result<()> {
-        let ctx = build_context();
-        assert_eq!(
-            ctx.resolve_source(Path::new("./data")),
-            PathBuf::from("/ctx/sub/data")
-        );
-        assert_eq!(
-            ctx.resolve_source(Path::new("data")),
-            PathBuf::from("/ctx/sub/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_absolute_inside_the_repository_maps_into_the_context() -> Result<()> {
-        let ctx = build_context();
-        assert_eq!(
-            ctx.resolve_source(Path::new("/repo/other/data")),
-            PathBuf::from("/ctx/other/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_absolute_outside_the_repository_is_unchanged() -> Result<()> {
-        let ctx = build_context();
-        assert_eq!(
-            ctx.resolve_source(Path::new("/elsewhere/data")),
-            PathBuf::from("/elsewhere/data")
-        );
-        // A sibling whose name merely starts with the root's name is outside it.
-        assert_eq!(
-            ctx.resolve_source(Path::new("/repo-archive/data")),
-            PathBuf::from("/repo-archive/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_include_dir_is_the_context_at_the_invoking_directory() -> Result<()> {
-        assert_eq!(build_context().include_dir(), PathBuf::from("/ctx/sub"));
-        let snapshot = BuildContext {
-            dir: Path::new("/snap"),
-            cwd_rel: Path::new(""),
-            root: Path::new("/repo/sub"),
-        };
-        assert_eq!(snapshot.include_dir(), PathBuf::from("/snap"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_copy_specs_resolve_sources_and_keep_targets_in_builder_order() -> Result<()> {
-        let config = vec!["./data:/data".to_string(), "no-colon".to_string()];
-        let runtime = vec![(PathBuf::from("/repo/tests"), PathBuf::from("/app/tests"))];
-        assert_eq!(
-            build_context().copy_specs(&config, &runtime),
-            vec!["/ctx/sub/data:/data", "no-colon", "/ctx/tests:/app/tests"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_from_relative_origin_is_under_the_invoking_directory() -> Result<()> {
-        let ctx = build_context();
-        assert_eq!(
-            ctx.resolve_source_from(Path::new("scripts"), Path::new("data")),
-            PathBuf::from("/ctx/sub/scripts/data")
-        );
-        assert_eq!(
-            ctx.resolve_source_from(Path::new("./scripts"), Path::new("./data")),
-            PathBuf::from("/ctx/sub/scripts/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_from_absolute_origin_under_root_maps_into_the_context() -> Result<()> {
-        assert_eq!(
-            build_context().resolve_source_from(Path::new("/repo/scripts"), Path::new("data")),
-            PathBuf::from("/ctx/scripts/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_from_absolute_origin_outside_root_reads_live_paths() -> Result<()> {
-        assert_eq!(
-            build_context().resolve_source_from(Path::new("/elsewhere"), Path::new("data")),
-            PathBuf::from("/elsewhere/data")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_resolve_source_from_leaves_absolute_sources_to_the_origin_free_rule() -> Result<()> {
-        let ctx = build_context();
-        for origin in ["scripts", "/repo/scripts", "/elsewhere"] {
-            assert_eq!(
-                ctx.resolve_source_from(Path::new(origin), Path::new("/repo/other/data")),
-                PathBuf::from("/ctx/other/data"),
-                "origin {origin}"
-            );
-            assert_eq!(
-                ctx.resolve_source_from(Path::new(origin), Path::new("/elsewhere/data")),
-                PathBuf::from("/elsewhere/data"),
-                "origin {origin}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_copy_specs_from_resolve_relative_sources_against_the_origin() -> Result<()> {
-        let config = vec!["./data:/data".to_string(), "no-colon".to_string()];
-        let runtime = vec![(PathBuf::from("/repo/tests"), PathBuf::from("/app/tests"))];
-        assert_eq!(
-            build_context().copy_specs_from(Path::new("scripts"), &config, &runtime),
-            vec![
-                "/ctx/sub/scripts/data:/data",
-                "no-colon",
-                "/ctx/tests:/app/tests"
-            ]
-        );
-        Ok(())
-    }
-
-    // ---- Mock ImageBuilder for testing ----
 
     /// A mock implementation of `ImageBuilder` that records calls.
     struct MockImageBuilder {
