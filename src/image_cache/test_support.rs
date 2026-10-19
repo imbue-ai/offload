@@ -15,14 +15,20 @@ use crate::git::{ImageEntry, NOTES_REF, NoteContents};
 /// Helper: create a temp directory with an initialized git repo and one commit.
 pub(super) fn init_temp_repo() -> Result<tempfile::TempDir> {
     let dir = tempfile::tempdir()?;
-    git_cmd(dir.path(), &["init"])?;
-    git_cmd(dir.path(), &["config", "user.email", "test@test.com"])?;
-    git_cmd(dir.path(), &["config", "user.name", "Test"])?;
-    let readme = dir.path().join("README.md");
-    std::fs::write(&readme, "# test repo")?;
-    git_cmd(dir.path(), &["add", "README.md"])?;
-    git_cmd(dir.path(), &["commit", "-m", "initial commit"])?;
+    init_repo_in(dir.path())?;
     Ok(dir)
+}
+
+/// Helper: initialize a git repo with one commit in an existing directory.
+pub(super) fn init_repo_in(dir: &Path) -> Result<()> {
+    git_cmd(dir, &["init"])?;
+    git_cmd(dir, &["config", "user.email", "test@test.com"])?;
+    git_cmd(dir, &["config", "user.name", "Test"])?;
+    let readme = dir.join("README.md");
+    std::fs::write(&readme, "# test repo")?;
+    git_cmd(dir, &["add", "README.md"])?;
+    git_cmd(dir, &["commit", "-m", "initial commit"])?;
+    Ok(())
 }
 
 /// Helper: run a git command in a directory and return stdout.
@@ -148,11 +154,18 @@ pub(super) fn write_recipe_entry_in(
     write_note_in(dir, sha, &contents)
 }
 
-/// A context exported to `/ctx` from a repository at `/repo` invoked from its `sub/`.
+/// A context exported to `/ctx` from a repository at `/repo` invoked from its `sub/`, whose
+/// relative copy sources are written against the invoking directory.
 pub(super) fn build_context() -> BuildContext<'static> {
+    build_context_from(Path::new(""))
+}
+
+/// [`build_context`] for a provider whose relative copy sources are written against `origin`.
+pub(super) fn build_context_from(origin: &'static Path) -> BuildContext<'static> {
     BuildContext {
         dir: Path::new("/ctx"),
         cwd_rel: Path::new("sub"),
         root: Path::new("/repo"),
+        origin,
     }
 }

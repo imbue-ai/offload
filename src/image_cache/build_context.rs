@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::ProviderConfig;
+
 /// The tree a base-image build reads from, so a cached image depends only on the checkpoint
 /// export (or the fallback's snapshot) and never on the live working tree.
 pub(crate) struct BuildContext<'a> {
@@ -14,6 +16,21 @@ pub(crate) struct BuildContext<'a> {
     /// The on-disk directory `dir` mirrors (the repository root for an export, the invoking
     /// directory for a snapshot), so absolute sources under it map to their copy in `dir`.
     pub root: &'a Path,
+    /// What a relative copy source is written against, as [`copy_origin`] chose it for the
+    /// provider, so the builder reads the directory the recipe digested.
+    pub origin: &'a Path,
+}
+
+/// The directory a relative copy source is written against, relative to the invoking directory:
+/// `[provider].working_dir` for the default provider, because its `prepare_command` runs there
+/// and a relative source has always named a path under it, and the invoking directory itself
+/// (the empty path) for every other provider. The recipe and the build both take the origin
+/// from here, so a cached image cannot be keyed by one directory and built from another.
+pub(crate) fn copy_origin(provider: &ProviderConfig) -> &Path {
+    match provider {
+        ProviderConfig::Default(default) => default.working_dir.as_deref().unwrap_or(Path::new("")),
+        ProviderConfig::Modal(_) | ProviderConfig::Local(_) => Path::new(""),
+    }
 }
 
 impl BuildContext<'_> {
@@ -23,74 +40,47 @@ impl BuildContext<'_> {
         normalized(self.dir.join(self.cwd_rel))
     }
 
-    /// Where the builder reads a copy source: the source's live location (relative sources
-    /// resolve against the invoking directory) is mapped to its copy in the context when it lies
-    /// under `root`, and read as given otherwise because the context holds no counterpart.
+    /// Where the builder reads a copy source: its live location (a relative source resolves
+    /// against `origin` under the invoking directory, an absolute one ignores both) is mapped to
+    /// its copy in the context when it lies under `root`, and read as given otherwise because
+    /// the context holds no counterpart.
     pub(crate) fn resolve_source(&self, source: &Path) -> PathBuf {
-        let live = self.root.join(self.cwd_rel).join(source);
+        let live = self.root.join(self.cwd_rel).join(self.origin).join(source);
         match path_under_root(self.root, &live) {
             Some(inside) => normalized(self.dir.join(inside)),
             None => live,
         }
     }
 
-    /// [`Self::resolve_source`] for a builder whose relative sources are written relative to
-    /// `origin` rather than the invoking directory: the default provider runs the user's
-    /// `prepare_command` in `[provider].working_dir`, so a relative source has always meant a
-    /// path under that directory for it. An absolute source ignores the origin.
-    pub(crate) fn resolve_source_from(&self, origin: &Path, source: &Path) -> PathBuf {
-        self.resolve_source(&origin.join(source))
-    }
-
     /// `source:target` copy specs with every source resolved, config entries first and runtime
-    /// `--copy-dir` pairs second, which is the order the recipe records.
+    /// `--copy-dir` pairs second, which is the order the recipe records; a config entry without
+    /// a `:` is passed through as written.
     pub(crate) fn copy_specs(
         &self,
         config_copy_dirs: &[String],
         runtime_copy_dirs: &[(PathBuf, PathBuf)],
     ) -> Vec<String> {
-        copy_specs_with(
-            |source| self.resolve_source(source),
-            config_copy_dirs,
-            runtime_copy_dirs,
-        )
-    }
-
-    /// [`Self::copy_specs`] for a builder whose relative sources are written relative to
-    /// `origin`; see [`Self::resolve_source_from`].
-    pub(crate) fn copy_specs_from(
-        &self,
-        origin: &Path,
-        config_copy_dirs: &[String],
-        runtime_copy_dirs: &[(PathBuf, PathBuf)],
-    ) -> Vec<String> {
-        copy_specs_with(
-            |source| self.resolve_source_from(origin, source),
-            config_copy_dirs,
-            runtime_copy_dirs,
-        )
-    }
-}
-
-/// Formats copy specs with each source passed through `resolve`, config entries first and
-/// runtime `--copy-dir` pairs second; a config entry without a `:` is passed through as written.
-fn copy_specs_with(
-    resolve: impl Fn(&Path) -> PathBuf,
-    config_copy_dirs: &[String],
-    runtime_copy_dirs: &[(PathBuf, PathBuf)],
-) -> Vec<String> {
-    let config = config_copy_dirs
-        .iter()
-        .map(|spec| match spec.split_once(':') {
-            Some((source, target)) => {
-                format!("{}:{}", resolve(Path::new(source)).display(), target)
-            }
-            None => spec.clone(),
+        let config = config_copy_dirs
+            .iter()
+            .map(|spec| match spec.split_once(':') {
+                Some((source, target)) => {
+                    format!(
+                        "{}:{}",
+                        self.resolve_source(Path::new(source)).display(),
+                        target
+                    )
+                }
+                None => spec.clone(),
+            });
+        let runtime = runtime_copy_dirs.iter().map(|(source, target)| {
+            format!(
+                "{}:{}",
+                self.resolve_source(source).display(),
+                target.display()
+            )
         });
-    let runtime = runtime_copy_dirs
-        .iter()
-        .map(|(source, target)| format!("{}:{}", resolve(source).display(), target.display()));
-    config.chain(runtime).collect()
+        config.chain(runtime).collect()
+    }
 }
 
 /// Drop the `.` components and trailing separators that `Path::join` leaves in place.
@@ -113,7 +103,7 @@ mod tests {
     use anyhow::Result;
 
     use super::*;
-    use crate::image_cache::test_support::build_context;
+    use crate::image_cache::test_support::{build_context, build_context_from};
 
     #[test]
     fn test_path_under_root_sees_through_a_symlinked_spelling() -> Result<()> {
@@ -179,6 +169,7 @@ mod tests {
             dir: Path::new("/snap"),
             cwd_rel: Path::new(""),
             root: Path::new("/repo/sub"),
+            origin: Path::new(""),
         };
         assert_eq!(snapshot.include_dir(), PathBuf::from("/snap"));
         Ok(())
@@ -196,48 +187,47 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_source_from_relative_origin_is_under_the_invoking_directory() -> Result<()> {
-        let ctx = build_context();
+    fn test_resolve_source_relative_origin_is_under_the_invoking_directory() -> Result<()> {
         assert_eq!(
-            ctx.resolve_source_from(Path::new("scripts"), Path::new("data")),
+            build_context_from(Path::new("scripts")).resolve_source(Path::new("data")),
             PathBuf::from("/ctx/sub/scripts/data")
         );
         assert_eq!(
-            ctx.resolve_source_from(Path::new("./scripts"), Path::new("./data")),
+            build_context_from(Path::new("./scripts")).resolve_source(Path::new("./data")),
             PathBuf::from("/ctx/sub/scripts/data")
         );
         Ok(())
     }
 
     #[test]
-    fn test_resolve_source_from_absolute_origin_under_root_maps_into_the_context() -> Result<()> {
+    fn test_resolve_source_absolute_origin_under_root_maps_into_the_context() -> Result<()> {
         assert_eq!(
-            build_context().resolve_source_from(Path::new("/repo/scripts"), Path::new("data")),
+            build_context_from(Path::new("/repo/scripts")).resolve_source(Path::new("data")),
             PathBuf::from("/ctx/scripts/data")
         );
         Ok(())
     }
 
     #[test]
-    fn test_resolve_source_from_absolute_origin_outside_root_reads_live_paths() -> Result<()> {
+    fn test_resolve_source_absolute_origin_outside_root_reads_live_paths() -> Result<()> {
         assert_eq!(
-            build_context().resolve_source_from(Path::new("/elsewhere"), Path::new("data")),
+            build_context_from(Path::new("/elsewhere")).resolve_source(Path::new("data")),
             PathBuf::from("/elsewhere/data")
         );
         Ok(())
     }
 
     #[test]
-    fn test_resolve_source_from_leaves_absolute_sources_to_the_origin_free_rule() -> Result<()> {
-        let ctx = build_context();
+    fn test_resolve_source_ignores_the_origin_for_absolute_sources() -> Result<()> {
         for origin in ["scripts", "/repo/scripts", "/elsewhere"] {
+            let ctx = build_context_from(Path::new(origin));
             assert_eq!(
-                ctx.resolve_source_from(Path::new(origin), Path::new("/repo/other/data")),
+                ctx.resolve_source(Path::new("/repo/other/data")),
                 PathBuf::from("/ctx/other/data"),
                 "origin {origin}"
             );
             assert_eq!(
-                ctx.resolve_source_from(Path::new(origin), Path::new("/elsewhere/data")),
+                ctx.resolve_source(Path::new("/elsewhere/data")),
                 PathBuf::from("/elsewhere/data"),
                 "origin {origin}"
             );
@@ -246,11 +236,11 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_specs_from_resolve_relative_sources_against_the_origin() -> Result<()> {
+    fn test_copy_specs_resolve_relative_sources_against_the_origin() -> Result<()> {
         let config = vec!["./data:/data".to_string(), "no-colon".to_string()];
         let runtime = vec![(PathBuf::from("/repo/tests"), PathBuf::from("/app/tests"))];
         assert_eq!(
-            build_context().copy_specs_from(Path::new("scripts"), &config, &runtime),
+            build_context_from(Path::new("scripts")).copy_specs(&config, &runtime),
             vec![
                 "/ctx/sub/scripts/data:/data",
                 "no-colon",

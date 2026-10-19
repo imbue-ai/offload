@@ -306,6 +306,8 @@ impl SandboxProvider for ModalProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderConfig;
+    use crate::image_cache::copy_origin;
 
     fn provider(config: ModalProviderConfig) -> ModalProvider {
         ModalProvider::from_config(config)
@@ -313,30 +315,39 @@ mod tests {
 
     // -- prepare command tests --
 
-    /// A context exported to `/ctx` from a repository at `/repo` invoked from its `sub/`.
-    fn build_context() -> BuildContext<'static> {
-        BuildContext {
+    /// The command a provider built from `config` runs in the context the pipeline hands it: an
+    /// export at `/ctx` of a repository at `/repo` invoked from its `sub/`, with relative copy
+    /// sources written against the origin [`copy_origin`] chooses for `config`.
+    fn prepare_command_for(
+        config: ModalProviderConfig,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+    ) -> String {
+        let p = provider(config.clone());
+        let provider_config = ProviderConfig::Modal(config);
+        let build_ctx = BuildContext {
             dir: Path::new("/ctx"),
             cwd_rel: Path::new("sub"),
             root: Path::new("/repo"),
-        }
+            origin: copy_origin(&provider_config),
+        };
+        p.build_prepare_command(copy_dirs, sandbox_init_cmd, &build_ctx)
     }
 
     #[test]
     fn test_prepare_command_defaults() {
-        let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(&[], None, &build_context());
+        let cmd = prepare_command_for(ModalProviderConfig::default(), &[], None);
         assert_eq!(cmd, "uv run @modal_sandbox.py prepare --context-dir=/ctx");
     }
 
     #[test]
     fn test_prepare_command_with_dockerfile_and_include_cwd() {
-        let p = provider(ModalProviderConfig {
+        let config = ModalProviderConfig {
             dockerfile: Some("./Dockerfile".to_string()),
             include_cwd: true,
             ..Default::default()
-        });
-        let cmd = p.build_prepare_command(&[], None, &build_context());
+        };
+        let cmd = prepare_command_for(config, &[], None);
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile --include-dir=/ctx/sub --context-dir=/ctx"
@@ -346,13 +357,13 @@ mod tests {
 
     #[test]
     fn test_prepare_command_with_copy_dirs() {
-        let p = provider(ModalProviderConfig {
+        let config = ModalProviderConfig {
             copy_dirs: vec![
                 "./src:/app/src".to_string(),
                 "/repo/lib:/app/lib".to_string(),
             ],
             ..Default::default()
-        });
+        };
         let runtime_dirs = vec![
             (PathBuf::from("./tests"), PathBuf::from("/app/tests")),
             (
@@ -360,7 +371,7 @@ mod tests {
                 PathBuf::from("/app/fixtures"),
             ),
         ];
-        let cmd = p.build_prepare_command(&runtime_dirs, None, &build_context());
+        let cmd = prepare_command_for(config, &runtime_dirs, None);
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare \
@@ -374,11 +385,10 @@ mod tests {
 
     #[test]
     fn test_prepare_command_with_sandbox_init_cmd() {
-        let p = provider(ModalProviderConfig::default());
-        let cmd = p.build_prepare_command(
+        let cmd = prepare_command_for(
+            ModalProviderConfig::default(),
             &[],
             Some("apt-get update && apt-get install -y curl"),
-            &build_context(),
         );
         assert_eq!(
             cmd,
@@ -390,14 +400,14 @@ mod tests {
 
     #[test]
     fn test_prepare_command_all_options() {
-        let p = provider(ModalProviderConfig {
+        let config = ModalProviderConfig {
             dockerfile: Some("./Dockerfile.test".to_string()),
             include_cwd: true,
             copy_dirs: vec!["./src:/app/src".to_string()],
             ..Default::default()
-        });
+        };
         let runtime_dirs = vec![(PathBuf::from("./tests"), PathBuf::from("/app/tests"))];
-        let cmd = p.build_prepare_command(&runtime_dirs, Some("make setup"), &build_context());
+        let cmd = prepare_command_for(config, &runtime_dirs, Some("make setup"));
         assert_eq!(
             cmd,
             "uv run @modal_sandbox.py prepare ./Dockerfile.test --include-dir=/ctx/sub \

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::path_under_root;
+use super::{copy_origin, path_under_root};
 use crate::bundled::SCRIPTS_DIR;
 use crate::config::{Config, ProviderConfig};
 use crate::git;
@@ -142,7 +142,8 @@ pub(crate) async fn current_recipe(
         return Ok(None);
     };
     let root = git::repo_root(repo).await?;
-    let origin = copy_origin(repo, config);
+    // `repo` is the invoking directory, so this is the build's `root.join(cwd_rel).join(origin)`.
+    let origin = repo.join(copy_origin(&config.provider));
     let sources: Vec<PathBuf> = recipe
         .copy_dirs
         .iter()
@@ -163,18 +164,6 @@ pub(crate) async fn current_recipe(
     }
     recipe.export_extras = export_extras;
     Ok(Some(recipe))
-}
-
-/// The directory a relative copy source is written against, matching the builders: the
-/// default provider's `working_dir` when set, otherwise the invoking directory.
-fn copy_origin(repo: &Path, config: &Config) -> PathBuf {
-    match &config.provider {
-        ProviderConfig::Default(default) => match &default.working_dir {
-            Some(working_dir) => repo.join(working_dir),
-            None => repo.to_path_buf(),
-        },
-        ProviderConfig::Modal(_) | ProviderConfig::Local(_) => repo.to_path_buf(),
-    }
 }
 
 /// What the recipe records for a copy source at `live`: nothing inside the repository, where
@@ -279,7 +268,10 @@ mod tests {
 
     use super::*;
     use crate::config::{ModalProviderConfig, load_config_str};
-    use crate::image_cache::test_support::{git_cmd, init_temp_repo, minimal_modal_config};
+    use crate::image_cache::BuildContext;
+    use crate::image_cache::test_support::{
+        git_cmd, init_repo_in, init_temp_repo, minimal_modal_config,
+    };
 
     const MODAL_PROVIDER: &str = r#"
         type = "modal"
@@ -680,6 +672,42 @@ mod tests {
         assert_eq!(
             first_copy_content(&recipe)?,
             Some(digest_dir(&outside.path().join("data"))?.as_str())
+        );
+        Ok(())
+    }
+
+    /// The recipe and the build take a relative copy source's origin from the one rule, so the
+    /// directory `current_recipe` digests is the directory `copy_specs` hands the builder for
+    /// the same invocation.
+    #[tokio::test]
+    async fn test_current_recipe_digests_the_directory_copy_specs_resolves_under_working_dir()
+    -> Result<()> {
+        let base = tempfile::tempdir()?;
+        let repo = base.path().join("repo");
+        std::fs::create_dir(&repo)?;
+        init_repo_in(&repo)?;
+        std::fs::create_dir_all(base.path().join("ops/data"))?;
+        std::fs::write(base.path().join("ops/data/seed.txt"), "seed")?;
+        let copy_dir = "data:/data";
+        let config = default_config_in(Path::new("../ops"), copy_dir)?;
+        let recipe = current_recipe_in(&repo, &config).await?;
+
+        let root = git::repo_root(&repo).await?;
+        let cwd_rel = git::path_within_repo(&repo).await?;
+        let build = BuildContext {
+            dir: Path::new("/ctx"),
+            cwd_rel: &cwd_rel,
+            root: &root,
+            origin: copy_origin(&config.provider),
+        };
+        let specs = build.copy_specs(&[copy_dir.to_string()], &[]);
+        let source = specs
+            .first()
+            .and_then(|spec| spec.strip_suffix(":/data"))
+            .context("expected one resolved copy spec")?;
+        assert_eq!(
+            first_copy_content(&recipe)?,
+            Some(digest_dir(Path::new(source))?.as_str())
         );
         Ok(())
     }

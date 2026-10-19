@@ -224,9 +224,10 @@ pub struct ModalProviderConfig {
 
     /// Directories to copy into the sandbox image.
     ///
-    /// Each entry is a string in the format "local_path:remote_path".
-    /// These directories are baked into the image during preparation,
-    /// making sandbox creation faster.
+    /// Each entry is a string in the format "local_path:remote_path". A relative
+    /// `local_path` is taken from the directory `offload` is run in. These
+    /// directories are baked into the image during preparation, making sandbox
+    /// creation faster.
     #[serde(default)]
     pub copy_dirs: Vec<String>,
 
@@ -326,7 +327,9 @@ pub struct DefaultProviderConfig {
 
     /// Directories to copy into the image during prepare.
     ///
-    /// Each entry is a string in the format "local_path:remote_path".
+    /// Each entry is a string in the format "local_path:remote_path". A relative
+    /// `local_path` is taken from `working_dir` when it is set, because that is where
+    /// `prepare_command` runs, and otherwise from the directory `offload` is run in.
     /// These directories are baked into the image during the prepare step,
     /// making sandbox creation faster.
     #[serde(default)]

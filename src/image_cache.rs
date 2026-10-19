@@ -36,7 +36,7 @@ use crate::git;
 use crate::provider::{PrepareContext, ProviderError, ProviderResult};
 use crate::trace::Tracer;
 use crate::with_retry;
-pub(crate) use build_context::{BuildContext, path_under_root};
+pub(crate) use build_context::{BuildContext, copy_origin, path_under_root};
 use recipe::Recipe;
 pub(crate) use recipe::current_recipe;
 use verdict::{Verdict, classify_note, entry_line, matching_image};
@@ -440,6 +440,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
         dir: tree_dir.path(),
         cwd_rel: &cwd_rel,
         root: &repo_root,
+        origin: copy_origin(&ctx.config.provider),
     };
 
     // Build base image from exported tree
@@ -535,6 +536,7 @@ pub(crate) async fn full_build_fallback<B: ImageBuilder>(
         dir: context_snapshot.path(),
         cwd_rel: Path::new(""),
         root: &invoking_dir,
+        origin: copy_origin(&ctx.config.provider),
     };
 
     let image_id = {
