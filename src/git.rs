@@ -29,6 +29,7 @@ pub struct ImageEntry {
 
 impl ImageEntry {
     /// An entry carrying only `image_id`, the shape older Offload versions write.
+    #[cfg(test)]
     pub(crate) fn legacy(image_id: impl Into<String>) -> ImageEntry {
         ImageEntry {
             image_id: image_id.into(),
@@ -558,7 +559,8 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
     Ok(Some(sha.to_string()))
 }
 
-/// Convert a config path to a canonical repo-relative form.
+/// Convert a config path to a canonical repo-relative form, recorded in a note
+/// entry as the config that built it; informational only, never a lookup key.
 ///
 /// Strips `./` prefix and makes the path relative to the repo root.
 pub fn canonicalize_config_path(config_path: &str, repo_root: &Path) -> Result<String> {

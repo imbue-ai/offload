@@ -10,8 +10,12 @@
 //!   commit is the nearest ancestor that touches any `build_inputs` file.
 //! - **Latest-commit** (no `[checkpoint]`): the base commit is HEAD itself.
 //!
-//! Cached image IDs are stored as git notes (`refs/notes/offload-images`) so
-//! they travel with the repo and are shared across machines.
+//! A cached base image is keyed by the base commit and the [`Recipe`] stored in
+//! its note entry: lookup takes the entry whose stored recipe equals the current
+//! one, so a config edit that shapes the image misses and configs that differ
+//! only in fields the builder never sees share one image.  Cached image IDs are
+//! stored as git notes (`refs/notes/offload-images`) so they travel with the
+//! repo and are shared across machines.
 
 pub mod recipe;
 
@@ -28,6 +32,7 @@ use crate::git;
 use crate::provider::{PrepareContext, ProviderError, ProviderResult};
 use crate::trace::Tracer;
 use crate::with_retry;
+use recipe::Recipe;
 
 /// A provider-specific opaque image identifier read from a git note.
 #[derive(Debug, Clone)]
@@ -52,10 +57,11 @@ pub struct LatestCommitInfo {
 /// Latest-commit mode: use HEAD as the base commit.
 ///
 /// Returns `None` for an empty repo (no commits).
-/// Skips the git-note lookup when `no_cache` is true.
+/// Skips the git-note lookup when `no_cache` is true; otherwise the lookup
+/// matches the note's entries against `recipe`.
 pub async fn resolve_latest_commit(
     repo: &Path,
-    config_path: &str,
+    recipe: &Recipe,
     no_cache: bool,
 ) -> Result<Option<LatestCommitInfo>> {
     let head_sha = match git::head_sha(repo).await {
@@ -66,9 +72,7 @@ pub async fn resolve_latest_commit(
     let cached_image = if no_cache {
         None
     } else {
-        let repo_root = git::repo_root(repo).await?;
-        let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-        read_cached_image_for_commit(repo, &head_sha, &config_key).await?
+        read_cached_image_for_commit(repo, &head_sha, recipe).await?
     };
 
     Ok(Some(LatestCommitInfo {
@@ -80,10 +84,11 @@ pub async fn resolve_latest_commit(
 /// Checkpoint mode: find the nearest ancestor that touches any `build_inputs` file.
 ///
 /// Returns `None` if no such ancestor exists.
-/// Skips the git-note lookup when `no_cache` is true.
+/// Skips the git-note lookup when `no_cache` is true; otherwise the lookup
+/// matches the note's entries against `recipe`.
 pub async fn resolve_checkpoint(
     repo: &Path,
-    config_path: &str,
+    recipe: &Recipe,
     checkpoint_cfg: &CheckpointConfig,
     no_cache: bool,
 ) -> Result<Option<CheckpointInfo>> {
@@ -96,9 +101,7 @@ pub async fn resolve_checkpoint(
     let cached_image = if no_cache {
         None
     } else {
-        let repo_root = git::repo_root(repo).await?;
-        let config_key = git::canonicalize_config_path(config_path, &repo_root)?;
-        read_cached_image_for_commit(repo, &checkpoint_sha, &config_key).await?
+        read_cached_image_for_commit(repo, &checkpoint_sha, recipe).await?
     };
 
     Ok(Some(CheckpointInfo {
@@ -107,12 +110,17 @@ pub async fn resolve_checkpoint(
     }))
 }
 
-/// Look up the cached image ID stored in a git note for `commit_sha`.
+/// Look up the entry on `commit_sha` whose stored recipe equals `recipe` as JSON.
+///
+/// Exact equality is the whole test, so an entry without a recipe (written by an
+/// older Offload) or with a shape this version does not know never matches; a
+/// miss against an existing note prints one line saying what the note holds.
 async fn read_cached_image_for_commit(
     repo: &Path,
     commit_sha: &str,
-    config_key: &str,
+    recipe: &Recipe,
 ) -> Result<Option<CachedImage>> {
+    let wanted = serde_json::to_value(recipe).context("failed to serialize recipe")?;
     let note = git::read_note(repo, commit_sha)
         .await
         .context("failed to read git note for checkpoint commit")?;
@@ -121,12 +129,35 @@ async fn read_cached_image_for_commit(
         return Ok(None);
     };
 
-    match contents.get(config_key) {
-        Some(entry) if !entry.image_id.is_empty() => Ok(Some(CachedImage {
+    let hit = contents
+        .values()
+        .find(|entry| entry.recipe.as_ref() == Some(&wanted) && !entry.image_id.is_empty());
+    if let Some(entry) = hit {
+        return Ok(Some(CachedImage {
             image_id: entry.image_id.clone(),
-        })),
-        _ => Ok(None),
+        }));
     }
+
+    let legacy = contents
+        .values()
+        .filter(|entry| entry.recipe.is_none())
+        .count();
+    let different = contents
+        .values()
+        .filter(|entry| {
+            entry
+                .recipe
+                .as_ref()
+                .is_some_and(|stored| *stored != wanted)
+        })
+        .count();
+    eprintln!(
+        "[cache] No entry on {} matches the current recipe: {} written by an older Offload (no recipe), {} with a different recipe",
+        &commit_sha[..8.min(commit_sha.len())],
+        legacy,
+        different
+    );
+    Ok(None)
 }
 
 /// Which caching mode determined the base commit.
@@ -151,6 +182,8 @@ pub struct ResolvedBase {
     pub base_sha: String,
     pub cached_image_id: Option<String>,
     pub kind: BaseKind,
+    /// The recipe the lookup used, so a base built after a miss is written under the same key.
+    pub recipe: Recipe,
 }
 
 /// Provider-specific image build operations.
@@ -187,18 +220,24 @@ pub(crate) enum PrewarmOutcome {
 /// Pick the base commit and (optionally) its cached image before provider dispatch.
 ///
 /// Selects checkpoint or latest-commit mode based on the config, then returns
-/// the base SHA and any cached image ID.  Best-effort: returns `None` on
-/// failure, outside a git repo, or when no base commit can be identified.
+/// the base SHA, any cached image ID, and the recipe the lookup used.  Best-effort:
+/// returns `None` on failure, outside a git repo, when no base commit can be
+/// identified, or when the provider builds no base image to cache.
 pub async fn resolve_base(
     repo: &Path,
-    config_path: &Path,
     config: &Config,
+    copy_dirs: &[(PathBuf, PathBuf)],
     no_cache: bool,
 ) -> Option<ResolvedBase> {
     if git::repo_root(repo).await.is_err() {
         info!("Not in a git repo, skipping checkpoint/cache resolution");
         return None;
     }
+
+    let Some(recipe) = Recipe::from_config(config, copy_dirs) else {
+        info!("Provider builds no base image, skipping checkpoint/cache resolution");
+        return None;
+    };
 
     if !no_cache {
         if let Err(e) = git::fetch_notes(repo, "origin").await {
@@ -209,18 +248,16 @@ pub async fn resolve_base(
         }
     }
 
-    let config_path_str = config_path.to_string_lossy();
-
     // Resolve (base_sha, cached_image, kind) — one call per mode.
     let result: Result<Option<(String, Option<CachedImage>, BaseKind)>> =
         if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
-            resolve_checkpoint(repo, &config_path_str, checkpoint_cfg, no_cache)
+            resolve_checkpoint(repo, &recipe, checkpoint_cfg, no_cache)
                 .await
                 .map(|opt| {
                     opt.map(|info| (info.checkpoint_sha, info.cached_image, BaseKind::Checkpoint))
                 })
         } else {
-            resolve_latest_commit(repo, &config_path_str, no_cache)
+            resolve_latest_commit(repo, &recipe, no_cache)
                 .await
                 .map(|opt| {
                     opt.map(|info| (info.head_sha, info.cached_image, BaseKind::LatestCommit))
@@ -232,6 +269,7 @@ pub async fn resolve_base(
             base_sha,
             cached_image_id: cached_image.map(|c| c.image_id),
             kind,
+            recipe,
         }),
         Ok(None) => {
             info!("No base commit found");
@@ -244,31 +282,49 @@ pub async fn resolve_base(
     }
 }
 
-/// Persist a cached image ID as a git note on `commit_sha` and push (best-effort).
+/// The note entry for a freshly built base image and the recipe name it is stored under.
+async fn recipe_note_entry(
+    repo: &Path,
+    image_id: &str,
+    recipe: &Recipe,
+    config_path: &Path,
+) -> Result<(String, git::ImageEntry)> {
+    let repo_root = git::repo_root(repo)
+        .await
+        .context("failed to get repo root for note")?;
+    let config_path = git::canonicalize_config_path(&config_path.to_string_lossy(), &repo_root)
+        .context("failed to canonicalize config path for note")?;
+    let entry = git::ImageEntry {
+        image_id: image_id.to_string(),
+        recipe: Some(serde_json::to_value(recipe).context("failed to serialize recipe")?),
+        config_path: Some(config_path),
+        offload_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        built_at: Some(humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string()),
+    };
+    Ok((recipe.name()?, entry))
+}
+
+/// Persist a cached image ID as a git note on `commit_sha` under the recipe's name and
+/// push (best-effort).  The recipe is stored inline so lookup can compare it and
+/// `git notes show` can explain a miss; the config path, Offload version, and build
+/// time are provenance that nothing reads.
 pub async fn write_note_for_commit(
     repo: &Path,
     commit_sha: &str,
     image_id: &str,
+    recipe: &Recipe,
     config_path: &Path,
 ) {
-    let config_path_str = config_path.to_string_lossy();
-
-    let config_key = match git::repo_root(repo).await {
-        Ok(root) => match git::canonicalize_config_path(&config_path_str, &root) {
-            Ok(key) => key,
-            Err(e) => {
-                warn!("Failed to canonicalize config path for note: {}", e);
-                return;
-            }
-        },
+    let (name, entry) = match recipe_note_entry(repo, image_id, recipe, config_path).await {
+        Ok(named) => named,
         Err(e) => {
-            warn!("Failed to get repo root for note: {}", e);
+            warn!("Failed to build image cache note entry: {:#}", e);
             return;
         }
     };
 
     let mut contents = git::NoteContents::new();
-    contents.insert(config_key, git::ImageEntry::legacy(image_id));
+    contents.insert(name, entry);
 
     if let Err(e) = git::write_note(repo, commit_sha, &contents).await {
         warn!("Failed to write note: {}", e);
@@ -296,7 +352,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
     builder: &mut B,
     ctx: &PrepareContext<'_>,
 ) -> anyhow::Result<PrewarmOutcome> {
-    let resolved = match resolve_base(ctx.repo, ctx.config_path, ctx.config, ctx.no_cache).await {
+    let resolved = match resolve_base(ctx.repo, ctx.config, ctx.copy_dirs, ctx.no_cache).await {
         Some(r) => r,
         None => {
             return Ok(PrewarmOutcome::CacheMiss);
@@ -392,7 +448,7 @@ pub(crate) async fn run_prewarm_pipeline<B: ImageBuilder>(
 
     // Write note if caching enabled
     if let (Some(cfg_path), Some(base_id)) = (note_config, &base_image_id) {
-        write_note_for_commit(ctx.repo, base_sha, base_id, cfg_path).await;
+        write_note_for_commit(ctx.repo, base_sha, base_id, &resolved.recipe, cfg_path).await;
     }
 
     // Build thin diff on top of base
@@ -640,6 +696,12 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
     let config = crate::config::load_config(path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
 
+    // The key `offload build` would look up: no runtime copy dirs.
+    let Some(recipe) = Recipe::from_config(&config, &[]) else {
+        println!("Provider caches no images; nothing to look up.");
+        return Ok(());
+    };
+
     // Best-effort fetch and configure notes
     let _ = git::fetch_notes(repo, remote).await;
     let _ = git::configure_notes_fetch(repo, remote).await;
@@ -650,7 +712,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
     let short_head = &head[..8.min(head.len())];
 
     if let Some(ref checkpoint_cfg) = config.checkpoint {
-        let info = resolve_checkpoint(repo, config_path, checkpoint_cfg, false)
+        let info = resolve_checkpoint(repo, &recipe, checkpoint_cfg, false)
             .await
             .context("Failed to resolve checkpoint")?;
 
@@ -704,7 +766,7 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
             }
         }
     } else {
-        let info = resolve_latest_commit(repo, config_path, false)
+        let info = resolve_latest_commit(repo, &recipe, false)
             .await
             .context("Failed to resolve latest commit")?;
 
@@ -738,6 +800,9 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        DefaultFrameworkConfig, FrameworkConfig, ModalProviderConfig, OffloadConfig, ProviderConfig,
+    };
     use crate::git::{ImageEntry, NOTES_REF, NoteContents};
 
     use std::path::Path;
@@ -827,6 +892,54 @@ mod tests {
         git_cmd(dir, &["rev-parse", "HEAD"])
     }
 
+    /// Helper: a minimal Modal config; tests change the one field they vary.
+    fn minimal_modal_config() -> Config {
+        Config {
+            offload: OffloadConfig {
+                max_parallel: 1,
+                test_timeout_secs: 60,
+                working_dir: None,
+                sandbox_project_root: Some("/app".to_string()),
+                sandbox_repo_root: Some("/app".to_string()),
+                sandbox_init_cmd: Some("bash init.sh".to_string()),
+                post_patch_cmd: None,
+                impatiently_requeue_batches: true,
+                max_parallel_collection: 0,
+            },
+            provider: ProviderConfig::Modal(ModalProviderConfig {
+                dockerfile: Some("Dockerfile".to_string()),
+                ..ModalProviderConfig::default()
+            }),
+            framework: FrameworkConfig::Default(DefaultFrameworkConfig {
+                discover_command: "echo test".to_string(),
+                run_command: "run {tests}".to_string(),
+                result_file: None,
+                working_dir: None,
+                test_id_format: "{name}".to_string(),
+            }),
+            groups: Default::default(),
+            report: Default::default(),
+            checkpoint: None,
+            history: None,
+        }
+    }
+
+    /// Helper: the recipe `offload build` derives from `config` (no runtime copy dirs).
+    fn recipe_for(config: &Config) -> Result<Recipe> {
+        Recipe::from_config(config, &[]).context("the Modal provider should yield a recipe")
+    }
+
+    /// Helper: write an entry for `recipe` on `sha` the way a current Offload does.
+    fn write_recipe_entry_in(dir: &Path, sha: &str, recipe: &Recipe, image_id: &str) -> Result<()> {
+        let entry = ImageEntry {
+            recipe: Some(serde_json::to_value(recipe)?),
+            ..ImageEntry::legacy(image_id)
+        };
+        let mut contents = NoteContents::new();
+        contents.insert(recipe.name()?, entry);
+        write_note_in(dir, sha, &contents)
+    }
+
     // ---- Tests for resolve_checkpoint ----
 
     #[tokio::test]
@@ -854,7 +967,8 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let result = resolve_checkpoint(dir.path(), &recipe, &cfg, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
@@ -876,7 +990,8 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let result = resolve_checkpoint(dir.path(), &recipe, &cfg, false).await?;
 
         assert!(result.is_none(), "no commit touches Dockerfile");
         Ok(())
@@ -892,13 +1007,14 @@ mod tests {
         git_cmd(dir.path(), &["commit", "-m", "add Dockerfile"])?;
         let checkpoint_sha = head_sha_in(dir.path())?;
 
-        // Write a note on the checkpoint commit
-        let mut contents = NoteContents::new();
-        contents.insert(
-            "offload.toml".to_string(),
-            ImageEntry::legacy("im-cached123"),
-        );
-        write_note_in(dir.path(), &checkpoint_sha, &contents)?;
+        // Write a recipe entry on the checkpoint commit
+        let config = minimal_modal_config();
+        write_recipe_entry_in(
+            dir.path(),
+            &checkpoint_sha,
+            &recipe_for(&config)?,
+            "im-cached123",
+        )?;
 
         // Add another commit that doesn't touch Dockerfile
         std::fs::write(dir.path().join("app.py"), "print('hello')")?;
@@ -909,12 +1025,47 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), "offload.toml", &cfg, false).await?;
+        let result = resolve_checkpoint(dir.path(), &recipe_for(&config)?, &cfg, false).await?;
 
         let info = result.context("should find checkpoint")?;
         assert_eq!(info.checkpoint_sha, checkpoint_sha);
         let cached = info.cached_image.context("should have cached image")?;
         assert_eq!(cached.image_id, "im-cached123");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_checkpoint_misses_when_sandbox_init_cmd_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = init_temp_repo()?;
+
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu:22.04")?;
+        git_cmd(dir.path(), &["add", "Dockerfile"])?;
+        git_cmd(dir.path(), &["commit", "-m", "add Dockerfile"])?;
+        let checkpoint_sha = head_sha_in(dir.path())?;
+
+        let config = minimal_modal_config();
+        write_recipe_entry_in(
+            dir.path(),
+            &checkpoint_sha,
+            &recipe_for(&config)?,
+            "im-old-init",
+        )?;
+
+        let mut changed = minimal_modal_config();
+        changed.offload.sandbox_init_cmd = Some("bash other.sh".to_string());
+        let cfg = CheckpointConfig {
+            build_inputs: vec!["Dockerfile".to_string()],
+        };
+
+        let result = resolve_checkpoint(dir.path(), &recipe_for(&changed)?, &cfg, false).await?;
+
+        let info = result.ok_or("should find checkpoint")?;
+        assert_eq!(info.checkpoint_sha, checkpoint_sha);
+        assert!(
+            info.cached_image.is_none(),
+            "a changed sandbox_init_cmd must not reuse the image"
+        );
         Ok(())
     }
 
@@ -925,15 +1076,11 @@ mod tests {
         let dir = init_temp_repo()?;
         let head = head_sha_in(dir.path())?;
 
-        // Write a note on HEAD
-        let mut contents = NoteContents::new();
-        contents.insert(
-            "offload.toml".to_string(),
-            ImageEntry::legacy("im-head-cached"),
-        );
-        write_note_in(dir.path(), &head, &contents)?;
+        // Write a recipe entry on HEAD
+        let config = minimal_modal_config();
+        write_recipe_entry_in(dir.path(), &head, &recipe_for(&config)?, "im-head-cached")?;
 
-        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
+        let result = resolve_latest_commit(dir.path(), &recipe_for(&config)?, false).await?;
 
         let info = result.context("should find latest commit")?;
         assert_eq!(info.head_sha, head);
@@ -948,7 +1095,8 @@ mod tests {
         let head = head_sha_in(dir.path())?;
 
         // No note on HEAD
-        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let result = resolve_latest_commit(dir.path(), &recipe, false).await?;
 
         let info = result.context("should find latest commit (miss still returns info)")?;
         assert_eq!(info.head_sha, head);
@@ -965,9 +1113,126 @@ mod tests {
         git_cmd(dir.path(), &["init"])?;
         // Empty repo — no commits
 
-        let result = resolve_latest_commit(dir.path(), "offload.toml", false).await?;
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let result = resolve_latest_commit(dir.path(), &recipe, false).await?;
 
         assert!(result.is_none(), "empty repo has no HEAD");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_configs_differing_only_in_report_share_one_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = init_temp_repo()?;
+        let head = head_sha_in(dir.path())?;
+
+        let config = minimal_modal_config();
+        let mut other = minimal_modal_config();
+        other.report.output_dir = PathBuf::from("other-results");
+        let recipe = recipe_for(&config)?;
+        let other_recipe = recipe_for(&other)?;
+        assert_eq!(recipe, other_recipe);
+
+        write_recipe_entry_in(dir.path(), &head, &recipe, "im-shared")?;
+
+        for lookup in [&recipe, &other_recipe] {
+            let info = resolve_latest_commit(dir.path(), lookup, false)
+                .await?
+                .ok_or("should find latest commit")?;
+            let cached = info.cached_image.ok_or("should have cached image")?;
+            assert_eq!(cached.image_id, "im-shared");
+        }
+        let note = read_note_in(dir.path(), &head)?.ok_or("note should exist")?;
+        assert_eq!(note.len(), 1, "one recipe means one entry");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stored_recipe_with_extra_key_does_not_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = init_temp_repo()?;
+        let head = head_sha_in(dir.path())?;
+
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let mut stored = serde_json::to_value(&recipe)?;
+        stored
+            .as_object_mut()
+            .ok_or("recipe serializes to an object")?
+            .insert("newer_field".to_string(), serde_json::Value::Bool(true));
+        let mut contents = NoteContents::new();
+        contents.insert(
+            recipe.name()?,
+            ImageEntry {
+                recipe: Some(stored),
+                ..ImageEntry::legacy("im-newer")
+            },
+        );
+        write_note_in(dir.path(), &head, &contents)?;
+
+        let info = resolve_latest_commit(dir.path(), &recipe, false)
+            .await?
+            .ok_or("should find latest commit")?;
+        assert!(
+            info.cached_image.is_none(),
+            "an entry with a field this version does not know must not match"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_legacy_only_note_misses() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = init_temp_repo()?;
+        let head = head_sha_in(dir.path())?;
+
+        let mut contents = NoteContents::new();
+        contents.insert("offload.toml".to_string(), ImageEntry::legacy("im-legacy"));
+        write_note_in(dir.path(), &head, &contents)?;
+
+        let recipe = recipe_for(&minimal_modal_config())?;
+        let info = resolve_latest_commit(dir.path(), &recipe, false)
+            .await?
+            .ok_or("should find latest commit")?;
+        assert!(
+            info.cached_image.is_none(),
+            "entries without a recipe never match"
+        );
+        Ok(())
+    }
+
+    // ---- Tests for write_note_for_commit ----
+
+    #[tokio::test]
+    async fn test_write_note_for_commit_writes_entry_under_recipe_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = init_temp_repo()?;
+        let head = head_sha_in(dir.path())?;
+        let mut legacy = NoteContents::new();
+        legacy.insert("offload.toml".to_string(), ImageEntry::legacy("im-legacy"));
+        write_note_in(dir.path(), &head, &legacy)?;
+
+        let recipe = recipe_for(&minimal_modal_config())?;
+        write_note_for_commit(
+            dir.path(),
+            &head,
+            "im-built",
+            &recipe,
+            Path::new("./offload.toml"),
+        )
+        .await;
+
+        let note = read_note_in(dir.path(), &head)?.ok_or("note should exist")?;
+        assert_eq!(note.len(), 2, "the legacy entry is kept beside the new one");
+        let entry = note
+            .get(&recipe.name()?)
+            .ok_or("entry under the recipe name")?;
+        assert_eq!(entry.image_id, "im-built");
+        assert_eq!(entry.recipe, Some(serde_json::to_value(&recipe)?));
+        assert_eq!(entry.config_path.as_deref(), Some("offload.toml"));
+        assert_eq!(
+            entry.offload_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        humantime::parse_rfc3339(entry.built_at.as_deref().ok_or("built_at should be set")?)?;
         Ok(())
     }
 

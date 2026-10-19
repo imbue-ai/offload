@@ -632,11 +632,14 @@ pub struct DefaultFrameworkConfig {
 /// Configuration for image checkpointing.
 ///
 /// When present, enables checkpointing support for sandbox images.
-/// The `build_inputs` field lists file paths that are hashed to determine
-/// whether a cached image can be reused.
+/// The `build_inputs` field lists the tracked files whose change starts a
+/// new checkpoint.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CheckpointConfig {
-    /// File paths whose contents are hashed to compute the image cache key.
+    /// Tracked paths whose change starts a new checkpoint: the base image is
+    /// built from the nearest ancestor commit that touches one of them.
+    /// Config fields that shape the image are part of the cache key
+    /// automatically and need not be listed here.
     ///
     /// Must be non-empty when checkpoint is enabled.
     #[serde(default)]
