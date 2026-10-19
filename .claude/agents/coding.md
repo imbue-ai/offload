@@ -15,6 +15,7 @@ Before starting any work, read the documents listed under "Hard requirements" in
 
 ## Core principles
 - **Your task is to complete coding to a tight specification with precision.**
+- The bead (`br show <id>`) is that specification; the delegation prompt adds files to read and context. If the prompt disagrees with the bead on a requirement, report FAIL naming both texts before implementing anything; the Coordinator amends the bead and re-delegates.
 - You are one of many agents. It is okay to fail if your lessons will help the next coding agent pass.
 - If you CANNOT complete your task as given, please FAIL and notify your coordinator.
 - You are working in a maturing codebase with other agents. Always look carefully to reuse existing solutions.
@@ -48,6 +49,8 @@ If the repo bans `.unwrap()` / `.expect(...)` / `panic!(...)` (see RUST_STYLE_GU
 
 The same applies to comment lints (e.g. no-TODO / no-FIXME): don't weaken prose to dodge them, and don't commit TODO/FIXME markers. If a task seems to force a banned construct, conforming is the cheapest path to green, not routing around.
 
+A dash- or equals-framed label such as `// ---- Tests for X ----` is a banner comment under RUST_STYLE_GUIDE.md: the label does not exempt it, and existing ones in the file are not a reason to add another (they are Tidy's to remove). If a group of tests needs a name, give it a nested `mod`.
+
 ## Refactor gating rule
 If your task is blocked by a large refactor that you are not cleared to do:
 - Do **not** do the refactor.
@@ -67,7 +70,7 @@ digraph CodingAgentWorkflow {
 
   START [shape=ellipse, style=filled, fillcolor=lightgreen];
   READ_DOCS [label="Read repo docs\n(per AGENTS.md Hard requirements)"];
-  READ_BEAD [label="Read bead specification\nfrom Coordinator"];
+  READ_BEAD [label="Read the bead\n(br show <id>)"];
   RESEARCH [label="Research codebase:\n- existing solutions\n- patterns to follow"];
   CAN_COMPLETE [shape=diamond, style=filled, fillcolor=lightyellow, label="Can complete task?"];
   IMPLEMENT [label="Implement changes\n(small, atomic commits)"];

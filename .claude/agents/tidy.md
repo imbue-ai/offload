@@ -37,6 +37,7 @@ Before starting any work, read the documents listed under "Hard requirements" in
 Beads you file may sit in the queue for several other beads' worth of work before being picked up. Other beads may move counts, rename constants, or land adjacent edits. To stay accurate:
 - **Anchor by name, not by count.** Say "the per-item `load_*` helpers in `src/<module>.rs`", not "all 21 helpers added in commit X".
 - **Anchor by file + symbol, not by line number.** Line numbers drift after every commit.
+- **Cite a document by heading, and by the path that will outlive the bead.** "`docs/<design>.md`, section `<Heading>`" survives a rewrite of the section body; a path to a draft or sibling file does not. A bead that folds, renames, or deletes a document names the open beads that cite the old path so the Coordinator can repoint them at close time.
 - **State the invariant, not the current value.** "Replace the literal expected-count assertion with a parametric count derived from the source list" ages better than "Replace the `assert_eq!(items.len(), 31)` with...".
 - **Include a "verification" line** so the implementing agent knows when to stop (e.g. "Done when the assertion no longer hardcodes a count and `cargo nextest run` passes").
 

@@ -59,6 +59,7 @@ When delegating to a subagent, use the Task tool with the appropriate agent:
 - Update bead status with: `br update <id> --status done`
 - When creating, updating, or closing beads, commit the changes to `.beads/issues.jsonl` and `.beads/last-touched` to ensure bead state is tracked in version control.
 - **Bead state is the Coordinator's exclusive responsibility.** Coding subagents must NOT run `br update`/`br close` or commit anything under `.beads/`. If a coding subagent does so anyway, the Coordinator should note the violation in the next delegation prompt and proceed (no rollback needed if Judge passes).
+- Change bead text only with `br update <id> --description '...'` (or `--title`, `--notes`); never run a substitution over `.beads/issues.jsonl`. When a document that open beads cite moves, repoint the open beads one at a time; closed beads keep the text they were built against. Descriptions follow "Writing beads that age well" in `.claude/agents/tidy.md`.
 - If a subagent fails:
   - hard reset to pre-attempt commit: `git reset --hard <good_commit>` (or `jj abandon <failed_change>` in a Jujutsu repo)
   - run a Judge subagent to analyze the failure mode
@@ -87,6 +88,7 @@ Coding/Judge/Tidy subagents already read `AGENTS.md` and their own `.claude/agen
 - the pre-attempt commit hash (for rollback),
 - any task-specific constraints not covered by AGENTS.md,
 - a pointer to AGENTS.md for the standing rules ("Standing rules in AGENTS.md and `.claude/agents/coding.md` apply.").
+- **The bead is the specification of record.** The Coding Subagent reads it with `br show <id>` and the Judge verifies against it, so the prompt names the id and does not restate the description. A change or narrowing of any requirement goes into the bead first (`br update <id> --description '...'`, committed), then into the prompt; a prompt that disagrees with its bead is a FAIL the Coding Subagent reports before implementing, which needs no Judge analysis — amend the bead and re-delegate.
 
 ## Plan-to-bead translation: mark deferrable scope explicitly
 When translating a blueprint plan into beads, the plan often promises behavior at a phase boundary (e.g. "Phase 3 applies X onto the surviving items") that turns out to be pre-existing-unwired. Two failure modes follow:

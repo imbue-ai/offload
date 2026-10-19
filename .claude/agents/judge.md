@@ -24,6 +24,8 @@ Before starting any review, read the documents listed under "Hard requirements" 
 - **Missed requirements** - Was anything specified but not implemented?
   - Note: if a requirement was not specified, the implementation may be empty
 - **Pre-existing gaps surfaced by the bead.** If you find behavior the bead description promised but did not deliver, AND a one-line git blame / quick read shows the gap pre-dated this bead's branch point, mention it explicitly as a "pre-existing gap" in your verdict and recommend the Coordinator file a follow-up bead. PASS the current bead if its tests pass and the gap is genuinely pre-existing. FAIL only if the gap was introduced by this bead.
+- **A decision the tree already makes.** If the bead computes a second time what an existing function already decides (a path origin, a precedence order, a classification), the second statement is where the two will drift and the next bead will have to extend both. FAIL if this bead added the second copy, as a reuse failure; if both copies pre-date the bead, name them in the verdict for Tidy.
+- **Banner comments.** A dash- or equals-framed label such as `// ---- Tests for X ----` is a banner comment under RUST_STYLE_GUIDE.md; the label does not exempt it, and a bead that adds one fails the Definition of Done. Ones that pre-date the bead are Tidy's to remove and need no note in the verdict.
 
 ## Verification steps
 Run every check in the **Definition of Done** in `AGENTS.md` to validate the code. That list is the single source of truth — do not restate or maintain a separate copy here.
