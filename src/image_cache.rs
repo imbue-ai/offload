@@ -13,6 +13,8 @@
 //! Cached image IDs are stored as git notes (`refs/notes/offload-images`) so
 //! they travel with the repo and are shared across machines.
 
+pub mod recipe;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
