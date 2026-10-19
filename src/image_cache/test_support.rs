@@ -133,9 +133,11 @@ pub(super) fn minimal_modal_config() -> Config {
     }
 }
 
-/// Helper: the recipe `offload build` derives from `config` (no runtime copy dirs).
+/// Helper: the recipe `offload build` derives from `config` at the repository root (no runtime
+/// copy dirs).
 pub(super) fn recipe_for(config: &Config) -> Result<Recipe> {
-    Recipe::from_config(config, &[]).context("the Modal provider should yield a recipe")
+    Recipe::from_config(config, Path::new(""), &[])
+        .context("the Modal provider should yield a recipe")
 }
 
 /// Helper: write an entry for `recipe` on `sha` the way a current Offload does.

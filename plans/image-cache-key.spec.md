@@ -37,10 +37,10 @@ A cached base image is identified by the checkpoint SHA and the recipe. The reci
 | `builder` | tagged by `[provider].type` | What turns the recipe into an image, and the fields only that builder reads |
 | `builder.modal.script` | SHA-256 of the bundled `modal_sandbox.py` | The script assembles the image; a change to it or to its pinned Modal SDK may change the image |
 | `builder.modal.dockerfile` | `[provider].dockerfile` | Selects which Dockerfile in the checkpoint tree is built |
-| `builder.modal.include_cwd` | `[provider].include_cwd` | Adds the repository tree at `/app` |
+| `builder.modal.include_dir` | the invoking directory relative to the repository root when `[provider].include_cwd` is set (empty at the root), otherwise null | The directory added at `/app`, recorded as what enters the image rather than where Offload ran, so one config invoked from two directories cannot share an image |
 | `builder.default.prepare_command` | `[provider].prepare_command` | The user's assembler |
 | `builder.default.working_dir` | `[provider].working_dir` | Where `prepare_command` runs; relative paths resolve against it |
-| `copy_dirs` | `[provider].copy_dirs` followed by the `--copy-dir` flags, in order | Directories added to the image, as the builder receives them. Each entry is `{source, target, content}`; `content` is the source's content digest when the source lies outside the repository (`absent` when it does not exist on disk), otherwise null |
+| `copy_dirs` | `[provider].copy_dirs` followed by the `--copy-dir` flags, in order | Directories added to the image, as the builder receives them. Each entry is `{source, target, content}`; `source` is the repository-relative path of a source inside the repository, whatever spelling and invoking directory named it, and the path as written for one outside; `content` is the source's content digest when the source lies outside the repository (`absent` when it does not exist on disk), otherwise null |
 | `sandbox_init_cmd` | `[offload].sandbox_init_cmd` | Runs as the last base-image layer. Empty is normalized to absent |
 | `export_extras` | files `export_tree` copies from the live tree | `{paths, content}`: the sorted paths of the gitignored but not dockerignored files that enter the export, and one digest of their content. Null when there are none |
 
@@ -82,7 +82,7 @@ The note stays a flat JSON object. Every value is an entry with a required `imag
         "modal": {
           "script": "9b1d...",
           "dockerfile": "system/Dockerfile",
-          "include_cwd": false
+          "include_dir": null
         }
       },
       "copy_dirs": [],

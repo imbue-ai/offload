@@ -37,7 +37,10 @@ pub enum Builder {
     Modal {
         script: String,
         dockerfile: Option<String>,
-        include_cwd: bool,
+        /// The repository-relative directory `include_cwd` adds at `/app` (empty at the root),
+        /// or `None` when it adds nothing: the invoking directory enters the recipe as what it
+        /// selects, so one config run from two directories cannot share an image.
+        include_dir: Option<String>,
     },
     Default {
         prepare_command: String,
@@ -45,8 +48,10 @@ pub enum Builder {
     },
 }
 
-/// A directory added to the image, in the order the builder receives it; `content` digests a
-/// source that lies outside the repository, or is [`ABSENT_SOURCE`] when that source is missing.
+/// A directory added to the image, in the order the builder receives it; `source` is the
+/// repository-relative path of a source inside the repository, which the build reads from the
+/// export, and the path as written for one outside; `content` digests an outside source, or is
+/// [`ABSENT_SOURCE`] when that source is missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyDir {
     pub source: String,
@@ -67,10 +72,13 @@ pub struct ExportExtras {
 pub const ABSENT_SOURCE: &str = "absent";
 
 impl Recipe {
-    /// Derives the recipe from the loaded config without touching the disk, so every live-tree
-    /// digest is left unset for the caller to fill; `None` when the provider builds no base image.
+    /// Derives the recipe from the loaded config without touching the disk: `cwd_rel`, the
+    /// invoking directory relative to the repository root, becomes the directory `include_cwd`
+    /// adds, while copy sources stay as written and every live-tree digest is left unset for
+    /// the caller to fill. `None` when the provider builds no base image.
     pub fn from_config(
         config: &Config,
+        cwd_rel: &Path,
         runtime_copy_dirs: &[(PathBuf, PathBuf)],
     ) -> Option<Recipe> {
         let (builder, config_copy_dirs) = match &config.provider {
@@ -79,7 +87,7 @@ impl Recipe {
                 Builder::Modal {
                     script: modal_script_digest()?,
                     dockerfile: modal.dockerfile.clone(),
-                    include_cwd: modal.include_cwd,
+                    include_dir: modal.include_cwd.then(|| repo_relative(cwd_rel)),
                 },
                 &modal.copy_dirs,
             ),
@@ -129,54 +137,58 @@ impl Recipe {
     }
 }
 
-/// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] plus
-/// digests of the two live-tree inputs a base build still reads, copy sources outside the
-/// repository and the gitignored files `export_tree` copies in, so a change in either is a
-/// cache miss. `None` when the provider builds no base image.
+/// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] for the
+/// invoking directory, with each copy source inside the repository rewritten to the
+/// repository-relative path the build reads, and digests of the two live-tree inputs a base
+/// build still reads, copy sources outside the repository and the gitignored files
+/// `export_tree` copies in, so a change in what enters the image is a cache miss. `None` when
+/// the provider builds no base image.
 pub(crate) async fn current_recipe(
     repo: &Path,
     config: &Config,
     copy_dirs: &[(PathBuf, PathBuf)],
 ) -> Result<Option<Recipe>> {
-    let Some(mut recipe) = Recipe::from_config(config, copy_dirs) else {
+    let cwd_rel = git::path_within_repo(repo).await?;
+    let Some(mut recipe) = Recipe::from_config(config, &cwd_rel, copy_dirs) else {
         return Ok(None);
     };
     let root = git::repo_root(repo).await?;
     // `repo` is the invoking directory, so this is the build's `root.join(cwd_rel).join(origin)`.
     let origin = repo.join(copy_origin(&config.provider));
-    let sources: Vec<PathBuf> = recipe
-        .copy_dirs
-        .iter()
-        .map(|dir| origin.join(&dir.source))
-        .collect();
-    let (contents, export_extras) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<Option<String>>, Option<ExportExtras>)> {
-            let contents = sources
-                .iter()
-                .map(|source| copy_source_content(&root, source))
-                .collect::<Result<Vec<_>>>()?;
-            Ok((contents, export_extras(&root)?))
-        },
-    )
-    .await??;
-    for (dir, content) in recipe.copy_dirs.iter_mut().zip(contents) {
-        dir.content = content;
-    }
-    recipe.export_extras = export_extras;
-    Ok(Some(recipe))
+    tokio::task::spawn_blocking(move || -> Result<Option<Recipe>> {
+        for dir in &mut recipe.copy_dirs {
+            let live = origin.join(&dir.source);
+            record_copy_source(&root, &live, dir)?;
+        }
+        recipe.export_extras = export_extras(&root)?;
+        Ok(Some(recipe))
+    })
+    .await?
 }
 
-/// What the recipe records for a copy source at `live`: nothing inside the repository, where
-/// the build reads the export, [`ABSENT_SOURCE`] for a missing source outside it, and otherwise
-/// a digest of the live directory the build reads.
-fn copy_source_content(root: &Path, live: &Path) -> Result<Option<String>> {
-    if path_under_root(root, live).is_some() {
-        return Ok(None);
+/// What the recipe records for `dir`, whose source the build reads at `live`: inside the
+/// repository the source becomes its repository-relative path, the one the build reads in the
+/// export, so the spelling and invoking directory that named it drop out; outside it the source
+/// stays as written and `content` digests the live directory the build reads, or is
+/// [`ABSENT_SOURCE`] when that directory is missing so its later appearance is a cache miss.
+fn record_copy_source(root: &Path, live: &Path, dir: &mut CopyDir) -> Result<()> {
+    if let Some(inside) = path_under_root(root, live) {
+        dir.source = repo_relative(&inside);
+        return Ok(());
     }
-    if !live.exists() {
-        return Ok(Some(ABSENT_SOURCE.to_string()));
-    }
-    digest_dir(live).map(Some)
+    dir.content = Some(if live.exists() {
+        digest_dir(live)?
+    } else {
+        ABSENT_SOURCE.to_string()
+    });
+    Ok(())
+}
+
+/// `path` as the recipe spells a repository-relative path: its components alone, without the
+/// trailing separator git leaves on `rev-parse --show-prefix` or an interior `.`, so one
+/// directory cannot yield two recipes.
+fn repo_relative(path: &Path) -> String {
+    path.components().collect::<PathBuf>().display().to_string()
 }
 
 /// The files `export_tree` copies in from the live tree with their digest; `None` when there
@@ -329,13 +341,13 @@ mod tests {
             builder: Builder::Modal {
                 script: "9b1d".repeat(16),
                 dockerfile: Some("system/Dockerfile".to_string()),
-                include_cwd: false,
+                include_dir: None,
             },
             copy_dirs: vec![],
             sandbox_init_cmd: Some("bash system/scripts/offload_sandbox_init.sh".to_string()),
             export_extras: None,
         };
-        assert_eq!(recipe.name()?, "recipe:c0cd23c48b675ba1");
+        assert_eq!(recipe.name()?, "recipe:ba79b860a7dfd4bd");
         Ok(())
     }
 
@@ -346,7 +358,7 @@ mod tests {
             builder: Builder::Modal {
                 script: "9b1d".to_string(),
                 dockerfile: Some("system/Dockerfile".to_string()),
-                include_cwd: false,
+                include_dir: None,
             },
             copy_dirs: vec![copy_dir("data", "/data")],
             sandbox_init_cmd: Some("bash init.sh".to_string()),
@@ -361,7 +373,7 @@ mod tests {
                 "modal": {
                     "script": "9b1d",
                     "dockerfile": "system/Dockerfile",
-                    "include_cwd": false
+                    "include_dir": null
                 }
             },
             "copy_dirs": [{"source": "data", "target": "/data", "content": null}],
@@ -403,14 +415,14 @@ mod tests {
     fn from_config_fills_the_modal_builder() -> Result<(), Box<dyn std::error::Error>> {
         let toml = config_toml(r#"sandbox_init_cmd = "bash init.sh""#, MODAL_PROVIDER);
         let config = load_config_str(&toml)?;
-        let recipe = Recipe::from_config(&config, &[]).ok_or("expected a recipe")?;
+        let recipe = Recipe::from_config(&config, Path::new(""), &[]).ok_or("expected a recipe")?;
         assert_eq!(recipe.format, RECIPE_FORMAT);
         assert_eq!(
             recipe.builder,
             Builder::Modal {
                 script: modal_script_digest().ok_or("bundled script missing")?,
                 dockerfile: Some("system/Dockerfile".to_string()),
-                include_cwd: false,
+                include_dir: None,
             }
         );
         assert_eq!(recipe.sandbox_init_cmd.as_deref(), Some("bash init.sh"));
@@ -418,10 +430,38 @@ mod tests {
         Ok(())
     }
 
+    /// Helper: the directory the recipe's Modal builder adds at `/app`.
+    fn included_dir(recipe: &Recipe) -> Result<Option<&str>> {
+        match &recipe.builder {
+            Builder::Modal { include_dir, .. } => Ok(include_dir.as_deref()),
+            Builder::Default { .. } => anyhow::bail!("expected the Modal builder"),
+        }
+    }
+
+    #[test]
+    fn from_config_records_the_included_directory_relative_to_the_root() -> Result<()> {
+        let including_cwd = load_config_str(&config_toml(
+            "",
+            &format!("{MODAL_PROVIDER}include_cwd = true"),
+        ))?;
+        let from_root =
+            Recipe::from_config(&including_cwd, Path::new(""), &[]).context("expected a recipe")?;
+        assert_eq!(included_dir(&from_root)?, Some(""));
+        // git spells the prefix with a trailing slash; the recipe stores the directory alone.
+        let from_sub = Recipe::from_config(&including_cwd, Path::new("sub/dir/"), &[])
+            .context("expected a recipe")?;
+        assert_eq!(included_dir(&from_sub)?, Some("sub/dir"));
+        let config = load_config_str(&config_toml("", MODAL_PROVIDER))?;
+        let without =
+            Recipe::from_config(&config, Path::new("sub"), &[]).context("expected a recipe")?;
+        assert_eq!(included_dir(&without)?, None);
+        Ok(())
+    }
+
     #[test]
     fn from_config_fills_the_default_builder() -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config_str(&config_toml("", DEFAULT_PROVIDER))?;
-        let recipe = Recipe::from_config(&config, &[]).ok_or("expected a recipe")?;
+        let recipe = Recipe::from_config(&config, Path::new(""), &[]).ok_or("expected a recipe")?;
         assert_eq!(
             recipe.builder,
             Builder::Default {
@@ -437,7 +477,7 @@ mod tests {
     #[test]
     fn empty_sandbox_init_cmd_normalizes_to_none() -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config_str(&config_toml(r#"sandbox_init_cmd = """#, MODAL_PROVIDER))?;
-        let recipe = Recipe::from_config(&config, &[]).ok_or("expected a recipe")?;
+        let recipe = Recipe::from_config(&config, Path::new(""), &[]).ok_or("expected a recipe")?;
         assert_eq!(recipe.sandbox_init_cmd, None);
         Ok(())
     }
@@ -447,7 +487,8 @@ mod tests {
     {
         let config = load_config_str(&config_toml("", MODAL_PROVIDER))?;
         let runtime = [(PathBuf::from("/tmp/extra"), PathBuf::from("/extra"))];
-        let recipe = Recipe::from_config(&config, &runtime).ok_or("expected a recipe")?;
+        let recipe =
+            Recipe::from_config(&config, Path::new(""), &runtime).ok_or("expected a recipe")?;
         assert_eq!(
             recipe.copy_dirs,
             vec![
@@ -463,7 +504,7 @@ mod tests {
     #[test]
     fn from_config_is_none_for_the_local_provider() -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config_str(&config_toml("", r#"type = "local""#))?;
-        assert_eq!(Recipe::from_config(&config, &[]), None);
+        assert_eq!(Recipe::from_config(&config, Path::new(""), &[]), None);
         Ok(())
     }
 
@@ -471,7 +512,7 @@ mod tests {
     fn from_config_is_none_for_default_without_prepare_command()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config_str(&config_toml("", DEFAULT_PROVIDER_WITHOUT_PREPARE))?;
-        assert_eq!(Recipe::from_config(&config, &[]), None);
+        assert_eq!(Recipe::from_config(&config, Path::new(""), &[]), None);
         Ok(())
     }
 
@@ -518,6 +559,17 @@ mod tests {
         config.provider = ProviderConfig::Modal(ModalProviderConfig {
             dockerfile: Some("Dockerfile".to_string()),
             copy_dirs,
+            ..ModalProviderConfig::default()
+        });
+        config
+    }
+
+    /// Helper: a Modal config whose `include_cwd` adds the invoking directory at `/app`.
+    fn modal_config_including_cwd() -> Config {
+        let mut config = minimal_modal_config();
+        config.provider = ProviderConfig::Modal(ModalProviderConfig {
+            dockerfile: Some("Dockerfile".to_string()),
+            include_cwd: true,
             ..ModalProviderConfig::default()
         });
         config
@@ -617,9 +669,13 @@ mod tests {
         let dir = init_temp_repo()?;
         let outside = tempfile::tempdir()?;
         std::fs::write(outside.path().join("model.bin"), "weights")?;
-        let config =
-            modal_config_with_copy_dirs(vec![format!("{}:/data", outside.path().display())]);
+        let outside_source = outside.path().display().to_string();
+        let config = modal_config_with_copy_dirs(vec![format!("{outside_source}:/data")]);
         let before = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(
+            before.copy_dirs.first().map(|dir| dir.source.as_str()),
+            Some(outside_source.as_str())
+        );
         let digest = first_copy_content(&before)?.context("expected a digest")?;
         assert_eq!(digest.len(), 64);
         assert_eq!(current_recipe_in(dir.path(), &config).await?, before);
@@ -631,8 +687,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_current_recipe_leaves_a_copy_source_inside_the_repository_undigested()
-    -> Result<()> {
+    async fn test_current_recipe_records_an_inside_copy_source_relative_to_the_root() -> Result<()>
+    {
         let dir = init_temp_repo()?;
         std::fs::create_dir(dir.path().join("data"))?;
         std::fs::write(dir.path().join("data/seed.txt"), "seed")?;
@@ -640,8 +696,52 @@ mod tests {
         for source in ["data", absolute.as_str()] {
             let config = modal_config_with_copy_dirs(vec![format!("{source}:/data")]);
             let recipe = current_recipe_in(dir.path(), &config).await?;
-            assert_eq!(first_copy_content(&recipe)?, None, "source {source}");
+            let first = recipe.copy_dirs.first().context("expected a copy dir")?;
+            assert_eq!(first.source, "data", "source {source}");
+            assert_eq!(first.content, None, "source {source}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_records_a_relative_inside_source_under_the_invoking_directory()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::create_dir_all(dir.path().join("sub/data"))?;
+        let config = modal_config_with_copy_dirs(vec!["./data:/data".to_string()]);
+        let recipe = current_recipe_in(&dir.path().join("sub"), &config).await?;
+        let first = recipe.copy_dirs.first().context("expected a copy dir")?;
+        assert_eq!(first.source, "sub/data");
+        assert_eq!(first.content, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_differs_between_invoking_directories_when_include_cwd_is_set()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub)?;
+        let config = modal_config_including_cwd();
+        let from_root = current_recipe_in(dir.path(), &config).await?;
+        let from_sub = current_recipe_in(&sub, &config).await?;
+        assert_eq!(included_dir(&from_root)?, Some(""));
+        assert_eq!(included_dir(&from_sub)?, Some("sub"));
+        assert_ne!(from_root, from_sub);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_is_shared_between_invoking_directories_without_cwd_inputs()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub)?;
+        let config = minimal_modal_config();
+        assert_eq!(
+            current_recipe_in(&sub, &config).await?,
+            current_recipe_in(dir.path(), &config).await?
+        );
         Ok(())
     }
 
