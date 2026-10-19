@@ -36,7 +36,9 @@ use crate::git;
 use crate::provider::{PrepareContext, ProviderError, ProviderResult};
 use crate::trace::Tracer;
 use crate::with_retry;
-pub(crate) use build_context::{BuildContext, copy_origin, path_under_root};
+pub(crate) use build_context::{
+    BuildContext, LinkTarget, copy_origin, link_target, path_under_root,
+};
 use recipe::Recipe;
 pub(crate) use recipe::current_recipe;
 use verdict::{Verdict, classify_note, entry_line, matching_image};
@@ -47,74 +49,20 @@ pub struct CachedImage {
     pub image_id: String,
 }
 
-/// Result of checkpoint-mode resolution: the base commit and its cached image (if any).
-#[derive(Debug, Clone)]
-pub struct CheckpointInfo {
-    pub checkpoint_sha: String,
-    pub cached_image: Option<CachedImage>,
+/// Latest-commit mode: HEAD is the base commit; `None` for an empty repo (no commits). The
+/// recipe is computed from the base commit's tree, so the commit is picked before the lookup.
+pub async fn resolve_latest_commit(repo: &Path) -> Option<String> {
+    git::head_sha(repo).await.ok()
 }
 
-/// Result of latest-commit-mode resolution: HEAD and its cached image (if any).
-#[derive(Debug, Clone)]
-pub struct LatestCommitInfo {
-    pub head_sha: String,
-    pub cached_image: Option<CachedImage>,
-}
-
-/// Latest-commit mode: use HEAD as the base commit.
-///
-/// Returns `None` for an empty repo (no commits).
-/// Skips the git-note lookup when `no_cache` is true; otherwise the lookup
-/// matches the note's entries against `recipe`.
-pub async fn resolve_latest_commit(
-    repo: &Path,
-    recipe: &Recipe,
-    no_cache: bool,
-) -> Result<Option<LatestCommitInfo>> {
-    let head_sha = match git::head_sha(repo).await {
-        Ok(sha) => sha,
-        Err(_) => return Ok(None),
-    };
-
-    let cached_image = if no_cache {
-        None
-    } else {
-        read_cached_image_for_commit(repo, &head_sha, recipe).await?
-    };
-
-    Ok(Some(LatestCommitInfo {
-        head_sha,
-        cached_image,
-    }))
-}
-
-/// Checkpoint mode: find the nearest ancestor that touches any `build_inputs` file.
-///
-/// Returns `None` if no such ancestor exists.
-/// Skips the git-note lookup when `no_cache` is true; otherwise the lookup
-/// matches the note's entries against `recipe`.
+/// Checkpoint mode: the nearest ancestor of HEAD that touches any `build_inputs` file; `None`
+/// if no such ancestor exists. The recipe is computed from the base commit's tree, so the
+/// commit is picked before the lookup.
 pub async fn resolve_checkpoint(
     repo: &Path,
-    recipe: &Recipe,
     checkpoint_cfg: &CheckpointConfig,
-    no_cache: bool,
-) -> Result<Option<CheckpointInfo>> {
-    let checkpoint_sha =
-        match git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs).await? {
-            Some(sha) => sha,
-            None => return Ok(None),
-        };
-
-    let cached_image = if no_cache {
-        None
-    } else {
-        read_cached_image_for_commit(repo, &checkpoint_sha, recipe).await?
-    };
-
-    Ok(Some(CheckpointInfo {
-        checkpoint_sha,
-        cached_image,
-    }))
+) -> Result<Option<String>> {
+    git::nearest_ancestor_touching(repo, &checkpoint_cfg.build_inputs).await
 }
 
 /// Look up the entry on `commit_sha` whose stored recipe equals `recipe` as JSON.
@@ -229,7 +177,31 @@ pub async fn resolve_base(
         return None;
     }
 
-    let recipe = match current_recipe(repo, config, copy_dirs).await {
+    // Resolve (base_sha, kind) — one call per mode — before the recipe, which digests the
+    // symlinks of the base commit's tree.
+    let result: Result<Option<(String, BaseKind)>> =
+        if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
+            resolve_checkpoint(repo, checkpoint_cfg)
+                .await
+                .map(|opt| opt.map(|sha| (sha, BaseKind::Checkpoint)))
+        } else {
+            Ok(resolve_latest_commit(repo)
+                .await
+                .map(|sha| (sha, BaseKind::LatestCommit)))
+        };
+    let (base_sha, kind) = match result {
+        Ok(Some(base)) => base,
+        Ok(None) => {
+            info!("No base commit found");
+            return None;
+        }
+        Err(e) => {
+            warn!("Base resolution failed: {}", e);
+            return None;
+        }
+    };
+
+    let recipe = match current_recipe(repo, &base_sha, config, copy_dirs).await {
         Ok(Some(recipe)) => recipe,
         Ok(None) => {
             info!("Provider builds no base image, skipping checkpoint/cache resolution");
@@ -244,47 +216,30 @@ pub async fn resolve_base(
         }
     };
 
-    if !no_cache {
+    let cached_image_id = if no_cache {
+        None
+    } else {
         if let Err(e) = git::fetch_notes(repo, "origin").await {
             warn!("Failed to fetch notes: {}", e);
         }
         if let Err(e) = git::configure_notes_fetch(repo, "origin").await {
             warn!("Failed to configure notes fetch: {}", e);
         }
-    }
-
-    // Resolve (base_sha, cached_image, kind) — one call per mode.
-    let result: Result<Option<(String, Option<CachedImage>, BaseKind)>> =
-        if let Some(checkpoint_cfg) = config.checkpoint.as_ref() {
-            resolve_checkpoint(repo, &recipe, checkpoint_cfg, no_cache)
-                .await
-                .map(|opt| {
-                    opt.map(|info| (info.checkpoint_sha, info.cached_image, BaseKind::Checkpoint))
-                })
-        } else {
-            resolve_latest_commit(repo, &recipe, no_cache)
-                .await
-                .map(|opt| {
-                    opt.map(|info| (info.head_sha, info.cached_image, BaseKind::LatestCommit))
-                })
-        };
-
-    match result {
-        Ok(Some((base_sha, cached_image, kind))) => Some(ResolvedBase {
-            base_sha,
-            cached_image_id: cached_image.map(|c| c.image_id),
-            kind,
-            recipe,
-        }),
-        Ok(None) => {
-            info!("No base commit found");
-            None
+        match read_cached_image_for_commit(repo, &base_sha, &recipe).await {
+            Ok(cached_image) => cached_image.map(|c| c.image_id),
+            Err(e) => {
+                warn!("Base resolution failed: {}", e);
+                return None;
+            }
         }
-        Err(e) => {
-            warn!("Base resolution failed: {}", e);
-            None
-        }
-    }
+    };
+
+    Some(ResolvedBase {
+        base_sha,
+        cached_image_id,
+        kind,
+        recipe,
+    })
 }
 
 /// The note entry for a freshly built base image and the recipe name it is stored under.  The
@@ -720,15 +675,6 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
     let config = crate::config::load_config(path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
 
-    // The recipe `offload build` would look up: no runtime copy dirs.
-    let recipe = current_recipe(repo, &config, &[])
-        .await
-        .context("Failed to compute the image recipe")?;
-    let Some(recipe) = recipe else {
-        println!("Provider caches no images; nothing to look up.");
-        return Ok(());
-    };
-
     // Best-effort fetch and configure notes
     let _ = git::fetch_notes(repo, remote).await;
     let _ = git::configure_notes_fetch(repo, remote).await;
@@ -738,24 +684,25 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
         .context("Failed to get HEAD SHA")?;
     let short_head = &head[..8.min(head.len())];
 
-    // The resolvers only pick the base commit here; its note is classified below so every
-    // entry is explained instead of reduced to a hit or a miss.
-    let verdicts = if let Some(ref checkpoint_cfg) = config.checkpoint {
-        let info = resolve_checkpoint(repo, &recipe, checkpoint_cfg, true)
+    // The resolvers only pick the base commit here, before the recipe because it digests the
+    // symlinks of that commit's tree; the note is classified below so every entry is explained
+    // instead of reduced to a hit or a miss.
+    let (base_sha, kind, base_label) = if let Some(ref checkpoint_cfg) = config.checkpoint {
+        let checkpoint_sha = resolve_checkpoint(repo, checkpoint_cfg)
             .await
             .context("Failed to resolve checkpoint")?;
 
-        let Some(info) = info else {
+        let Some(checkpoint_sha) = checkpoint_sha else {
             println!("HEAD:               {}", short_head);
             println!("Base commit:        (no checkpoint found in last 100 commits)");
             println!("Next run mode:      full build (no checkpoint found)");
             return Ok(());
         };
 
-        let short_base = &info.checkpoint_sha[..8.min(info.checkpoint_sha.len())];
+        let short_base = &checkpoint_sha[..8.min(checkpoint_sha.len())];
 
         let distance = match git::ancestors(repo, 100).await {
-            Ok(ancestors) => ancestors.iter().position(|sha| sha == &info.checkpoint_sha),
+            Ok(ancestors) => ancestors.iter().position(|sha| sha == &checkpoint_sha),
             Err(_) => None,
         };
         let distance_label = match distance {
@@ -763,70 +710,48 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
             None => "unknown distance".to_string(),
         };
 
-        let verdicts = classify_note(repo, &info.checkpoint_sha, &recipe).await?;
-        match verdicts.as_deref().and_then(matching_image) {
-            Some(image_id) => {
-                let run_mode = if info.checkpoint_sha == head {
-                    "use checkpoint image directly (HEAD is the checkpoint)".to_string()
-                } else {
-                    match git::diff_file_count(repo, &info.checkpoint_sha, &head).await {
-                        Ok(count) => {
-                            format!("thin diff ({} files changed since checkpoint)", count)
-                        }
-                        Err(_) => "thin diff".to_string(),
-                    }
-                };
-
-                println!("HEAD:               {}", short_head);
-                println!(
-                    "Base commit:        {} (checkpoint, {})",
-                    short_base, distance_label
-                );
-                println!("Cached image:       {}", image_id);
-                println!("Next run mode:      {}", run_mode);
-            }
-            None => {
-                println!("HEAD:               {}", short_head);
-                println!(
-                    "Base commit:        {} (checkpoint, {})",
-                    short_base, distance_label
-                );
-                println!("Cached image:       (none)");
-                println!("Next run mode:      full build (no cached checkpoint image)");
-            }
-        }
-        verdicts
+        let base_label = format!("{short_base} (checkpoint, {distance_label})");
+        (checkpoint_sha, BaseKind::Checkpoint, base_label)
     } else {
-        let info = resolve_latest_commit(repo, &recipe, true)
-            .await
-            .context("Failed to resolve latest commit")?;
-
-        let Some(info) = info else {
+        let Some(head_sha) = resolve_latest_commit(repo).await else {
             println!("HEAD:               (none -- empty repo)");
             println!("Next run mode:      full build");
             return Ok(());
         };
 
-        let short_base = &info.head_sha[..8.min(info.head_sha.len())];
-
-        let verdicts = classify_note(repo, &info.head_sha, &recipe).await?;
-        match verdicts.as_deref().and_then(matching_image) {
-            Some(image_id) => {
-                println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (latest commit, HEAD)", short_base);
-                println!("Cached image:       {}", image_id);
-                println!("Next run mode:      thin diff (uncommitted changes only)");
-            }
-            None => {
-                println!("HEAD:               {}", short_head);
-                println!("Base commit:        {} (latest commit, HEAD)", short_base);
-                println!("Cached image:       (none)");
-                println!("Next run mode:      full build (no cached image for HEAD)");
-            }
-        }
-        verdicts
+        let base_label = format!("{short_head} (latest commit, HEAD)");
+        (head_sha, BaseKind::LatestCommit, base_label)
     };
 
+    // The recipe `offload build` would look up: no runtime copy dirs.
+    let recipe = current_recipe(repo, &base_sha, &config, &[])
+        .await
+        .context("Failed to compute the image recipe")?;
+    let Some(recipe) = recipe else {
+        println!("Provider caches no images; nothing to look up.");
+        return Ok(());
+    };
+
+    let verdicts = classify_note(repo, &base_sha, &recipe).await?;
+    let image_id = verdicts.as_deref().and_then(matching_image);
+    let run_mode = match (kind, image_id) {
+        (BaseKind::Checkpoint, Some(_)) if base_sha == head => {
+            "use checkpoint image directly (HEAD is the checkpoint)".to_string()
+        }
+        (BaseKind::Checkpoint, Some(_)) => match git::diff_file_count(repo, &base_sha, &head).await
+        {
+            Ok(count) => format!("thin diff ({} files changed since checkpoint)", count),
+            Err(_) => "thin diff".to_string(),
+        },
+        (BaseKind::Checkpoint, None) => "full build (no cached checkpoint image)".to_string(),
+        (BaseKind::LatestCommit, Some(_)) => "thin diff (uncommitted changes only)".to_string(),
+        (BaseKind::LatestCommit, None) => "full build (no cached image for HEAD)".to_string(),
+    };
+
+    println!("HEAD:               {}", short_head);
+    println!("Base commit:        {}", base_label);
+    println!("Cached image:       {}", image_id.unwrap_or("(none)"));
+    println!("Next run mode:      {}", run_mode);
     println!("Recipe:             {}", recipe.name()?);
     let entries = verdicts.as_deref().unwrap_or_default();
     if entries.is_empty() {
@@ -842,8 +767,8 @@ pub async fn status_handler(repo: &Path, config_path: &str, remote: &str) -> any
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        build_context, git_cmd, head_sha_in, init_temp_repo, minimal_modal_config, read_note_in,
-        recipe_for, write_note_in, write_recipe_entry_in,
+        build_context, commit_symlink, git_cmd, head_sha_in, init_temp_repo, minimal_modal_config,
+        read_note_in, recipe_for, write_note_in, write_recipe_entry_in,
     };
     use super::*;
     use crate::git::{ImageEntry, NoteContents};
@@ -875,12 +800,13 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
+        let sha = resolve_checkpoint(dir.path(), &cfg)
+            .await?
+            .context("should find checkpoint")?;
+        assert_eq!(sha, checkpoint_sha);
         let recipe = recipe_for(&minimal_modal_config())?;
-        let result = resolve_checkpoint(dir.path(), &recipe, &cfg, false).await?;
-
-        let info = result.context("should find checkpoint")?;
-        assert_eq!(info.checkpoint_sha, checkpoint_sha);
-        assert!(info.cached_image.is_none(), "no note written, no cache");
+        let cached = read_cached_image_for_commit(dir.path(), &sha, &recipe).await?;
+        assert!(cached.is_none(), "no note written, no cache");
         Ok(())
     }
 
@@ -898,8 +824,7 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let recipe = recipe_for(&minimal_modal_config())?;
-        let result = resolve_checkpoint(dir.path(), &recipe, &cfg, false).await?;
+        let result = resolve_checkpoint(dir.path(), &cfg).await?;
 
         assert!(result.is_none(), "no commit touches Dockerfile");
         Ok(())
@@ -933,11 +858,13 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), &recipe_for(&config)?, &cfg, false).await?;
-
-        let info = result.context("should find checkpoint")?;
-        assert_eq!(info.checkpoint_sha, checkpoint_sha);
-        let cached = info.cached_image.context("should have cached image")?;
+        let sha = resolve_checkpoint(dir.path(), &cfg)
+            .await?
+            .context("should find checkpoint")?;
+        assert_eq!(sha, checkpoint_sha);
+        let cached = read_cached_image_for_commit(dir.path(), &sha, &recipe_for(&config)?)
+            .await?
+            .context("should have cached image")?;
         assert_eq!(cached.image_id, "im-cached123");
         Ok(())
     }
@@ -965,12 +892,13 @@ mod tests {
             build_inputs: vec!["Dockerfile".to_string()],
         };
 
-        let result = resolve_checkpoint(dir.path(), &recipe_for(&changed)?, &cfg, false).await?;
-
-        let info = result.context("should find checkpoint")?;
-        assert_eq!(info.checkpoint_sha, checkpoint_sha);
+        let sha = resolve_checkpoint(dir.path(), &cfg)
+            .await?
+            .context("should find checkpoint")?;
+        assert_eq!(sha, checkpoint_sha);
+        let cached = read_cached_image_for_commit(dir.path(), &sha, &recipe_for(&changed)?).await?;
         assert!(
-            info.cached_image.is_none(),
+            cached.is_none(),
             "a changed sandbox_init_cmd must not reuse the image"
         );
         Ok(())
@@ -985,11 +913,13 @@ mod tests {
         let config = minimal_modal_config();
         write_recipe_entry_in(dir.path(), &head, &recipe_for(&config)?, "im-head-cached")?;
 
-        let result = resolve_latest_commit(dir.path(), &recipe_for(&config)?, false).await?;
-
-        let info = result.context("should find latest commit")?;
-        assert_eq!(info.head_sha, head);
-        let cached = info.cached_image.context("should have cached image")?;
+        let sha = resolve_latest_commit(dir.path())
+            .await
+            .context("should find latest commit")?;
+        assert_eq!(sha, head);
+        let cached = read_cached_image_for_commit(dir.path(), &sha, &recipe_for(&config)?)
+            .await?
+            .context("should have cached image")?;
         assert_eq!(cached.image_id, "im-head-cached");
         Ok(())
     }
@@ -1000,15 +930,13 @@ mod tests {
         let head = head_sha_in(dir.path())?;
 
         // No note on HEAD
+        let sha = resolve_latest_commit(dir.path())
+            .await
+            .context("should find latest commit")?;
+        assert_eq!(sha, head);
         let recipe = recipe_for(&minimal_modal_config())?;
-        let result = resolve_latest_commit(dir.path(), &recipe, false).await?;
-
-        let info = result.context("should find latest commit (miss still returns info)")?;
-        assert_eq!(info.head_sha, head);
-        assert!(
-            info.cached_image.is_none(),
-            "no note on HEAD means no cached image"
-        );
+        let cached = read_cached_image_for_commit(dir.path(), &sha, &recipe).await?;
+        assert!(cached.is_none(), "no note on HEAD means no cached image");
         Ok(())
     }
 
@@ -1018,10 +946,41 @@ mod tests {
         git_cmd(dir.path(), &["init"])?;
         // Empty repo — no commits
 
-        let recipe = recipe_for(&minimal_modal_config())?;
-        let result = resolve_latest_commit(dir.path(), &recipe, false).await?;
+        let result = resolve_latest_commit(dir.path()).await;
 
         assert!(result.is_none(), "empty repo has no HEAD");
+        Ok(())
+    }
+
+    /// The recipe digests the symlinks of the checkpoint tree, which the export checks out, so
+    /// a link removed after the checkpoint is still digested.
+    #[tokio::test]
+    async fn test_resolve_base_digests_the_symlinks_of_the_checkpoint_tree() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("model.bin"), "weights")?;
+        commit_symlink(dir.path(), "model", outside.path())?;
+        std::fs::write(dir.path().join("Dockerfile"), "FROM ubuntu:22.04")?;
+        git_cmd(dir.path(), &["add", "Dockerfile"])?;
+        git_cmd(dir.path(), &["commit", "-m", "add Dockerfile"])?;
+        let checkpoint_sha = head_sha_in(dir.path())?;
+        git_cmd(dir.path(), &["rm", "-q", "model"])?;
+        git_cmd(dir.path(), &["commit", "-m", "remove the link"])?;
+
+        let mut config = minimal_modal_config();
+        config.checkpoint = Some(CheckpointConfig {
+            build_inputs: vec!["Dockerfile".to_string()],
+        });
+        let resolved = resolve_base(dir.path(), &config, &[], true)
+            .await
+            .context("should resolve the checkpoint")?;
+
+        assert_eq!(resolved.base_sha, checkpoint_sha);
+        let symlinks = resolved
+            .recipe
+            .escaping_symlinks
+            .context("the checkpoint's link should be digested")?;
+        assert_eq!(symlinks.paths, vec!["model"]);
         Ok(())
     }
 
@@ -1040,10 +999,9 @@ mod tests {
         write_recipe_entry_in(dir.path(), &head, &recipe, "im-shared")?;
 
         for lookup in [&recipe, &other_recipe] {
-            let info = resolve_latest_commit(dir.path(), lookup, false)
+            let cached = read_cached_image_for_commit(dir.path(), &head, lookup)
                 .await?
-                .context("should find latest commit")?;
-            let cached = info.cached_image.context("should have cached image")?;
+                .context("should have cached image")?;
             assert_eq!(cached.image_id, "im-shared");
         }
         let note = read_note_in(dir.path(), &head)?.context("note should exist")?;
@@ -1072,11 +1030,9 @@ mod tests {
         );
         write_note_in(dir.path(), &head, &contents)?;
 
-        let info = resolve_latest_commit(dir.path(), &recipe, false)
-            .await?
-            .context("should find latest commit")?;
+        let cached = read_cached_image_for_commit(dir.path(), &head, &recipe).await?;
         assert!(
-            info.cached_image.is_none(),
+            cached.is_none(),
             "an entry with a field this version does not know must not match"
         );
         Ok(())
@@ -1092,13 +1048,8 @@ mod tests {
         write_note_in(dir.path(), &head, &contents)?;
 
         let recipe = recipe_for(&minimal_modal_config())?;
-        let info = resolve_latest_commit(dir.path(), &recipe, false)
-            .await?
-            .context("should find latest commit")?;
-        assert!(
-            info.cached_image.is_none(),
-            "entries without a recipe never match"
-        );
+        let cached = read_cached_image_for_commit(dir.path(), &head, &recipe).await?;
+        assert!(cached.is_none(), "entries without a recipe never match");
         Ok(())
     }
 

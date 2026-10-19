@@ -7,14 +7,14 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{copy_origin, path_under_root};
+use super::{LinkTarget, copy_origin, link_target, path_under_root};
 use crate::bundled::SCRIPTS_DIR;
 use crate::config::{Config, ProviderConfig};
 use crate::git;
 
 /// Version of the Rust side of the image pipeline; bumped when export rules or argument
 /// passing change what an unchanged recipe builds.
-pub const RECIPE_FORMAT: u32 = 1;
+pub const RECIPE_FORMAT: u32 = 2;
 
 /// Name of the bundled script that assembles Modal images.
 const MODAL_SCRIPT: &str = "modal_sandbox.py";
@@ -68,17 +68,17 @@ pub struct ExportExtras {
     pub content: String,
 }
 
-/// The tracked symlinks whose targets lie outside the repository or are missing, which the
-/// export carries as links the builder follows into the live tree, with one digest of those
-/// targets.
+/// The symlinks of the checkpoint tree whose targets lie outside the repository or are missing,
+/// which the export carries as absolute links the builder follows into the live tree, with one
+/// digest of those targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EscapingSymlinks {
     pub paths: Vec<String>,
     pub content: String,
 }
 
-/// Recorded for a copy source outside the repository, or a tracked symlink's target, that is
-/// missing, so its later appearance is a cache miss.
+/// Recorded for a copy source outside the repository, or a checkpoint symlink's target, that
+/// is missing, so its later appearance is a cache miss.
 pub const ABSENT_SOURCE: &str = "absent";
 
 /// Stands in for the permission bits in the digest record of a symlink to a directory, which
@@ -152,14 +152,16 @@ impl Recipe {
     }
 }
 
-/// The recipe the current invocation looks up or builds under: [`Recipe::from_config`] for the
-/// invoking directory, with each copy source inside the repository rewritten to the
-/// repository-relative path the build reads, and digests of the live-tree inputs a base build
-/// still reads, copy sources outside the repository, the gitignored files `export_tree` copies
-/// in, and the targets of tracked symlinks that lead out of the repository, so a change in what
-/// enters the image is a cache miss. `None` when the provider builds no base image.
+/// The recipe the current invocation looks up or builds under for the base commit `base_sha`:
+/// [`Recipe::from_config`] for the invoking directory, with each copy source inside the
+/// repository rewritten to the repository-relative path the build reads, and digests of the
+/// live-tree inputs a base build still reads, copy sources outside the repository, the
+/// gitignored files `export_tree` copies in, and the targets of the base tree's symlinks that
+/// lead out of the repository, so a change in what enters the image is a cache miss. `None`
+/// when the provider builds no base image.
 pub(crate) async fn current_recipe(
     repo: &Path,
+    base_sha: &str,
     config: &Config,
     copy_dirs: &[(PathBuf, PathBuf)],
 ) -> Result<Option<Recipe>> {
@@ -170,13 +172,14 @@ pub(crate) async fn current_recipe(
     let root = git::repo_root(repo).await?;
     // `repo` is the invoking directory, so this is the build's `root.join(cwd_rel).join(origin)`.
     let origin = repo.join(copy_origin(&config.provider));
+    let base_sha = base_sha.to_string();
     tokio::task::spawn_blocking(move || -> Result<Option<Recipe>> {
         for dir in &mut recipe.copy_dirs {
             let live = origin.join(&dir.source);
             record_copy_source(&root, &live, dir)?;
         }
         recipe.export_extras = export_extras(&root)?;
-        recipe.escaping_symlinks = escaping_symlinks(&root)?;
+        recipe.escaping_symlinks = escaping_symlinks(&root, &base_sha)?;
         Ok(Some(recipe))
     })
     .await?
@@ -218,26 +221,27 @@ fn export_extras(root: &Path) -> Result<Option<ExportExtras>> {
     Ok(Some(ExportExtras { paths, content }))
 }
 
-/// The tracked symlinks that lead out of the repository with one digest of their targets, which
-/// the builder reads live by following the link the export carries; `None` when every tracked
-/// link resolves inside the repository, where the export holds its target.
-fn escaping_symlinks(root: &Path) -> Result<Option<EscapingSymlinks>> {
-    let paths: Vec<String> = git::tracked_symlinks(root)?
+/// The symlinks of `commit_sha`'s tree that lead out of the repository, with one digest of what
+/// they resolve to from the live root, which the builder reads by following the absolute link
+/// the export carries; `None` when every link resolves inside the repository, where the export
+/// holds its target. The links come from the commit the export checks out, so one retargeted or
+/// deleted since the checkpoint is digested as the export carries it.
+fn escaping_symlinks(root: &Path, commit_sha: &str) -> Result<Option<EscapingSymlinks>> {
+    let escaping: Vec<(String, PathBuf)> = git::tree_symlinks(root, commit_sha)?
         .into_iter()
-        .filter(|link| symlink_escapes(root, link))
+        .filter_map(
+            |(link, target)| match link_target(root, Path::new(&link), &target) {
+                LinkTarget::Escaping(live) => Some((link, live)),
+                LinkTarget::Inside(_) => None,
+            },
+        )
         .collect();
-    if paths.is_empty() {
+    if escaping.is_empty() {
         return Ok(None);
     }
-    let content = digest_symlink_targets(root, &paths)?;
+    let content = digest_symlink_targets(&escaping)?;
+    let paths = escaping.into_iter().map(|(link, _)| link).collect();
     Ok(Some(EscapingSymlinks { paths, content }))
-}
-
-/// Whether the symlink at `link` under `root` leads out of the repository: its target resolves
-/// outside the root, or is missing and so cannot be placed inside it.
-fn symlink_escapes(root: &Path, link: &str) -> bool {
-    let path = root.join(link);
-    !path.exists() || path_under_root(root, &path).is_none()
 }
 
 impl CopyDir {
@@ -271,25 +275,37 @@ fn modal_script_digest() -> Option<String> {
 fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in paths {
-        let file_path = root.join(path);
-        hasher.update(path.as_bytes());
-        hasher.update(b"\n");
-        if file_path.is_symlink() && file_path.is_dir() {
-            hash_dir_link(&mut hasher, &file_path)?;
-            continue;
-        }
-        let mut file = File::open(&file_path)
-            .with_context(|| format!("failed to open {}", file_path.display()))?;
-        let metadata = file.metadata()?;
-        let mode = permission_bits(&metadata);
-        hasher.update(format!("{mode:o}").as_bytes());
-        hasher.update(b"\n");
-        hasher.update(metadata.len().to_string().as_bytes());
-        hasher.update(b"\n");
-        std::io::copy(&mut file, &mut hasher)
-            .with_context(|| format!("failed to read {}", file_path.display()))?;
+        hash_file(&mut hasher, path, &root.join(path))?;
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// [`digest_files`] of the one file at `file_path` recorded under `path`, for the target of a
+/// symlink the builder's upload sends as a regular file at the link's path.
+fn digest_file(path: &str, file_path: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hash_file(&mut hasher, path, file_path)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Feeds `hasher` the [`digest_files`] record of the file at `file_path` under the path `path`.
+fn hash_file(hasher: &mut Sha256, path: &str, file_path: &Path) -> Result<()> {
+    hasher.update(path.as_bytes());
+    hasher.update(b"\n");
+    if file_path.is_symlink() && file_path.is_dir() {
+        return hash_dir_link(hasher, file_path);
+    }
+    let mut file =
+        File::open(file_path).with_context(|| format!("failed to open {}", file_path.display()))?;
+    let metadata = file.metadata()?;
+    let mode = permission_bits(&metadata);
+    hasher.update(format!("{mode:o}").as_bytes());
+    hasher.update(b"\n");
+    hasher.update(metadata.len().to_string().as_bytes());
+    hasher.update(b"\n");
+    std::io::copy(&mut file, hasher)
+        .with_context(|| format!("failed to read {}", file_path.display()))?;
+    Ok(())
 }
 
 /// Feeds `hasher` what follows the path in the record of the symlink to a directory at `link`:
@@ -330,18 +346,17 @@ fn digest_dir(dir: &Path) -> Result<String> {
     digest_files(dir, &paths)
 }
 
-/// One digest over the targets of the symlinks `links` under `root`, each as its path, a
-/// newline, its target's digest ([`digest_dir`] for a directory, [`digest_files`] for a file,
-/// [`ABSENT_SOURCE`] for a dangling link), and a newline, so an edit, a replacement, or an
-/// appearance of a target changes the digest.
-fn digest_symlink_targets(root: &Path, links: &[String]) -> Result<String> {
+/// One digest over what the escaping symlinks `links` resolve to, each as its path, a newline,
+/// the digest of its live resolution ([`digest_dir`] for a directory, [`digest_file`] under the
+/// link's path for a file, [`ABSENT_SOURCE`] for a dangling link), and a newline, so an edit, a
+/// replacement, or an appearance of a target changes the digest.
+fn digest_symlink_targets(links: &[(String, PathBuf)]) -> Result<String> {
     let mut hasher = Sha256::new();
-    for link in links {
-        let target = root.join(link);
-        let content = if target.is_dir() {
-            digest_dir(&target)?
-        } else if target.exists() {
-            digest_files(root, std::slice::from_ref(link))?
+    for (link, live) in links {
+        let content = if live.is_dir() {
+            digest_dir(live)?
+        } else if live.exists() {
+            digest_file(link, live)?
         } else {
             ABSENT_SOURCE.to_string()
         };
@@ -387,7 +402,7 @@ mod tests {
     use crate::config::{ModalProviderConfig, load_config_str};
     use crate::image_cache::BuildContext;
     use crate::image_cache::test_support::{
-        commit_symlink, git_cmd, init_repo_in, init_temp_repo, minimal_modal_config,
+        commit_symlink, git_cmd, head_sha_in, init_repo_in, init_temp_repo, minimal_modal_config,
     };
 
     const MODAL_PROVIDER: &str = r#"
@@ -453,7 +468,7 @@ mod tests {
             export_extras: None,
             escaping_symlinks: None,
         };
-        assert_eq!(recipe.name()?, "recipe:67e87d914c2c1417");
+        assert_eq!(recipe.name()?, "recipe:e0dc31cbfba5640a");
         Ok(())
     }
 
@@ -774,9 +789,11 @@ mod tests {
         Ok(())
     }
 
-    /// Helper: the recipe `offload build` would look up from `dir` with `config`.
+    /// Helper: the recipe `offload build` would look up from `dir` with `config` when HEAD is
+    /// the base commit.
     async fn current_recipe_in(dir: &Path, config: &Config) -> Result<Recipe> {
-        current_recipe(dir, config, &[])
+        let head = head_sha_in(dir)?;
+        current_recipe(dir, &head, config, &[])
             .await?
             .context("expected a recipe")
     }
@@ -1071,6 +1088,37 @@ mod tests {
         let dir = init_temp_repo()?;
         let recipe = current_recipe_in(dir.path(), &minimal_modal_config()).await?;
         assert_eq!(recipe.escaping_symlinks, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_digests_a_link_present_at_the_checkpoint_and_deleted_at_head()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        let model = outside.path().join("model.bin");
+        std::fs::write(&model, "weights")?;
+        commit_symlink(dir.path(), "model", &model)?;
+        let checkpoint = head_sha_in(dir.path())?;
+        git_cmd(dir.path(), &["rm", "-q", "model"])?;
+        git_cmd(dir.path(), &["commit", "-m", "remove the link"])?;
+        let config = minimal_modal_config();
+        let before = current_recipe(dir.path(), &checkpoint, &config, &[])
+            .await?
+            .context("expected a recipe")?;
+        assert_eq!(escaping_symlinks_of(&before)?.paths, vec!["model"]);
+        assert_eq!(
+            current_recipe_in(dir.path(), &config)
+                .await?
+                .escaping_symlinks,
+            None,
+            "HEAD's tree carries no link"
+        );
+        std::fs::write(&model, "weights v2")?;
+        let after = current_recipe(dir.path(), &checkpoint, &config, &[])
+            .await?
+            .context("expected a recipe")?;
+        assert_ne!(after.name()?, before.name()?);
         Ok(())
     }
 

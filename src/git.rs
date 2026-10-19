@@ -1,10 +1,12 @@
 //! Git operations for resolving and caching images via git notes.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+
+use crate::image_cache::{LinkTarget, link_target};
 
 /// Git ref for the notes used to store cached image metadata.
 pub const NOTES_REF: &str = "refs/notes/offload-images";
@@ -291,10 +293,12 @@ pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String
 
 /// Export a commit's tree plus untracked files into `dest` as a shallow clone.
 ///
-/// First creates a shallow clone with tracked files and `.git/`, then copies
-/// untracked files from the working tree filtered by `.dockerignore` (not
-/// `.gitignore`). This includes gitignored files like generated tarballs that
-/// the Docker build needs but git doesn't track.
+/// First creates a shallow clone with tracked files and `.git/`, points its
+/// symlinks at what the image recipe digested for them (see
+/// [`rewrite_exported_symlinks`]), then copies untracked files from the working
+/// tree filtered by `.dockerignore` (not `.gitignore`). This includes gitignored
+/// files like generated tarballs that the Docker build needs but git doesn't
+/// track.
 ///
 /// The thin diff applies with `git apply --3way` to handle overlapping
 /// "new file" hunks for files present in both the export and the patch.
@@ -333,6 +337,8 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
         // directories, and git refuses to recognise a repo whose
         // refs/heads/ directory is missing.
         run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
+
+        rewrite_exported_symlinks(&repo_root, &dest)?;
 
         // Copy untracked files from the working tree, using .dockerignore
         // (not .gitignore) as the filter. This ensures gitignored files
@@ -417,28 +423,130 @@ pub(crate) fn export_extra_paths(repo_root: &Path) -> Result<Vec<String>> {
     Ok(paths)
 }
 
-/// The sorted repo-relative paths of the symlinks in the index (`ls-files --stage` mode
-/// `120000`), shared with the image cache recipe because a link the export carries can lead the
-/// builder out of the checkpoint tree into live content.
-pub(crate) fn tracked_symlinks(repo_root: &Path) -> Result<Vec<String>> {
+/// Point every symlink in the export at what the recipe digested for it. A link that resolves
+/// outside the repository, or dangles, becomes an absolute link to its live resolution, so the
+/// build follows the path the recipe followed rather than that text relative to the export's
+/// temporary directory. An absolute link into the repository becomes a relative link to the
+/// export's copy of its target, so the build cannot read the live file; relative rather than
+/// absolute into the export so the link survives a build context that keeps links as links. A
+/// relative link into the repository already reads the export's copy and is left alone.
+fn rewrite_exported_symlinks(repo_root: &Path, dest: &Path) -> Result<()> {
+    let mut links = Vec::new();
+    collect_symlinks(dest, Path::new(""), &mut links)?;
+    for (link, target) in links {
+        let text = match link_target(repo_root, &link, &target) {
+            LinkTarget::Escaping(live) => live,
+            LinkTarget::Inside(_) if target.is_relative() => continue,
+            LinkTarget::Inside(inside) => relative_link(&link, &inside),
+        };
+        replace_symlink(&dest.join(&link), &text)?;
+    }
+    Ok(())
+}
+
+/// Appends every symlink under `root.join(prefix)` to `links` as its path relative to `root`
+/// and its text, descending real directories only and never the export's `.git`. A link is
+/// recognized by `symlink_metadata`, so a dangling one is found and one to a directory is
+/// listed rather than entered.
+fn collect_symlinks(root: &Path, prefix: &Path, links: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    let dir = root.join(prefix);
+    let entries =
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = prefix.join(entry.file_name());
+        let metadata = path.symlink_metadata()?;
+        if metadata.is_symlink() {
+            let target = std::fs::read_link(&path)
+                .with_context(|| format!("failed to read link {}", path.display()))?;
+            links.push((relative, target));
+        } else if metadata.is_dir() && relative != Path::new(".git") {
+            collect_symlinks(root, &relative, links)?;
+        }
+    }
+    Ok(())
+}
+
+/// The text of a relative link at repository-relative `link` to repository-relative `inside`:
+/// one `..` per directory above the link, then the target, or `.` for the root itself.
+fn relative_link(link: &Path, inside: &Path) -> PathBuf {
+    let depth = link.parent().map_or(0, |dir| dir.components().count());
+    let text: PathBuf = std::iter::repeat_n(Component::ParentDir, depth)
+        .chain(inside.components())
+        .collect();
+    if text.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        text
+    }
+}
+
+/// Replace the symlink at `path` with one whose text is `target`.
+#[cfg(unix)]
+fn replace_symlink(path: &Path, target: &Path) -> Result<()> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("failed to remove link {}", path.display()))?;
+    std::os::unix::fs::symlink(target, path)
+        .with_context(|| format!("failed to link {} to {}", path.display(), target.display()))
+}
+
+/// Replace the symlink at `path` (non-unix: the export cannot be made to match the recipe).
+#[cfg(not(unix))]
+fn replace_symlink(path: &Path, target: &Path) -> Result<()> {
+    bail!(
+        "cannot rewrite the link {} to {} on this platform",
+        path.display(),
+        target.display()
+    )
+}
+
+/// The symlinks in `commit_sha`'s tree as sorted `(path, target)` pairs (`ls-tree -r` mode
+/// `120000`, each target its blob), read from the commit rather than the index or the working
+/// tree because the export checks out this tree and the image cache recipe digests what the
+/// export carries.
+pub(crate) fn tree_symlinks(repo_root: &Path, commit_sha: &str) -> Result<Vec<(String, PathBuf)>> {
     let output = std::process::Command::new("git")
-        .args(["ls-files", "--stage", "-z"])
+        .args(["ls-tree", "-r", "-z", commit_sha])
         .current_dir(repo_root)
         .output()
-        .context("failed to list tracked files")?;
+        .context("failed to list the commit tree")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git ls-files --stage failed: {}", stderr.trim());
+        bail!("git ls-tree {commit_sha} failed: {}", stderr.trim());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut paths: Vec<String> = stdout
+    let mut links = Vec::new();
+    for (info, path) in stdout
         .split('\0')
         .filter_map(|entry| entry.split_once('\t'))
-        .filter(|(info, _)| info.starts_with("120000 "))
-        .map(|(_, path)| path.to_string())
-        .collect();
-    paths.sort();
-    Ok(paths)
+    {
+        let mut fields = info.split(' ');
+        if fields.next() != Some("120000") {
+            continue;
+        }
+        let oid = fields
+            .nth(1)
+            .with_context(|| format!("malformed ls-tree entry for {path}"))?;
+        links.push((path.to_string(), blob_path(repo_root, oid)?));
+    }
+    links.sort();
+    Ok(links)
+}
+
+/// The content of blob `oid` as a path: the text of a symlink as git stores it.
+fn blob_path(repo_root: &Path, oid: &str) -> Result<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["cat-file", "blob", oid])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to read a symlink blob")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git cat-file blob {oid} failed: {}", stderr.trim());
+    }
+    let text = String::from_utf8(output.stdout).context("symlink target was not valid UTF-8")?;
+    Ok(PathBuf::from(text))
 }
 
 /// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
@@ -629,30 +737,20 @@ mod tests {
     /// Helper: create a temp directory with an initialized git repo.
     fn init_temp_repo() -> Result<tempfile::TempDir> {
         let dir = tempfile::tempdir()?;
-        let run = |args: &[&str]| -> Result<()> {
-            let output = std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .output()?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("git {} failed: {}", args.join(" "), stderr.trim());
-            }
-            Ok(())
-        };
-        run(&["init"])?;
-        run(&["config", "user.email", "test@test.com"])?;
-        run(&["config", "user.name", "Test"])?;
-        // Create an initial commit so HEAD exists
-        let readme = dir.path().join("README.md");
-        std::fs::write(&readme, "# test repo")?;
-        run(&["add", "README.md"])?;
-        run(&["commit", "-m", "initial commit"])?;
+        init_repo_in(dir.path())?;
         Ok(dir)
+    }
+
+    /// Helper: initialize a git repo with one commit in an existing directory.
+    fn init_repo_in(dir: &Path) -> Result<()> {
+        git_in(dir, &["init"])?;
+        git_in(dir, &["config", "user.email", "test@test.com"])?;
+        git_in(dir, &["config", "user.name", "Test"])?;
+        // Create an initial commit so HEAD exists
+        std::fs::write(dir.join("README.md"), "# test repo")?;
+        git_in(dir, &["add", "README.md"])?;
+        git_in(dir, &["commit", "-m", "initial commit"])?;
+        Ok(())
     }
 
     /// Helper: run a git command in a directory and return stdout.
@@ -1112,6 +1210,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_export_tree_rewrites_a_relative_escaping_link_to_its_live_target() -> Result<()> {
+        let base = tempfile::tempdir()?;
+        let repo = base.path().join("repo");
+        std::fs::create_dir(&repo)?;
+        init_repo_in(&repo)?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        std::os::unix::fs::symlink("../model.bin", repo.join("model"))?;
+        git_in(&repo, &["add", "model"])?;
+        git_in(&repo, &["commit", "-m", "add link"])?;
+        let sha = git_in(&repo, &["rev-parse", "HEAD"])?;
+        let root = PathBuf::from(git_in(&repo, &["rev-parse", "--show-toplevel"])?);
+
+        let dest = tempfile::tempdir()?;
+        export_tree(&repo, &sha, dest.path()).await?;
+
+        assert_eq!(
+            std::fs::read_link(dest.path().join("model"))?,
+            root.join("../model.bin")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("model"))?,
+            "weights"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_tree_rewrites_an_absolute_inside_link_into_the_export() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::os::unix::fs::symlink(dir.path().join("README.md"), dir.path().join("readme-link"))?;
+        git_in(dir.path(), &["add", "readme-link"])?;
+        git_in(dir.path(), &["commit", "-m", "add link"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        let dest = tempfile::tempdir()?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
+        std::fs::write(dir.path().join("README.md"), "# edited after the export")?;
+
+        assert_eq!(
+            std::fs::read_link(dest.path().join("readme-link"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("readme-link"))?,
+            "# test repo"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_export_extra_paths_lists_what_export_tree_copies() -> Result<()> {
         let dir = init_temp_repo()?;
         std::fs::write(dir.path().join(".gitignore"), "*.tar.gz\nbuild/\n")?;
@@ -1347,15 +1495,125 @@ mod tests {
     }
 
     #[test]
-    fn test_tracked_symlinks_lists_only_mode_120000_entries() -> Result<()> {
+    fn test_tree_symlinks_lists_the_commit_links_with_their_targets() -> Result<()> {
         let dir = init_temp_repo()?;
         std::fs::write(dir.path().join("plain.txt"), "plain")?;
         std::os::unix::fs::symlink("README.md", dir.path().join("to-readme"))?;
         std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("dangling"))?;
         git_in(dir.path(), &["add", "plain.txt", "to-readme", "dangling"])?;
         git_in(dir.path(), &["commit", "-m", "add links"])?;
+        let with_links = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        git_in(dir.path(), &["rm", "-q", "to-readme"])?;
+        git_in(dir.path(), &["commit", "-m", "remove a link"])?;
         std::os::unix::fs::symlink("README.md", dir.path().join("untracked"))?;
-        assert_eq!(tracked_symlinks(dir.path())?, vec!["dangling", "to-readme"]);
+        let dangling = ("dangling".to_string(), PathBuf::from("/nonexistent/target"));
+        let to_readme = ("to-readme".to_string(), PathBuf::from("README.md"));
+        assert_eq!(
+            tree_symlinks(dir.path(), &with_links)?,
+            vec![dangling.clone(), to_readme]
+        );
+        assert_eq!(tree_symlinks(dir.path(), "HEAD")?, vec![dangling]);
+        Ok(())
+    }
+
+    /// Helper: a live root and an export of it, each holding `README.md` and `docs/`, with the
+    /// export one directory deeper than the root so a relative link out of the root lands
+    /// somewhere else from the export.
+    fn root_and_export() -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("repo");
+        let export = base.path().join("tmp/export");
+        for dir in [&root, &export] {
+            std::fs::create_dir_all(dir.join("docs"))?;
+            std::fs::write(dir.join("README.md"), "readme")?;
+        }
+        Ok((base, root, export))
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_points_an_escaping_link_at_its_live_resolution() -> Result<()>
+    {
+        let (base, root, export) = root_and_export()?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        std::os::unix::fs::symlink("../model.bin", export.join("model"))?;
+        std::os::unix::fs::symlink("../../model.bin", export.join("docs/model"))?;
+        std::os::unix::fs::symlink("missing.txt", export.join("late"))?;
+        std::os::unix::fs::symlink(base.path().join("model.bin"), export.join("absolute"))?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("model"))?,
+            root.join("../model.bin")
+        );
+        assert_eq!(std::fs::read_to_string(export.join("model"))?, "weights");
+        assert_eq!(
+            std::fs::read_link(export.join("docs/model"))?,
+            root.join("docs/../../model.bin")
+        );
+        assert_eq!(
+            std::fs::read_to_string(export.join("docs/model"))?,
+            "weights"
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("late"))?,
+            root.join("missing.txt")
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("absolute"))?,
+            base.path().join("model.bin")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_points_an_absolute_inside_link_into_the_export() -> Result<()>
+    {
+        let (_base, root, export) = root_and_export()?;
+        std::os::unix::fs::symlink(root.join("README.md"), export.join("readme"))?;
+        std::os::unix::fs::symlink(root.join("README.md"), export.join("docs/readme"))?;
+        std::os::unix::fs::symlink(&root, export.join("top"))?;
+        std::fs::write(root.join("README.md"), "edited live")?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("readme"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(std::fs::read_to_string(export.join("readme"))?, "readme");
+        assert_eq!(
+            std::fs::read_link(export.join("docs/readme"))?,
+            Path::new("../README.md")
+        );
+        assert_eq!(std::fs::read_link(export.join("top"))?, Path::new("."));
+        Ok(())
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_leaves_relative_inside_links_and_skips_git() -> Result<()> {
+        let (_base, root, export) = root_and_export()?;
+        std::fs::create_dir(export.join(".git"))?;
+        std::os::unix::fs::symlink("README.md", export.join("readme"))?;
+        std::os::unix::fs::symlink("../README.md", export.join("docs/readme"))?;
+        std::os::unix::fs::symlink(".", export.join("loop"))?;
+        std::os::unix::fs::symlink("/nonexistent/hook", export.join(".git/hook"))?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("readme"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("docs/readme"))?,
+            Path::new("../README.md")
+        );
+        assert_eq!(std::fs::read_link(export.join("loop"))?, Path::new("."));
+        assert_eq!(
+            std::fs::read_link(export.join(".git/hook"))?,
+            Path::new("/nonexistent/hook")
+        );
         Ok(())
     }
 }

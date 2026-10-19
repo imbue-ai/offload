@@ -98,6 +98,34 @@ pub(crate) fn path_under_root(root: &Path, path: &Path) -> Option<PathBuf> {
     path.strip_prefix(root).ok().map(Path::to_path_buf)
 }
 
+/// Where a symlink of the checkpoint tree leads when its text is followed from the live
+/// repository. The recipe digests by this classification and the export is rewritten by it, so
+/// the build reads what was digested: `Inside` carries the repository-relative path of the
+/// target, which the export holds a copy of; `Escaping` carries the absolute live path the link
+/// resolves to, which lies outside the repository or does not exist and so is read live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LinkTarget {
+    Inside(PathBuf),
+    Escaping(PathBuf),
+}
+
+/// Classify the symlink at repository-relative `link` whose text is `target`: the text is
+/// resolved against the link's directory under `root` (an absolute text stands alone), and the
+/// result is inside when it exists under the root and escaping otherwise. A dangling link is
+/// escaping whatever its text spells, because the export cannot hold what does not exist.
+pub(crate) fn link_target(root: &Path, link: &Path, target: &Path) -> LinkTarget {
+    let live = root
+        .join(link.parent().unwrap_or(Path::new("")))
+        .join(target);
+    if !live.exists() {
+        return LinkTarget::Escaping(live);
+    }
+    match path_under_root(root, &live) {
+        Some(inside) => LinkTarget::Inside(inside),
+        None => LinkTarget::Escaping(live),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -119,6 +147,71 @@ mod tests {
         assert_eq!(
             path_under_root(&link, &root.join("data")),
             Some(PathBuf::from("data"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_link_target_resolves_a_relative_text_against_the_link_directory() -> Result<()> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("repo");
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(root.join("README.md"), "readme")?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        assert_eq!(
+            link_target(&root, Path::new("docs/readme"), Path::new("../README.md")),
+            LinkTarget::Inside(PathBuf::from("README.md"))
+        );
+        assert_eq!(
+            link_target(&root, Path::new("readme"), Path::new("README.md")),
+            LinkTarget::Inside(PathBuf::from("README.md"))
+        );
+        assert_eq!(
+            link_target(&root, Path::new("docs/model"), Path::new("../../model.bin")),
+            LinkTarget::Escaping(root.join("docs/../../model.bin"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_link_target_classifies_an_absolute_text_by_where_it_lies() -> Result<()> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("repo");
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("README.md"), "readme")?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        let spelled_through_link = base.path().join("link");
+        std::os::unix::fs::symlink(&root, &spelled_through_link)?;
+        assert_eq!(
+            link_target(&root, Path::new("readme"), &root.join("README.md")),
+            LinkTarget::Inside(PathBuf::from("README.md"))
+        );
+        assert_eq!(
+            link_target(
+                &root,
+                Path::new("readme"),
+                &spelled_through_link.join("README.md")
+            ),
+            LinkTarget::Inside(PathBuf::from("README.md"))
+        );
+        assert_eq!(
+            link_target(&root, Path::new("model"), &base.path().join("model.bin")),
+            LinkTarget::Escaping(base.path().join("model.bin"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_link_target_is_escaping_for_a_dangling_link_whatever_its_text_spells() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        assert_eq!(
+            link_target(root, Path::new("late"), Path::new("missing.txt")),
+            LinkTarget::Escaping(root.join("missing.txt"))
+        );
+        assert_eq!(
+            link_target(root, Path::new("late"), &root.join("missing.txt")),
+            LinkTarget::Escaping(root.join("missing.txt"))
         );
         Ok(())
     }
