@@ -10,12 +10,38 @@ use serde::{Deserialize, Serialize};
 pub const NOTES_REF: &str = "refs/notes/offload-images";
 
 /// A cached image entry stored in a git note.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Only `image_id` is required and absent fields are not written, so entries from older Offload
+/// versions parse here and entries written here parse there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     pub image_id: String,
+    /// Kept as a JSON value so any stored shape parses and lookup compares it as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_at: Option<String>,
 }
 
-/// A note is a JSON object keyed by TOML config file path.
+impl ImageEntry {
+    /// An entry carrying only `image_id`, the shape older Offload versions write.
+    pub(crate) fn legacy(image_id: impl Into<String>) -> ImageEntry {
+        ImageEntry {
+            image_id: image_id.into(),
+            recipe: None,
+            config_path: None,
+            offload_version: None,
+            built_at: None,
+        }
+    }
+}
+
+/// A note is a flat JSON object keyed by recipe name (`recipe:<16 hex>`); entries written by
+/// older Offload versions are keyed by the repo-relative config path and carry only `image_id`.
 pub type NoteContents = HashMap<String, ImageEntry>;
 
 /// Run a git command and return its stdout as a trimmed string.
@@ -93,7 +119,7 @@ pub async fn read_note(repo: &Path, commit_sha: &str) -> Result<Option<NoteConte
 
 /// Write (or merge) an offload-images note for a given commit.
 ///
-/// Performs a read-modify-write: existing entries for other config keys are
+/// Performs a read-modify-write: existing entries under other keys are
 /// preserved. The note is pretty-printed JSON with 4-space indentation.
 pub async fn write_note(repo: &Path, commit_sha: &str, contents: &NoteContents) -> Result<()> {
     // Read existing note to merge
@@ -604,16 +630,74 @@ mod tests {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
+    /// The entry shape older Offload versions parse; serde's defaults ignore unknown keys.
+    #[derive(Deserialize)]
+    struct OldEntry {
+        image_id: String,
+    }
+
+    /// An entry written under a recipe name, with every optional field set.
+    fn recipe_entry(image_id: &str) -> ImageEntry {
+        ImageEntry {
+            image_id: image_id.to_string(),
+            recipe: Some(serde_json::json!({"format": 1, "sandbox_init_cmd": "make"})),
+            config_path: Some("offload-modal.toml".to_string()),
+            offload_version: Some("0.9.15".to_string()),
+            built_at: Some("2026-10-19T22:39:45Z".to_string()),
+        }
+    }
+
     // ---- Unit tests ----
 
     #[test]
     fn test_image_entry_json_round_trip() -> Result<()> {
-        let entry = ImageEntry {
-            image_id: "im-abc123".to_string(),
-        };
+        let entry = ImageEntry::legacy("im-abc123");
         let json = serde_json::to_string(&entry)?;
         let parsed: ImageEntry = serde_json::from_str(&json)?;
         assert_eq!(parsed.image_id, entry.image_id);
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_note_parses_with_new_fields_none() -> Result<()> {
+        let note: NoteContents = serde_json::from_str(r#"{"offload.toml": {"image_id": "im-x"}}"#)?;
+        let entry = note.get("offload.toml").context("missing legacy key")?;
+        assert_eq!(entry.image_id, "im-x");
+        assert!(entry.recipe.is_none());
+        assert!(entry.config_path.is_none());
+        assert!(entry.offload_version.is_none());
+        assert!(entry.built_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_entry_serializes_set_fields() -> Result<()> {
+        let value = serde_json::to_value(recipe_entry("im-new"))?;
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "image_id": "im-new",
+                "recipe": {"format": 1, "sandbox_init_cmd": "make"},
+                "config_path": "offload-modal.toml",
+                "offload_version": "0.9.15",
+                "built_at": "2026-10-19T22:39:45Z",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_image_entry_serializes_image_id_only() -> Result<()> {
+        let json = serde_json::to_string(&ImageEntry::legacy("im-x"))?;
+        assert_eq!(json, r#"{"image_id":"im-x"}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_entry_deserializes_under_old_shape() -> Result<()> {
+        let json = serde_json::to_string(&recipe_entry("im-new"))?;
+        let old: OldEntry = serde_json::from_str(&json)?;
+        assert_eq!(old.image_id, "im-new");
         Ok(())
     }
 
@@ -807,12 +891,7 @@ mod tests {
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
 
         let mut contents = NoteContents::new();
-        contents.insert(
-            "offload.toml".to_string(),
-            ImageEntry {
-                image_id: "im-test123".to_string(),
-            },
-        );
+        contents.insert("offload.toml".to_string(), ImageEntry::legacy("im-test123"));
 
         write_note(dir.path(), &sha, &contents).await?;
         let read_back = read_note(dir.path(), &sha).await?;
@@ -832,22 +911,12 @@ mod tests {
 
         // Write first config
         let mut contents_a = NoteContents::new();
-        contents_a.insert(
-            "config-a.toml".to_string(),
-            ImageEntry {
-                image_id: "im-aaa".to_string(),
-            },
-        );
+        contents_a.insert("config-a.toml".to_string(), ImageEntry::legacy("im-aaa"));
         write_note(dir.path(), &sha, &contents_a).await?;
 
         // Write second config -- should merge, not overwrite
         let mut contents_b = NoteContents::new();
-        contents_b.insert(
-            "config-b.toml".to_string(),
-            ImageEntry {
-                image_id: "im-bbb".to_string(),
-            },
-        );
+        contents_b.insert("config-b.toml".to_string(), ImageEntry::legacy("im-bbb"));
         write_note(dir.path(), &sha, &contents_b).await?;
 
         let read_back = read_note(dir.path(), &sha)
@@ -867,6 +936,37 @@ mod tests {
                 .context("missing key b")?
                 .image_id,
             "im-bbb"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_note_round_trips_and_merges_new_fields() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let recipe_key = "recipe:3f9c2a7b1e5d4c08";
+
+        let mut contents_a = NoteContents::new();
+        contents_a.insert(recipe_key.to_string(), recipe_entry("im-a"));
+        write_note(dir.path(), &sha, &contents_a).await?;
+
+        let read_back = read_note(dir.path(), &sha)
+            .await?
+            .context("expected note")?;
+        assert_eq!(read_back.get(recipe_key), Some(&recipe_entry("im-a")));
+
+        let mut contents_b = NoteContents::new();
+        contents_b.insert("offload.toml".to_string(), ImageEntry::legacy("im-b"));
+        write_note(dir.path(), &sha, &contents_b).await?;
+
+        let merged = read_note(dir.path(), &sha)
+            .await?
+            .context("expected merged note")?;
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get(recipe_key), Some(&recipe_entry("im-a")));
+        assert_eq!(
+            merged.get("offload.toml"),
+            Some(&ImageEntry::legacy("im-b"))
         );
         Ok(())
     }

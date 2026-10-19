@@ -268,12 +268,7 @@ pub async fn write_note_for_commit(
     };
 
     let mut contents = git::NoteContents::new();
-    contents.insert(
-        config_key,
-        git::ImageEntry {
-            image_id: image_id.to_string(),
-        },
-    );
+    contents.insert(config_key, git::ImageEntry::legacy(image_id));
 
     if let Err(e) = git::write_note(repo, commit_sha, &contents).await {
         warn!("Failed to write note: {}", e);
@@ -901,9 +896,7 @@ mod tests {
         let mut contents = NoteContents::new();
         contents.insert(
             "offload.toml".to_string(),
-            ImageEntry {
-                image_id: "im-cached123".to_string(),
-            },
+            ImageEntry::legacy("im-cached123"),
         );
         write_note_in(dir.path(), &checkpoint_sha, &contents)?;
 
@@ -936,9 +929,7 @@ mod tests {
         let mut contents = NoteContents::new();
         contents.insert(
             "offload.toml".to_string(),
-            ImageEntry {
-                image_id: "im-head-cached".to_string(),
-            },
+            ImageEntry::legacy("im-head-cached"),
         );
         write_note_in(dir.path(), &head, &contents)?;
 
