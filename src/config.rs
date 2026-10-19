@@ -166,7 +166,7 @@ fn validate_config(config: &mut Config) -> Result<()> {
         if checkpoint.build_inputs.is_empty() {
             anyhow::bail!(
                 "Checkpoint configuration requires at least one entry in build_inputs. \
-                 Add file paths whose contents determine the image cache key, e.g.:\n\
+                 List the tracked paths whose change starts a new checkpoint, e.g.:\n\
                  [checkpoint]\n\
                  build_inputs = [\"Dockerfile\", \"requirements.txt\"]"
             );
@@ -615,6 +615,10 @@ mod tests {
         assert!(
             err_msg.contains("build_inputs"),
             "Error should mention build_inputs, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("tracked paths whose change starts a new checkpoint"),
+            "Error should say what build_inputs lists, got: {err_msg}"
         );
     }
 
