@@ -1,6 +1,6 @@
 //! The recipe that, together with the checkpoint tree, identifies a cached base image.
 
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -224,16 +224,21 @@ fn modal_script_digest() -> Option<String> {
 }
 
 /// Hex SHA-256 over `paths` under `root` in the given order, each as its path, a newline, its
-/// decimal length, a newline, and its bytes, so a rename, resize, or edit changes the digest.
-pub(crate) fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
+/// permission bits in unpadded octal, a newline, its decimal length, a newline, and its bytes,
+/// so a rename, chmod, resize, or edit changes the digest.
+fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in paths {
         let file_path = root.join(path);
         let mut file = File::open(&file_path)
             .with_context(|| format!("failed to open {}", file_path.display()))?;
+        let metadata = file.metadata()?;
+        let mode = permission_bits(&metadata);
         hasher.update(path.as_bytes());
         hasher.update(b"\n");
-        hasher.update(file.metadata()?.len().to_string().as_bytes());
+        hasher.update(format!("{mode:o}").as_bytes());
+        hasher.update(b"\n");
+        hasher.update(metadata.len().to_string().as_bytes());
         hasher.update(b"\n");
         std::io::copy(&mut file, &mut hasher)
             .with_context(|| format!("failed to read {}", file_path.display()))?;
@@ -241,9 +246,23 @@ pub(crate) fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// The permission bits the builder's tar upload records for a file, `st_mode & 0o7777`, so
+/// the digest follows a chmod the way the image does.
+#[cfg(unix)]
+fn permission_bits(metadata: &Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777
+}
+
+/// The permission bits the builder's tar upload records for a file (non-unix: none).
+#[cfg(not(unix))]
+fn permission_bits(_metadata: &Metadata) -> u32 {
+    0
+}
+
 /// [`digest_files`] over every file under `dir`, walked in sorted path order and following
 /// symlinks, for a copy source the export holds no copy of.
-pub(crate) fn digest_dir(dir: &Path) -> Result<String> {
+fn digest_dir(dir: &Path) -> Result<String> {
     let mut paths = Vec::new();
     collect_files(dir, Path::new(""), &mut paths)?;
     paths.sort();
@@ -516,17 +535,25 @@ mod tests {
         Ok(())
     }
 
+    /// Helper: `chmod` `path` to `mode`.
+    fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+
     #[test]
-    fn digest_files_covers_path_length_and_bytes_in_order() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn digest_files_covers_path_mode_length_and_bytes_in_order()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("a"), "x")?;
+        set_mode(&dir.path().join("a"), 0o644)?;
         std::fs::create_dir(dir.path().join("b"))?;
         std::fs::write(dir.path().join("b/c"), "yz")?;
+        set_mode(&dir.path().join("b/c"), 0o755)?;
         let paths = ["a".to_string(), "b/c".to_string()];
         assert_eq!(
             digest_files(dir.path(), &paths)?,
-            sha256_hex(b"a\n1\nxb/c\n2\nyz")
+            sha256_hex(b"a\n644\n1\nxb/c\n755\n2\nyz")
         );
         assert_eq!(digest_dir(dir.path())?, digest_files(dir.path(), &paths)?);
         let reversed = ["b/c".to_string(), "a".to_string()];
@@ -665,6 +692,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_current_recipe_name_changes_when_an_export_extra_mode_changes() -> Result<()> {
+        let dir = init_temp_repo()?;
+        commit_ignore_files(dir.path())?;
+        let artifact = dir.path().join("build.tar.gz");
+        std::fs::write(&artifact, "artifact")?;
+        let config = minimal_modal_config();
+        let before = current_recipe_in(dir.path(), &config).await?;
+        set_mode(&artifact, 0o755)?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_eq!(
+            after.export_extras.as_ref().map(|extras| &extras.paths),
+            before.export_extras.as_ref().map(|extras| &extras.paths)
+        );
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_current_recipe_digests_a_copy_source_outside_the_repository() -> Result<()> {
         let dir = init_temp_repo()?;
         let outside = tempfile::tempdir()?;
@@ -682,6 +727,23 @@ mod tests {
         std::fs::write(outside.path().join("model.bin"), "weights v2")?;
         let after = current_recipe_in(dir.path(), &config).await?;
         assert_ne!(first_copy_content(&after)?, Some(digest));
+        assert_ne!(after.name()?, before.name()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_current_recipe_digests_the_mode_of_a_copy_source_outside_the_repository()
+    -> Result<()> {
+        let dir = init_temp_repo()?;
+        let outside = tempfile::tempdir()?;
+        let model = outside.path().join("model.bin");
+        std::fs::write(&model, "weights")?;
+        let config =
+            modal_config_with_copy_dirs(vec![format!("{}:/data", outside.path().display())]);
+        let before = current_recipe_in(dir.path(), &config).await?;
+        set_mode(&model, 0o755)?;
+        let after = current_recipe_in(dir.path(), &config).await?;
+        assert_ne!(first_copy_content(&after)?, first_copy_content(&before)?);
         assert_ne!(after.name()?, before.name()?);
         Ok(())
     }
