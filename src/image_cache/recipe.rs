@@ -1,8 +1,9 @@
 //! The recipe that, together with the checkpoint tree, identifies a cached base image.
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -43,7 +44,7 @@ pub enum Builder {
 }
 
 /// A directory added to the image, in the order the builder receives it; `content` digests a
-/// source that lies outside the repository.
+/// source that lies outside the repository, or is [`ABSENT_SOURCE`] when that source is missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyDir {
     pub source: String,
@@ -52,15 +53,20 @@ pub struct CopyDir {
 }
 
 /// The gitignored but not dockerignored files that `export_tree` copies into the export from
-/// the live tree.
+/// the live tree, with one digest of their content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportExtras {
     pub paths: Vec<String>,
     pub content: String,
 }
 
+/// Recorded as a copy source's `content` when it lies outside the repository and is missing, so
+/// its later appearance is a cache miss.
+pub const ABSENT_SOURCE: &str = "absent";
+
 impl Recipe {
-    /// Derives the recipe from the loaded config; `None` when the provider builds no base image.
+    /// Derives the recipe from the loaded config without touching the disk, so every live-tree
+    /// digest is left unset for the caller to fill; `None` when the provider builds no base image.
     pub fn from_config(
         config: &Config,
         runtime_copy_dirs: &[(PathBuf, PathBuf)],
@@ -140,6 +146,50 @@ fn modal_script_digest() -> Option<String> {
     SCRIPTS_DIR
         .get_file(MODAL_SCRIPT)
         .map(|file| sha256_hex(file.contents()))
+}
+
+/// Hex SHA-256 over `paths` under `root` in the given order, each as its path, a newline, its
+/// decimal length, a newline, and its bytes, so a rename, resize, or edit changes the digest.
+pub(crate) fn digest_files(root: &Path, paths: &[String]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    for path in paths {
+        let file_path = root.join(path);
+        let mut file = File::open(&file_path)
+            .with_context(|| format!("failed to open {}", file_path.display()))?;
+        hasher.update(path.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(file.metadata()?.len().to_string().as_bytes());
+        hasher.update(b"\n");
+        std::io::copy(&mut file, &mut hasher)
+            .with_context(|| format!("failed to read {}", file_path.display()))?;
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// [`digest_files`] over every file under `dir`, walked in sorted path order and following
+/// symlinks, for a copy source the export holds no copy of.
+pub(crate) fn digest_dir(dir: &Path) -> Result<String> {
+    let mut paths = Vec::new();
+    collect_files(dir, Path::new(""), &mut paths)?;
+    paths.sort();
+    digest_files(dir, &paths)
+}
+
+/// Appends every file under `root.join(prefix)` to `paths`, relative to `root`.
+fn collect_files(root: &Path, prefix: &Path, paths: &mut Vec<String>) -> Result<()> {
+    let dir = root.join(prefix);
+    let entries =
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let relative = prefix.join(entry.file_name());
+        if entry.path().is_dir() {
+            collect_files(root, &relative, paths)?;
+        } else {
+            paths.push(relative.to_string_lossy().into_owned());
+        }
+    }
+    Ok(())
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -355,6 +405,27 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config_str(&config_toml("", DEFAULT_PROVIDER_WITHOUT_PREPARE))?;
         assert_eq!(Recipe::from_config(&config, &[]), None);
+        Ok(())
+    }
+
+    #[test]
+    fn digest_files_covers_path_length_and_bytes_in_order() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a"), "x")?;
+        std::fs::create_dir(dir.path().join("b"))?;
+        std::fs::write(dir.path().join("b/c"), "yz")?;
+        let paths = ["a".to_string(), "b/c".to_string()];
+        assert_eq!(
+            digest_files(dir.path(), &paths)?,
+            sha256_hex(b"a\n1\nxb/c\n2\nyz")
+        );
+        assert_eq!(digest_dir(dir.path())?, digest_files(dir.path(), &paths)?);
+        let reversed = ["b/c".to_string(), "a".to_string()];
+        assert_ne!(
+            digest_files(dir.path(), &reversed)?,
+            digest_files(dir.path(), &paths)?
+        );
         Ok(())
     }
 

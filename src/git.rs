@@ -358,6 +358,21 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
 /// conflicts with the thin diff's "new file" hunks for non-gitignored
 /// untracked files.
 fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
+    for relpath in export_extra_paths(repo_root)? {
+        let src = repo_root.join(&relpath);
+        let dst = dest.join(&relpath);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::copy(&src, &dst).ok();
+    }
+    Ok(())
+}
+
+/// The sorted repo-relative paths of the files [`copy_untracked_files`] copies in from the
+/// live tree (untracked, gitignored, and not dockerignored), shared with the image cache
+/// recipe so a change to any of them is a cache miss.
+pub(crate) fn export_extra_paths(repo_root: &Path) -> Result<Vec<String>> {
     let dockerignore = repo_root.join(".dockerignore");
 
     // All untracked files (including gitignored), minus dockerignored ones.
@@ -375,7 +390,7 @@ fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
         .output()
         .context("failed to list untracked files")?;
     if !all_output.status.success() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Non-gitignored untracked files — these are in the thin diff already.
@@ -391,21 +406,15 @@ fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
     };
     let non_gitignored: std::collections::HashSet<&str> = ngi_stdout.lines().collect();
 
-    // Copy only the gitignored files (set difference).
+    // Only the gitignored files (set difference).
     let all_stdout = String::from_utf8_lossy(&all_output.stdout).into_owned();
-    for relpath in all_stdout.lines() {
-        if relpath.is_empty() || non_gitignored.contains(relpath) {
-            continue;
-        }
-        let src = repo_root.join(relpath);
-        let dst = dest.join(relpath);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::copy(&src, &dst).ok();
-    }
-
-    Ok(())
+    let mut paths: Vec<String> = all_stdout
+        .lines()
+        .filter(|relpath| !relpath.is_empty() && !non_gitignored.contains(relpath))
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    Ok(paths)
 }
 
 /// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
@@ -1075,6 +1084,31 @@ mod tests {
         );
         // Should be a git repo
         assert!(dest.path().join(".git").exists(), ".git should exist");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_extra_paths_lists_what_export_tree_copies() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::write(dir.path().join(".gitignore"), "*.tar.gz\nbuild/\n")?;
+        std::fs::write(dir.path().join(".dockerignore"), "*.log\n")?;
+        git_in(dir.path(), &["add", ".gitignore", ".dockerignore"])?;
+        git_in(dir.path(), &["commit", "-m", "add ignore files"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        std::fs::write(dir.path().join("base.tar.gz"), "tarball")?;
+        std::fs::create_dir(dir.path().join("build"))?;
+        std::fs::write(dir.path().join("build/out.bin"), "artifact")?;
+        std::fs::write(dir.path().join("debug.log"), "dockerignored")?;
+        std::fs::write(dir.path().join("notes.txt"), "untracked but not gitignored")?;
+
+        let listed = export_extra_paths(dir.path())?;
+        assert_eq!(listed, vec!["base.tar.gz", "build/out.bin"]);
+
+        let dest = tempfile::tempdir()?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
+        let copied = git_in(dest.path(), &["ls-files", "--others"])?;
+        assert_eq!(copied.lines().collect::<Vec<_>>(), listed);
         Ok(())
     }
 

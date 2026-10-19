@@ -40,7 +40,7 @@ A cached base image is identified by the checkpoint SHA and the recipe. The reci
 | `builder.modal.include_cwd` | `[provider].include_cwd` | Adds the repository tree at `/app` |
 | `builder.default.prepare_command` | `[provider].prepare_command` | The user's assembler |
 | `builder.default.working_dir` | `[provider].working_dir` | Where `prepare_command` runs; relative paths resolve against it |
-| `copy_dirs` | `[provider].copy_dirs` followed by the `--copy-dir` flags, in order | Directories added to the image, as the builder receives them. Each entry is `{source, target, content}`; `content` is the source's content digest when the source lies outside the repository, otherwise null |
+| `copy_dirs` | `[provider].copy_dirs` followed by the `--copy-dir` flags, in order | Directories added to the image, as the builder receives them. Each entry is `{source, target, content}`; `content` is the source's content digest when the source lies outside the repository (`absent` when it does not exist on disk), otherwise null |
 | `sandbox_init_cmd` | `[offload].sandbox_init_cmd` | Runs as the last base-image layer. Empty is normalized to absent |
 | `export_extras` | files `export_tree` copies from the live tree | `{paths, content}`: the sorted paths of the gitignored but not dockerignored files that enter the export, and one digest of their content. Null when there are none |
 
@@ -63,7 +63,7 @@ Values are taken verbatim from the loaded config. Environment expansion applies 
 The base build is a function of the checkpoint tree and the recipe.
 
 - Rust resolves every path the builder reads against the exported checkpoint tree and passes it as an explicit argument: the Dockerfile, the directory that `include_cwd` adds (the export at the invoking directory's path relative to the repository root), `.dockerignore`, and each copy source. The script reads nothing relative to its own working directory.
-- A copy source whose canonical path lies outside the repository has no counterpart in the export. It is passed as given, and its content digest is recorded in its `copy_dirs` entry.
+- A copy source whose canonical path lies outside the repository has no counterpart in the export. It is passed as given, and its content digest is recorded in its `copy_dirs` entry; a source that does not exist on disk is recorded as `absent`, so its later appearance is a miss.
 - The gitignored but not dockerignored files that `export_tree` copies from the live tree are recorded in `export_extras`. For a repository whose `.dockerignore` excludes everything `.gitignore` excludes, the set is empty and costs nothing.
 
 The sandbox ends up with the same files as before: what the live tree used to bake into the base now arrives through the export plus the thin diff.
