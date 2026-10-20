@@ -23,7 +23,11 @@ Before starting any review, read the documents listed under "Hard requirements" 
 - **Failure to comply with standing constraints** - Are policies followed?
 - **Missed requirements** - Was anything specified but not implemented?
   - Note: if a requirement was not specified, the implementation may be empty
+  - A shape the bead introduces with "for example" or "one way" is a sketch, not a requirement: judge a different shape against the bead's Done line and its stated constraints, and name in the verdict which of those the departure meets.
 - **Pre-existing gaps surfaced by the bead.** If you find behavior the bead description promised but did not deliver, AND a one-line git blame / quick read shows the gap pre-dated this bead's branch point, mention it explicitly as a "pre-existing gap" in your verdict and recommend the Coordinator file a follow-up bead. PASS the current bead if its tests pass and the gap is genuinely pre-existing. FAIL only if the gap was introduced by this bead.
+- **A decision the tree already makes.** If the bead computes a second time what an existing function already decides (a path origin, a precedence order, a classification), the second statement is where the two will drift and the next bead will have to extend both. FAIL if this bead added the second copy, as a reuse failure; if both copies pre-date the bead, name them in the verdict for Tidy.
+- **An input the key does not carry.** When the bead's claim is that a key, digest, or list covers what another component reads, enumerate that component's reads from its implementation and check each one against the bead. For the Modal builder the implementation is the SDK at the version the header of `scripts/modal_sandbox.py` pins; `uv run --offline --python 3.11 --with 'modal==<version>' python -c 'import modal.mount; print(modal.mount.__file__)'` prints where to read it (`mount.py` walks the tree, `_utils/blob_utils.py` writes the tar), so do not read whichever copy sits under `~/.cache/uv`. Cite the version and the function in the verdict. A read the bead claims to cover and leaves out is a FAIL; one the plan never listed is a pre-existing gap to file.
+- **Banner comments.** A dash- or equals-framed label such as `// ---- Tests for X ----` is a banner comment under RUST_STYLE_GUIDE.md; the label does not exempt it, and a bead that adds one fails the Definition of Done. Ones that pre-date the bead are Tidy's to remove and need no note in the verdict.
 
 ## Verification steps
 Run every check in the **Definition of Done** in `AGENTS.md` to validate the code. That list is the single source of truth — do not restate or maintain a separate copy here.
@@ -32,6 +36,7 @@ Run every check in the **Definition of Done** in `AGENTS.md` to validate the cod
 - The harness may surface stale rust-analyzer / IDE diagnostics (e.g. "cannot find function", "pattern does not mention field") that disagree with a clean `cargo check`. **Treat the Definition of Done checks as the only source of truth.** If they pass, ignore editor diagnostics.
 - Benign hints like inactive `#[cfg(not(...))]` blocks are expected after edits to multi-config modules and are not failures.
 - Do NOT render FAIL based on editor diagnostics that you have not reproduced via a cargo command.
+- A test that fails with behaviour the diff removed, or a run that dies in rustc, clang, or the linker rather than in a test, is a stale artifact or a toolchain crash, not a verdict: `touch` the changed source (or run `cargo clean -p offload`) and rerun once. FAIL only on a failure that reproduces.
 
 ## Verdict
 - Render a **PASS** if no errors detected and all checks succeed

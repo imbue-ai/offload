@@ -1,5 +1,7 @@
 # Checkpoint Images -- Specification
 
+The note key and note format described here are superseded by `plans/image-cache-key.spec.md`; the rest of this document remains the historical record.
+
 This document specifies the requirements for checkpoint image support in Offload.
 It supersedes the earlier draft in `#checkpoint-images.md#`.
 

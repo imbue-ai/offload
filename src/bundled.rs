@@ -9,7 +9,7 @@ use include_dir::{Dir, include_dir};
 use regex::Regex;
 
 /// Embedded scripts directory.
-static SCRIPTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/scripts");
+pub(crate) static SCRIPTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/scripts");
 
 /// Lazily initialized cache of extracted scripts.
 static SCRIPTS_CACHE: OnceLock<Result<PathBuf, BundledError>> = OnceLock::new();

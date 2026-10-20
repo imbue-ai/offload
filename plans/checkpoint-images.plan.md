@@ -1,5 +1,7 @@
 # Checkpoint Images -- Implementation Plan
 
+The note key and note format described here are superseded by `plans/image-cache-key.spec.md`; the rest of this document remains the historical record.
+
 Implementation plan for the checkpoint images spec (`checkpoint-images.spec.md`).
 
 ## Key Technical Decisions

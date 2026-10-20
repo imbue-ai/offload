@@ -16,7 +16,7 @@ use super::{
 const MODAL_CPU_COST_PER_CORE_PER_SEC: f64 = 0.00003942;
 use crate::config::{DefaultProviderConfig, SandboxConfig};
 use crate::connector::{Connector, ShellConnector};
-use crate::image_cache::{ImageBuilder, prepare_with_prewarm};
+use crate::image_cache::{BuildContext, ImageBuilder, prepare_with_prewarm};
 
 /// Provider that uses shell commands for sandbox lifecycle management.
 ///
@@ -64,20 +64,20 @@ impl DefaultProvider {
     }
 
     /// Builds the full prepare command string, or `None` if no `prepare_command` is configured.
+    ///
+    /// Copy sources are resolved into the build context, which carries the origin a relative
+    /// source is written against; the user-authored `prepare_command` itself is appended to
+    /// verbatim, so its own `--include-cwd` keeps its meaning.
     fn build_prepare_command(
         &self,
         copy_dirs: &[(PathBuf, PathBuf)],
         sandbox_init_cmd: Option<&str>,
-        context_dir: Option<&Path>,
+        build_ctx: &BuildContext<'_>,
     ) -> Option<String> {
         let prepare_cmd = self.config.prepare_command.as_ref()?;
         let mut full = prepare_cmd.clone();
 
-        for copy_spec in &self.config.copy_dirs {
-            full.push_str(&format!(" --copy-dir={}", shell_words::quote(copy_spec)));
-        }
-        for (local, remote) in copy_dirs {
-            let spec = format!("{}:{}", local.display(), remote.display());
+        for spec in build_ctx.copy_specs(&self.config.copy_dirs, copy_dirs) {
             full.push_str(&format!(" --copy-dir={}", shell_words::quote(&spec)));
         }
 
@@ -88,12 +88,10 @@ impl DefaultProvider {
             ));
         }
 
-        if let Some(dir) = context_dir {
-            full.push_str(&format!(
-                " --context-dir={}",
-                shell_words::quote(&dir.display().to_string())
-            ));
-        }
+        full.push_str(&format!(
+            " --context-dir={}",
+            shell_words::quote(&build_ctx.dir.display().to_string())
+        ));
 
         Some(full)
     }
@@ -106,10 +104,10 @@ impl ImageBuilder for DefaultProvider {
         copy_dirs: &[(PathBuf, PathBuf)],
         sandbox_init_cmd: Option<&str>,
         discovery_done: Option<&AtomicBool>,
-        context_dir: Option<&Path>,
+        build_ctx: &BuildContext<'_>,
     ) -> ProviderResult<Option<String>> {
         let image_id = if let Some(full_prepare_cmd) =
-            self.build_prepare_command(copy_dirs, sandbox_init_cmd, context_dir)
+            self.build_prepare_command(copy_dirs, sandbox_init_cmd, build_ctx)
         {
             let image_id = run_prepare_command(
                 &self.connector,
@@ -546,6 +544,8 @@ impl Sandbox for DefaultSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderConfig;
+    use crate::image_cache::copy_origin;
 
     /// Creates a DefaultSandbox with given env vars for testing.
     fn sandbox_with_env(env: Vec<(String, String)>) -> DefaultSandbox {
@@ -1060,6 +1060,154 @@ mod tests {
         );
     }
 
+    /// A config whose `prepare_command` is the bundled Modal script, with one relative copy dir.
+    fn modal_script_config(prepare_command: Option<&str>) -> DefaultProviderConfig {
+        DefaultProviderConfig {
+            prepare_command: prepare_command.map(str::to_string),
+            create_command: "uv run @modal_sandbox.py create {image_id}".to_string(),
+            exec_command: "uv run @modal_sandbox.py exec {sandbox_id} {command}".to_string(),
+            destroy_command: "uv run @modal_sandbox.py destroy {sandbox_id}".to_string(),
+            download_command: None,
+            working_dir: None,
+            timeout_secs: 300,
+            env: Default::default(),
+            copy_dirs: vec!["./data:/data".to_string()],
+            cpu_cores: 1.0,
+        }
+    }
+
+    /// The command a provider built from `config` runs in the context the pipeline hands it: an
+    /// export at `/ctx` of a repository at `/repo` invoked from its `sub/`, with relative copy
+    /// sources written against the origin [`copy_origin`] chooses for `config`.
+    fn prepare_command_for(
+        config: DefaultProviderConfig,
+        copy_dirs: &[(PathBuf, PathBuf)],
+        sandbox_init_cmd: Option<&str>,
+    ) -> Option<String> {
+        let provider = DefaultProvider::from_config(config.clone());
+        let provider_config = ProviderConfig::Default(config);
+        let build_ctx = BuildContext {
+            dir: Path::new("/ctx"),
+            cwd_rel: Path::new("sub"),
+            root: Path::new("/repo"),
+            origin: copy_origin(&provider_config),
+        };
+        provider.build_prepare_command(copy_dirs, sandbox_init_cmd, &build_ctx)
+    }
+
+    #[test]
+    fn test_build_prepare_command_is_none_without_prepare_command() {
+        assert_eq!(
+            prepare_command_for(modal_script_config(None), &[], None),
+            None
+        );
+    }
+
+    /// The user's own `--include-cwd` is left in place; only the appended copy sources are
+    /// resolved into the context.
+    #[test]
+    fn test_build_prepare_command_carries_resolved_copy_sources() {
+        let config = modal_script_config(Some(
+            "uv run @modal_sandbox.py prepare --include-cwd Dockerfile",
+        ));
+        let runtime_dirs = vec![(PathBuf::from("/repo/tests"), PathBuf::from("/app/tests"))];
+        let cmd = prepare_command_for(config, &runtime_dirs, Some("make setup"));
+        assert_eq!(
+            cmd.as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare --include-cwd Dockerfile \
+                 --copy-dir=/ctx/sub/data:/data \
+                 --copy-dir=/ctx/tests:/app/tests \
+                 --sandbox-init-cmd='make setup' \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    /// `modal_script_config` whose `prepare_command` runs in `working_dir` and copies `data`
+    /// relative to it.
+    fn working_dir_config(working_dir: Option<&str>) -> DefaultProviderConfig {
+        DefaultProviderConfig {
+            working_dir: working_dir.map(PathBuf::from),
+            copy_dirs: vec!["data:/data".to_string()],
+            ..modal_script_config(Some("uv run @modal_sandbox.py prepare Dockerfile"))
+        }
+    }
+
+    #[test]
+    fn test_build_prepare_command_without_working_dir_reads_source_from_invoking_directory() {
+        assert_eq!(
+            prepare_command_for(working_dir_config(None), &[], None).as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/sub/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_relative_source_against_relative_working_dir() {
+        assert_eq!(
+            prepare_command_for(working_dir_config(Some("scripts")), &[], None).as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/sub/scripts/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_relative_source_against_working_dir_under_root() {
+        assert_eq!(
+            prepare_command_for(working_dir_config(Some("/repo/scripts")), &[], None).as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/ctx/scripts/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    /// A `working_dir` outside the repository has no copy in the context, so its sources stay
+    /// live paths.
+    #[test]
+    fn test_build_prepare_command_reads_relative_source_live_under_working_dir_outside_root() {
+        assert_eq!(
+            prepare_command_for(working_dir_config(Some("/elsewhere")), &[], None).as_deref(),
+            Some(
+                "uv run @modal_sandbox.py prepare Dockerfile \
+                 --copy-dir=/elsewhere/data:/data \
+                 --context-dir=/ctx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_prepare_command_resolves_absolute_sources_regardless_of_working_dir() {
+        for working_dir in ["scripts", "/repo/scripts", "/elsewhere"] {
+            let config = DefaultProviderConfig {
+                copy_dirs: vec!["/repo/lib:/app/lib".to_string()],
+                ..working_dir_config(Some(working_dir))
+            };
+            let runtime_dirs = vec![(
+                PathBuf::from("/other/fixtures"),
+                PathBuf::from("/app/fixtures"),
+            )];
+            assert_eq!(
+                prepare_command_for(config, &runtime_dirs, None).as_deref(),
+                Some(
+                    "uv run @modal_sandbox.py prepare Dockerfile \
+                     --copy-dir=/ctx/lib:/app/lib \
+                     --copy-dir=/other/fixtures:/app/fixtures \
+                     --context-dir=/ctx"
+                ),
+                "working_dir {working_dir}"
+            );
+        }
+    }
+
     /// Integration test for Modal sandbox download functionality via DefaultProvider.
     ///
     /// This test requires Modal credentials (MODAL_TOKEN_ID and MODAL_TOKEN_SECRET).
@@ -1106,7 +1254,13 @@ mod tests {
         // Build full image directly for this integration test (no prewarm context needed)
         {
             use crate::image_cache::ImageBuilder;
-            provider.build_full(&[], None, None, None).await?;
+            let build_ctx = BuildContext {
+                dir: temp_dir.path(),
+                cwd_rel: Path::new(""),
+                root: temp_dir.path(),
+                origin: Path::new(""),
+            };
+            provider.build_full(&[], None, None, &build_ctx).await?;
         }
 
         // Create sandbox

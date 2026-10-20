@@ -6,7 +6,7 @@ This document specifies the requirements for the `post_patch_cmd` feature in Off
 
 Offload's image build pipeline splits the environment into two layers:
 
-1. **Base image** — Dockerfile + source checkout + dependency install + `sandbox_init_cmd`. Cached in git notes. Rebuilt only when `build_inputs` change (checkpoint mode) or HEAD changes (latest-commit mode).
+1. **Base image** — Dockerfile + source checkout + dependency install + `sandbox_init_cmd`. Cached in git notes. Rebuilt when the checkpoint changes (a `build_inputs` file in checkpoint mode, HEAD in latest-commit mode) or when the image recipe changes (see `plans/image-cache-key.spec.md`).
 2. **Thin-diff** — Binary patch of working-tree changes applied on top of the base image via `offload apply-diff`. Fast (~4s). Rebuilds every run.
 
 This split assumes a clean dichotomy: things either change-with-deps (heavy, cache-worthy) or change-with-source (cheap, patch-worthy). But there is a third category: **derived artifacts** — files produced by running tools against the source tree. Examples:

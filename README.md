@@ -180,7 +180,7 @@ Run tests in parallel.
 |------|-------------|
 | `--parallel N` | Override maximum parallel sandboxes |
 | `--collect-only` | Discover tests without running them |
-| `--copy-dir LOCAL:REMOTE` | Copy a directory into each sandbox (repeatable) |
+| `--copy-dir LOCAL:REMOTE` | Copy a directory into each sandbox (repeatable). Part of the image cache key |
 | `--env KEY=VALUE` | Set an environment variable in sandboxes (repeatable) |
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
 | `--override-image-id ID` | Escape hatch: run tests against the given pre-built Modal image ID as-is, bypassing all image build, thin-diff patch, and cache setup. Only valid with the `modal` provider |
@@ -192,12 +192,25 @@ Run tests in parallel.
 ### `offload build`
 
 Build the sandbox image without running tests. Prepares the provider image
-(resolving cache, building if needed) and writes the image ID to git notes.
+(resolving cache, building if needed) and writes the image ID to git notes
+under the recipe name (see [Image Cache](#image-cache)).
 The image ID is printed to stdout on success.
 
 | Flag | Description |
 |------|-------------|
 | `--no-cache` | Skip cached image lookup during prepare (forces fresh build) |
+
+### `offload checkpoint-status`
+
+Show the image cache state for the current HEAD. Prints HEAD, the checkpoint
+commit and its distance from HEAD, the cached image, the mode the next run
+would use, and the current recipe name followed by one line per entry on the
+checkpoint saying whether it matches, which recipe fields differ, or that it
+is a legacy entry written by an older Offload.
+
+| Flag | Description |
+|------|-------------|
+| `--remote NAME` | Remote to fetch notes from (default: `origin`) |
 
 ### `offload collect`
 
@@ -284,8 +297,8 @@ Configuration is stored in a TOML file (default: `offload.toml`).
 | `working_dir` | string | (cwd) | Working directory for test execution |
 | `sandbox_repo_root` | string | (none) | Path to the repository root inside the sandbox (e.g. `/app`). Used for thin-diff patches and as the default test working directory (`OFFLOAD_ROOT`) |
 | `sandbox_project_root` | string | (none) | Working directory for test execution, if different from `sandbox_repo_root`. Only needed in monorepo setups where tests run from a subdirectory (e.g. `/app/mypackage`) |
-| `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied |
-| `post_patch_cmd` | string | (none) | Optional command to run after thin-diff patch is applied, before image materialization. Runs as an image layer. `OFFLOAD_PATCH_FILE` env var is set to the patch path when a diff exists |
+| `sandbox_init_cmd` | string | (none) | Optional command to run during image build, after cwd/copy-dirs are applied. Part of the image cache key; changing it rebuilds the base image |
+| `post_patch_cmd` | string | (none) | Optional command to run after thin-diff patch is applied, before image materialization. Runs as an image layer. `OFFLOAD_PATCH_FILE` env var is set to the patch path when a diff exists. Not part of the image cache key |
 | `impatiently_requeue_batches` | boolean | `true` | When `true`, the scheduler hedges against long-running batches by re-queuing each batch on pop (see "Split-requeue hedging" below) |
 | `max_parallel_collection` | integer | `0` | Maximum number of groups whose tests are collected concurrently during discovery; `0` (the default) means the number of CPU cores |
 
@@ -332,6 +345,8 @@ Custom shell commands for sandbox lifecycle management. Commands use placeholder
 | `env` | table | `{}` | Environment variables for test processes |
 | `cpu_cores` | float | `1.0` | CPU cores per sandbox |
 
+`prepare_command`, `working_dir`, and `copy_dirs` are part of the image cache key.
+
 #### `type = "modal"`
 
 Simplified Modal sandbox provider. Internally generates the appropriate Modal CLI commands.
@@ -347,6 +362,8 @@ Simplified Modal sandbox provider. Internally generates the appropriate Modal CL
 | `experimental_options` | table | `{}` | Experimental options passed as JSON to `Sandbox.create()` (e.g. `enable_docker = true`) |
 
 Use `experimental_options` to pass feature flags to Modal's `Sandbox.create()` (e.g. `[provider.experimental_options]\nenable_docker = true`). These options may change on Modal's side without notice.
+
+`dockerfile`, `include_cwd`, and `copy_dirs` are part of the image cache key. In a checkpoint build, `include_cwd` and relative `copy_dirs` read from the checkpoint tree rather than the working directory.
 
 ### `[framework]` -- Test Framework
 
@@ -430,6 +447,14 @@ Failed tests that pass on retry are marked as "flaky" (exit code 2).
 | `junit_file` | string | `"junit.xml"` | Filename for JUnit XML output |
 | `download_globs` | string[] | `[]` | Glob patterns for files to download from sandboxes after each batch |
 | `download_globs_failure_only` | boolean | `false` | When true, only download `download_globs` artifacts for batches that had test failures or errors |
+
+### `[checkpoint]` -- Checkpoint Images
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `build_inputs` | string[] | required | Tracked files whose change starts a new checkpoint. The checkpoint for a run is the nearest ancestor of HEAD touching any of them, so list every file the Dockerfile and `sandbox_init_cmd` read |
+
+Config fields that shape the base image are part of the cache key automatically and do not need to be listed. Without a `[checkpoint]` section, HEAD is the base commit.
 
 ### `[history]` -- Test History (optional)
 
@@ -613,7 +638,7 @@ junit_file = "junit.xml"
 
 This demonstrates using `sandbox_init_cmd` to run setup commands during image build. The `sandbox_init_cmd` applies a patch and syncs packages after the working directory is copied into the image, enabling the use of the native `pytest` framework instead of the `default` framework with inline setup commands.
 
-Use `post_patch_cmd` for derived artifacts that must be regenerated when source changes — generated API clients, frontend bundles, or compiled assets. Unlike `sandbox_init_cmd` (which runs only during base image builds), `post_patch_cmd` runs after every thin-diff patch, ensuring derived artifacts stay in sync with patched source code.
+Use `post_patch_cmd` for derived artifacts that must be regenerated when source changes — generated API clients, frontend bundles, or compiled assets. Unlike `sandbox_init_cmd` (which runs only during base image builds), `post_patch_cmd` runs after every thin-diff patch, ensuring derived artifacts stay in sync with patched source code. Changing `sandbox_init_cmd` rebuilds the base image; changing `post_patch_cmd` does not.
 
 ```toml
 [offload]
@@ -630,7 +655,11 @@ Commands in configuration can reference bundled scripts using `@filename.ext` sy
 
 ## Image Cache
 
-Offload caches image IDs in git notes (`refs/notes/offload-images`). Notes are fetched from and pushed to the remote automatically. Pass `--no-cache` to `offload run` to skip cached image lookup and force a fresh build.
+Offload caches base image IDs in git notes under `refs/notes/offload-images`. Notes are fetched from and pushed to the remote automatically.
+
+A cached base image is identified by the checkpoint commit plus the image recipe stored in its note entry, compared for equality, so configs that share a recipe share one base image; the recipe digest is only the entry's name. The recipe is the builder inputs, which are `dockerfile`, the directory `include_cwd` adds, and the bundled `modal_sandbox.py` script on Modal, or `prepare_command` and `working_dir` on the default provider; the `copy_dirs` and `--copy-dir` entries in order; `sandbox_init_cmd`; and digests of everything the build reads from outside the checkpoint tree, namely copy sources outside the repository, the gitignored files the export copies in, and tracked symlinks whose targets resolve outside the repository or are missing. The Recipe table in [plans/image-cache-key.spec.md](plans/image-cache-key.spec.md#recipe) lists each field with its source. Changing `post_patch_cmd`, `[framework]`, `[groups]`, `[report]`, `sandbox_project_root`, `env`, `cpu_cores`, or `memory_gb` does not rebuild the base.
+
+Entries written by Offload versions before this scheme are ignored, so the first run after upgrading rebuilds once per recipe. Pass `--no-cache` to `offload run` or `offload build` to skip the lookup and force a fresh build; nothing is written to the notes in that case. `offload checkpoint-status` lists each entry and why it does or does not match. The full design is in [plans/image-cache-key.spec.md](plans/image-cache-key.spec.md).
 
 ## Environment Variable Expansion
 

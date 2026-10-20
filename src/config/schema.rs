@@ -207,12 +207,8 @@ pub struct ModalProviderConfig {
     #[serde(default)]
     pub dockerfile: Option<String>,
 
-    /// Whether to include the current working directory in the image.
-    ///
-    /// When enabled, the entire current working directory is copied
-    /// into the sandbox image during preparation.
-    ///
-    /// Default: false
+    /// Adds the directory `offload` is run in to the image at `/app`; a checkpoint build takes
+    /// that directory's copy from the exported checkpoint tree, not the live working tree.
     #[serde(default)]
     pub include_cwd: bool,
 
@@ -224,9 +220,10 @@ pub struct ModalProviderConfig {
 
     /// Directories to copy into the sandbox image.
     ///
-    /// Each entry is a string in the format "local_path:remote_path".
-    /// These directories are baked into the image during preparation,
-    /// making sandbox creation faster.
+    /// Each entry is a string in the format "local_path:remote_path". A relative
+    /// `local_path` is taken from the directory `offload` is run in. These
+    /// directories are baked into the image during preparation, making sandbox
+    /// creation faster.
     #[serde(default)]
     pub copy_dirs: Vec<String>,
 
@@ -326,7 +323,9 @@ pub struct DefaultProviderConfig {
 
     /// Directories to copy into the image during prepare.
     ///
-    /// Each entry is a string in the format "local_path:remote_path".
+    /// Each entry is a string in the format "local_path:remote_path". A relative
+    /// `local_path` is taken from `working_dir` when it is set, because that is where
+    /// `prepare_command` runs, and otherwise from the directory `offload` is run in.
     /// These directories are baked into the image during the prepare step,
     /// making sandbox creation faster.
     #[serde(default)]
@@ -632,11 +631,14 @@ pub struct DefaultFrameworkConfig {
 /// Configuration for image checkpointing.
 ///
 /// When present, enables checkpointing support for sandbox images.
-/// The `build_inputs` field lists file paths that are hashed to determine
-/// whether a cached image can be reused.
+/// The `build_inputs` field lists the tracked files whose change starts a
+/// new checkpoint.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CheckpointConfig {
-    /// File paths whose contents are hashed to compute the image cache key.
+    /// Tracked paths whose change starts a new checkpoint: the base image is
+    /// built from the nearest ancestor commit that touches one of them.
+    /// Config fields that shape the image are part of the cache key
+    /// automatically and need not be listed here.
     ///
     /// Must be non-empty when checkpoint is enabled.
     #[serde(default)]

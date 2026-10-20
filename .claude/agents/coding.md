@@ -15,6 +15,8 @@ Before starting any work, read the documents listed under "Hard requirements" in
 
 ## Core principles
 - **Your task is to complete coding to a tight specification with precision.**
+- The bead (`br show <id>`) is that specification; the delegation prompt adds files to read and context. If the prompt disagrees with the bead on a requirement, report FAIL naming both texts before implementing anything; the Coordinator amends the bead and re-delegates.
+- The bead's Done line and its stated constraints are the contract; a shape it introduces with "for example" or "one way" is a sketch. You may build a different shape when the contract still holds, and the commit body then says what you built instead and why, so the Judge rules on the contract rather than on the sketch.
 - You are one of many agents. It is okay to fail if your lessons will help the next coding agent pass.
 - If you CANNOT complete your task as given, please FAIL and notify your coordinator.
 - You are working in a maturing codebase with other agents. Always look carefully to reuse existing solutions.
@@ -36,6 +38,9 @@ Before starting any work, read the documents listed under "Hard requirements" in
 - Benign hints like inactive `#[cfg(not(...))]` blocks are expected and not failures.
 - If you see an editor diagnostic but `cargo check` is clean, do not start a fix; verify against cargo and proceed.
 
+## Stale artifacts and toolchain crashes
+`target/` is shared by every agent that runs in this worktree, and cargo decides freshness by file mtime. If a test fails with the behaviour your diff removed, or a run dies in rustc, clang, or the linker rather than in a test, `touch` the source file you changed (or run `cargo clean -p offload`) and rerun once before reading the result as real.
+
 ## Conform to lint policy — including in test code
 The repo's lint/policy rules apply to ALL code, **including test code** (`#[cfg(test)]` modules and `tests/`). Do NOT route around a rule by relocating code, carving out `#[cfg(test)]`, adding `allow`/`exclude` entries, or raising a threshold — make the code conform.
 
@@ -47,6 +52,8 @@ If the repo bans `.unwrap()` / `.expect(...)` / `panic!(...)` (see RUST_STYLE_GU
 - `assert!`, `assert_eq!`, `assert_ne!`, `matches!`, `.unwrap_err()`, `.expect_err()` are fine — prefer them in tests.
 
 The same applies to comment lints (e.g. no-TODO / no-FIXME): don't weaken prose to dodge them, and don't commit TODO/FIXME markers. If a task seems to force a banned construct, conforming is the cheapest path to green, not routing around.
+
+A dash- or equals-framed label such as `// ---- Tests for X ----` is a banner comment under RUST_STYLE_GUIDE.md: the label does not exempt it, and existing ones in the file are not a reason to add another (they are Tidy's to remove). If a group of tests needs a name, give it a nested `mod`.
 
 ## Refactor gating rule
 If your task is blocked by a large refactor that you are not cleared to do:
@@ -67,7 +74,7 @@ digraph CodingAgentWorkflow {
 
   START [shape=ellipse, style=filled, fillcolor=lightgreen];
   READ_DOCS [label="Read repo docs\n(per AGENTS.md Hard requirements)"];
-  READ_BEAD [label="Read bead specification\nfrom Coordinator"];
+  READ_BEAD [label="Read the bead\n(br show <id>)"];
   RESEARCH [label="Research codebase:\n- existing solutions\n- patterns to follow"];
   CAN_COMPLETE [shape=diamond, style=filled, fillcolor=lightyellow, label="Can complete task?"];
   IMPLEMENT [label="Implement changes\n(small, atomic commits)"];

@@ -1,21 +1,50 @@
 //! Git operations for resolving and caching images via git notes.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+
+use crate::image_cache::{LinkTarget, link_target};
 
 /// Git ref for the notes used to store cached image metadata.
 pub const NOTES_REF: &str = "refs/notes/offload-images";
 
 /// A cached image entry stored in a git note.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Only `image_id` is required and absent fields are not written, so entries from older Offload
+/// versions parse here and entries written here parse there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     pub image_id: String,
+    /// Kept as a JSON value so any stored shape parses and lookup compares it as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_at: Option<String>,
 }
 
-/// A note is a JSON object keyed by TOML config file path.
+impl ImageEntry {
+    /// An entry carrying only `image_id`, the shape older Offload versions write.
+    #[cfg(test)]
+    pub(crate) fn legacy(image_id: impl Into<String>) -> ImageEntry {
+        ImageEntry {
+            image_id: image_id.into(),
+            recipe: None,
+            config_path: None,
+            offload_version: None,
+            built_at: None,
+        }
+    }
+}
+
+/// A note is a flat JSON object keyed by recipe name (`recipe:<16 hex>`); entries written by
+/// older Offload versions are keyed by the repo-relative config path and carry only `image_id`.
 pub type NoteContents = HashMap<String, ImageEntry>;
 
 /// Run a git command and return its stdout as a trimmed string.
@@ -52,6 +81,13 @@ pub async fn head_sha(repo: &Path) -> Result<String> {
 pub async fn repo_root(repo: &Path) -> Result<PathBuf> {
     let root = run_git(repo, &["rev-parse", "--show-toplevel"]).await?;
     Ok(PathBuf::from(root))
+}
+
+/// Return `dir`'s path relative to the repository root as git reports it (empty at the root),
+/// so a builder can find the invoking directory's copy inside an exported tree.
+pub async fn path_within_repo(dir: &Path) -> Result<PathBuf> {
+    let prefix = run_git(dir, &["rev-parse", "--show-prefix"]).await?;
+    Ok(PathBuf::from(prefix))
 }
 
 /// Read the offload-images note for a given commit.
@@ -93,7 +129,7 @@ pub async fn read_note(repo: &Path, commit_sha: &str) -> Result<Option<NoteConte
 
 /// Write (or merge) an offload-images note for a given commit.
 ///
-/// Performs a read-modify-write: existing entries for other config keys are
+/// Performs a read-modify-write: existing entries under other keys are
 /// preserved. The note is pretty-printed JSON with 4-space indentation.
 pub async fn write_note(repo: &Path, commit_sha: &str, contents: &NoteContents) -> Result<()> {
     // Read existing note to merge
@@ -257,10 +293,12 @@ pub async fn commit_touches_paths(repo: &Path, commit_sha: &str, paths: &[String
 
 /// Export a commit's tree plus untracked files into `dest` as a shallow clone.
 ///
-/// First creates a shallow clone with tracked files and `.git/`, then copies
-/// untracked files from the working tree filtered by `.dockerignore` (not
-/// `.gitignore`). This includes gitignored files like generated tarballs that
-/// the Docker build needs but git doesn't track.
+/// First creates a shallow clone with tracked files and `.git/`, points its
+/// symlinks at what the image recipe digested for them (see
+/// [`rewrite_exported_symlinks`]), then copies untracked files from the working
+/// tree filtered by `.dockerignore` (not `.gitignore`). This includes gitignored
+/// files like generated tarballs that the Docker build needs but git doesn't
+/// track.
 ///
 /// The thin diff applies with `git apply --3way` to handle overlapping
 /// "new file" hunks for files present in both the export and the patch.
@@ -300,6 +338,8 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
         // refs/heads/ directory is missing.
         run(&["-C", &dest.to_string_lossy(), "checkout", "-b", "main"])?;
 
+        rewrite_exported_symlinks(&repo_root, &dest)?;
+
         // Copy untracked files from the working tree, using .dockerignore
         // (not .gitignore) as the filter. This ensures gitignored files
         // like generated tarballs are included in the base image.
@@ -324,6 +364,21 @@ pub async fn export_tree(repo: &Path, commit_sha: &str, dest: &Path) -> Result<(
 /// conflicts with the thin diff's "new file" hunks for non-gitignored
 /// untracked files.
 fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
+    for relpath in export_extra_paths(repo_root)? {
+        let src = repo_root.join(&relpath);
+        let dst = dest.join(&relpath);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::copy(&src, &dst).ok();
+    }
+    Ok(())
+}
+
+/// The sorted repo-relative paths of the files [`copy_untracked_files`] copies in from the
+/// live tree (untracked, gitignored, and not dockerignored), shared with the image cache
+/// recipe so a change to any of them is a cache miss.
+pub(crate) fn export_extra_paths(repo_root: &Path) -> Result<Vec<String>> {
     let dockerignore = repo_root.join(".dockerignore");
 
     // All untracked files (including gitignored), minus dockerignored ones.
@@ -341,7 +396,7 @@ fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
         .output()
         .context("failed to list untracked files")?;
     if !all_output.status.success() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Non-gitignored untracked files — these are in the thin diff already.
@@ -357,21 +412,141 @@ fn copy_untracked_files(repo_root: &Path, dest: &Path) -> Result<()> {
     };
     let non_gitignored: std::collections::HashSet<&str> = ngi_stdout.lines().collect();
 
-    // Copy only the gitignored files (set difference).
+    // Only the gitignored files (set difference).
     let all_stdout = String::from_utf8_lossy(&all_output.stdout).into_owned();
-    for relpath in all_stdout.lines() {
-        if relpath.is_empty() || non_gitignored.contains(relpath) {
+    let mut paths: Vec<String> = all_stdout
+        .lines()
+        .filter(|relpath| !relpath.is_empty() && !non_gitignored.contains(relpath))
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// Point every symlink in the export at what the recipe digested for it. A link that resolves
+/// outside the repository, or dangles, becomes an absolute link to its live resolution, so the
+/// build follows the path the recipe followed rather than that text relative to the export's
+/// temporary directory. An absolute link into the repository becomes a relative link to the
+/// export's copy of its target, so the build cannot read the live file; relative rather than
+/// absolute into the export so the link survives a build context that keeps links as links. A
+/// relative link into the repository already reads the export's copy and is left alone.
+fn rewrite_exported_symlinks(repo_root: &Path, dest: &Path) -> Result<()> {
+    let mut links = Vec::new();
+    collect_symlinks(dest, Path::new(""), &mut links)?;
+    for (link, target) in links {
+        let text = match link_target(repo_root, &link, &target) {
+            LinkTarget::Escaping(live) => live,
+            LinkTarget::Inside(_) if target.is_relative() => continue,
+            LinkTarget::Inside(inside) => relative_link(&link, &inside),
+        };
+        replace_symlink(&dest.join(&link), &text)?;
+    }
+    Ok(())
+}
+
+/// Appends every symlink under `root.join(prefix)` to `links` as its path relative to `root`
+/// and its text, descending real directories only and never the export's `.git`. A link is
+/// recognized by `symlink_metadata`, so a dangling one is found and one to a directory is
+/// listed rather than entered.
+fn collect_symlinks(root: &Path, prefix: &Path, links: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    let dir = root.join(prefix);
+    let entries =
+        std::fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = prefix.join(entry.file_name());
+        let metadata = path.symlink_metadata()?;
+        if metadata.is_symlink() {
+            let target = std::fs::read_link(&path)
+                .with_context(|| format!("failed to read link {}", path.display()))?;
+            links.push((relative, target));
+        } else if metadata.is_dir() && relative != Path::new(".git") {
+            collect_symlinks(root, &relative, links)?;
+        }
+    }
+    Ok(())
+}
+
+/// The text of a relative link at repository-relative `link` to repository-relative `inside`:
+/// one `..` per directory above the link, then the target, or `.` for the root itself.
+fn relative_link(link: &Path, inside: &Path) -> PathBuf {
+    let depth = link.parent().map_or(0, |dir| dir.components().count());
+    let text: PathBuf = std::iter::repeat_n(Component::ParentDir, depth)
+        .chain(inside.components())
+        .collect();
+    if text.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        text
+    }
+}
+
+/// Replace the symlink at `path` with one whose text is `target`.
+#[cfg(unix)]
+fn replace_symlink(path: &Path, target: &Path) -> Result<()> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("failed to remove link {}", path.display()))?;
+    std::os::unix::fs::symlink(target, path)
+        .with_context(|| format!("failed to link {} to {}", path.display(), target.display()))
+}
+
+/// Replace the symlink at `path` (non-unix: the export cannot be made to match the recipe).
+#[cfg(not(unix))]
+fn replace_symlink(path: &Path, target: &Path) -> Result<()> {
+    bail!(
+        "cannot rewrite the link {} to {} on this platform",
+        path.display(),
+        target.display()
+    )
+}
+
+/// The symlinks in `commit_sha`'s tree as sorted `(path, target)` pairs (`ls-tree -r` mode
+/// `120000`, each target its blob), read from the commit rather than the index or the working
+/// tree because the export checks out this tree and the image cache recipe digests what the
+/// export carries.
+pub(crate) fn tree_symlinks(repo_root: &Path, commit_sha: &str) -> Result<Vec<(String, PathBuf)>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-tree", "-r", "-z", commit_sha])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to list the commit tree")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git ls-tree {commit_sha} failed: {}", stderr.trim());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut links = Vec::new();
+    for (info, path) in stdout
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\t'))
+    {
+        let mut fields = info.split(' ');
+        if fields.next() != Some("120000") {
             continue;
         }
-        let src = repo_root.join(relpath);
-        let dst = dest.join(relpath);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::copy(&src, &dst).ok();
+        let oid = fields
+            .nth(1)
+            .with_context(|| format!("malformed ls-tree entry for {path}"))?;
+        links.push((path.to_string(), blob_path(repo_root, oid)?));
     }
+    links.sort();
+    Ok(links)
+}
 
-    Ok(())
+/// The content of blob `oid` as a path: the text of a symlink as git stores it.
+fn blob_path(repo_root: &Path, oid: &str) -> Result<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["cat-file", "blob", oid])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to read a symlink blob")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git cat-file blob {oid} failed: {}", stderr.trim());
+    }
+    let text = String::from_utf8(output.stdout).context("symlink target was not valid UTF-8")?;
+    Ok(PathBuf::from(text))
 }
 
 /// Generate a binary diff capturing all working-tree changes since a checkpoint commit.
@@ -532,7 +707,8 @@ pub async fn nearest_ancestor_touching(repo: &Path, paths: &[String]) -> Result<
     Ok(Some(sha.to_string()))
 }
 
-/// Convert a config path to a canonical repo-relative form.
+/// Convert a config path to a canonical repo-relative form, recorded in a note
+/// entry as the config that built it; informational only, never a lookup key.
 ///
 /// Strips `./` prefix and makes the path relative to the repo root.
 pub fn canonicalize_config_path(config_path: &str, repo_root: &Path) -> Result<String> {
@@ -561,30 +737,20 @@ mod tests {
     /// Helper: create a temp directory with an initialized git repo.
     fn init_temp_repo() -> Result<tempfile::TempDir> {
         let dir = tempfile::tempdir()?;
-        let run = |args: &[&str]| -> Result<()> {
-            let output = std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .output()?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("git {} failed: {}", args.join(" "), stderr.trim());
-            }
-            Ok(())
-        };
-        run(&["init"])?;
-        run(&["config", "user.email", "test@test.com"])?;
-        run(&["config", "user.name", "Test"])?;
-        // Create an initial commit so HEAD exists
-        let readme = dir.path().join("README.md");
-        std::fs::write(&readme, "# test repo")?;
-        run(&["add", "README.md"])?;
-        run(&["commit", "-m", "initial commit"])?;
+        init_repo_in(dir.path())?;
         Ok(dir)
+    }
+
+    /// Helper: initialize a git repo with one commit in an existing directory.
+    fn init_repo_in(dir: &Path) -> Result<()> {
+        git_in(dir, &["init"])?;
+        git_in(dir, &["config", "user.email", "test@test.com"])?;
+        git_in(dir, &["config", "user.name", "Test"])?;
+        // Create an initial commit so HEAD exists
+        std::fs::write(dir.join("README.md"), "# test repo")?;
+        git_in(dir, &["add", "README.md"])?;
+        git_in(dir, &["commit", "-m", "initial commit"])?;
+        Ok(())
     }
 
     /// Helper: run a git command in a directory and return stdout.
@@ -604,16 +770,74 @@ mod tests {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
+    /// The entry shape older Offload versions parse; serde's defaults ignore unknown keys.
+    #[derive(Deserialize)]
+    struct OldEntry {
+        image_id: String,
+    }
+
+    /// An entry written under a recipe name, with every optional field set.
+    fn recipe_entry(image_id: &str) -> ImageEntry {
+        ImageEntry {
+            image_id: image_id.to_string(),
+            recipe: Some(serde_json::json!({"format": 1, "sandbox_init_cmd": "make"})),
+            config_path: Some("offload-modal.toml".to_string()),
+            offload_version: Some("0.9.15".to_string()),
+            built_at: Some("2026-10-19T22:39:45Z".to_string()),
+        }
+    }
+
     // ---- Unit tests ----
 
     #[test]
     fn test_image_entry_json_round_trip() -> Result<()> {
-        let entry = ImageEntry {
-            image_id: "im-abc123".to_string(),
-        };
+        let entry = ImageEntry::legacy("im-abc123");
         let json = serde_json::to_string(&entry)?;
         let parsed: ImageEntry = serde_json::from_str(&json)?;
         assert_eq!(parsed.image_id, entry.image_id);
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_note_parses_with_new_fields_none() -> Result<()> {
+        let note: NoteContents = serde_json::from_str(r#"{"offload.toml": {"image_id": "im-x"}}"#)?;
+        let entry = note.get("offload.toml").context("missing legacy key")?;
+        assert_eq!(entry.image_id, "im-x");
+        assert!(entry.recipe.is_none());
+        assert!(entry.config_path.is_none());
+        assert!(entry.offload_version.is_none());
+        assert!(entry.built_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_entry_serializes_set_fields() -> Result<()> {
+        let value = serde_json::to_value(recipe_entry("im-new"))?;
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "image_id": "im-new",
+                "recipe": {"format": 1, "sandbox_init_cmd": "make"},
+                "config_path": "offload-modal.toml",
+                "offload_version": "0.9.15",
+                "built_at": "2026-10-19T22:39:45Z",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_image_entry_serializes_image_id_only() -> Result<()> {
+        let json = serde_json::to_string(&ImageEntry::legacy("im-x"))?;
+        assert_eq!(json, r#"{"image_id":"im-x"}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_entry_deserializes_under_old_shape() -> Result<()> {
+        let json = serde_json::to_string(&recipe_entry("im-new"))?;
+        let old: OldEntry = serde_json::from_str(&json)?;
+        assert_eq!(old.image_id, "im-new");
         Ok(())
     }
 
@@ -807,12 +1031,7 @@ mod tests {
         let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
 
         let mut contents = NoteContents::new();
-        contents.insert(
-            "offload.toml".to_string(),
-            ImageEntry {
-                image_id: "im-test123".to_string(),
-            },
-        );
+        contents.insert("offload.toml".to_string(), ImageEntry::legacy("im-test123"));
 
         write_note(dir.path(), &sha, &contents).await?;
         let read_back = read_note(dir.path(), &sha).await?;
@@ -832,22 +1051,12 @@ mod tests {
 
         // Write first config
         let mut contents_a = NoteContents::new();
-        contents_a.insert(
-            "config-a.toml".to_string(),
-            ImageEntry {
-                image_id: "im-aaa".to_string(),
-            },
-        );
+        contents_a.insert("config-a.toml".to_string(), ImageEntry::legacy("im-aaa"));
         write_note(dir.path(), &sha, &contents_a).await?;
 
         // Write second config -- should merge, not overwrite
         let mut contents_b = NoteContents::new();
-        contents_b.insert(
-            "config-b.toml".to_string(),
-            ImageEntry {
-                image_id: "im-bbb".to_string(),
-            },
-        );
+        contents_b.insert("config-b.toml".to_string(), ImageEntry::legacy("im-bbb"));
         write_note(dir.path(), &sha, &contents_b).await?;
 
         let read_back = read_note(dir.path(), &sha)
@@ -868,6 +1077,47 @@ mod tests {
                 .image_id,
             "im-bbb"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_note_round_trips_and_merges_new_fields() -> Result<()> {
+        let dir = init_temp_repo()?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        let recipe_key = "recipe:3f9c2a7b1e5d4c08";
+
+        let mut contents_a = NoteContents::new();
+        contents_a.insert(recipe_key.to_string(), recipe_entry("im-a"));
+        write_note(dir.path(), &sha, &contents_a).await?;
+
+        let read_back = read_note(dir.path(), &sha)
+            .await?
+            .context("expected note")?;
+        assert_eq!(read_back.get(recipe_key), Some(&recipe_entry("im-a")));
+
+        let mut contents_b = NoteContents::new();
+        contents_b.insert("offload.toml".to_string(), ImageEntry::legacy("im-b"));
+        write_note(dir.path(), &sha, &contents_b).await?;
+
+        let merged = read_note(dir.path(), &sha)
+            .await?
+            .context("expected merged note")?;
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get(recipe_key), Some(&recipe_entry("im-a")));
+        assert_eq!(
+            merged.get("offload.toml"),
+            Some(&ImageEntry::legacy("im-b"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_path_within_repo() -> Result<()> {
+        let repo = init_temp_repo()?;
+        let sub = repo.path().join("sub").join("dir");
+        std::fs::create_dir_all(&sub)?;
+        assert_eq!(path_within_repo(repo.path()).await?, PathBuf::new());
+        assert_eq!(path_within_repo(&sub).await?, PathBuf::from("sub/dir"));
         Ok(())
     }
 
@@ -956,6 +1206,81 @@ mod tests {
         );
         // Should be a git repo
         assert!(dest.path().join(".git").exists(), ".git should exist");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_tree_rewrites_a_relative_escaping_link_to_its_live_target() -> Result<()> {
+        let base = tempfile::tempdir()?;
+        let repo = base.path().join("repo");
+        std::fs::create_dir(&repo)?;
+        init_repo_in(&repo)?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        std::os::unix::fs::symlink("../model.bin", repo.join("model"))?;
+        git_in(&repo, &["add", "model"])?;
+        git_in(&repo, &["commit", "-m", "add link"])?;
+        let sha = git_in(&repo, &["rev-parse", "HEAD"])?;
+        let root = PathBuf::from(git_in(&repo, &["rev-parse", "--show-toplevel"])?);
+
+        let dest = tempfile::tempdir()?;
+        export_tree(&repo, &sha, dest.path()).await?;
+
+        assert_eq!(
+            std::fs::read_link(dest.path().join("model"))?,
+            root.join("../model.bin")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("model"))?,
+            "weights"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_tree_rewrites_an_absolute_inside_link_into_the_export() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::os::unix::fs::symlink(dir.path().join("README.md"), dir.path().join("readme-link"))?;
+        git_in(dir.path(), &["add", "readme-link"])?;
+        git_in(dir.path(), &["commit", "-m", "add link"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        let dest = tempfile::tempdir()?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
+        std::fs::write(dir.path().join("README.md"), "# edited after the export")?;
+
+        assert_eq!(
+            std::fs::read_link(dest.path().join("readme-link"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("readme-link"))?,
+            "# test repo"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_extra_paths_lists_what_export_tree_copies() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::write(dir.path().join(".gitignore"), "*.tar.gz\nbuild/\n")?;
+        std::fs::write(dir.path().join(".dockerignore"), "*.log\n")?;
+        git_in(dir.path(), &["add", ".gitignore", ".dockerignore"])?;
+        git_in(dir.path(), &["commit", "-m", "add ignore files"])?;
+        let sha = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+
+        std::fs::write(dir.path().join("base.tar.gz"), "tarball")?;
+        std::fs::create_dir(dir.path().join("build"))?;
+        std::fs::write(dir.path().join("build/out.bin"), "artifact")?;
+        std::fs::write(dir.path().join("debug.log"), "dockerignored")?;
+        std::fs::write(dir.path().join("notes.txt"), "untracked but not gitignored")?;
+
+        let listed = export_extra_paths(dir.path())?;
+        assert_eq!(listed, vec!["base.tar.gz", "build/out.bin"]);
+
+        let dest = tempfile::tempdir()?;
+        export_tree(dir.path(), &sha, dest.path()).await?;
+        let copied = git_in(dest.path(), &["ls-files", "--others"])?;
+        assert_eq!(copied.lines().collect::<Vec<_>>(), listed);
         Ok(())
     }
 
@@ -1166,6 +1491,129 @@ mod tests {
 
         // fetch_notes should return Ok(()) even though remote has no notes ref
         fetch_notes(dir.path(), "origin").await?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_symlinks_lists_the_commit_links_with_their_targets() -> Result<()> {
+        let dir = init_temp_repo()?;
+        std::fs::write(dir.path().join("plain.txt"), "plain")?;
+        std::os::unix::fs::symlink("README.md", dir.path().join("to-readme"))?;
+        std::os::unix::fs::symlink("/nonexistent/target", dir.path().join("dangling"))?;
+        git_in(dir.path(), &["add", "plain.txt", "to-readme", "dangling"])?;
+        git_in(dir.path(), &["commit", "-m", "add links"])?;
+        let with_links = git_in(dir.path(), &["rev-parse", "HEAD"])?;
+        git_in(dir.path(), &["rm", "-q", "to-readme"])?;
+        git_in(dir.path(), &["commit", "-m", "remove a link"])?;
+        std::os::unix::fs::symlink("README.md", dir.path().join("untracked"))?;
+        let dangling = ("dangling".to_string(), PathBuf::from("/nonexistent/target"));
+        let to_readme = ("to-readme".to_string(), PathBuf::from("README.md"));
+        assert_eq!(
+            tree_symlinks(dir.path(), &with_links)?,
+            vec![dangling.clone(), to_readme]
+        );
+        assert_eq!(tree_symlinks(dir.path(), "HEAD")?, vec![dangling]);
+        Ok(())
+    }
+
+    /// Helper: a live root and an export of it, each holding `README.md` and `docs/`, with the
+    /// export one directory deeper than the root so a relative link out of the root lands
+    /// somewhere else from the export.
+    fn root_and_export() -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("repo");
+        let export = base.path().join("tmp/export");
+        for dir in [&root, &export] {
+            std::fs::create_dir_all(dir.join("docs"))?;
+            std::fs::write(dir.join("README.md"), "readme")?;
+        }
+        Ok((base, root, export))
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_points_an_escaping_link_at_its_live_resolution() -> Result<()>
+    {
+        let (base, root, export) = root_and_export()?;
+        std::fs::write(base.path().join("model.bin"), "weights")?;
+        std::os::unix::fs::symlink("../model.bin", export.join("model"))?;
+        std::os::unix::fs::symlink("../../model.bin", export.join("docs/model"))?;
+        std::os::unix::fs::symlink("missing.txt", export.join("late"))?;
+        std::os::unix::fs::symlink(base.path().join("model.bin"), export.join("absolute"))?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("model"))?,
+            root.join("../model.bin")
+        );
+        assert_eq!(std::fs::read_to_string(export.join("model"))?, "weights");
+        assert_eq!(
+            std::fs::read_link(export.join("docs/model"))?,
+            root.join("docs/../../model.bin")
+        );
+        assert_eq!(
+            std::fs::read_to_string(export.join("docs/model"))?,
+            "weights"
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("late"))?,
+            root.join("missing.txt")
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("absolute"))?,
+            base.path().join("model.bin")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_points_an_absolute_inside_link_into_the_export() -> Result<()>
+    {
+        let (_base, root, export) = root_and_export()?;
+        std::os::unix::fs::symlink(root.join("README.md"), export.join("readme"))?;
+        std::os::unix::fs::symlink(root.join("README.md"), export.join("docs/readme"))?;
+        std::os::unix::fs::symlink(&root, export.join("top"))?;
+        std::fs::write(root.join("README.md"), "edited live")?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("readme"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(std::fs::read_to_string(export.join("readme"))?, "readme");
+        assert_eq!(
+            std::fs::read_link(export.join("docs/readme"))?,
+            Path::new("../README.md")
+        );
+        assert_eq!(std::fs::read_link(export.join("top"))?, Path::new("."));
+        Ok(())
+    }
+
+    #[test]
+    fn test_rewrite_exported_symlinks_leaves_relative_inside_links_and_skips_git() -> Result<()> {
+        let (_base, root, export) = root_and_export()?;
+        std::fs::create_dir(export.join(".git"))?;
+        std::os::unix::fs::symlink("README.md", export.join("readme"))?;
+        std::os::unix::fs::symlink("../README.md", export.join("docs/readme"))?;
+        std::os::unix::fs::symlink(".", export.join("loop"))?;
+        std::os::unix::fs::symlink("/nonexistent/hook", export.join(".git/hook"))?;
+
+        rewrite_exported_symlinks(&root, &export)?;
+
+        assert_eq!(
+            std::fs::read_link(export.join("readme"))?,
+            Path::new("README.md")
+        );
+        assert_eq!(
+            std::fs::read_link(export.join("docs/readme"))?,
+            Path::new("../README.md")
+        );
+        assert_eq!(std::fs::read_link(export.join("loop"))?, Path::new("."));
+        assert_eq!(
+            std::fs::read_link(export.join(".git/hook"))?,
+            Path::new("/nonexistent/hook")
+        );
         Ok(())
     }
 }

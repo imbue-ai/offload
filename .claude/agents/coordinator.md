@@ -59,6 +59,7 @@ When delegating to a subagent, use the Task tool with the appropriate agent:
 - Update bead status with: `br update <id> --status done`
 - When creating, updating, or closing beads, commit the changes to `.beads/issues.jsonl` and `.beads/last-touched` to ensure bead state is tracked in version control.
 - **Bead state is the Coordinator's exclusive responsibility.** Coding subagents must NOT run `br update`/`br close` or commit anything under `.beads/`. If a coding subagent does so anyway, the Coordinator should note the violation in the next delegation prompt and proceed (no rollback needed if Judge passes).
+- Change bead text only with `br update <id> --description '...'` (or `--title`, `--notes`); never run a substitution over `.beads/issues.jsonl`. When a document that open beads cite moves, repoint the open beads one at a time; closed beads keep the text they were built against. Descriptions follow "Writing beads that age well" in `.claude/agents/tidy.md`.
 - If a subagent fails:
   - hard reset to pre-attempt commit: `git reset --hard <good_commit>` (or `jj abandon <failed_change>` in a Jujutsu repo)
   - run a Judge subagent to analyze the failure mode
@@ -87,6 +88,7 @@ Coding/Judge/Tidy subagents already read `AGENTS.md` and their own `.claude/agen
 - the pre-attempt commit hash (for rollback),
 - any task-specific constraints not covered by AGENTS.md,
 - a pointer to AGENTS.md for the standing rules ("Standing rules in AGENTS.md and `.claude/agents/coding.md` apply.").
+- **The bead is the specification of record.** The Coding Subagent reads it with `br show <id>` and the Judge verifies against it, so the prompt names the id and does not restate the description. A change or narrowing of any requirement goes into the bead first (`br update <id> --description '...'`, committed), then into the prompt; a prompt that disagrees with its bead is a FAIL the Coding Subagent reports before implementing, which needs no Judge analysis — amend the bead and re-delegate.
 
 ## Plan-to-bead translation: mark deferrable scope explicitly
 When translating a blueprint plan into beads, the plan often promises behavior at a phase boundary (e.g. "Phase 3 applies X onto the surviving items") that turns out to be pre-existing-unwired. Two failure modes follow:
@@ -97,6 +99,7 @@ Mitigation when authoring bead descriptions from a plan:
 - For each promised behavior, mark it explicitly as **must-land in this bead** or **may be deferred (file follow-up)**. Default is must-land; deferral requires a one-line justification (e.g. "pre-existing gap; out of plan's stated scope for this phase").
 - When Judge surfaces a gap that matches a "may be deferred" marker, the Coordinator files a follow-up bead and closes the current one as PASS.
 - When Judge surfaces a gap with no marker, treat it as a real fail and retry.
+- When the plan's invariant is that one artifact covers everything another component reads (a cache key over a build's inputs, a digest over an upload), enumerate the read side from its implementation, not from the plan's prose, before writing the beads that build the covering side, and give every enumerated input a field or a bead. For the Modal builder the implementation is the SDK the bundled script pins; `.claude/agents/judge.md` ("An input the key does not carry") says how to read it. The six cache-key plan items were written from the prose, and the invoking directory, file mode bits, and escaping symlinks each became a review finding and a P1 bead after the last item shipped.
 
 ## Commit-message escaping
 Apostrophes (e.g. `it's`) in bash heredocs can break `git commit -m`. When a commit message contains single quotes, write the message to a temp file and use `-F`:
